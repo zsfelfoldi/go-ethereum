@@ -251,7 +251,7 @@ func accountList(ctx *cli.Context) {
 		utils.Fatalf("Could not list accounts: %v", err)
 	}
 	for _, acct := range accts {
-		fmt.Printf("Address: %#x\n", acct)
+		fmt.Printf("Address: %x\n", acct)
 	}
 }
 
@@ -278,7 +278,7 @@ func accountCreate(ctx *cli.Context) {
 	if err != nil {
 		utils.Fatalf("Could not create the account: %v", err)
 	}
-	fmt.Printf("Address: %#x\n", acct.Address)
+	fmt.Printf("Address: %x\n", acct.Address)
 }
 
 func importchain(ctx *cli.Context) {
@@ -314,7 +314,7 @@ func dump(ctx *cli.Context) {
 	for _, arg := range ctx.Args() {
 		var block *types.Block
 		if hashish(arg) {
-			block = chainmgr.GetBlock(common.Hex2Bytes(arg))
+			block = chainmgr.GetBlock(common.HexToHash(arg))
 		} else {
 			num, _ := strconv.Atoi(arg)
 			block = chainmgr.GetBlockByNumber(uint64(num))
