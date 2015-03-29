@@ -7,7 +7,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/event"
-	"github.com/ethereum/go-ethereum/state"
+	"github.com/ethereum/go-ethereum/core/state"
 )
 
 type FilterManager struct {
@@ -37,17 +37,20 @@ func (self *FilterManager) Stop() {
 
 func (self *FilterManager) InstallFilter(filter *core.Filter) (id int) {
 	self.filterMu.Lock()
+	defer self.filterMu.Unlock()
 	id = self.filterId
 	self.filters[id] = filter
 	self.filterId++
-	self.filterMu.Unlock()
+
 	return id
 }
 
 func (self *FilterManager) UninstallFilter(id int) {
 	self.filterMu.Lock()
-	delete(self.filters, id)
-	self.filterMu.Unlock()
+	defer self.filterMu.Unlock()
+	if _, ok := self.filters[id]; ok {
+		delete(self.filters, id)
+	}
 }
 
 // GetFilter retrieves a filter installed using InstallFilter.
@@ -60,7 +63,11 @@ func (self *FilterManager) GetFilter(id int) *core.Filter {
 
 func (self *FilterManager) filterLoop() {
 	// Subscribe to events
-	events := self.eventMux.Subscribe(core.PendingBlockEvent{}, core.NewBlockEvent{}, state.Logs(nil))
+	events := self.eventMux.Subscribe(
+		//core.PendingBlockEvent{},
+		core.ChainEvent{},
+		core.TxPreEvent{},
+		state.Logs(nil))
 
 out:
 	for {
@@ -69,20 +76,20 @@ out:
 			break out
 		case event := <-events.Chan():
 			switch event := event.(type) {
-			case core.NewBlockEvent:
+			case core.ChainEvent:
 				self.filterMu.RLock()
 				for _, filter := range self.filters {
 					if filter.BlockCallback != nil {
-						filter.BlockCallback(event.Block)
+						filter.BlockCallback(event.Block, event.Logs)
 					}
 				}
 				self.filterMu.RUnlock()
 
-			case core.PendingBlockEvent:
+			case core.TxPreEvent:
 				self.filterMu.RLock()
 				for _, filter := range self.filters {
 					if filter.PendingCallback != nil {
-						filter.PendingCallback(event.Block)
+						filter.PendingCallback(event.Tx)
 					}
 				}
 				self.filterMu.RUnlock()

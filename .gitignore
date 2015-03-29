@@ -6,10 +6,13 @@
 
 /tmp
 */**/*un~
+*/**/*.test
 *un~
 .DS_Store
 */**/.DS_Store
 .ethtest
+*/**/*tx_database*
+*/**/*dapps*
 
 #*
 .#*
@@ -17,3 +20,8 @@
 *~
 .project
 .settings
+
+cmd/ethereum/ethereum
+cmd/mist/mist
+deploy/osx/Mist.app
+deploy/osx/Mist\ Installer.dmg

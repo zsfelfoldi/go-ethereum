@@ -3,36 +3,47 @@ package core
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"math/big"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethutil"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/state"
 )
 
-var chainlogger = logger.NewLogger("CHAIN")
+var (
+	chainlogger = logger.NewLogger("CHAIN")
+	jsonlogger  = logger.NewJsonLogger()
 
-type ChainEvent struct {
-	Block *types.Block
-	Td    *big.Int
-}
+	blockHashPre = []byte("block-hash-")
+	blockNumPre  = []byte("block-num-")
+)
+
+const blockCacheLimit = 10000
 
 type StateQuery interface {
 	GetAccount(addr []byte) *state.StateObject
 }
 
-func CalcDifficulty(block, parent *types.Block) *big.Int {
+func CalcDifficulty(block, parent *types.Header) *big.Int {
 	diff := new(big.Int)
 
-	adjust := new(big.Int).Rsh(parent.Difficulty(), 10)
-	if block.Time() >= parent.Time()+8 {
-		diff.Sub(parent.Difficulty(), adjust)
+	diffBoundDiv := big.NewInt(2048)
+	min := big.NewInt(131072)
+
+	adjust := new(big.Int).Div(parent.Difficulty, diffBoundDiv)
+	if (block.Time - parent.Time) < 8 {
+		diff.Add(parent.Difficulty, adjust)
 	} else {
-		diff.Add(parent.Difficulty(), adjust)
+		diff.Sub(parent.Difficulty, adjust)
+	}
+
+	if diff.Cmp(min) < 0 {
+		return min
 	}
 
 	return diff
@@ -54,11 +65,10 @@ func CalculateTD(block, parent *types.Block) *big.Int {
 
 func CalcGasLimit(parent, block *types.Block) *big.Int {
 	if block.Number().Cmp(big.NewInt(0)) == 0 {
-		return ethutil.BigPow(10, 6)
+		return common.BigPow(10, 6)
 	}
 
 	// ((1024-1) * parent.gasLimit + (gasUsed * 6 / 5)) / 1024
-
 	previous := new(big.Int).Mul(big.NewInt(1024-1), parent.GasLimit())
 	current := new(big.Rat).Mul(new(big.Rat).SetInt(parent.GasUsed()), big.NewRat(6, 5))
 	curInt := new(big.Int).Div(current.Num(), current.Denom())
@@ -66,25 +76,43 @@ func CalcGasLimit(parent, block *types.Block) *big.Int {
 	result := new(big.Int).Add(previous, curInt)
 	result.Div(result, big.NewInt(1024))
 
-	min := big.NewInt(125000)
-
-	return ethutil.BigMax(min, result)
+	return common.BigMax(GenesisGasLimit, result)
 }
 
 type ChainManager struct {
 	//eth          EthManager
-	db           ethutil.Database
+	blockDb      common.Database
+	stateDb      common.Database
 	processor    types.BlockProcessor
 	eventMux     *event.TypeMux
 	genesisBlock *types.Block
 	// Last known total difficulty
-	mu              sync.RWMutex
-	td              *big.Int
-	lastBlockNumber uint64
-	currentBlock    *types.Block
-	lastBlockHash   []byte
+	mu            sync.RWMutex
+	tsmu          sync.RWMutex
+	td            *big.Int
+	currentBlock  *types.Block
+	lastBlockHash common.Hash
 
 	transState *state.StateDB
+	txState    *state.ManagedState
+
+	cache *BlockCache
+
+	quit chan struct{}
+}
+
+func NewChainManager(blockDb, stateDb common.Database, mux *event.TypeMux) *ChainManager {
+	bc := &ChainManager{blockDb: blockDb, stateDb: stateDb, genesisBlock: GenesisBlock(stateDb), eventMux: mux, quit: make(chan struct{}), cache: NewBlockCache(blockCacheLimit)}
+	bc.setLastBlock()
+	bc.transState = bc.State().Copy()
+	// Take ownership of this particular state
+	bc.txState = state.ManageState(bc.State().Copy())
+
+	bc.makeCache()
+
+	go bc.update()
+
+	return bc
 }
 
 func (self *ChainManager) Td() *big.Int {
@@ -94,14 +122,7 @@ func (self *ChainManager) Td() *big.Int {
 	return self.td
 }
 
-func (self *ChainManager) LastBlockNumber() uint64 {
-	self.mu.RLock()
-	defer self.mu.RUnlock()
-
-	return self.lastBlockNumber
-}
-
-func (self *ChainManager) LastBlockHash() []byte {
+func (self *ChainManager) LastBlockHash() common.Hash {
 	self.mu.RLock()
 	defer self.mu.RUnlock()
 
@@ -115,19 +136,11 @@ func (self *ChainManager) CurrentBlock() *types.Block {
 	return self.currentBlock
 }
 
-func NewChainManager(db ethutil.Database, mux *event.TypeMux) *ChainManager {
-	bc := &ChainManager{db: db, genesisBlock: GenesisBlock(db), eventMux: mux}
-	bc.setLastBlock()
-	bc.transState = bc.State().Copy()
-
-	return bc
-}
-
-func (self *ChainManager) Status() (td *big.Int, currentBlock []byte, genesisBlock []byte) {
+func (self *ChainManager) Status() (td *big.Int, currentBlock common.Hash, genesisBlock common.Hash) {
 	self.mu.RLock()
 	defer self.mu.RUnlock()
 
-	return self.td, self.currentBlock.Hash(), self.Genesis().Hash()
+	return self.td, self.currentBlock.Hash(), self.genesisBlock.Hash()
 }
 
 func (self *ChainManager) SetProcessor(proc types.BlockProcessor) {
@@ -135,38 +148,70 @@ func (self *ChainManager) SetProcessor(proc types.BlockProcessor) {
 }
 
 func (self *ChainManager) State() *state.StateDB {
-	return state.New(self.CurrentBlock().Root(), self.db)
+	return state.New(self.CurrentBlock().Root(), self.stateDb)
 }
 
 func (self *ChainManager) TransState() *state.StateDB {
+	self.tsmu.RLock()
+	defer self.tsmu.RUnlock()
+
 	return self.transState
 }
 
+func (self *ChainManager) TxState() *state.ManagedState {
+	self.tsmu.RLock()
+	defer self.tsmu.RUnlock()
+
+	return self.txState
+}
+
+func (self *ChainManager) setTxState(statedb *state.StateDB) {
+	self.tsmu.Lock()
+	defer self.tsmu.Unlock()
+	self.txState = state.ManageState(statedb)
+}
+
+func (self *ChainManager) setTransState(statedb *state.StateDB) {
+	self.transState = statedb
+}
+
 func (bc *ChainManager) setLastBlock() {
-	data, _ := bc.db.Get([]byte("LastBlock"))
+	data, _ := bc.blockDb.Get([]byte("LastBlock"))
 	if len(data) != 0 {
-		var block types.Block
-		rlp.Decode(bytes.NewReader(data), &block)
-		bc.currentBlock = &block
+		block := bc.GetBlock(common.BytesToHash(data))
+		bc.currentBlock = block
 		bc.lastBlockHash = block.Hash()
-		bc.lastBlockNumber = block.Header().Number.Uint64()
 
 		// Set the last know difficulty (might be 0x0 as initial value, Genesis)
-		bc.td = ethutil.BigD(bc.db.LastKnownTD())
+		bc.td = common.BigD(bc.blockDb.LastKnownTD())
 	} else {
 		bc.Reset()
 	}
 
-	chainlogger.Infof("Last block (#%d) %x TD=%v\n", bc.lastBlockNumber, bc.currentBlock.Hash(), bc.td)
+	chainlogger.Infof("Last block (#%v) %x TD=%v\n", bc.currentBlock.Number(), bc.currentBlock.Hash(), bc.td)
+}
+
+func (bc *ChainManager) makeCache() {
+	if bc.cache == nil {
+		bc.cache = NewBlockCache(blockCacheLimit)
+	}
+	// load in last `blockCacheLimit` - 1 blocks. Last block is the current.
+	ancestors := bc.GetAncestors(bc.currentBlock, blockCacheLimit-1)
+	ancestors = append(ancestors, bc.currentBlock)
+	for _, block := range ancestors {
+		bc.cache.Push(block)
+	}
 }
 
 // Block creation & chain handling
-func (bc *ChainManager) NewBlock(coinbase []byte) *types.Block {
+func (bc *ChainManager) NewBlock(coinbase common.Address) *types.Block {
 	bc.mu.RLock()
 	defer bc.mu.RUnlock()
 
-	var root []byte
-	parentHash := ZeroHash256
+	var (
+		root       common.Hash
+		parentHash common.Hash
+	)
 
 	if bc.currentBlock != nil {
 		root = bc.currentBlock.Header().Root
@@ -177,8 +222,8 @@ func (bc *ChainManager) NewBlock(coinbase []byte) *types.Block {
 		parentHash,
 		coinbase,
 		root,
-		ethutil.BigPow(2, 32),
-		nil,
+		common.BigPow(2, 32),
+		0,
 		"")
 	block.SetUncles(nil)
 	block.SetTransactions(nil)
@@ -187,8 +232,8 @@ func (bc *ChainManager) NewBlock(coinbase []byte) *types.Block {
 	parent := bc.currentBlock
 	if parent != nil {
 		header := block.Header()
-		header.Difficulty = CalcDifficulty(block, parent)
-		header.Number = new(big.Int).Add(parent.Header().Number, ethutil.Big1)
+		header.Difficulty = CalcDifficulty(block.Header(), parent.Header())
+		header.Number = new(big.Int).Add(parent.Header().Number, common.Big1)
 		header.GasLimit = CalcGasLimit(parent, block)
 
 	}
@@ -201,43 +246,70 @@ func (bc *ChainManager) Reset() {
 	defer bc.mu.Unlock()
 
 	for block := bc.currentBlock; block != nil; block = bc.GetBlock(block.Header().ParentHash) {
-		bc.db.Delete(block.Hash())
+		bc.removeBlock(block)
+	}
+
+	if bc.cache == nil {
+		bc.cache = NewBlockCache(blockCacheLimit)
 	}
 
 	// Prepare the genesis block
 	bc.write(bc.genesisBlock)
 	bc.insert(bc.genesisBlock)
 	bc.currentBlock = bc.genesisBlock
+	bc.makeCache()
 
-	bc.setTotalDifficulty(ethutil.Big("0"))
+	bc.setTotalDifficulty(common.Big("0"))
 }
 
-func (self *ChainManager) Export() []byte {
-	self.mu.RLock()
-	defer self.mu.RUnlock()
+func (bc *ChainManager) removeBlock(block *types.Block) {
+	bc.blockDb.Delete(append(blockHashPre, block.Hash().Bytes()...))
+}
 
-	chainlogger.Infof("exporting %v blocks...\n", self.currentBlock.Header().Number)
+func (bc *ChainManager) ResetWithGenesisBlock(gb *types.Block) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
 
-	blocks := make([]*types.Block, int(self.currentBlock.NumberU64())+1)
-	for block := self.currentBlock; block != nil; block = self.GetBlock(block.Header().ParentHash) {
-		blocks[block.NumberU64()] = block
+	for block := bc.currentBlock; block != nil; block = bc.GetBlock(block.Header().ParentHash) {
+		bc.removeBlock(block)
 	}
 
-	return ethutil.Encode(blocks)
+	// Prepare the genesis block
+	bc.genesisBlock = gb
+	bc.write(bc.genesisBlock)
+	bc.insert(bc.genesisBlock)
+	bc.currentBlock = bc.genesisBlock
+	bc.makeCache()
+}
+
+// Export writes the active chain to the given writer.
+func (self *ChainManager) Export(w io.Writer) error {
+	self.mu.RLock()
+	defer self.mu.RUnlock()
+	chainlogger.Infof("exporting %v blocks...\n", self.currentBlock.Header().Number)
+	for block := self.currentBlock; block != nil; block = self.GetBlock(block.Header().ParentHash) {
+		if err := block.EncodeRLP(w); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (bc *ChainManager) insert(block *types.Block) {
-	encodedBlock := ethutil.Encode(block)
-	bc.db.Put([]byte("LastBlock"), encodedBlock)
+	bc.blockDb.Put([]byte("LastBlock"), block.Hash().Bytes())
 	bc.currentBlock = block
 	bc.lastBlockHash = block.Hash()
+
+	key := append(blockNumPre, block.Number().Bytes()...)
+	bc.blockDb.Put(key, bc.lastBlockHash.Bytes())
+	// Push block to cache
+	bc.cache.Push(block)
 }
 
 func (bc *ChainManager) write(block *types.Block) {
-	bc.writeBlockInfo(block)
-
-	encodedBlock := ethutil.Encode(block.RlpDataForStorage())
-	bc.db.Put(block.Hash(), encodedBlock)
+	enc, _ := rlp.EncodeToBytes((*types.StorageBlock)(block))
+	key := append(blockHashPre, block.Hash().Bytes()...)
+	bc.blockDb.Put(key, enc)
 }
 
 // Accessors
@@ -246,17 +318,16 @@ func (bc *ChainManager) Genesis() *types.Block {
 }
 
 // Block fetching methods
-func (bc *ChainManager) HasBlock(hash []byte) bool {
-	data, _ := bc.db.Get(hash)
+func (bc *ChainManager) HasBlock(hash common.Hash) bool {
+	data, _ := bc.blockDb.Get(append(blockHashPre, hash[:]...))
 	return len(data) != 0
 }
 
-func (self *ChainManager) GetBlockHashesFromHash(hash []byte, max uint64) (chain [][]byte) {
+func (self *ChainManager) GetBlockHashesFromHash(hash common.Hash, max uint64) (chain []common.Hash) {
 	block := self.GetBlock(hash)
 	if block == nil {
 		return
 	}
-
 	// XXX Could be optimised by using a different database which only holds hashes (i.e., linked list)
 	for i := uint64(0); i < max; i++ {
 		parentHash := block.Header().ParentHash
@@ -267,7 +338,7 @@ func (self *ChainManager) GetBlockHashesFromHash(hash []byte, max uint64) (chain
 		}
 
 		chain = append(chain, block.Hash())
-		if block.Header().Number.Cmp(ethutil.Big0) <= 0 {
+		if block.Header().Number.Cmp(common.Big0) <= 0 {
 			break
 		}
 	}
@@ -275,18 +346,33 @@ func (self *ChainManager) GetBlockHashesFromHash(hash []byte, max uint64) (chain
 	return
 }
 
-func (self *ChainManager) GetBlock(hash []byte) *types.Block {
-	data, _ := self.db.Get(hash)
+func (self *ChainManager) GetBlock(hash common.Hash) *types.Block {
+	if block := self.cache.Get(hash); block != nil {
+		return block
+	}
+
+	data, _ := self.blockDb.Get(append(blockHashPre, hash[:]...))
 	if len(data) == 0 {
 		return nil
 	}
-	var block types.Block
+	var block types.StorageBlock
 	if err := rlp.Decode(bytes.NewReader(data), &block); err != nil {
-		fmt.Println(err)
+		chainlogger.Errorf("invalid block RLP for hash %x: %v", hash, err)
+		return nil
+	}
+	return (*types.Block)(&block)
+}
+
+func (self *ChainManager) GetBlockByNumber(num uint64) *types.Block {
+	self.mu.RLock()
+	defer self.mu.RUnlock()
+
+	key, _ := self.blockDb.Get(append(blockNumPre, big.NewInt(int64(num)).Bytes()...))
+	if len(key) == 0 {
 		return nil
 	}
 
-	return &block
+	return self.GetBlock(common.BytesToHash(key))
 }
 
 func (self *ChainManager) GetUnclesInChain(block *types.Block, length int) (uncles []*types.Header) {
@@ -311,26 +397,8 @@ func (self *ChainManager) GetAncestors(block *types.Block, length int) (blocks [
 	return
 }
 
-func (self *ChainManager) GetBlockByNumber(num uint64) *types.Block {
-	self.mu.RLock()
-	defer self.mu.RUnlock()
-
-	var block *types.Block
-
-	if num <= self.currentBlock.Number().Uint64() {
-		block = self.currentBlock
-		for ; block != nil; block = self.GetBlock(block.Header().ParentHash) {
-			if block.Header().Number.Uint64() == num {
-				break
-			}
-		}
-	}
-
-	return block
-}
-
 func (bc *ChainManager) setTotalDifficulty(td *big.Int) {
-	bc.db.Put([]byte("LTD"), td.Bytes())
+	bc.blockDb.Put([]byte("LTD"), td.Bytes())
 	bc.td = td
 }
 
@@ -354,58 +422,123 @@ func (self *ChainManager) CalcTotalDiff(block *types.Block) (*big.Int, error) {
 	return td, nil
 }
 
-// Unexported method for writing extra non-essential block info to the db
-func (bc *ChainManager) writeBlockInfo(block *types.Block) {
-	bc.lastBlockNumber++
+func (bc *ChainManager) Stop() {
+	close(bc.quit)
 }
 
-func (bc *ChainManager) Stop() {
-	if bc.CurrentBlock != nil {
-		chainlogger.Infoln("Stopped")
-	}
+type queueEvent struct {
+	queue          []interface{}
+	canonicalCount int
+	sideCount      int
+	splitCount     int
 }
 
 func (self *ChainManager) InsertChain(chain types.Blocks) error {
-	for _, block := range chain {
-		td, err := self.processor.Process(block)
+	//self.tsmu.Lock()
+	//defer self.tsmu.Unlock()
+
+	// A queued approach to delivering events. This is generally faster than direct delivery and requires much less mutex acquiring.
+	var queue = make([]interface{}, len(chain))
+	var queueEvent = queueEvent{queue: queue}
+	for i, block := range chain {
+		// Call in to the block processor and check for errors. It's likely that if one block fails
+		// all others will fail too (unless a known block is returned).
+		td, logs, err := self.processor.Process(block)
 		if err != nil {
 			if IsKnownBlockErr(err) {
 				continue
 			}
 
+			if err == BlockEqualTSErr {
+				queue[i] = ChainSideEvent{block, logs}
+				continue
+			}
+
 			h := block.Header()
-			chainlogger.Infof("block #%v process failed (%x)\n", h.Number, h.Hash()[:4])
-			chainlogger.Infoln(block)
-			chainlogger.Infoln(err)
+			chainlogger.Errorf("INVALID block #%v (%x)\n", h.Number, h.Hash().Bytes()[:4])
+			chainlogger.Errorln(err)
+			chainlogger.Debugln(block)
 			return err
 		}
 		block.Td = td
 
 		self.mu.Lock()
+		cblock := self.currentBlock
 		{
+			// Write block to database. Eventually we'll have to improve on this and throw away blocks that are
+			// not in the canonical chain.
 			self.write(block)
-			cblock := self.currentBlock
+			// Compare the TD of the last known block in the canonical chain to make sure it's greater.
+			// At this point it's possible that a different chain (fork) becomes the new canonical chain.
 			if td.Cmp(self.td) > 0 {
-				if block.Header().Number.Cmp(new(big.Int).Add(cblock.Header().Number, ethutil.Big1)) < 0 {
-					chainlogger.Infof("Split detected. New head #%v (%x) TD=%v, was #%v (%x) TD=%v\n", block.Header().Number, block.Hash()[:4], td, cblock.Header().Number, cblock.Hash()[:4], self.td)
+				if block.Header().Number.Cmp(new(big.Int).Add(cblock.Header().Number, common.Big1)) < 0 {
+					chash := cblock.Hash()
+					hash := block.Hash()
+					chainlogger.Infof("Split detected. New head #%v (%x) TD=%v, was #%v (%x) TD=%v\n", block.Header().Number, hash[:4], td, cblock.Header().Number, chash[:4], self.td)
+
+					queue[i] = ChainSplitEvent{block, logs}
+					queueEvent.splitCount++
 				}
 
 				self.setTotalDifficulty(td)
 				self.insert(block)
-				self.transState = state.New(cblock.Root(), self.db)
 
-				self.eventMux.Post(ChainEvent{block, td})
+				jsonlogger.LogJson(&logger.EthChainNewHead{
+					BlockHash:     block.Hash().Hex(),
+					BlockNumber:   block.Number(),
+					ChainHeadHash: cblock.Hash().Hex(),
+					BlockPrevHash: block.ParentHash().Hex(),
+				})
+
+				self.setTransState(state.New(block.Root(), self.stateDb))
+				self.setTxState(state.New(block.Root(), self.stateDb))
+
+				queue[i] = ChainEvent{block, logs}
+				queueEvent.canonicalCount++
+			} else {
+				queue[i] = ChainSideEvent{block, logs}
+				queueEvent.sideCount++
 			}
 		}
 		self.mu.Unlock()
 
-		self.eventMux.Post(NewBlockEvent{block})
 	}
+
+	go self.eventMux.Post(queueEvent)
 
 	return nil
 }
 
-// Satisfy state query interface
-func (self *ChainManager) GetAccount(addr []byte) *state.StateObject {
-	return self.State().GetAccount(addr)
+func (self *ChainManager) update() {
+	events := self.eventMux.Subscribe(queueEvent{})
+
+out:
+	for {
+		select {
+		case ev := <-events.Chan():
+			switch ev := ev.(type) {
+			case queueEvent:
+				for i, event := range ev.queue {
+					switch event := event.(type) {
+					case ChainEvent:
+						// We need some control over the mining operation. Acquiring locks and waiting for the miner to create new block takes too long
+						// and in most cases isn't even necessary.
+						if i+1 == ev.canonicalCount {
+							self.eventMux.Post(ChainHeadEvent{event.Block})
+						}
+					case ChainSplitEvent:
+						// On chain splits we need to reset the transaction state. We can't be sure whether the actual
+						// state of the accounts are still valid.
+						if i == ev.splitCount {
+							self.setTxState(state.New(event.Block.Root(), self.stateDb))
+						}
+					}
+
+					self.eventMux.Post(event)
+				}
+			}
+		case <-self.quit:
+			break out
+		}
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 
 	"encoding/hex"
@@ -16,12 +17,13 @@ import (
 	"errors"
 
 	"code.google.com/p/go-uuid/uuid"
-	"code.google.com/p/go.crypto/pbkdf2"
-	"code.google.com/p/go.crypto/ripemd160"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto/ecies"
 	"github.com/ethereum/go-ethereum/crypto/secp256k1"
 	"github.com/ethereum/go-ethereum/crypto/sha3"
-	"github.com/ethereum/go-ethereum/ethutil"
+	"github.com/ethereum/go-ethereum/rlp"
+	"golang.org/x/crypto/pbkdf2"
+	"golang.org/x/crypto/ripemd160"
 )
 
 func init() {
@@ -37,9 +39,20 @@ func Sha3(data ...[]byte) []byte {
 	return d.Sum(nil)
 }
 
+func Sha3Hash(data ...[]byte) (h common.Hash) {
+	d := sha3.NewKeccak256()
+	for _, b := range data {
+		d.Write(b)
+	}
+	d.Sum(h[:0])
+	return h
+}
+
 // Creates an ethereum address given the bytes and the nonce
-func CreateAddress(b []byte, nonce uint64) []byte {
-	return Sha3(ethutil.NewValue([]interface{}{b, nonce}).Encode())[12:]
+func CreateAddress(b common.Address, nonce uint64) common.Address {
+	data, _ := rlp.EncodeToBytes([]interface{}{b, nonce})
+	return common.BytesToAddress(Sha3(data)[12:])
+	//return Sha3(common.NewValue([]interface{}{b, nonce}).Encode())[12:]
 }
 
 func Sha256(data []byte) []byte {
@@ -55,13 +68,8 @@ func Ripemd160(data []byte) []byte {
 	return ripemd.Sum(nil)
 }
 
-func Ecrecover(data []byte) []byte {
-	var in = struct {
-		hash []byte
-		sig  []byte
-	}{data[:32], data[32:]}
-
-	r, _ := secp256k1.RecoverPubkey(in.hash, in.sig)
+func Ecrecover(hash, sig []byte) []byte {
+	r, _ := secp256k1.RecoverPubkey(hash, sig)
 
 	return r
 }
@@ -74,7 +82,7 @@ func ToECDSA(prv []byte) *ecdsa.PrivateKey {
 
 	priv := new(ecdsa.PrivateKey)
 	priv.PublicKey.Curve = S256()
-	priv.D = ethutil.BigD(prv)
+	priv.D = common.BigD(prv)
 	priv.PublicKey.X, priv.PublicKey.Y = S256().ScalarBaseMult(prv)
 	return priv
 }
@@ -127,14 +135,23 @@ func LoadECDSA(file string) (*ecdsa.PrivateKey, error) {
 	return ToECDSA(buf), nil
 }
 
+// SaveECDSA saves a secp256k1 private key to the given file with restrictive
+// permissions
+func SaveECDSA(file string, key *ecdsa.PrivateKey) error {
+	return ioutil.WriteFile(file, FromECDSA(key), 0600)
+}
+
 func GenerateKey() (*ecdsa.PrivateKey, error) {
 	return ecdsa.GenerateKey(S256(), rand.Reader)
 }
 
 func SigToPub(hash, sig []byte) *ecdsa.PublicKey {
-	s := Ecrecover(append(hash, sig...))
-	x, y := elliptic.Unmarshal(S256(), s)
+	s := Ecrecover(hash, sig)
+	if s == nil || len(s) != 65 {
+		return nil
+	}
 
+	x, y := elliptic.Unmarshal(S256(), s)
 	return &ecdsa.PublicKey{S256(), x, y}
 }
 
@@ -143,7 +160,7 @@ func Sign(hash []byte, prv *ecdsa.PrivateKey) (sig []byte, err error) {
 		return nil, fmt.Errorf("hash is required to be exactly 32 bytes (%d)", len(hash))
 	}
 
-	sig, err = secp256k1.Sign(hash, ethutil.LeftPadBytes(prv.D.Bytes(), prv.Params().BitSize/8))
+	sig, err = secp256k1.Sign(hash, common.LeftPadBytes(prv.D.Bytes(), prv.Params().BitSize/8))
 	return
 }
 
@@ -198,7 +215,7 @@ func decryptPreSaleKey(fileContent []byte, password string) (key *Key, err error
 		Address:    PubkeyToAddress(ecKey.PublicKey),
 		PrivateKey: ecKey,
 	}
-	derivedAddr := ethutil.Bytes2Hex(key.Address)
+	derivedAddr := common.Bytes2Hex(key.Address)
 	expectedAddr := preSaleKeyStruct.EthAddr
 	if derivedAddr != expectedAddr {
 		err = errors.New("decrypted addr not equal to expected addr")

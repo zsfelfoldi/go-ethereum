@@ -5,31 +5,32 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
-	"io"
 	"net"
-	"runtime"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/p2p/discover"
 	"github.com/ethereum/go-ethereum/p2p/nat"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 const (
-	handshakeTimeout     = 5 * time.Second
 	defaultDialTimeout   = 10 * time.Second
 	refreshPeersInterval = 30 * time.Second
+
+	// total timeout for encryption handshake and protocol
+	// handshake in both directions.
+	handshakeTimeout = 5 * time.Second
+	// maximum time allowed for reading a complete message.
+	// this is effectively the amount of time a connection can be idle.
+	frameReadTimeout = 1 * time.Minute
+	// maximum amount of time allowed for writing a complete message.
+	frameWriteTimeout = 5 * time.Second
 )
 
 var srvlog = logger.NewLogger("P2P Server")
-
-// MakeName creates a node name that follows the ethereum convention
-// for such names. It adds the operation system name and Go runtime version
-// the name.
-func MakeName(name, version string) string {
-	return fmt.Sprintf("%s/v%s/%s/%s", name, version, runtime.GOOS, runtime.Version())
-}
+var srvjslog = logger.NewJsonLogger()
 
 // Server manages all peer connections.
 //
@@ -45,7 +46,7 @@ type Server struct {
 	MaxPeers int
 
 	// Name sets the node name of this server.
-	// Use MakeName to create a name that follows existing conventions.
+	// Use common.MakeName to create a name that follows existing conventions.
 	Name string
 
 	// Bootstrap nodes are used to establish connectivity
@@ -56,10 +57,6 @@ type Server struct {
 	// by the server. Matching protocols are launched for
 	// each peer.
 	Protocols []Protocol
-
-	// If Blacklist is set to a non-nil value, the given Blacklist
-	// is used to verify peer connections.
-	Blacklist Blacklist
 
 	// If ListenAddr is set to a non-nil address, the server
 	// will listen for incoming connections.
@@ -83,8 +80,10 @@ type Server struct {
 
 	// Hooks for testing. These are useful because we can inhibit
 	// the whole protocol stack.
-	handshakeFunc
+	setupFunc
 	newPeerHook
+
+	ourHandshake *protoHandshake
 
 	lock     sync.RWMutex
 	running  bool
@@ -99,7 +98,7 @@ type Server struct {
 	peerConnect chan *discover.Node
 }
 
-type handshakeFunc func(io.ReadWriter, *ecdsa.PrivateKey, *discover.Node) (discover.NodeID, []byte, error)
+type setupFunc func(net.Conn, *ecdsa.PrivateKey, *protoHandshake, *discover.Node) (*conn, error)
 type newPeerHook func(*Peer)
 
 // Peers returns all connected peers.
@@ -130,10 +129,14 @@ func (srv *Server) SuggestPeer(n *discover.Node) {
 
 // Broadcast sends an RLP-encoded message to all connected peers.
 // This method is deprecated and will be removed later.
-func (srv *Server) Broadcast(protocol string, code uint64, data ...interface{}) {
+func (srv *Server) Broadcast(protocol string, code uint64, data interface{}) error {
 	var payload []byte
 	if data != nil {
-		payload = encodePayload(data...)
+		var err error
+		payload, err = rlp.EncodeToBytes(data)
+		if err != nil {
+			return err
+		}
 	}
 	srv.lock.RLock()
 	defer srv.lock.RUnlock()
@@ -147,6 +150,7 @@ func (srv *Server) Broadcast(protocol string, code uint64, data ...interface{}) 
 			peer.writeProtoMsg(protocol, msg)
 		}
 	}
+	return nil
 }
 
 // Start starts running the server.
@@ -159,7 +163,7 @@ func (srv *Server) Start() (err error) {
 	}
 	srvlog.Infoln("Starting Server")
 
-	// initialize all the fields
+	// static fields
 	if srv.PrivateKey == nil {
 		return fmt.Errorf("Server.PrivateKey must be set to a non-nil key")
 	}
@@ -169,25 +173,29 @@ func (srv *Server) Start() (err error) {
 	srv.quit = make(chan struct{})
 	srv.peers = make(map[discover.NodeID]*Peer)
 	srv.peerConnect = make(chan *discover.Node)
+	if srv.setupFunc == nil {
+		srv.setupFunc = setupConn
+	}
 
-	if srv.handshakeFunc == nil {
-		srv.handshakeFunc = encHandshake
+	// node table
+	ntab, err := discover.ListenUDP(srv.PrivateKey, srv.ListenAddr, srv.NAT)
+	if err != nil {
+		return err
 	}
-	if srv.Blacklist == nil {
-		srv.Blacklist = NewBlacklist()
+	srv.ntab = ntab
+
+	// handshake
+	srv.ourHandshake = &protoHandshake{Version: baseProtocolVersion, Name: srv.Name, ID: ntab.Self().ID}
+	for _, p := range srv.Protocols {
+		srv.ourHandshake.Caps = append(srv.ourHandshake.Caps, p.cap())
 	}
+
+	// listen/dial
 	if srv.ListenAddr != "" {
 		if err := srv.startListening(); err != nil {
 			return err
 		}
 	}
-
-	// dial stuff
-	dt, err := discover.ListenUDP(srv.PrivateKey, srv.ListenAddr, srv.NAT)
-	if err != nil {
-		return err
-	}
-	srv.ntab = dt
 	if srv.Dialer == nil {
 		srv.Dialer = &net.Dialer{Timeout: defaultDialTimeout}
 	}
@@ -295,7 +303,7 @@ func (srv *Server) dialLoop() {
 			srv.lock.Lock()
 			_, isconnected := srv.peers[dest.ID]
 			srv.lock.Unlock()
-			if isconnected || dialing[dest.ID] || dest.ID == srv.ntab.Self() {
+			if isconnected || dialing[dest.ID] || dest.ID == srv.Self().ID {
 				continue
 			}
 
@@ -329,12 +337,16 @@ func (srv *Server) dialNode(dest *discover.Node) {
 	srv.startPeer(conn, dest)
 }
 
+func (srv *Server) Self() *discover.Node {
+	return srv.ntab.Self()
+}
+
 func (srv *Server) findPeers() {
-	far := srv.ntab.Self()
+	far := srv.Self().ID
 	for i := range far {
 		far[i] = ^far[i]
 	}
-	closeToSelf := srv.ntab.Lookup(srv.ntab.Self())
+	closeToSelf := srv.ntab.Lookup(srv.Self().ID)
 	farFromSelf := srv.ntab.Lookup(far)
 
 	for i := 0; i < len(closeToSelf) || i < len(farFromSelf); i++ {
@@ -347,30 +359,46 @@ func (srv *Server) findPeers() {
 	}
 }
 
-func (srv *Server) startPeer(conn net.Conn, dest *discover.Node) {
+func (srv *Server) startPeer(fd net.Conn, dest *discover.Node) {
 	// TODO: handle/store session token
-	conn.SetDeadline(time.Now().Add(handshakeTimeout))
-	remoteID, _, err := srv.handshakeFunc(conn, srv.PrivateKey, dest)
+	fd.SetDeadline(time.Now().Add(handshakeTimeout))
+	conn, err := srv.setupFunc(fd, srv.PrivateKey, srv.ourHandshake, dest)
 	if err != nil {
-		conn.Close()
-		srvlog.Debugf("Encryption Handshake with %v failed: %v", conn.RemoteAddr(), err)
+		fd.Close()
+		srvlog.Debugf("Handshake with %v failed: %v", fd.RemoteAddr(), err)
 		return
 	}
-	ourID := srv.ntab.Self()
-	p := newPeer(conn, srv.Protocols, srv.Name, &ourID, &remoteID)
-	if ok, reason := srv.addPeer(remoteID, p); !ok {
+
+	conn.MsgReadWriter = &netWrapper{
+		wrapped: conn.MsgReadWriter,
+		conn:    fd, rtimeout: frameReadTimeout, wtimeout: frameWriteTimeout,
+	}
+	p := newPeer(fd, conn, srv.Protocols)
+	if ok, reason := srv.addPeer(conn.ID, p); !ok {
 		srvlog.DebugDetailf("Not adding %v (%v)\n", p, reason)
 		p.politeDisconnect(reason)
 		return
 	}
+
 	srvlog.Debugf("Added %v\n", p)
+	srvjslog.LogJson(&logger.P2PConnected{
+		RemoteId:            fmt.Sprintf("%x", conn.ID[:]),
+		RemoteAddress:       fd.RemoteAddr().String(),
+		RemoteVersionString: conn.Name,
+		NumConnections:      srv.PeerCount(),
+	})
 
 	if srv.newPeerHook != nil {
 		srv.newPeerHook(p)
 	}
 	discreason := p.run()
 	srv.removePeer(p)
+
 	srvlog.Debugf("Removed %v (%v)\n", p, discreason)
+	srvjslog.LogJson(&logger.P2PDisconnected{
+		RemoteId:       fmt.Sprintf("%x", conn.ID[:]),
+		NumConnections: srv.PeerCount(),
+	})
 }
 
 func (srv *Server) addPeer(id discover.NodeID, p *Peer) (bool, DiscReason) {
@@ -383,9 +411,7 @@ func (srv *Server) addPeer(id discover.NodeID, p *Peer) (bool, DiscReason) {
 		return false, DiscTooManyPeers
 	case srv.peers[id] != nil:
 		return false, DiscAlreadyConnected
-	case srv.Blacklist.Exists(id[:]):
-		return false, DiscUselessPeer
-	case id == srv.ntab.Self():
+	case id == srv.Self().ID:
 		return false, DiscSelf
 	}
 	srv.peers[id] = p
@@ -394,57 +420,7 @@ func (srv *Server) addPeer(id discover.NodeID, p *Peer) (bool, DiscReason) {
 
 func (srv *Server) removePeer(p *Peer) {
 	srv.lock.Lock()
-	delete(srv.peers, *p.remoteID)
+	delete(srv.peers, p.ID())
 	srv.lock.Unlock()
 	srv.peerWG.Done()
-}
-
-type Blacklist interface {
-	Get([]byte) (bool, error)
-	Put([]byte) error
-	Delete([]byte) error
-	Exists(pubkey []byte) (ok bool)
-}
-
-type BlacklistMap struct {
-	blacklist map[string]bool
-	lock      sync.RWMutex
-}
-
-func NewBlacklist() *BlacklistMap {
-	return &BlacklistMap{
-		blacklist: make(map[string]bool),
-	}
-}
-
-func (self *BlacklistMap) Get(pubkey []byte) (bool, error) {
-	self.lock.RLock()
-	defer self.lock.RUnlock()
-	v, ok := self.blacklist[string(pubkey)]
-	var err error
-	if !ok {
-		err = fmt.Errorf("not found")
-	}
-	return v, err
-}
-
-func (self *BlacklistMap) Exists(pubkey []byte) (ok bool) {
-	self.lock.RLock()
-	defer self.lock.RUnlock()
-	_, ok = self.blacklist[string(pubkey)]
-	return
-}
-
-func (self *BlacklistMap) Put(pubkey []byte) error {
-	self.lock.Lock()
-	defer self.lock.Unlock()
-	self.blacklist[string(pubkey)] = true
-	return nil
-}
-
-func (self *BlacklistMap) Delete(pubkey []byte) error {
-	self.lock.Lock()
-	defer self.lock.Unlock()
-	delete(self.blacklist, string(pubkey))
-	return nil
 }

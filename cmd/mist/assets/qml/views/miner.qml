@@ -9,7 +9,7 @@ import Ethereum 1.0
 Rectangle {
 	id: root
 	property var title: "Miner"
-	property var iconSource: "../miner.png"
+	property var iconSource: "../mining-icon.png"
 	property var menuItem
 
 	color: "#00000000"
@@ -19,20 +19,9 @@ Rectangle {
             id: lastBlockLabel
             objectName: "lastBlockLabel"
             text: "---"
-	    onTextChanged: {
-		//menuItem.secondaryTitle = text
-	    }
-        }
-
-        Label {
-            objectName: "miningLabel"
-            visible: false
-            font.pixelSize: 10
-            anchors.right: lastBlockLabel.left
-            anchors.rightMargin: 5
-	    onTextChanged: {
-		menuItem.secondaryTitle = text
-	    }
+	   	 	onTextChanged: {
+			//menuItem.secondaryTitle = text
+	    	}
         }
 
 	ColumnLayout {
@@ -66,8 +55,8 @@ Rectangle {
 					Button {
 						text: "Start"
 						onClicked: {
-							eth.setGasPrice(minGasPrice.text || "10000000000000");
-							eth.setExtra(blockExtra.text)
+							// eth.setGasPrice(minGasPrice.text || "10000000000000");
+							// eth.setExtra(blockExtra.text)
 							if (eth.toggleMining()) {
 								this.text = "Stop";
 							} else {
@@ -76,35 +65,35 @@ Rectangle {
 						}
 					}
 
-					Rectangle {
-						id: minGasPriceRect
-						anchors.top: parent.top
-						anchors.topMargin: 2
-						width: 200
-						TextField {
-							id: minGasPrice
-							placeholderText: "Min Gas: 10000000000000"
-							width: 200
-							validator: RegExpValidator { regExp: /\d*/ }
-						}
-					}
+					// Rectangle {
+					// 	id: minGasPriceRect
+					// 	anchors.top: parent.top
+					// 	anchors.topMargin: 2
+					// 	width: 200
+					// 	TextField {
+					// 		id: minGasPrice
+					// 		placeholderText: "Min Gas: 10000000000000"
+					// 		width: 200
+					// 		validator: RegExpValidator { regExp: /\d*/ }
+					// 	}
+					// }
 
-					Rectangle {
-						width: 300
-						anchors {
-							left: minGasPriceRect.right
-							leftMargin: 5
-							top: parent.top
-							topMargin: 2
-						}
+					// Rectangle {
+					// 	width: 300
+					// 	anchors {
+					// 		left: minGasPriceRect.right
+					// 		leftMargin: 5
+					// 		top: parent.top
+					// 		topMargin: 2
+					// 	}
 
-						TextField {
-							id: blockExtra
-							placeholderText: "Extra"
-							width: parent.width
-							maximumLength: 1024
-						}
-					}
+					// 	TextField {
+					// 		id: blockExtra
+					// 		placeholderText: "Extra"
+					// 		width: parent.width
+					// 		maximumLength: 1024
+					// 	}
+					// }
 				}
 			}
 

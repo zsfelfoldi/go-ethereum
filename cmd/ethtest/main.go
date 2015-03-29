@@ -27,15 +27,37 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math/big"
 	"os"
+	"strconv"
 	"strings"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/ethutil"
 	"github.com/ethereum/go-ethereum/logger"
-	"github.com/ethereum/go-ethereum/state"
 	"github.com/ethereum/go-ethereum/tests/helper"
 )
+
+type Log struct {
+	AddressF string   `json:"address"`
+	DataF    string   `json:"data"`
+	TopicsF  []string `json:"topics"`
+	BloomF   string   `json:"bloom"`
+}
+
+func (self Log) Address() []byte      { return common.Hex2Bytes(self.AddressF) }
+func (self Log) Data() []byte         { return common.Hex2Bytes(self.DataF) }
+func (self Log) RlpData() interface{} { return nil }
+func (self Log) Topics() [][]byte {
+	t := make([][]byte, len(self.TopicsF))
+	for i, topic := range self.TopicsF {
+		t[i] = common.Hex2Bytes(topic)
+	}
+	return t
+}
 
 type Account struct {
 	Balance string
@@ -44,27 +66,39 @@ type Account struct {
 	Storage map[string]string
 }
 
-func StateObjectFromAccount(db ethutil.Database, addr string, account Account) *state.StateObject {
-	obj := state.NewStateObject(ethutil.Hex2Bytes(addr), db)
-	obj.SetBalance(ethutil.Big(account.Balance))
+func StateObjectFromAccount(db common.Database, addr string, account Account) *state.StateObject {
+	obj := state.NewStateObject(common.HexToAddress(addr), db)
+	obj.SetBalance(common.Big(account.Balance))
 
-	if ethutil.IsHex(account.Code) {
+	if common.IsHex(account.Code) {
 		account.Code = account.Code[2:]
 	}
-	obj.Code = ethutil.Hex2Bytes(account.Code)
-	obj.Nonce = ethutil.Big(account.Nonce).Uint64()
+	obj.SetCode(common.Hex2Bytes(account.Code))
+	obj.SetNonce(common.Big(account.Nonce).Uint64())
 
 	return obj
 }
 
 type VmTest struct {
-	Callcreates interface{}
-	Env         map[string]string
-	Exec        map[string]string
-	Gas         string
-	Out         string
-	Post        map[string]Account
-	Pre         map[string]Account
+	Callcreates   interface{}
+	Env           Env
+	Exec          map[string]string
+	Transaction   map[string]string
+	Logs          []Log
+	Gas           string
+	Out           string
+	Post          map[string]Account
+	Pre           map[string]Account
+	PostStateRoot string
+}
+
+type Env struct {
+	CurrentCoinbase   string
+	CurrentDifficulty string
+	CurrentGasLimit   string
+	CurrentNumber     string
+	CurrentTimestamp  interface{}
+	PreviousHash      string
 }
 
 func RunVmTest(r io.Reader) (failed int) {
@@ -78,47 +112,103 @@ func RunVmTest(r io.Reader) (failed int) {
 
 	for name, test := range tests {
 		db, _ := ethdb.NewMemDatabase()
-		state := state.New(nil, db)
+		statedb := state.New(common.Hash{}, db)
 		for addr, account := range test.Pre {
 			obj := StateObjectFromAccount(db, addr, account)
-			state.SetStateObject(obj)
+			statedb.SetStateObject(obj)
 		}
 
-		ret, _, gas, err := helper.RunVm(state, test.Env, test.Exec)
-		// When an error is returned it doesn't always mean the tests fails.
-		// Have to come up with some conditional failing mechanism.
-		if err != nil {
-			log.Println(err)
+		env := make(map[string]string)
+		env["currentCoinbase"] = test.Env.CurrentCoinbase
+		env["currentDifficulty"] = test.Env.CurrentDifficulty
+		env["currentGasLimit"] = test.Env.CurrentGasLimit
+		env["currentNumber"] = test.Env.CurrentNumber
+		env["previousHash"] = test.Env.PreviousHash
+		if n, ok := test.Env.CurrentTimestamp.(float64); ok {
+			env["currentTimestamp"] = strconv.Itoa(int(n))
+		} else {
+			env["currentTimestamp"] = test.Env.CurrentTimestamp.(string)
 		}
+
+		ret, logs, _, _ := helper.RunState(statedb, env, test.Transaction)
+		statedb.Sync()
 
 		rexp := helper.FromHex(test.Out)
 		if bytes.Compare(rexp, ret) != 0 {
-			log.Printf("%s's return failed. Expected %x, got %x\n", name, rexp, ret)
+			helper.Log.Infof("%s's return failed. Expected %x, got %x\n", name, rexp, ret)
 			failed = 1
-		}
-
-		if len(test.Gas) == 0 && err == nil {
-			log.Printf("0 gas indicates error but no error given by VM")
-			failed = 1
-		} else {
-			gexp := ethutil.Big(test.Gas)
-			if gexp.Cmp(gas) != 0 {
-				log.Printf("%s's gas failed. Expected %v, got %v\n", name, gexp, gas)
-				failed = 1
-			}
 		}
 
 		for addr, account := range test.Post {
-			obj := state.GetStateObject(helper.FromHex(addr))
-			for addr, value := range account.Storage {
-				v := obj.GetState(helper.FromHex(addr)).Bytes()
-				vexp := helper.FromHex(value)
+			obj := statedb.GetStateObject(common.HexToAddress(addr))
+			if obj == nil {
+				continue
+			}
 
-				if bytes.Compare(v, vexp) != 0 {
-					log.Printf("%s's : (%x: %s) storage failed. Expected %x, got %x (%v %v)\n", name, obj.Address()[0:4], addr, vexp, v, ethutil.BigD(vexp), ethutil.BigD(v))
+			if len(test.Exec) == 0 {
+				if obj.Balance().Cmp(common.Big(account.Balance)) != 0 {
+					helper.Log.Infof("%s's : (%x) balance failed. Expected %v, got %v => %v\n", name, obj.Address().Bytes()[:4], account.Balance, obj.Balance(), new(big.Int).Sub(common.Big(account.Balance), obj.Balance()))
 					failed = 1
 				}
 			}
+
+			for addr, value := range account.Storage {
+				v := obj.GetState(common.HexToHash(addr)).Bytes()
+				vexp := helper.FromHex(value)
+
+				if bytes.Compare(v, vexp) != 0 {
+					helper.Log.Infof("%s's : (%x: %s) storage failed. Expected %x, got %x (%v %v)\n", name, obj.Address().Bytes()[0:4], addr, vexp, v, common.BigD(vexp), common.BigD(v))
+					failed = 1
+				}
+			}
+		}
+
+		statedb.Sync()
+		//if !bytes.Equal(common.Hex2Bytes(test.PostStateRoot), statedb.Root()) {
+		if common.HexToHash(test.PostStateRoot) != statedb.Root() {
+			helper.Log.Infof("%s's : Post state root failed. Expected %s, got %x", name, test.PostStateRoot, statedb.Root())
+			failed = 1
+		}
+
+		if len(test.Logs) > 0 {
+			if len(test.Logs) != len(logs) {
+				helper.Log.Infof("log length failed. Expected %d, got %d", len(test.Logs), len(logs))
+				failed = 1
+			} else {
+				for i, log := range test.Logs {
+					if common.HexToAddress(log.AddressF) != logs[i].Address() {
+						helper.Log.Infof("'%s' log address failed. Expected %v got %x", name, log.AddressF, logs[i].Address())
+						failed = 1
+					}
+
+					if !bytes.Equal(logs[i].Data(), helper.FromHex(log.DataF)) {
+						helper.Log.Infof("'%s' log data failed. Expected %v got %x", name, log.DataF, logs[i].Data())
+						failed = 1
+					}
+
+					if len(log.TopicsF) != len(logs[i].Topics()) {
+						helper.Log.Infof("'%s' log topics length failed. Expected %d got %d", name, len(log.TopicsF), logs[i].Topics())
+						failed = 1
+					} else {
+						for j, topic := range log.TopicsF {
+							if common.HexToHash(topic) != logs[i].Topics()[j] {
+								helper.Log.Infof("'%s' log topic[%d] failed. Expected %v got %x", name, j, topic, logs[i].Topics()[j])
+								failed = 1
+							}
+						}
+					}
+					genBloom := common.LeftPadBytes(types.LogsBloom(state.Logs{logs[i]}).Bytes(), 256)
+
+					if !bytes.Equal(genBloom, common.Hex2Bytes(log.BloomF)) {
+						helper.Log.Infof("'%s' bloom failed.", name)
+						failed = 1
+					}
+				}
+			}
+		}
+
+		if failed == 1 {
+			helper.Log.Infoln(string(statedb.Dump()))
 		}
 
 		logger.Flush()
@@ -129,6 +219,7 @@ func RunVmTest(r io.Reader) (failed int) {
 
 func main() {
 	helper.Logger.SetLogLevel(5)
+	vm.Debug = true
 
 	if len(os.Args) > 1 {
 		os.Exit(RunVmTest(strings.NewReader(os.Args[1])))

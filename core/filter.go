@@ -1,57 +1,36 @@
 package core
 
 import (
-	"bytes"
 	"math"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/state"
 )
 
 type AccountChange struct {
 	Address, StateAddress []byte
 }
 
-type FilterOptions struct {
-	Earliest int64
-	Latest   int64
-
-	Address []byte
-	Topics  [][]byte
-
-	Skip int
-	Max  int
-}
-
 // Filtering interface
 type Filter struct {
-	eth      EthManager
+	eth      Backend
 	earliest int64
 	latest   int64
 	skip     int
-	address  []byte
+	address  []common.Address
 	max      int
-	topics   [][]byte
+	topics   [][]common.Hash
 
-	BlockCallback   func(*types.Block)
-	PendingCallback func(*types.Block)
+	BlockCallback   func(*types.Block, state.Logs)
+	PendingCallback func(*types.Transaction)
 	LogsCallback    func(state.Logs)
 }
 
 // Create a new filter which uses a bloom filter on blocks to figure out whether a particular block
 // is interesting or not.
-func NewFilter(eth EthManager) *Filter {
+func NewFilter(eth Backend) *Filter {
 	return &Filter{eth: eth}
-}
-
-func (self *Filter) SetOptions(options FilterOptions) {
-	self.earliest = options.Earliest
-	self.latest = options.Latest
-	self.skip = options.Skip
-	self.max = options.Max
-	self.address = options.Address
-	self.topics = options.Topics
-
 }
 
 // Set the earliest and latest block for filtering.
@@ -65,11 +44,11 @@ func (self *Filter) SetLatestBlock(latest int64) {
 	self.latest = latest
 }
 
-func (self *Filter) SetAddress(addr []byte) {
+func (self *Filter) SetAddress(addr []common.Address) {
 	self.address = addr
 }
 
-func (self *Filter) SetTopics(topics [][]byte) {
+func (self *Filter) SetTopics(topics [][]common.Hash) {
 	self.topics = topics
 }
 
@@ -111,14 +90,14 @@ func (self *Filter) Find() state.Logs {
 		// current parameters
 		if self.bloomFilter(block) {
 			// Get the logs of the block
-			logs, err := self.eth.BlockProcessor().GetLogs(block)
+			unfiltered, err := self.eth.BlockProcessor().GetLogs(block)
 			if err != nil {
 				chainlogger.Warnln("err: filter get logs ", err)
 
 				break
 			}
 
-			logs = append(logs, self.FilterLogs(logs)...)
+			logs = append(logs, self.FilterLogs(unfiltered)...)
 		}
 
 		block = self.eth.ChainManager().GetBlock(block.ParentHash())
@@ -129,9 +108,9 @@ func (self *Filter) Find() state.Logs {
 	return logs[skip:]
 }
 
-func includes(addresses [][]byte, a []byte) bool {
+func includes(addresses []common.Address, a common.Address) bool {
 	for _, addr := range addresses {
-		if !bytes.Equal(addr, a) {
+		if addr != a {
 			return false
 		}
 	}
@@ -145,14 +124,22 @@ func (self *Filter) FilterLogs(logs state.Logs) state.Logs {
 	// Filter the logs for interesting stuff
 Logs:
 	for _, log := range logs {
-		if !bytes.Equal(self.address, log.Address()) {
+		if len(self.address) > 0 && !includes(self.address, log.Address()) {
 			continue
 		}
 
-		max := int(math.Min(float64(len(self.topics)), float64(len(log.Topics()))))
-		for i := 0; i < max; i++ {
-			if !bytes.Equal(log.Topics()[i], self.topics[i]) {
-				continue Logs
+		logTopics := make([]common.Hash, len(self.topics))
+		copy(logTopics, log.Topics())
+
+		for i, topics := range self.topics {
+			for _, topic := range topics {
+				var match bool
+				if log.Topics()[i] == topic {
+					match = true
+				}
+				if !match {
+					continue Logs
+				}
 			}
 		}
 
@@ -163,12 +150,29 @@ Logs:
 }
 
 func (self *Filter) bloomFilter(block *types.Block) bool {
-	if len(self.address) > 0 && !types.BloomLookup(block.Bloom(), self.address) {
-		return false
+	if len(self.address) > 0 {
+		var included bool
+		for _, addr := range self.address {
+			if types.BloomLookup(block.Bloom(), addr.Hash()) {
+				included = true
+				break
+			}
+		}
+
+		if !included {
+			return false
+		}
 	}
 
-	for _, topic := range self.topics {
-		if !types.BloomLookup(block.Bloom(), topic) {
+	for _, sub := range self.topics {
+		var included bool
+		for _, topic := range sub {
+			if types.BloomLookup(block.Bloom(), topic) {
+				included = true
+				break
+			}
+		}
+		if !included {
 			return false
 		}
 	}

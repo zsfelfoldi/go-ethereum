@@ -12,7 +12,7 @@ import "../ext/http.js" as Http
 
 ApplicationWindow {
     id: root
-    
+
     //flags: Qt.FramelessWindowHint
     // Use this to make the window frameless. But then you'll need to do move and resize by hand
 
@@ -40,10 +40,20 @@ ApplicationWindow {
     // Takes care of loading all default plugins
     Component.onCompleted: {
 
-        catalog = addPlugin("./views/catalog.qml", {noAdd: true, close: false, section: "begin"});
-        var wallet = addPlugin("./views/wallet.qml", {noAdd: true, close: false, section: "ethereum", active: true});
+        catalog = addPlugin("./views/catalog.qml", {noAdd: true, close: false, section: "begin", active: true});
 
-        addPlugin("./views/miner.qml", {noAdd: true, close: false, section: "ethereum", active: true});
+        var walletWeb = addPlugin("./views/browser.qml", {noAdd: true, close: false, section: "ethereum", active: false});
+        walletWeb.view.url = "http://ethereum-dapp-wallet.meteor.com/";
+        walletWeb.menuItem.title = "Wallet";
+
+        addPlugin("./views/miner.qml", {noAdd: true, close: false, section: "legacy", active: false});
+        addPlugin("./views/network.qml", {noAdd: true, close: false, section: "ethereum", active: false});
+
+       /* var whisperTab = addPlugin("./views/browser.qml", {noAdd: true, close: true, section: "ethereum", active: false});
+        whisperTab.view.url = "http://ethereum-dapp-whisper-client.meteor.com/";
+        whisperTab.menuItem.title = "Whisper Chat";
+*/
+        addPlugin("./views/wallet.qml", {noAdd: true, close: false, section: "legacy"});
         addPlugin("./views/transaction.qml", {noAdd: true, close: false, section: "legacy"});
         addPlugin("./views/whisper.qml", {noAdd: true, close: false, section: "legacy"});
         addPlugin("./views/chain.qml", {noAdd: true, close: false, section: "legacy"});
@@ -60,13 +70,14 @@ ApplicationWindow {
 
     function activeView(view, menuItem) {
         mainSplit.setView(view, menuItem)
-        if (view.hideUrl) {
-            //urlPane.visible = false;
-            //mainView.anchors.top = rootView.top
+        /*if (view.hideUrl) {
+            urlPane.visible = false;
+            mainView.anchors.top = rootView.top
         } else {
-            //urlPane.visible = true;
-            //mainView.anchors.top = divider.bottom
-        }
+            urlPane.visible = true;
+            mainView.anchors.top = divider.bottom
+        }*/
+
     }
 
     function addViews(view, path, options) {
@@ -115,35 +126,35 @@ ApplicationWindow {
     }
 
     function newBrowserTab(url) {
-        
+
         var urlMatches = url.toString().match(/^[a-z]*\:\/\/([^\/?#]+)(?:[\/?#]|$)/i);
         var requestedDomain = urlMatches && urlMatches[1];
 
         var domainAlreadyOpen = false;
 
-        console.log("requested: " + requestedDomain )
-
         for(var i = 0; i < mainSplit.views.length; i++) {
             if (mainSplit.views[i].view.url) {
                 var matches = mainSplit.views[i].view.url.toString().match(/^[a-z]*\:\/\/(?:www\.)?([^\/?#]+)(?:[\/?#]|$)/i);
                 var existingDomain = matches && matches[1];
-                console.log("exists: " + existingDomain);
                 if (requestedDomain == existingDomain) {
                     domainAlreadyOpen = true;
-                    mainSplit.views[i].view.url = url;
+
+                    if (mainSplit.views[i].view.url != url){
+                        mainSplit.views[i].view.url = url;
+                    }
+
                     activeView(mainSplit.views[i].view, mainSplit.views[i].menuItem);
                 }
             }
-        }  
+        }
 
-        if (!domainAlreadyOpen) {            
+        if (!domainAlreadyOpen) {
             var window = addPlugin("./views/browser.qml", {noAdd: true, close: true, section: "apps", active: true});
             window.view.url = url;
             window.menuItem.title = "Mist";
             activeView(window.view, window.menuItem);
         }
     }
-
 
 
     menuBar: MenuBar {
@@ -153,7 +164,7 @@ ApplicationWindow {
                 text: "New tab"
                 shortcut: "Ctrl+t"
                 onTriggered: {
-	            activeView(catalog.view, catalog.menuItem);
+                activeView(catalog.view, catalog.menuItem);
                 }
             }
 
@@ -178,30 +189,19 @@ ApplicationWindow {
                 }
             }
 
+            MenuItem {
+                text: "Generate key"
+                shortcut: "Ctrl+k"
+                onTriggered: gui.generateKey()
+            }
         }
 
         Menu {
             title: "Developer"
             MenuItem {
-                iconSource: "../icecream.png"
-                text: "Debugger"
-                shortcut: "Ctrl+d"
-                onTriggered: eth.startDebugger()
-            }
-
-            MenuItem {
                 text: "Import Tx"
                 onTriggered: {
                     txImportDialog.visible = true
-                }
-            }
-
-            MenuItem {
-                text: "Run JS file"
-                onTriggered: {
-                    generalFileDialog.show(true, function(path) {
-                        eth.evalJavascriptFile(path)
-                    })
                 }
             }
 
@@ -245,80 +245,8 @@ ApplicationWindow {
                 }
             }
         }
+
     }
-
-    statusBar: StatusBar {
-        //height: 32
-        visible: false
-
-        id: statusBar
-        Label {
-            //y: 6
-            id: walletValueLabel
-
-            font.pixelSize: 10
-            styleColor: "#797979"
-        }
-
-	/*
-        Label {
-            //y: 6
-            objectName: "miningLabel"
-            visible: true
-            font.pixelSize: 10
-            anchors.right: lastBlockLabel.left
-            anchors.rightMargin: 5
-        }
-
-        Label {
-            id: lastBlockLabel
-            objectName: "lastBlockLabel"
-            visible: true
-            text: "---"
-            font.pixelSize: 10
-            anchors.right: peerGroup.left
-            anchors.rightMargin: 5
-        }
-	*/
-
-        ProgressBar {
-            visible: false
-            id: downloadIndicator
-            value: 0
-            objectName: "downloadIndicator"
-            y: -4
-            x: statusBar.width / 2 - this.width / 2
-            width: 160
-        }
-
-        Label {
-            visible: false
-            objectName: "downloadLabel"
-            //y: 7
-            anchors.left: downloadIndicator.right
-            anchors.leftMargin: 5
-            font.pixelSize: 10
-            text: "0 / 0"
-        }
-
-
-        RowLayout {
-            id: peerGroup
-            //y: 7
-            anchors.right: parent.right
-            MouseArea {
-                onDoubleClicked:  peerWindow.visible = true
-                anchors.fill: parent
-            }
-
-            Label {
-                id: peerCounterLabel
-                font.pixelSize: 10
-                text: "0 / 0"
-            }
-        }
-    }
-
 
     property var blockModel: ListModel {
         id: blockModel
@@ -375,28 +303,28 @@ ApplicationWindow {
              Layout.minimumWidth: 192
              Layout.maximumWidth: 192
 
-            FontLoader { 
+            FontLoader {
                id: sourceSansPro
-               source: "fonts/SourceSansPro-Regular.ttf" 
+               source: "fonts/SourceSansPro-Regular.ttf"
             }
-            FontLoader { 
-               source: "fonts/SourceSansPro-Semibold.ttf" 
-            }            
-            FontLoader { 
-               source: "fonts/SourceSansPro-Bold.ttf" 
-            } 
-            FontLoader { 
-               source: "fonts/SourceSansPro-Black.ttf" 
-            }            
-            FontLoader { 
-               source: "fonts/SourceSansPro-Light.ttf" 
-            }              
-            FontLoader { 
-               source: "fonts/SourceSansPro-ExtraLight.ttf" 
-            }  
-            FontLoader { 
+            FontLoader {
+               source: "fonts/SourceSansPro-Semibold.ttf"
+            }
+            FontLoader {
+               source: "fonts/SourceSansPro-Bold.ttf"
+            }
+            FontLoader {
+               source: "fonts/SourceSansPro-Black.ttf"
+            }
+            FontLoader {
+               source: "fonts/SourceSansPro-Light.ttf"
+            }
+            FontLoader {
+               source: "fonts/SourceSansPro-ExtraLight.ttf"
+            }
+            FontLoader {
                id: simpleLineIcons
-               source: "fonts/Simple-Line-Icons.ttf" 
+               source: "fonts/Simple-Line-Icons.ttf"
             }
 
             Rectangle {
@@ -445,13 +373,17 @@ ApplicationWindow {
                      property var view;
                      property var path;
                      property var closable;
+                     property var badgeContent;
 
                      property alias title: label.text
                      property alias icon: icon.source
                      property alias secondaryTitle: secondary.text
+                     property alias badgeNumber: badgeNumberLabel.text
+                     property alias badgeIcon: badgeIconLabel.text
+
                      function setSelection(on) {
                          sel.visible = on
-                         
+
                          if (this.closable == true) {
                                 closeIcon.visible = on
                          }
@@ -475,7 +407,7 @@ ApplicationWindow {
                      Rectangle {
                          // New App Button
                          id: newAppButton
-                         visible: false 
+                         visible: false
                          anchors.fill: parent
                          anchors.rightMargin: 8
                          border.width: 0
@@ -541,7 +473,6 @@ ApplicationWindow {
                             if (parent.closable == true) {
                                 closeIcon.visible = sel.visible
                             }
-                            
                          }
                          onExited:  {
                             closeIcon.visible = false
@@ -550,8 +481,8 @@ ApplicationWindow {
 
                      Image {
                          id: icon
-                         height: 24
-                         width: 24
+                         height: 28
+                         width: 28
                          anchors {
                              left: parent.left
                              verticalCenter: parent.verticalCenter
@@ -563,32 +494,40 @@ ApplicationWindow {
                         id: buttonLabel
                         visible: false
                         text: "GO TO NEW APP"
-                        font.family: sourceSansPro.name 
+                        font.family: sourceSansPro.name
                         font.weight: Font.DemiBold
                         anchors.horizontalCenter: parent.horizontalCenter
                         anchors.verticalCenter: parent.verticalCenter
                         color: "#AAA0A0"
-                     }   
+                     }
 
                     Text {
                          id: label
-                         font.family: sourceSansPro.name 
+                         font.family: sourceSansPro.name
                          font.weight: Font.DemiBold
-                         anchors {
-                             left: icon.right
-                             verticalCenter: parent.verticalCenter
-                             leftMargin: 6
-                             // verticalCenterOffset: -10
-                         }
+                         elide: Text.ElideRight
                          x:250
                          color: "#665F5F"
                          font.pixelSize: 14
-                     }
+                         anchors {
+                             left: icon.right
+                             right: parent.right
+                             verticalCenter: parent.verticalCenter
+                             leftMargin: 6
+                             rightMargin: 8
+                             verticalCenterOffset: (secondaryTitle == "") ? 0 : -10;
+                         }
 
+
+
+
+                     }
 
                      Text {
                          id: secondary
-                         font.family: sourceSansPro.name 
+                         //only shows secondary title if there's no badge
+                         visible: (badgeContent == "icon" || badgeContent == "number" )? false : true
+                         font.family: sourceSansPro.name
                          font.weight: Font.Light
                          anchors {
                              left: icon.right
@@ -604,7 +543,7 @@ ApplicationWindow {
                         visible: false
                         width: 10
                         height: 10
-                        color: "#FFFFFF"
+                        color: "#FAFAFA"
                         anchors {
                             fill: icon
                         }
@@ -617,17 +556,57 @@ ApplicationWindow {
                          }
 
                         Text {
-                             
-                             font.family: simpleLineIcons.name 
+
+                             font.family: simpleLineIcons.name
                              anchors {
                                  centerIn: parent
                              }
                              color: "#665F5F"
-                             font.pixelSize: 18
+                             font.pixelSize: 20
                              text: "\ue082"
                          }
                      }
-                     
+
+                     Rectangle {
+                        id: badge
+                        visible: (badgeContent == "icon" || badgeContent == "number" )? true : false
+                        width: 32
+                        color: "#05000000"
+                        anchors {
+                            right: parent.right;
+                            top: parent.top;
+                            bottom: parent.bottom;
+                            rightMargin: 4;
+                        }
+
+                        Text {
+                             id: badgeIconLabel
+                             visible: (badgeContent == "icon") ? true : false;
+                             font.family: simpleLineIcons.name
+                             anchors {
+                                 centerIn: parent
+                             }
+                             horizontalAlignment: Text.AlignCenter
+                             color: "#AAA0A0"
+                             font.pixelSize: 20
+                             text: badgeIcon
+                         }
+
+                        Text {
+                             id: badgeNumberLabel
+                             visible: (badgeContent == "number") ? true : false;
+                             anchors {
+                                 centerIn: parent
+                             }
+                             horizontalAlignment: Text.AlignCenter
+                             font.family: sourceSansPro.name
+                             font.weight: Font.Light
+                             color: "#AAA0A0"
+                             font.pixelSize: 18
+                             text: badgeNumber
+                         }
+                     }
+
 
 
                      function closeApp() {
@@ -696,7 +675,7 @@ ApplicationWindow {
                  anchors.left: parent.left
                  anchors.right: parent.right
                  spacing: 3
-                
+
 
 
                 ColumnLayout {
@@ -709,17 +688,22 @@ ApplicationWindow {
                  }
 
                  Rectangle {
-                     height: 55
+                     height: 19
                      color: "transparent"
                      Text {
                          text: "ETHEREUM"
-                         font.family: sourceSansPro.name 
-                         font.weight: Font.DemiBold
-                         anchors {
-                             left: parent.left
-                             top: parent.verticalCenter
-                             leftMargin: 16
-                         }
+                         font.family: sourceSansPro.name
+                         font.weight: Font.Regular
+                         // anchors.top:  20
+                         // anchors.left:  16
+                        anchors {
+                            leftMargin: 12
+                            topMargin: 4
+                            fill: parent
+                        }
+                         // anchors.leftMargin: 16
+                         // anchors.topMargin: 16
+                        // anchors.verticalCenterOffset: 50
                          color: "#AAA0A0"
                      }
                  }
@@ -735,17 +719,16 @@ ApplicationWindow {
                  }
 
                  Rectangle {
-                     height: 55
-                     color: "transparent"
+                     height: 19
+                     color: "#00ff00"
+                     visible: (menuApps.children.length > 0)
+
                      Text {
                          text: "APPS"
-                         font.family: sourceSansPro.name 
-                         font.weight: Font.DemiBold
-                         anchors {
-                             left: parent.left
-                             top: parent.verticalCenter
-                             leftMargin: 16
-                         }
+                         font.family: sourceSansPro.name
+                         font.weight: Font.Regular
+                         anchors.fill: parent
+                         anchors.leftMargin: 16
                          color: "#AAA0A0"
                      }
                  }
@@ -753,31 +736,17 @@ ApplicationWindow {
                  ColumnLayout {
                      id: menuApps
                      spacing: 3
+
+
                      anchors {
                          left: parent.left
                          right: parent.right
                      }
                  }
 
-                 Rectangle {
-                     height: 55
-                     color: "transparent"
-                     Text {
-                         text: "DEBUG"
-                         font.family: sourceSansPro.name 
-                         font.weight: Font.DemiBold
-                         anchors {
-                             left: parent.left
-                             top: parent.verticalCenter
-                             leftMargin: 16
-                         }
-                         color: "#AAA0A0"
-                     }
-                 }
-
-
                  ColumnLayout {
                      id: menuLegacy
+                     visible: true
                      spacing: 3
                      anchors {
                          left: parent.left
@@ -796,7 +765,7 @@ ApplicationWindow {
               anchors.left: menu.right
               anchors.bottom: parent.bottom
               anchors.top: parent.top
-              color: "#00000000"             
+              color: "#00000000"
 
               /*Rectangle {
                   id: urlPane
@@ -898,7 +867,7 @@ ApplicationWindow {
         }
 
         function setWalletValue(value) {
-            walletValueLabel.text = value
+            //walletValueLabel.text = value
         }
 
         function loadPlugin(name) {
@@ -910,7 +879,7 @@ ApplicationWindow {
         function addPeer(peer) { peerModel.append(peer) }
 
         function setPeerCounters(text) {
-            peerCounterLabel.text = text
+            //peerCounterLabel.text = text
         }
 
         function timeAgo(unixTs){
@@ -950,7 +919,8 @@ ApplicationWindow {
                      model: peerModel
                      TableViewColumn{width: 180; role: "addr" ; title: "Remote Address" }
                      TableViewColumn{width: 280; role: "nodeID" ; title: "Node ID" }
-                     TableViewColumn{width: 180; role: "caps" ; title: "Capabilities" }
+                     TableViewColumn{width: 100; role: "name" ; title: "Name" }
+                     TableViewColumn{width: 40; role: "caps" ; title: "Capabilities" }
                  }
              }
          }
@@ -981,7 +951,7 @@ ApplicationWindow {
                  anchors.top: parent.top
                  anchors.topMargin: 30
                  font.pointSize: 12
-                 text: "<h2>Mist (0.7.10)</h2><br><h3>Development</h3>Jeffrey Wilcke<br>Viktor Trón<br>Felix Lange<br>Taylor Gerring<br>Daniel Nagy<br><h3>UX</h3>Alex van de Sande<br>"
+                 text: "<h2>Mist (0.9.0)</h2><br><h3>Development</h3>Jeffrey Wilcke<br>Viktor Trón<br>Felix Lange<br>Taylor Gerring<br>Daniel Nagy<br>Gustav Simonsson<br><h3>UX/UI</h3>Alex van de Sande<br>Fabian Vogelsteller"
              }
          }
 

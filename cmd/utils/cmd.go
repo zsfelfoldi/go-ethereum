@@ -23,25 +23,17 @@ package utils
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
-	"path"
-	"path/filepath"
 	"regexp"
-	"runtime"
 
-	"bitbucket.org/kardianos/osext"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth"
-	"github.com/ethereum/go-ethereum/ethutil"
 	"github.com/ethereum/go-ethereum/logger"
-	"github.com/ethereum/go-ethereum/miner"
 	"github.com/ethereum/go-ethereum/rlp"
-	rpchttp "github.com/ethereum/go-ethereum/rpc/http"
-	rpcws "github.com/ethereum/go-ethereum/rpc/ws"
-	"github.com/ethereum/go-ethereum/state"
-	"github.com/ethereum/go-ethereum/xeth"
 )
 
 var clilogger = logger.NewLogger("CLI")
@@ -71,7 +63,7 @@ func RunInterruptCallbacks(sig os.Signal) {
 }
 
 func openLogFile(Datadir string, filename string) *os.File {
-	path := ethutil.AbsolutePath(Datadir, filename)
+	path := common.AbsolutePath(Datadir, filename)
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		panic(fmt.Sprintf("error opening log file '%s': %v", filename, err))
@@ -103,22 +95,21 @@ func initDataDir(Datadir string) {
 	}
 }
 
-func InitConfig(vmType int, ConfigFile string, Datadir string, EnvPrefix string) *ethutil.ConfigManager {
-	initDataDir(Datadir)
-	cfg := ethutil.ReadConfig(ConfigFile, Datadir, EnvPrefix)
-	cfg.VmType = vmType
-
-	return cfg
-}
-
 func exit(err error) {
 	status := 0
 	if err != nil {
-		clilogger.Errorln("Fatal: ", err)
+		fmt.Fprintln(os.Stderr, "Fatal:", err)
 		status = 1
 	}
 	logger.Flush()
 	os.Exit(status)
+}
+
+// Fatalf formats a message to standard output and exits the program.
+func Fatalf(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "Fatal: "+format+"\n", args...)
+	logger.Flush()
+	os.Exit(1)
 }
 
 func StartEthereum(ethereum *eth.Ethereum) {
@@ -132,116 +123,20 @@ func StartEthereum(ethereum *eth.Ethereum) {
 	})
 }
 
-func DefaultAssetPath() string {
-	var assetPath string
-	// If the current working directory is the go-ethereum dir
-	// assume a debug build and use the source directory as
-	// asset directory.
-	pwd, _ := os.Getwd()
-	if pwd == path.Join(os.Getenv("GOPATH"), "src", "github.com", "ethereum", "go-ethereum", "cmd", "mist") {
-		assetPath = path.Join(pwd, "assets")
-	} else {
-		switch runtime.GOOS {
-		case "darwin":
-			// Get Binary Directory
-			exedir, _ := osext.ExecutableFolder()
-			assetPath = filepath.Join(exedir, "../Resources")
-		case "linux":
-			assetPath = "/usr/share/mist"
-		case "windows":
-			assetPath = "./assets"
-		default:
-			assetPath = "."
-		}
-	}
-	return assetPath
-}
-
-func KeyTasks(keyManager *crypto.KeyManager, KeyRing string, GenAddr bool, SecretFile string, ExportDir string, NonInteractive bool) {
-
-	var err error
-	switch {
-	case GenAddr:
-		if NonInteractive || confirm("This action overwrites your old private key.") {
-			err = keyManager.Init(KeyRing, 0, true)
-		}
-		exit(err)
-	case len(SecretFile) > 0:
-		SecretFile = ethutil.ExpandHomePath(SecretFile)
-
-		if NonInteractive || confirm("This action overwrites your old private key.") {
-			err = keyManager.InitFromSecretsFile(KeyRing, 0, SecretFile)
-		}
-		exit(err)
-	case len(ExportDir) > 0:
-		err = keyManager.Init(KeyRing, 0, false)
-		if err == nil {
-			err = keyManager.Export(ExportDir)
-		}
-		exit(err)
-	default:
-		// Creates a keypair if none exists
-		err = keyManager.Init(KeyRing, 0, false)
-		if err != nil {
-			exit(err)
-		}
-	}
-	clilogger.Infof("Main address %x\n", keyManager.Address())
-}
-
-func StartRpc(ethereum *eth.Ethereum, RpcPort int) {
-	var err error
-	ethereum.RpcServer, err = rpchttp.NewRpcHttpServer(xeth.New(ethereum), RpcPort)
-	if err != nil {
-		clilogger.Errorf("Could not start RPC interface (port %v): %v", RpcPort, err)
-	} else {
-		go ethereum.RpcServer.Start()
-	}
-}
-
-func StartWebSockets(eth *eth.Ethereum, wsPort int) {
-	clilogger.Infoln("Starting WebSockets")
-
-	var err error
-	eth.WsServer, err = rpcws.NewWebSocketServer(xeth.New(eth), wsPort)
-	if err != nil {
-		clilogger.Errorf("Could not start RPC interface (port %v): %v", wsPort, err)
-	} else {
-		go eth.WsServer.Start()
-	}
-}
-
-var gminer *miner.Miner
-
-func GetMiner() *miner.Miner {
-	return gminer
-}
-
-func StartMining(ethereum *eth.Ethereum) bool {
-	if !ethereum.Mining {
-		ethereum.Mining = true
-		addr := ethereum.KeyManager().Address()
-
-		go func() {
-			clilogger.Infoln("Start mining")
-			if gminer == nil {
-				gminer = miner.New(addr, ethereum)
-			}
-			gminer.Start()
-		}()
-		RegisterInterrupt(func(os.Signal) {
-			StopMining(ethereum)
-		})
-		return true
-	}
-	return false
+func StartEthereumForTest(ethereum *eth.Ethereum) {
+	clilogger.Infoln("Starting ", ethereum.Name())
+	ethereum.StartForTest()
+	RegisterInterrupt(func(sig os.Signal) {
+		ethereum.Stop()
+		logger.Flush()
+	})
 }
 
 func FormatTransactionData(data string) []byte {
-	d := ethutil.StringToByteFunc(data, func(s string) (ret []byte) {
+	d := common.StringToByteFunc(data, func(s string) (ret []byte) {
 		slice := regexp.MustCompile("\\n|\\s").Split(s, 1000000000)
 		for _, dataItem := range slice {
-			d := ethutil.FormatData(dataItem)
+			d := common.FormatData(dataItem)
 			ret = append(ret, d...)
 		}
 		return
@@ -250,55 +145,42 @@ func FormatTransactionData(data string) []byte {
 	return d
 }
 
-func StopMining(ethereum *eth.Ethereum) bool {
-	if ethereum.Mining && gminer != nil {
-		gminer.Stop()
-		clilogger.Infoln("Stopped mining")
-		ethereum.Mining = false
-
-		return true
-	}
-
-	return false
-}
-
-// Replay block
-func BlockDo(ethereum *eth.Ethereum, hash []byte) error {
-	block := ethereum.ChainManager().GetBlock(hash)
-	if block == nil {
-		return fmt.Errorf("unknown block %x", hash)
-	}
-
-	parent := ethereum.ChainManager().GetBlock(block.ParentHash())
-
-	statedb := state.New(parent.Root(), ethereum.Db())
-	_, err := ethereum.BlockProcessor().TransitionState(statedb, parent, block)
-	if err != nil {
-		return err
-	}
-
-	return nil
-
-}
-
-func ImportChain(ethereum *eth.Ethereum, fn string) error {
-	clilogger.Infof("importing chain '%s'\n", fn)
+func ImportChain(chainmgr *core.ChainManager, fn string) error {
+	fmt.Printf("importing blockchain '%s'\n", fn)
 	fh, err := os.OpenFile(fn, os.O_RDONLY, os.ModePerm)
 	if err != nil {
 		return err
 	}
 	defer fh.Close()
 
-	var chain types.Blocks
-	if err := rlp.Decode(fh, &chain); err != nil {
+	chainmgr.Reset()
+	stream := rlp.NewStream(fh)
+	var i int
+	for ; ; i++ {
+		var b types.Block
+		if err := stream.Decode(&b); err == io.EOF {
+			break
+		} else if err != nil {
+			return fmt.Errorf("at block %d: %v", i, err)
+		}
+		if err := chainmgr.InsertChain(types.Blocks{&b}); err != nil {
+			return fmt.Errorf("invalid block %d: %v", i, err)
+		}
+	}
+	fmt.Printf("imported %d blocks\n", i)
+	return nil
+}
+
+func ExportChain(chainmgr *core.ChainManager, fn string) error {
+	fmt.Printf("exporting blockchain '%s'\n", fn)
+	fh, err := os.OpenFile(fn, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.ModePerm)
+	if err != nil {
 		return err
 	}
-
-	ethereum.ChainManager().Reset()
-	if err := ethereum.ChainManager().InsertChain(chain); err != nil {
+	defer fh.Close()
+	if err := chainmgr.Export(fh); err != nil {
 		return err
 	}
-	clilogger.Infof("imported %d blocks\n", len(chain))
-
+	fmt.Printf("exported blockchain\n")
 	return nil
 }

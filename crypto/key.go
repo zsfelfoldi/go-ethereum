@@ -26,7 +26,6 @@ package crypto
 import (
 	"bytes"
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"encoding/json"
 	"io"
 
@@ -86,20 +85,7 @@ func (k *Key) UnmarshalJSON(j []byte) (err error) {
 	return err
 }
 
-func NewKey(rand io.Reader) *Key {
-	randBytes := make([]byte, 32)
-	_, err := rand.Read(randBytes)
-	if err != nil {
-		panic("key generation: could not read from random source: " + err.Error())
-	}
-	reader := bytes.NewReader(randBytes)
-	_, x, y, err := elliptic.GenerateKey(S256(), reader)
-	if err != nil {
-		panic("key generation: elliptic.GenerateKey failed: " + err.Error())
-	}
-	privateKeyMarshalled := elliptic.Marshal(S256(), x, y)
-	privateKeyECDSA := ToECDSA(privateKeyMarshalled)
-
+func NewKeyFromECDSA(privateKeyECDSA *ecdsa.PrivateKey) *Key {
 	id := uuid.NewRandom()
 	key := &Key{
 		Id:         id,
@@ -107,4 +93,19 @@ func NewKey(rand io.Reader) *Key {
 		PrivateKey: privateKeyECDSA,
 	}
 	return key
+}
+
+func NewKey(rand io.Reader) *Key {
+	randBytes := make([]byte, 64)
+	_, err := rand.Read(randBytes)
+	if err != nil {
+		panic("key generation: could not read from random source: " + err.Error())
+	}
+	reader := bytes.NewReader(randBytes)
+	privateKeyECDSA, err := ecdsa.GenerateKey(S256(), reader)
+	if err != nil {
+		panic("key generation: ecdsa.GenerateKey failed: " + err.Error())
+	}
+
+	return NewKeyFromECDSA(privateKeyECDSA)
 }

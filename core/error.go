@@ -1,8 +1,17 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
+
+	"github.com/ethereum/go-ethereum/common"
+)
+
+var (
+	BlockNumberErr  = errors.New("block number invalid")
+	BlockFutureErr  = errors.New("block time is in the future")
+	BlockEqualTSErr = errors.New("block time stamp equal to previous")
 )
 
 // Parent error. In case a parent is unknown this error will be thrown
@@ -15,8 +24,8 @@ func (err *ParentErr) Error() string {
 	return err.Message
 }
 
-func ParentError(hash []byte) error {
-	return &ParentErr{Message: fmt.Sprintf("Block's parent unkown %x", hash)}
+func ParentError(hash common.Hash) error {
+	return &ParentErr{Message: fmt.Sprintf("Block's parent unknown %x", hash)}
 }
 
 func IsParentErr(err error) bool {
@@ -62,23 +71,6 @@ func IsValidationErr(err error) bool {
 	return ok
 }
 
-type GasLimitErr struct {
-	Message string
-	Is, Max *big.Int
-}
-
-func IsGasLimitErr(err error) bool {
-	_, ok := err.(*GasLimitErr)
-
-	return ok
-}
-func (err *GasLimitErr) Error() string {
-	return err.Message
-}
-func GasLimitError(is, max *big.Int) *GasLimitErr {
-	return &GasLimitErr{Message: fmt.Sprintf("GasLimit error. Max %s, transaction would take it to %s", max, is), Is: is, Max: max}
-}
-
 type NonceErr struct {
 	Message string
 	Is, Exp uint64
@@ -89,11 +81,29 @@ func (err *NonceErr) Error() string {
 }
 
 func NonceError(is, exp uint64) *NonceErr {
-	return &NonceErr{Message: fmt.Sprintf("Nonce err. Is %d, expected %d", is, exp), Is: is, Exp: exp}
+	return &NonceErr{Message: fmt.Sprintf("Transaction w/ invalid nonce (%d / %d)", is, exp), Is: is, Exp: exp}
 }
 
 func IsNonceErr(err error) bool {
 	_, ok := err.(*NonceErr)
+
+	return ok
+}
+
+type InvalidTxErr struct {
+	Message string
+}
+
+func (err *InvalidTxErr) Error() string {
+	return err.Message
+}
+
+func InvalidTxError(err error) *InvalidTxErr {
+	return &InvalidTxErr{fmt.Sprintf("%v", err)}
+}
+
+func IsInvalidTxErr(err error) bool {
+	_, ok := err.(*InvalidTxErr)
 
 	return ok
 }
@@ -129,7 +139,7 @@ func IsTDError(e error) bool {
 
 type KnownBlockError struct {
 	number *big.Int
-	hash   []byte
+	hash   common.Hash
 }
 
 func (self *KnownBlockError) Error() string {
@@ -137,5 +147,21 @@ func (self *KnownBlockError) Error() string {
 }
 func IsKnownBlockErr(e error) bool {
 	_, ok := e.(*KnownBlockError)
+	return ok
+}
+
+type ValueTransferError struct {
+	message string
+}
+
+func ValueTransferErr(str string, v ...interface{}) *ValueTransferError {
+	return &ValueTransferError{fmt.Sprintf(str, v...)}
+}
+
+func (self *ValueTransferError) Error() string {
+	return self.message
+}
+func IsValueTransferErr(e error) bool {
+	_, ok := e.(*ValueTransferError)
 	return ok
 }
