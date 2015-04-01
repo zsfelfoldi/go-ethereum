@@ -260,10 +260,13 @@ func (sm *BlockProcessor) ValidateHeader(block, parent *types.Header) error {
 		return fmt.Errorf("Difficulty check failed for block %v, %v", block.Difficulty, expd)
 	}
 
+	// TODO: use use minGasLimit and gasLimitBoundDivisor from
+	// https://github.com/ethereum/common/blob/master/params.json
 	// block.gasLimit - parent.gasLimit <= parent.gasLimit / 1024
 	a := new(big.Int).Sub(block.GasLimit, parent.GasLimit)
+	a.Abs(a)
 	b := new(big.Int).Div(parent.GasLimit, big.NewInt(1024))
-	if a.Cmp(b) > 0 {
+	if !(a.Cmp(b) < 0) {
 		return fmt.Errorf("GasLimit check failed for block %v (%v > %v)", block.GasLimit, a, b)
 	}
 
@@ -323,8 +326,12 @@ func (sm *BlockProcessor) AccumulateRewards(statedb *state.StateDB, block, paren
 			return ValidationError(fmt.Sprintf("%v", err))
 		}
 
+		num := new(big.Int).Add(big.NewInt(8), uncle.Number)
+		num.Sub(num, block.Number())
+
 		r := new(big.Int)
-		r.Mul(BlockReward, big.NewInt(15)).Div(r, big.NewInt(16))
+		r.Mul(BlockReward, num)
+		r.Div(r, big.NewInt(8))
 
 		statedb.AddBalance(uncle.Coinbase, r)
 
