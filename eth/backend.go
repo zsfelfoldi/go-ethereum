@@ -125,7 +125,6 @@ type Ethereum struct {
 	blockDb common.Database // Block chain database
 	stateDb common.Database // State changes database
 	extraDb common.Database // Extra database (txs, etc)
-
 	// Closed when databases are flushed and closed
 	databasesClosed chan bool
 
@@ -180,7 +179,6 @@ func New(config *Config) (*Ethereum, error) {
 	if err != nil {
 		return nil, err
 	}
-	nodeDb := path.Join(config.DataDir, "nodes")
 
 	// Perform database sanity checks
 	d, _ := blockDb.Get([]byte("ProtocolVersion"))
@@ -247,7 +245,6 @@ func New(config *Config) (*Ethereum, error) {
 		NAT:            config.NAT,
 		NoDial:         !config.Dial,
 		BootstrapNodes: config.parseBootNodes(),
-		NodeDatabase:   nodeDb,
 	}
 	if len(config.Port) > 0 {
 		eth.net.ListenAddr = ":" + config.Port

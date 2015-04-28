@@ -11,9 +11,6 @@ import (
 	"sort"
 	"sync"
 	"time"
-
-	"github.com/ethereum/go-ethereum/logger"
-	"github.com/ethereum/go-ethereum/logger/glog"
 )
 
 const (
@@ -27,7 +24,6 @@ type Table struct {
 	mutex   sync.Mutex        // protects buckets, their content, and nursery
 	buckets [nBuckets]*bucket // index of known nodes by distance
 	nursery []*Node           // bootstrap nodes
-	db      *nodeDB           // database of known nodes
 
 	bondmu    sync.Mutex
 	bonding   map[NodeID]*bondproc
@@ -35,6 +31,7 @@ type Table struct {
 
 	net  transport
 	self *Node // metadata of the local node
+	db   *nodeDB
 }
 
 type bondproc struct {
@@ -61,16 +58,10 @@ type bucket struct {
 	entries    []*Node
 }
 
-func newTable(t transport, ourID NodeID, ourAddr *net.UDPAddr, nodeDBPath string) *Table {
-	// If no node database was given, use an in-memory one
-	db, err := newNodeDB(nodeDBPath, Version)
-	if err != nil {
-		glog.V(logger.Warn).Infoln("Failed to open node database:", err)
-		db, _ = newNodeDB("", Version)
-	}
+func newTable(t transport, ourID NodeID, ourAddr *net.UDPAddr) *Table {
 	tab := &Table{
 		net:       t,
-		db:        db,
+		db:        new(nodeDB),
 		self:      newNode(ourID, ourAddr),
 		bonding:   make(map[NodeID]*bondproc),
 		bondslots: make(chan struct{}, maxBondingPingPongs),
@@ -89,10 +80,9 @@ func (tab *Table) Self() *Node {
 	return tab.self
 }
 
-// Close terminates the network listener and flushes the node database.
+// Close terminates the network listener.
 func (tab *Table) Close() {
 	tab.net.close()
-	tab.db.close()
 }
 
 // Bootstrap sets the bootstrap nodes. These nodes are used to connect
@@ -176,13 +166,8 @@ func (tab *Table) refresh() {
 
 	result := tab.Lookup(randomID(tab.self.ID, ld))
 	if len(result) == 0 {
-		// Pick a batch of previously know seeds to lookup with
-		seeds := tab.db.querySeeds(10)
-		for _, seed := range seeds {
-			glog.V(logger.Debug).Infoln("Seeding network with", seed)
-		}
-		// Bootstrap the table with a self lookup
-		all := tab.bondall(append(tab.nursery, seeds...))
+		// bootstrap the table with a self lookup
+		all := tab.bondall(tab.nursery)
 		tab.mutex.Lock()
 		tab.add(all)
 		tab.mutex.Unlock()
@@ -250,7 +235,7 @@ func (tab *Table) bondall(nodes []*Node) (result []*Node) {
 // of the process can be skipped.
 func (tab *Table) bond(pinged bool, id NodeID, addr *net.UDPAddr, tcpPort uint16) (*Node, error) {
 	var n *Node
-	if n = tab.db.node(id); n == nil {
+	if n = tab.db.get(id); n == nil {
 		tab.bondmu.Lock()
 		w := tab.bonding[id]
 		if w != nil {
@@ -283,12 +268,9 @@ func (tab *Table) bond(pinged bool, id NodeID, addr *net.UDPAddr, tcpPort uint16
 }
 
 func (tab *Table) pingpong(w *bondproc, pinged bool, id NodeID, addr *net.UDPAddr, tcpPort uint16) {
-	// Request a bonding slot to limit network usage
 	<-tab.bondslots
 	defer func() { tab.bondslots <- struct{}{} }()
-
-	// Ping the remote side and wait for a pong
-	if w.err = tab.ping(id, addr); w.err != nil {
+	if w.err = tab.net.ping(id, addr); w.err != nil {
 		close(w.done)
 		return
 	}
@@ -298,21 +280,14 @@ func (tab *Table) pingpong(w *bondproc, pinged bool, id NodeID, addr *net.UDPAdd
 		// waitping will simply time out.
 		tab.net.waitping(id)
 	}
-	// Bonding succeeded, update the node database
-	w.n = &Node{
-		ID:       id,
-		IP:       addr.IP,
-		DiscPort: addr.Port,
-		TCPPort:  int(tcpPort),
-	}
-	tab.db.updateNode(w.n)
+	w.n = tab.db.add(id, addr, tcpPort)
 	close(w.done)
 }
 
 func (tab *Table) pingreplace(new *Node, b *bucket) {
 	if len(b.entries) == bucketSize {
 		oldest := b.entries[bucketSize-1]
-		if err := tab.ping(oldest.ID, oldest.addr()); err == nil {
+		if err := tab.net.ping(oldest.ID, oldest.addr()); err == nil {
 			// The node responded, we don't need to replace it.
 			return
 		}
@@ -323,21 +298,6 @@ func (tab *Table) pingreplace(new *Node, b *bucket) {
 	}
 	copy(b.entries[1:], b.entries)
 	b.entries[0] = new
-}
-
-// ping a remote endpoint and wait for a reply, also updating the node database
-// accordingly.
-func (tab *Table) ping(id NodeID, addr *net.UDPAddr) error {
-	// Update the last ping and send the message
-	tab.db.updateLastPing(id, time.Now())
-	if err := tab.net.ping(id, addr); err != nil {
-		return err
-	}
-	// Pong received, update the database and return
-	tab.db.updateLastPong(id, time.Now())
-	tab.db.ensureExpirer()
-
-	return nil
 }
 
 // add puts the entries into the table if their corresponding
