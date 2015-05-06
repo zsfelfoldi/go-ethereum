@@ -229,6 +229,11 @@ JavaScript API. See https://github.com/ethereum/go-ethereum/wiki/Javascipt-Conso
 			Name:   "upgradedb",
 			Usage:  "upgrade chainblock database",
 		},
+		{
+			Action: mist,
+			Name:   "mist",
+			Usage:  "run geth as backend process for the mist gui",
+		},
 	}
 	app.Flags = []cli.Flag{
 		utils.IdentityFlag,
@@ -250,6 +255,9 @@ JavaScript API. See https://github.com/ethereum/go-ethereum/wiki/Javascipt-Conso
 		utils.RPCEnabledFlag,
 		utils.RPCListenAddrFlag,
 		utils.RPCPortFlag,
+		utils.WSEnabledFlag,
+		utils.WSListenAddrFlag,
+		utils.WSListenPortFlag,
 		utils.WhisperEnabledFlag,
 		utils.VMDebugFlag,
 		utils.ProtocolVersionFlag,
@@ -375,9 +383,14 @@ func startEth(ctx *cli.Context, eth *eth.Ethereum) {
 		unlockAccount(ctx, am, account)
 	}
 	// Start auxiliary services if enabled.
-	if ctx.GlobalBool(utils.RPCEnabledFlag.Name) {
+	if ctx.GlobalBool(utils.RPCEnabledFlag.Name) || ctx.Command.Name == "mist" {
 		if err := utils.StartRPC(eth, ctx); err != nil {
 			utils.Fatalf("Error starting RPC: %v", err)
+		}
+	}
+	if ctx.GlobalBool(utils.WSEnabledFlag.Name) || ctx.Command.Name == "mist" {
+		if err := utils.StartWS(eth, ctx); err != nil {
+			utils.Fatalf("Error starting WS: %v", err)
 		}
 	}
 	if ctx.GlobalBool(utils.MiningEnabledFlag.Name) {
@@ -578,6 +591,17 @@ func upgradeDb(ctx *cli.Context) {
 	os.Remove(exportFile)
 
 	fmt.Println("Import finished")
+}
+
+func mist(ctx *cli.Context) {
+	cfg := utils.MakeEthConfig(ClientIdentifier, nodeNameVersion, ctx)
+	ethereum, err := eth.New(cfg)
+	if err != nil {
+		utils.Fatalf("%v", err)
+	}
+
+	startEth(ctx, ethereum)
+	ethereum.WaitForShutdown()
 }
 
 func dump(ctx *cli.Context) {

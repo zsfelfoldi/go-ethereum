@@ -22,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/p2p/nat"
 	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/ethereum/go-ethereum/ws"
 	"github.com/ethereum/go-ethereum/xeth"
 )
 
@@ -229,6 +230,21 @@ var (
 		Usage: "JS library path to be used with console and js subcommands",
 		Value: ".",
 	}
+	//Websocket settings
+	WSEnabledFlag = cli.BoolFlag{
+		Name:  "ws",
+		Usage: "Enable the websocket interface",
+	}
+	WSListenAddrFlag = cli.StringFlag{
+		Name:  "wsaddr",
+		Usage: "Listen address for the WS server",
+		Value: "127.0.0.1",
+	}
+	WSListenPortFlag = cli.IntFlag{
+		Name:  "wsport",
+		Usage: "Port on which the WS server should listen",
+		Value: 8546,
+	}
 )
 
 func GetNAT(ctx *cli.Context) nat.Interface {
@@ -339,6 +355,16 @@ func StartRPC(eth *eth.Ethereum, ctx *cli.Context) error {
 
 	xeth := xeth.New(eth, nil)
 	return rpc.Start(xeth, config)
+}
+
+func StartWS(eth *eth.Ethereum, ctx *cli.Context) error {
+	config := ws.Config{
+		ListenAddress: ctx.GlobalString(WSListenAddrFlag.Name),
+		ListenPort:    uint(ctx.GlobalInt(WSListenPortFlag.Name)),
+	}
+
+	xeth := xeth.New(eth, nil)
+	return ws.Start(xeth, config)
 }
 
 func StartPProf(ctx *cli.Context) {

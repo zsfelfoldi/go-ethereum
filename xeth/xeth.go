@@ -114,6 +114,10 @@ func (self *XEth) stop() {
 	close(self.quit)
 }
 
+func (self *XEth) StopBackend() {
+    self.backend.Stop()
+}
+
 func cAddress(a []string) []common.Address {
 	bslice := make([]common.Address, len(a))
 	for i, addr := range a {
