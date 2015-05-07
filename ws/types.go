@@ -18,12 +18,14 @@ type WSRequest struct {
 type WSSuccessResponse struct {
 	Id        interface{} `json:"id"`
 	WsVersion string      `json:"jsonrpc"`
+	Method    string      `json:"method"`
 	Result    interface{} `json:"result"`
 }
 
 type WSErrorResponse struct {
 	Id        interface{}    `json:"id"`
 	WsVersion string         `json:"jsonrpc"`
+	Method    string         `json:"method"`
 	Error     *WSErrorObject `json:"error"`
 }
 
@@ -36,4 +38,8 @@ type MinerStartRequest struct {
 }
 
 type MinerStartResponse struct {
+}
+
+type MinerHashrateResponse struct {
+	Hashrate int64 `json:"hashrate"`
 }

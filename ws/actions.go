@@ -6,11 +6,20 @@ import (
 	"github.com/ethereum/go-ethereum/xeth"
 )
 
+// WS methods
+const (
+	Quit          = "quit"
+	MinerStart    = "miner_start"
+	MinerStop     = "miner_stop"
+	MinerHashrate = "miner_hashrate"
+)
+
 func init() {
 	// register WS methods handlers
 	actions[Quit] = quit
 	actions[MinerStart] = minerStart
 	actions[MinerStop] = minerStop
+	actions[MinerHashrate] = minerHashrate
 }
 
 // websocket API stateless handler type
@@ -34,4 +43,9 @@ func minerStop(eth *xeth.XEth, req *WSRequest, res *interface{}) error {
 		return nil
 	}
 	return MinerNotStopped
+}
+
+func minerHashrate(eth *xeth.XEth, req *WSRequest, res *interface{}) error {
+	*res = &MinerHashrateResponse{Hashrate: eth.HashRate()}
+	return nil
 }

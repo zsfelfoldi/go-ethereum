@@ -364,7 +364,7 @@ func StartWS(eth *eth.Ethereum, ctx *cli.Context) error {
 	}
 
 	xeth := xeth.New(eth, nil)
-	return ws.Start(xeth, config)
+	return ws.Start(xeth, eth, config)
 }
 
 func StartPProf(ctx *cli.Context) {

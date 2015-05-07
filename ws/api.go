@@ -8,11 +8,6 @@ import (
 
 const (
 	ApiVersion = "0.1"
-
-	// WS methods
-	Quit       = "quit"
-	MinerStart = "miner_start"
-	MinerStop  = "miner_stop"
 )
 
 var (
