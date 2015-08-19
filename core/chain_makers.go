@@ -21,6 +21,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -156,7 +157,7 @@ func (b *BlockGen) OffsetTime(seconds int64) {
 // values. Inserting them into ChainManager requires use of FakePow or
 // a similar non-validating proof of work implementation.
 func GenerateChain(parent *types.Block, db ethdb.Database, n int, gen func(int, *BlockGen)) []*types.Block {
-	statedb := state.New(parent.Root(), db)
+	statedb := state.New(parent.Root(), access.NewDbChainAccess(db))
 	blocks := make(types.Blocks, n)
 	genblock := func(i int, h *types.Header) *types.Block {
 		b := &BlockGen{parent: parent, i: i, chain: blocks, header: h, statedb: statedb}
@@ -210,8 +211,9 @@ func newCanonical(n int, full bool) (ethdb.Database, *BlockProcessor, error) {
 	// Initialize a fresh chain with only a genesis block
 	genesis, _ := WriteTestNetGenesisBlock(db, 0)
 
-	chainman, _ := NewChainManager(db, FakePow{}, evmux)
-	processor := NewBlockProcessor(db, FakePow{}, chainman, evmux)
+	ca := access.NewDbChainAccess(db)
+	chainman, _ := NewChainManager(ca, FakePow{}, evmux)
+	processor := NewBlockProcessor(ca, FakePow{}, chainman, evmux)
 	processor.bc.SetProcessor(processor)
 
 	// Create and inject the requested chain

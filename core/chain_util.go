@@ -21,6 +21,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/logger"
@@ -165,15 +166,16 @@ func GetHeader(db ethdb.Database, hash common.Hash) *types.Header {
 }
 
 // GetBodyRLP retrieves the block body (transactions and uncles) in RLP encoding.
-func GetBodyRLP(db ethdb.Database, hash common.Hash) rlp.RawValue {
-	data, _ := db.Get(append(append(blockPrefix, hash[:]...), bodySuffix...))
-	return data
+func GetBodyRLP(ca *access.ChainAccess, hash common.Hash, odr bool) rlp.RawValue {
+	r := &BlockAccess{db: ca.Db(), blockHash: hash}
+	ca.Retrieve(r, odr)
+	return r.rlp
 }
 
 // GetBody retrieves the block body (transactons, uncles) corresponding to the
 // hash, nil if none found.
-func GetBody(db ethdb.Database, hash common.Hash) *types.Body {
-	data := GetBodyRLP(db, hash)
+func GetBody(ca *access.ChainAccess, hash common.Hash, odr bool) *types.Body {
+	data := GetBodyRLP(ca, hash, odr)
 	if len(data) == 0 {
 		return nil
 	}
@@ -202,13 +204,13 @@ func GetTd(db ethdb.Database, hash common.Hash) *big.Int {
 
 // GetBlock retrieves an entire block corresponding to the hash, assembling it
 // back from the stored header and body.
-func GetBlock(db ethdb.Database, hash common.Hash) *types.Block {
+func GetBlock(ca *access.ChainAccess, hash common.Hash, odr bool) *types.Block {
 	// Retrieve the block header and body contents
-	header := GetHeader(db, hash)
+	header := GetHeader(ca.Db(), hash)
 	if header == nil {
 		return nil
 	}
-	body := GetBody(db, hash)
+	body := GetBody(ca, hash, odr)
 	if body == nil {
 		return nil
 	}

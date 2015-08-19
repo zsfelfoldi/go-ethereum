@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -60,6 +61,7 @@ const (
 
 type ChainManager struct {
 	//eth          EthManager
+	chainAccess  *access.ChainAccess
 	chainDb      ethdb.Database
 	processor    types.BlockProcessor
 	eventMux     *event.TypeMux
@@ -89,7 +91,7 @@ type ChainManager struct {
 	pow pow.PoW
 }
 
-func NewChainManager(chainDb ethdb.Database, pow pow.PoW, mux *event.TypeMux) (*ChainManager, error) {
+func NewChainManager(chainAccess *access.ChainAccess, pow pow.PoW, mux *event.TypeMux) (*ChainManager, error) {
 	headerCache, _ := lru.New(headerCacheLimit)
 	bodyCache, _ := lru.New(bodyCacheLimit)
 	bodyRLPCache, _ := lru.New(bodyCacheLimit)
@@ -98,7 +100,8 @@ func NewChainManager(chainDb ethdb.Database, pow pow.PoW, mux *event.TypeMux) (*
 	futureBlocks, _ := lru.New(maxFutureBlocks)
 
 	bc := &ChainManager{
-		chainDb:      chainDb,
+		chainDb:     chainAccess.Db(),
+		chainAccess: chainAccess,
 		eventMux:     mux,
 		quit:         make(chan struct{}),
 		headerCache:  headerCache,
@@ -110,13 +113,13 @@ func NewChainManager(chainDb ethdb.Database, pow pow.PoW, mux *event.TypeMux) (*
 		pow:          pow,
 	}
 
-	bc.genesisBlock = bc.GetBlockByNumber(0)
+	bc.genesisBlock = bc.GetBlockByNumber(0, false)
 	if bc.genesisBlock == nil {
 		reader, err := NewDefaultGenesisReader()
 		if err != nil {
 			return nil, err
 		}
-		bc.genesisBlock, err = WriteGenesisBlock(chainDb, reader)
+		bc.genesisBlock, err = WriteGenesisBlock(bc.chainDb, reader)
 		if err != nil {
 			return nil, err
 		}
@@ -260,7 +263,7 @@ func (self *ChainManager) SetProcessor(proc types.BlockProcessor) {
 }
 
 func (self *ChainManager) State() *state.StateDB {
-	return state.New(self.CurrentBlock().Root(), self.chainDb)
+	return state.New(self.CurrentBlock().Root(), self.chainAccess)
 }
 
 // recover tries to retrieve a secondary last known good state from the database
@@ -268,7 +271,7 @@ func (self *ChainManager) State() *state.StateDB {
 func (bc *ChainManager) recover() bool {
 	data, _ := bc.chainDb.Get([]byte("checkpoint"))
 	if len(data) != 0 {
-		block := bc.GetBlock(common.BytesToHash(data))
+		block := bc.GetBlock(common.BytesToHash(data), false)
 		if block != nil {
 			if err := WriteCanonicalHash(bc.chainDb, block.Hash(), block.NumberU64()); err != nil {
 				glog.Fatalf("failed to write database head number: %v", err)
@@ -296,7 +299,7 @@ func (bc *ChainManager) ResetWithGenesisBlock(genesis *types.Block) {
 	defer bc.mu.Unlock()
 
 	// Dump the entire block chain and purge the caches
-	for block := bc.currentBlock; block != nil; block = bc.GetBlock(block.ParentHash()) {
+	for block := bc.currentBlock; block != nil; block = bc.GetBlock(block.ParentHash(), false) {
 		DeleteBlock(bc.chainDb, block.Hash())
 	}
 	for header := bc.currentHeader; header != nil; header = bc.GetHeader(header.ParentHash) {
@@ -341,7 +344,7 @@ func (self *ChainManager) ExportN(w io.Writer, first uint64, last uint64) error 
 	glog.V(logger.Info).Infof("exporting %d blocks...\n", last-first+1)
 
 	for nr := first; nr <= last; nr++ {
-		block := self.GetBlockByNumber(nr)
+		block := self.GetBlockByNumber(nr, false)
 		if block == nil {
 			return fmt.Errorf("export failed on #%d: not found", nr)
 		}
@@ -423,13 +426,13 @@ func (self *ChainManager) GetHeaderByNumber(number uint64) *types.Header {
 
 // GetBody retrieves a block body (transactions and uncles) from the database by
 // hash, caching it if found.
-func (self *ChainManager) GetBody(hash common.Hash) *types.Body {
+func (self *ChainManager) GetBody(hash common.Hash, odr bool) *types.Body {
 	// Short circuit if the body's already in the cache, retrieve otherwise
 	if cached, ok := self.bodyCache.Get(hash); ok {
 		body := cached.(*types.Body)
 		return body
 	}
-	body := GetBody(self.chainDb, hash)
+	body := GetBody(self.chainAccess, hash, odr)
 	if body == nil {
 		return nil
 	}
@@ -440,12 +443,12 @@ func (self *ChainManager) GetBody(hash common.Hash) *types.Body {
 
 // GetBodyRLP retrieves a block body in RLP encoding from the database by hash,
 // caching it if found.
-func (self *ChainManager) GetBodyRLP(hash common.Hash) rlp.RawValue {
+func (self *ChainManager) GetBodyRLP(hash common.Hash, odr bool) rlp.RawValue {
 	// Short circuit if the body's already in the cache, retrieve otherwise
 	if cached, ok := self.bodyRLPCache.Get(hash); ok {
 		return cached.(rlp.RawValue)
 	}
-	body := GetBodyRLP(self.chainDb, hash)
+	body := GetBodyRLP(self.chainAccess, hash, odr)
 	if len(body) == 0 {
 		return nil
 	}
@@ -473,16 +476,20 @@ func (self *ChainManager) GetTd(hash common.Hash) *big.Int {
 // HasBlock checks if a block is fully present in the database or not, caching
 // it if present.
 func (bc *ChainManager) HasBlock(hash common.Hash) bool {
-	return bc.GetBlock(hash) != nil
+	return bc.GetBlock(hash, false) != nil
+}
+
+func (self *ChainManager) GetBlockNoOdr(hash common.Hash) *types.Block {
+	return self.GetBlock(hash, false)
 }
 
 // GetBlock retrieves a block from the database by hash, caching it if found.
-func (self *ChainManager) GetBlock(hash common.Hash) *types.Block {
+func (self *ChainManager) GetBlock(hash common.Hash, odr bool) *types.Block {
 	// Short circuit if the block's already in the cache, retrieve otherwise
 	if block, ok := self.blockCache.Get(hash); ok {
 		return block.(*types.Block)
 	}
-	block := GetBlock(self.chainDb, hash)
+	block := GetBlock(self.chainAccess, hash, odr)
 	if block == nil {
 		return nil
 	}
@@ -493,12 +500,12 @@ func (self *ChainManager) GetBlock(hash common.Hash) *types.Block {
 
 // GetBlockByNumber retrieves a block from the database by number, caching it
 // (associated with its hash) if found.
-func (self *ChainManager) GetBlockByNumber(number uint64) *types.Block {
+func (self *ChainManager) GetBlockByNumber(number uint64, odr bool) *types.Block {
 	hash := GetCanonicalHash(self.chainDb, number)
 	if hash == (common.Hash{}) {
 		return nil
 	}
-	return self.GetBlock(hash)
+	return self.GetBlock(hash, odr)
 }
 
 // GetBlockHashesFromHash retrieves a number of block hashes starting at a given
@@ -527,7 +534,7 @@ func (self *ChainManager) GetBlockHashesFromHash(hash common.Hash, max uint64) [
 // GetBlocksFromHash returns the block corresponding to hash and up to n-1 ancestors.
 func (self *ChainManager) GetBlocksFromHash(hash common.Hash, n int) (blocks []*types.Block) {
 	for i := 0; i < n; i++ {
-		block := self.GetBlock(hash)
+		block := self.GetBlock(hash, false)
 		if block == nil {
 			break
 		}
@@ -543,7 +550,7 @@ func (self *ChainManager) GetUnclesInChain(block *types.Block, length int) []*ty
 	uncles := []*types.Header{}
 	for i := 0; block != nil && i < length; i++ {
 		uncles = append(uncles, block.Uncles()...)
-		block = self.GetBlock(block.ParentHash())
+		block = self.GetBlock(block.ParentHash(), false)
 	}
 	return uncles
 }
@@ -904,12 +911,12 @@ func (self *ChainManager) reorg(oldBlock, newBlock *types.Block) error {
 	// first reduce whoever is higher bound
 	if oldBlock.NumberU64() > newBlock.NumberU64() {
 		// reduce old chain
-		for oldBlock = oldBlock; oldBlock != nil && oldBlock.NumberU64() != newBlock.NumberU64(); oldBlock = self.GetBlock(oldBlock.ParentHash()) {
+		for oldBlock = oldBlock; oldBlock != nil && oldBlock.NumberU64() != newBlock.NumberU64(); oldBlock = self.GetBlock(oldBlock.ParentHash(), false) {
 			deletedTxs = append(deletedTxs, oldBlock.Transactions()...)
 		}
 	} else {
 		// reduce new chain and append new chain blocks for inserting later on
-		for newBlock = newBlock; newBlock != nil && newBlock.NumberU64() != oldBlock.NumberU64(); newBlock = self.GetBlock(newBlock.ParentHash()) {
+		for newBlock = newBlock; newBlock != nil && newBlock.NumberU64() != oldBlock.NumberU64(); newBlock = self.GetBlock(newBlock.ParentHash(), false) {
 			newChain = append(newChain, newBlock)
 		}
 	}
@@ -929,7 +936,7 @@ func (self *ChainManager) reorg(oldBlock, newBlock *types.Block) error {
 		newChain = append(newChain, newBlock)
 		deletedTxs = append(deletedTxs, oldBlock.Transactions()...)
 
-		oldBlock, newBlock = self.GetBlock(oldBlock.ParentHash()), self.GetBlock(newBlock.ParentHash())
+		oldBlock, newBlock = self.GetBlock(oldBlock.ParentHash(), false), self.GetBlock(newBlock.ParentHash(), false)
 		if oldBlock == nil {
 			return fmt.Errorf("Invalid old chain")
 		}

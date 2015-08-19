@@ -92,7 +92,7 @@ func (self *Filter) Find() state.Logs {
 
 	var (
 		logs  state.Logs
-		block = self.eth.ChainManager().GetBlockByNumber(latestBlockNo)
+		block = self.eth.ChainManager().GetBlockByNumber(latestBlockNo, false) // light client stage 1 won't process logs
 	)
 
 done:
@@ -121,7 +121,7 @@ done:
 			logs = append(logs, self.FilterLogs(unfiltered)...)
 		}
 
-		block = self.eth.ChainManager().GetBlock(block.ParentHash())
+		block = self.eth.ChainManager().GetBlock(block.ParentHash(), false)
 	}
 
 	skip := int(math.Min(float64(len(logs)), float64(self.skip)))

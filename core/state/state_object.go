@@ -22,6 +22,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/logger"
@@ -57,8 +58,8 @@ func (self Storage) Copy() Storage {
 
 type StateObject struct {
 	// State database for storing state changes
-	db   ethdb.Database
-	trie *trie.SecureTrie
+	ca   *access.ChainAccess
+	trie *TrieAccess
 
 	// Address belonging to this account
 	address common.Address
@@ -88,15 +89,15 @@ type StateObject struct {
 	dirty   bool
 }
 
-func NewStateObject(address common.Address, db ethdb.Database) *StateObject {
-	object := &StateObject{db: db, address: address, balance: new(big.Int), gasPool: new(big.Int), dirty: true}
+func NewStateObject(address common.Address, ca *access.ChainAccess) *StateObject {
+	object := &StateObject{ca: ca, address: address, balance: new(big.Int), gasPool: new(big.Int), dirty: true}
 	object.trie, _ = trie.NewSecure(common.Hash{}, db)
 	object.storage = make(Storage)
 	object.gasPool = new(big.Int)
 	return object
 }
 
-func NewStateObjectFromBytes(address common.Address, data []byte, db ethdb.Database) *StateObject {
+func NewStateObjectFromBytes(address common.Address, data []byte, ca *access.ChainAccess) *StateObject {
 	var extobject struct {
 		Nonce    uint64
 		Balance  *big.Int
@@ -108,21 +109,21 @@ func NewStateObjectFromBytes(address common.Address, data []byte, db ethdb.Datab
 		glog.Errorf("can't decode state object %x: %v", address, err)
 		return nil
 	}
-	trie, err := trie.NewSecure(extobject.Root, db)
+	trie, err := trie.NewSecure(extobject.Root, ca)
 	if err != nil {
 		// TODO: bubble this up or panic
 		glog.Errorf("can't create account trie with root %x: %v", extobject.Root[:], err)
 		return nil
 	}
 
-	object := &StateObject{address: address, db: db}
+	object := &StateObject{address: address, ca: ca}
 	object.nonce = extobject.Nonce
 	object.balance = extobject.Balance
 	object.codeHash = extobject.CodeHash
-	object.trie = trie
+	object.trie = NewStateTrieAccess(ca, trie, address)
 	object.storage = make(map[string]common.Hash)
 	object.gasPool = new(big.Int)
-	object.code, _ = db.Get(extobject.CodeHash)
+	object.code = RetrieveNodeData(ca, common.BytesToHash(extobject.CodeHash))
 	return object
 }
 
@@ -137,7 +138,8 @@ func (self *StateObject) MarkForDeletion() {
 
 func (c *StateObject) getAddr(addr common.Hash) common.Hash {
 	var ret []byte
-	rlp.DecodeBytes(c.trie.Get(addr[:]), &ret)
+	value, _ := c.trie.Get(addr[:])
+	rlp.DecodeBytes(value, &ret)
 	return common.BytesToHash(ret)
 }
 
@@ -147,7 +149,7 @@ func (c *StateObject) setAddr(addr []byte, value common.Hash) {
 		// if RLPing failed we better panic and not fail silently. This would be considered a consensus issue
 		panic(err)
 	}
-	c.trie.Update(addr, v)
+	c.trie.Trie().Update(addr, v)
 }
 
 func (self *StateObject) Storage() Storage {
@@ -176,7 +178,7 @@ func (self *StateObject) SetState(k, value common.Hash) {
 func (self *StateObject) Update() {
 	for key, value := range self.storage {
 		if (value == common.Hash{}) {
-			self.trie.Delete([]byte(key))
+			self.trie.Trie().Delete([]byte(key))
 			continue
 		}
 
@@ -240,7 +242,7 @@ func (self *StateObject) AddGas(gas, price *big.Int) {
 }
 
 func (self *StateObject) Copy() *StateObject {
-	stateObject := NewStateObject(self.Address(), self.db)
+	stateObject := NewStateObject(self.Address(), self.ca)
 	stateObject.balance.Set(self.balance)
 	stateObject.codeHash = common.CopyBytes(self.codeHash)
 	stateObject.nonce = self.nonce
@@ -270,11 +272,11 @@ func (c *StateObject) Address() common.Address {
 }
 
 func (self *StateObject) Trie() *trie.SecureTrie {
-	return self.trie
+	return self.trie.Trie()
 }
 
 func (self *StateObject) Root() []byte {
-	return self.trie.Root()
+	return self.trie.Trie().Root()
 }
 
 func (self *StateObject) Code() []byte {
@@ -301,10 +303,10 @@ func (self *StateObject) EachStorage(cb func(key, value []byte)) {
 		cb([]byte(h), v.Bytes())
 	}
 
-	it := self.trie.Iterator()
+	it := self.trie.Trie().Iterator()
 	for it.Next() {
 		// ignore cached values
-		key := self.trie.GetKey(it.Key)
+		key := self.trie.Trie().GetKey(it.Key)
 		if _, ok := self.storage[string(key)]; !ok {
 			cb(key, it.Value)
 		}
@@ -322,6 +324,20 @@ func (c *StateObject) RlpEncode() []byte {
 
 func (c *StateObject) CodeHash() common.Bytes {
 	return crypto.Sha3(c.code)
+}
+
+func (c *StateObject) RlpDecode(data []byte) {
+	decoder := common.NewValueFromBytes(data)
+	c.nonce = decoder.Get(0).Uint()
+	c.balance = decoder.Get(1).BigInt()
+	trie, _ := trie.NewSecure(common.BytesToHash(decoder.Get(2).Bytes()), c.ca)
+	c.trie = NewStateTrieAccess(c.ca, trie, c.Address())
+	c.storage = make(map[string]common.Hash)
+	c.gasPool = new(big.Int)
+
+	c.codeHash = decoder.Get(3).Bytes()
+
+	c.code = RetrieveNodeData(c.ca, common.BytesToHash(c.codeHash))
 }
 
 // Storage change object. Used by the manifest for notifying changes to

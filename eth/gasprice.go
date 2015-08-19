@@ -75,7 +75,7 @@ func (self *GasPriceOracle) processPastBlocks() {
 	}
 	self.firstProcessed = uint64(first)
 	for i := first; i <= last; i++ {
-		block := self.chain.GetBlockByNumber(uint64(i))
+		block := self.chain.GetBlockByNumber(uint64(i), false)
 		if block != nil {
 			self.processBlock(block)
 		}

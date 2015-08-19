@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -42,7 +43,7 @@ const (
 )
 
 type BlockProcessor struct {
-	chainDb ethdb.Database
+	chainAccess *access.ChainAccess
 	// Mutex for locking the block processor. Blocks can only be handled one at a time
 	mutex sync.Mutex
 	// Canonical block chain
@@ -69,13 +70,13 @@ type GasPool interface {
 	SubGas(gas, price *big.Int) error
 }
 
-func NewBlockProcessor(db ethdb.Database, pow pow.PoW, chainManager *ChainManager, eventMux *event.TypeMux) *BlockProcessor {
+func NewBlockProcessor(ca *access.ChainAccess, pow pow.PoW, chainManager *ChainManager, eventMux *event.TypeMux) *BlockProcessor {
 	sm := &BlockProcessor{
-		chainDb:  db,
-		mem:      make(map[string]*big.Int),
-		Pow:      pow,
-		bc:       chainManager,
-		eventMux: eventMux,
+		chainAccess: ca,
+		mem:         make(map[string]*big.Int),
+		Pow:         pow,
+		bc:          chainManager,
+		eventMux:    eventMux,
 	}
 	return sm
 }
@@ -171,7 +172,7 @@ func (sm *BlockProcessor) RetryProcess(block *types.Block) (logs state.Logs, err
 	if !sm.bc.HasBlock(block.ParentHash()) {
 		return nil, ParentError(block.ParentHash())
 	}
-	parent := sm.bc.GetBlock(block.ParentHash())
+	parent := sm.bc.GetBlock(block.ParentHash(), false)
 
 	// FIXME Change to full header validation. See #1225
 	errch := make(chan bool)
@@ -200,13 +201,13 @@ func (sm *BlockProcessor) Process(block *types.Block) (logs state.Logs, receipts
 	if !sm.bc.HasBlock(block.ParentHash()) {
 		return nil, nil, ParentError(block.ParentHash())
 	}
-	parent := sm.bc.GetBlock(block.ParentHash())
+	parent := sm.bc.GetBlock(block.ParentHash(), false)
 	return sm.processWithParent(block, parent)
 }
 
 func (sm *BlockProcessor) processWithParent(block, parent *types.Block) (logs state.Logs, receipts types.Receipts, err error) {
 	// Create a new state based on the parent's root (e.g., create copy)
-	state := state.New(parent.Root(), sm.chainDb)
+	state := state.New(parent.Root(), sm.chainAccess)
 	header := block.Header()
 	uncles := block.Uncles()
 	txs := block.Transactions()
@@ -346,8 +347,8 @@ func (sm *BlockProcessor) VerifyUncles(statedb *state.StateDB, block, parent *ty
 
 // GetBlockReceipts returns the receipts beloniging to the block hash
 func (sm *BlockProcessor) GetBlockReceipts(bhash common.Hash) types.Receipts {
-	if block := sm.ChainManager().GetBlock(bhash); block != nil {
-		return GetBlockReceipts(sm.chainDb, block.Hash())
+	if block := sm.ChainManager().GetBlock(bhash, false); block != nil {
+		return GetBlockReceipts(sm.chainAccess.Db(), block.Hash())
 	}
 
 	return nil
@@ -357,7 +358,7 @@ func (sm *BlockProcessor) GetBlockReceipts(bhash common.Hash) types.Receipts {
 // where it tries to get it from the (updated) method which gets them from the receipts or
 // the depricated way by re-processing the block.
 func (sm *BlockProcessor) GetLogs(block *types.Block) (logs state.Logs, err error) {
-	receipts := GetBlockReceipts(sm.chainDb, block.Hash())
+	receipts := GetBlockReceipts(sm.chainAccess.Db(), block.Hash())
 	// coalesce logs
 	for _, receipt := range receipts {
 		logs = append(logs, receipt.Logs()...)

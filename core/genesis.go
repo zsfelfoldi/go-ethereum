@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -60,7 +61,8 @@ func WriteGenesisBlock(chainDb ethdb.Database, reader io.Reader) (*types.Block, 
 		return nil, err
 	}
 
-	statedb := state.New(common.Hash{}, chainDb)
+	ca := access.NewDbChainAccess(chainDb)
+	statedb := state.New(common.Hash{}, ca)
 	for addr, account := range genesis.Alloc {
 		address := common.HexToAddress(addr)
 		statedb.AddBalance(address, common.String2Big(account.Balance))
@@ -84,7 +86,7 @@ func WriteGenesisBlock(chainDb ethdb.Database, reader io.Reader) (*types.Block, 
 		Root:       root,
 	}, nil, nil, nil)
 
-	if block := GetBlock(chainDb, block.Hash()); block != nil {
+	if block := GetBlock(ca, block.Hash(), false); block != nil {
 		glog.V(logger.Info).Infoln("Genesis block already in chain. Writing canonical number")
 		err := WriteCanonicalHash(chainDb, block.Hash(), block.NumberU64())
 		if err != nil {
@@ -117,7 +119,7 @@ func WriteGenesisBlock(chainDb ethdb.Database, reader io.Reader) (*types.Block, 
 // GenesisBlockForTesting creates a block in which addr has the given wei balance.
 // The state trie of the block is written to db.
 func GenesisBlockForTesting(db ethdb.Database, addr common.Address, balance *big.Int) *types.Block {
-	statedb := state.New(common.Hash{}, db)
+	statedb := state.New(common.Hash{}, access.NewDbChainAccess(db))
 	obj := statedb.GetOrNewStateObject(addr)
 	obj.SetBalance(balance)
 	root, err := statedb.Commit()

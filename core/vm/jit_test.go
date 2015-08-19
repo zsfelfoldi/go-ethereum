@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -39,7 +40,7 @@ type vmBench struct {
 
 func runVmBench(test vmBench, b *testing.B) {
 	db, _ := ethdb.NewMemDatabase()
-	sender := state.NewStateObject(common.Address{}, db)
+	sender := state.NewStateObject(common.Address{}, access.NewDbChainAccess(db))
 
 	if test.precompile && !test.forcejit {
 		NewProgram(test.code)

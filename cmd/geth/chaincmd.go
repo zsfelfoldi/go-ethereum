@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -170,16 +171,16 @@ func dump(ctx *cli.Context) {
 	for _, arg := range ctx.Args() {
 		var block *types.Block
 		if hashish(arg) {
-			block = chain.GetBlock(common.HexToHash(arg))
+			block = chain.GetBlock(common.HexToHash(arg), false)
 		} else {
 			num, _ := strconv.Atoi(arg)
-			block = chain.GetBlockByNumber(uint64(num))
+			block = chain.GetBlockByNumber(uint64(num), false)
 		}
 		if block == nil {
 			fmt.Println("{}")
 			utils.Fatalf("block not found")
 		} else {
-			state := state.New(block.Root(), chainDb)
+			state := state.New(block.Root(), access.NewDbChainAccess(chainDb))
 			fmt.Printf("%s\n", state.Dump())
 		}
 	}

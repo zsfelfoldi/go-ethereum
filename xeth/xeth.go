@@ -212,9 +212,9 @@ func (self *XEth) AtStateNum(num int64) *XEth {
 		st = self.backend.Miner().PendingState().Copy()
 	default:
 		if block := self.getBlockByHeight(num); block != nil {
-			st = state.New(block.Root(), self.backend.ChainDb())
+			st = state.New(block.Root(), self.backend.ChainAccess())
 		} else {
-			st = state.New(self.backend.ChainManager().GetBlockByNumber(0).Root(), self.backend.ChainDb())
+			st = state.New(self.backend.ChainManager().GetBlockByNumber(0, true).Root(), self.backend.ChainAccess())
 		}
 	}
 
@@ -258,7 +258,7 @@ func (self *XEth) UpdateState() (wait chan *big.Int) {
 						wait <- n
 						n = nil
 					}
-					statedb := state.New(ev.Block.Root(), self.backend.ChainDb())
+					statedb := state.New(ev.Block.Root(), self.backend.ChainAccess())
 					self.state = NewState(self, statedb)
 				}
 			case n, ok = <-wait:
@@ -290,19 +290,19 @@ func (self *XEth) getBlockByHeight(height int64) *types.Block {
 		num = uint64(height)
 	}
 
-	return self.backend.ChainManager().GetBlockByNumber(num)
+	return self.backend.ChainManager().GetBlockByNumber(num, true)
 }
 
 func (self *XEth) BlockByHash(strHash string) *Block {
 	hash := common.HexToHash(strHash)
-	block := self.backend.ChainManager().GetBlock(hash)
+	block := self.backend.ChainManager().GetBlock(hash, true)
 
 	return NewBlock(block)
 }
 
 func (self *XEth) EthBlockByHash(strHash string) *types.Block {
 	hash := common.HexToHash(strHash)
-	block := self.backend.ChainManager().GetBlock(hash)
+	block := self.backend.ChainManager().GetBlock(hash, true)
 
 	return block
 }
@@ -368,7 +368,7 @@ func (self *XEth) GetBlockReceipts(bhash common.Hash) types.Receipts {
 }
 
 func (self *XEth) GetTxReceipt(txhash common.Hash) *types.Receipt {
-	return core.GetReceipt(self.backend.ChainDb(), txhash)
+	return core.GetReceipt(self.backend.ChainAccess(), txhash, true)
 }
 
 func (self *XEth) GasLimit() *big.Int {

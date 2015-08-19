@@ -21,6 +21,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
@@ -33,8 +34,8 @@ import (
 // * Contracts
 // * Accounts
 type StateDB struct {
-	db   ethdb.Database
-	trie *trie.SecureTrie
+	ca   *access.ChainAccess
+	trie *TrieAccess
 
 	stateObjects map[string]*StateObject
 
@@ -47,15 +48,15 @@ type StateDB struct {
 }
 
 // Create a new state from a given trie
-func New(root common.Hash, db ethdb.Database) *StateDB {
-	tr, err := trie.NewSecure(root, db)
+func New(root common.Hash, ca *access.ChainAccess) *StateDB {
+	tr, err := trie.NewSecure(root, ca)
 	if err != nil {
 		// TODO: bubble this up
-		tr, _ = trie.NewSecure(common.Hash{}, db)
+		tr, _ = trie.NewSecure(common.Hash{}, ca)
 		glog.Errorf("can't create state trie with root %x: %v", root[:], err)
 	}
 	return &StateDB{
-		db:           db,
+		ca:           ca,
 		trie:         tr,
 		stateObjects: make(map[string]*StateObject),
 		refund:       new(big.Int),
@@ -200,10 +201,10 @@ func (self *StateDB) UpdateStateObject(stateObject *StateObject) {
 	//addr := stateObject.Address()
 
 	if len(stateObject.CodeHash()) > 0 {
-		self.db.Put(stateObject.CodeHash(), stateObject.code)
+		self.ca.Db().Put(stateObject.CodeHash(), stateObject.code)
 	}
 	addr := stateObject.Address()
-	self.trie.Update(addr[:], stateObject.RlpEncode())
+	self.trie.Trie().Update(addr[:], stateObject.RlpEncode())
 }
 
 // Delete the given state object and delete it from the state trie
@@ -211,8 +212,7 @@ func (self *StateDB) DeleteStateObject(stateObject *StateObject) {
 	stateObject.deleted = true
 
 	addr := stateObject.Address()
-	self.trie.Delete(addr[:])
-	//delete(self.stateObjects, addr.Str())
+	self.trie.Trie().Delete(addr[:])
 }
 
 // Retrieve a state object given my the address. Nil if not found
@@ -226,12 +226,12 @@ func (self *StateDB) GetStateObject(addr common.Address) (stateObject *StateObje
 		return stateObject
 	}
 
-	data := self.trie.Get(addr[:])
-	if len(data) == 0 {
+	data, err := self.trie.Get(addr[:])
+	if (err != nil) || (len(data) == 0) {
 		return nil
 	}
 
-	stateObject = NewStateObjectFromBytes(addr, []byte(data), self.db)
+	stateObject = NewStateObjectFromBytes(addr, []byte(data), self.ca)
 	self.SetStateObject(stateObject)
 
 	return stateObject
@@ -257,7 +257,7 @@ func (self *StateDB) newStateObject(addr common.Address) *StateObject {
 		glog.Infof("(+) %x\n", addr)
 	}
 
-	stateObject := NewStateObject(addr, self.db)
+	stateObject := NewStateObject(addr, self.ca)
 	self.stateObjects[addr.Str()] = stateObject
 
 	return stateObject
@@ -283,7 +283,7 @@ func (self *StateDB) CreateAccount(addr common.Address) *StateObject {
 //
 
 func (self *StateDB) Copy() *StateDB {
-	state := New(common.Hash{}, self.db)
+	state := New(common.Hash{}, self.ca)
 	state.trie = self.trie
 	for k, stateObject := range self.stateObjects {
 		state.stateObjects[k] = stateObject.Copy()

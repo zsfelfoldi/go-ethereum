@@ -26,6 +26,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/fetcher"
@@ -58,7 +59,7 @@ type ProtocolManager struct {
 	mode     Mode
 	txpool   txPool
 	chainman *core.ChainManager
-	chaindb  ethdb.Database
+	chainAccess    *access.ChainAccess
 
 	downloader *downloader.Downloader
 	fetcher    *fetcher.Fetcher
@@ -83,14 +84,14 @@ type ProtocolManager struct {
 
 // NewProtocolManager returns a new ethereum sub protocol manager. The Ethereum sub protocol manages peers capable
 // with the ethereum network.
-func NewProtocolManager(mode Mode, networkId int, mux *event.TypeMux, txpool txPool, pow pow.PoW, chainman *core.ChainManager, chaindb ethdb.Database) (*ProtocolManager, error) {
+func NewProtocolManager(mode Mode, networkId int, mux *event.TypeMux, txpool txPool, pow pow.PoW, chainman *core.ChainManager, ca *access.ChainAccess) (*ProtocolManager, error) {
 	// Create the protocol manager with the base fields
 	manager := &ProtocolManager{
 		mode:      mode,
 		eventMux:  mux,
 		txpool:    txpool,
 		chainman:  chainman,
-		chaindb:   chaindb,
+		chainAccess: ca,
 		peers:     newPeerSet(),
 		newPeerCh: make(chan *peer, 1),
 		txsyncCh:  make(chan *txsync),
@@ -129,7 +130,7 @@ func NewProtocolManager(mode Mode, networkId int, mux *event.TypeMux, txpool txP
 	case LightMode:
 		syncMode = downloader.LightSync
 	}
-	manager.downloader = downloader.New(syncMode, manager.eventMux, chainman.HasHeader, chainman.HasBlock, chainman.GetHeader, chainman.GetBlock,
+	manager.downloader = downloader.New(syncMode, manager.eventMux, chainman.HasHeader, chainman.HasBlock, chainman.GetHeader, chainman.GetBlockNoOdr,
 		chainman.CurrentHeader, chainman.CurrentBlock, chainman.GetTd, chainman.InsertHeaderChain, chainman.InsertChain, nil, manager.removePeer)
 
 	validator := func(block *types.Block, parent *types.Block) error {
@@ -138,7 +139,7 @@ func NewProtocolManager(mode Mode, networkId int, mux *event.TypeMux, txpool txP
 	heighter := func() uint64 {
 		return chainman.CurrentBlock().NumberU64()
 	}
-	manager.fetcher = fetcher.New(chainman.GetBlock, validator, manager.BroadcastBlock, heighter, chainman.InsertChain, manager.removePeer)
+	manager.fetcher = fetcher.New(chainman.GetBlockNoOdr, validator, manager.BroadcastBlock, heighter, chainman.InsertChain, manager.removePeer)
 
 	return manager, nil
 }
@@ -223,6 +224,10 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		p.RequestHeadersByHash, p.RequestHeadersByNumber, p.RequestBodies, p.RequestReceipts); err != nil {
 		return err
 	}
+
+//	pm.chainAccess.RegisterPeer(p.id, p.version, p.Head(), p.RequestBlockBodies, p.RequestNodeData, p.RequestReceipts, p.RequestAcctProof, p.RequestStorageDataProof)
+	pm.chainAccess.RegisterPeer(p.id, p.version, p.Head(), p.RequestBodies, p.RequestNodeData, p.RequestReceipts, nil, nil)
+	
 	// Propagate existing transactions. new transactions appearing
 	// after this will be sent via broadcasts.
 	pm.syncTransactions(p)
@@ -282,7 +287,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			request.Amount = uint64(downloader.MaxHashFetch)
 		}
 		// Calculate the last block that should be retrieved, and short circuit if unavailable
-		last := pm.chainman.GetBlockByNumber(request.Number + request.Amount - 1)
+		last := pm.chainman.GetBlockByNumber(request.Number + request.Amount - 1, false)
 		if last == nil {
 			last = pm.chainman.CurrentBlock()
 			request.Amount = last.NumberU64() - request.Number + 1
@@ -332,7 +337,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return errResp(ErrDecode, "msg %v: %v", msg, err)
 			}
 			// Retrieve the requested block, stopping if enough was found
-			if block := pm.chainman.GetBlock(hash); block != nil {
+			if block := pm.chainman.GetBlock(hash, false); block != nil {
 				blocks = append(blocks, block)
 				bytes += block.Size()
 			}
@@ -480,7 +485,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return errResp(ErrDecode, "msg %v: %v", msg, err)
 			}
 			// Retrieve the requested block body, stopping if enough was found
-			if data := pm.chainman.GetBodyRLP(hash); len(data) != 0 {
+			if data := pm.chainman.GetBodyRLP(hash, false); len(data) != 0 {
 				bodies = append(bodies, data)
 				bytes += len(data)
 			}
@@ -507,7 +512,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return errResp(ErrDecode, "msg %v: %v", msg, err)
 			}
 			// Retrieve the requested state entry, stopping if enough was found
-			if entry, err := pm.chaindb.Get(hash.Bytes()); err == nil {
+			if entry, err := pm.chainAccess.Db().Get(hash.Bytes()); err == nil {
 				data = append(data, entry)
 				bytes += len(entry)
 			}
@@ -534,7 +539,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return errResp(ErrDecode, "msg %v: %v", msg, err)
 			}
 			// Retrieve the requested block's receipts, skipping if unknown to us
-			results := core.GetBlockReceipts(pm.chaindb, hash)
+			results := core.GetBlockReceipts(pm.chainAccess, hash)
 			if results == nil {
 				if header := pm.chainman.GetHeader(hash); header == nil || header.ReceiptHash != types.EmptyRootHash {
 					continue
@@ -655,7 +660,7 @@ func (pm *ProtocolManager) BroadcastBlock(block *types.Block, propagate bool) {
 	if propagate {
 		// Calculate the TD of the block (it's not imported yet, so block.Td is not valid)
 		var td *big.Int
-		if parent := pm.chainman.GetBlock(block.ParentHash()); parent != nil {
+		if parent := pm.chainman.GetBlock(block.ParentHash(), false); parent != nil {
 			td = new(big.Int).Add(block.Difficulty(), pm.chainman.GetTd(block.ParentHash()))
 		} else {
 			glog.V(logger.Error).Infof("propagating dangling block #%d [%x]", block.NumberU64(), hash[:4])

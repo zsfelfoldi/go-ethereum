@@ -34,6 +34,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/compiler"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -214,6 +215,8 @@ type Ethereum struct {
 	chainDb ethdb.Database // Block chain database
 	dappDb  ethdb.Database // Dapp database
 
+	chainAccess *access.ChainAccess // blockchain access layer
+
 	//*** SERVICES ***
 	// State manager for processing new blocks and managing the over all states
 	blockProcessor  *core.BlockProcessor
@@ -279,7 +282,7 @@ func New(config *Config) (*Ethereum, error) {
 	if err := upgradeChainDatabase(chainDb); err != nil {
 		return nil, err
 	}
-
+	chainAccess := access.NewDbChainAccess(chainDb) // should replace with networking access constructor
 	dappDb, err := newdb(filepath.Join(config.DataDir, "dapp"))
 	if err != nil {
 		return nil, fmt.Errorf("dapp db err: %v", err)
@@ -336,6 +339,7 @@ func New(config *Config) (*Ethereum, error) {
 	eth := &Ethereum{
 		shutdownChan:            make(chan bool),
 		chainDb:                 chainDb,
+		chainAccess:             chainAccess,
 		dappDb:                  dappDb,
 		eventMux:                &event.TypeMux{},
 		accountManager:          config.AccountManager,
@@ -366,7 +370,7 @@ func New(config *Config) (*Ethereum, error) {
 		eth.pow = ethash.New()
 	}
 	//genesis := core.GenesisBlock(uint64(config.GenesisNonce), stateDb)
-	eth.chainManager, err = core.NewChainManager(chainDb, eth.pow, eth.EventMux())
+	eth.chainManager, err = core.NewChainManager(chainAccess, eth.pow, eth.EventMux())
 	if err != nil {
 		if err == core.ErrNoGenesis {
 			return nil, fmt.Errorf(`Genesis block not found. Please supply a genesis block with the "--genesis /path/to/file" argument`)
@@ -376,11 +380,12 @@ func New(config *Config) (*Ethereum, error) {
 	}
 	eth.txPool = core.NewTxPool(eth.EventMux(), eth.chainManager.State, eth.chainManager.GasLimit)
 
-	eth.blockProcessor = core.NewBlockProcessor(chainDb, eth.pow, eth.chainManager, eth.EventMux())
+	eth.blockProcessor = core.NewBlockProcessor(chainAccess, eth.pow, eth.chainManager, eth.EventMux())
 	eth.chainManager.SetProcessor(eth.blockProcessor)
-	if eth.protocolManager, err = NewProtocolManager(config.Mode, config.NetworkId, eth.eventMux, eth.txPool, eth.pow, eth.chainManager, chainDb); err != nil {
+	if eth.protocolManager, err = NewProtocolManager(config.Mode, config.NetworkId, eth.eventMux, eth.txPool, eth.pow, eth.chainManager, chainAccess); err != nil {
 		return nil, err
 	}
+
 	eth.miner = miner.New(eth, eth.EventMux(), eth.pow)
 	eth.miner.SetGasPrice(config.GasPrice)
 	eth.miner.SetExtra(config.ExtraData)
@@ -526,6 +531,7 @@ func (s *Ethereum) TxPool() *core.TxPool                 { return s.txPool }
 func (s *Ethereum) Whisper() *whisper.Whisper            { return s.whisper }
 func (s *Ethereum) EventMux() *event.TypeMux             { return s.eventMux }
 func (s *Ethereum) ChainDb() ethdb.Database              { return s.chainDb }
+func (s *Ethereum) ChainAccess() *access.ChainAccess     { return s.chainAccess }
 func (s *Ethereum) DappDb() ethdb.Database               { return s.dappDb }
 func (s *Ethereum) IsListening() bool                    { return true } // Always listening
 func (s *Ethereum) PeerCount() int                       { return s.net.PeerCount() }

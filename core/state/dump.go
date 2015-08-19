@@ -38,21 +38,21 @@ type World struct {
 
 func (self *StateDB) RawDump() World {
 	world := World{
-		Root:     common.Bytes2Hex(self.trie.Root()),
+		Root:     common.Bytes2Hex(self.trie.Trie().Root()),
 		Accounts: make(map[string]Account),
 	}
 
-	it := self.trie.Iterator()
+	it := self.trie.Trie().Iterator()
 	for it.Next() {
-		addr := self.trie.GetKey(it.Key)
-		stateObject := NewStateObjectFromBytes(common.BytesToAddress(addr), it.Value, self.db)
+		addr := self.trie.Trie().GetKey(it.Key)
+		stateObject := NewStateObjectFromBytes(common.BytesToAddress(addr), it.Value, self.ca)
 
 		account := Account{Balance: stateObject.balance.String(), Nonce: stateObject.nonce, Root: common.Bytes2Hex(stateObject.Root()), CodeHash: common.Bytes2Hex(stateObject.codeHash)}
 		account.Storage = make(map[string]string)
 
-		storageIt := stateObject.trie.Iterator()
+		storageIt := stateObject.trie.Trie().Iterator()
 		for storageIt.Next() {
-			account.Storage[common.Bytes2Hex(self.trie.GetKey(storageIt.Key))] = common.Bytes2Hex(storageIt.Value)
+			account.Storage[common.Bytes2Hex(self.trie.Trie().GetKey(storageIt.Key))] = common.Bytes2Hex(storageIt.Value)
 		}
 		world.Accounts[common.Bytes2Hex(addr)] = account
 	}
@@ -71,7 +71,7 @@ func (self *StateDB) Dump() []byte {
 // Debug stuff
 func (self *StateObject) CreateOutputForDiff() {
 	fmt.Printf("%x %x %x %x\n", self.Address(), self.Root(), self.balance.Bytes(), self.nonce)
-	it := self.trie.Iterator()
+	it := self.trie.Trie().Iterator()
 	for it.Next() {
 		fmt.Printf("%x %x\n", it.Key, it.Value)
 	}

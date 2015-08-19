@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -217,7 +218,7 @@ func (test *BlockTest) makeEthConfig() *eth.Config {
 // accounts defined by the test.
 func (t *BlockTest) InsertPreState(ethereum *eth.Ethereum) (*state.StateDB, error) {
 	db := ethereum.ChainDb()
-	statedb := state.New(common.Hash{}, db)
+	statedb := state.New(common.Hash{}, access.NewDbChainAccess(db))
 	for addrString, acct := range t.preAccounts {
 		addr, err := hex.DecodeString(addrString)
 		if err != nil {

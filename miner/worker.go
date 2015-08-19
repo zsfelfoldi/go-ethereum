@@ -274,7 +274,7 @@ func (self *worker) wait() {
 				go self.mux.Post(core.NewMinedBlockEvent{block})
 			} else {
 				work.state.Commit()
-				parent := self.chain.GetBlock(block.ParentHash())
+				parent := self.chain.GetBlock(block.ParentHash(), false)
 				if parent == nil {
 					glog.V(logger.Error).Infoln("Invalid block found during mining")
 					continue
@@ -313,7 +313,7 @@ func (self *worker) wait() {
 
 			// check staleness and display confirmation
 			var stale, confirm string
-			canonBlock := self.chain.GetBlockByNumber(block.NumberU64())
+			canonBlock := self.chain.GetBlockByNumber(block.NumberU64(), false)
 			if canonBlock != nil && canonBlock.Hash() != block.Hash() {
 				stale = "stale "
 			} else {
@@ -348,7 +348,7 @@ func (self *worker) push(work *Work) {
 
 // makeCurrent creates a new environment for the current cycle.
 func (self *worker) makeCurrent(parent *types.Block, header *types.Header) {
-	state := state.New(parent.Root(), self.eth.ChainDb())
+	state := state.New(parent.Root(), self.eth.ChainAccess())
 	work := &Work{
 		state:     state,
 		ancestors: set.New(),
@@ -408,7 +408,7 @@ func (self *worker) isBlockLocallyMined(current *Work, deepBlockNum uint64) bool
 	}
 
 	//Does the block at {deepBlockNum} send earnings to my coinbase?
-	var block = self.chain.GetBlockByNumber(deepBlockNum)
+	var block = self.chain.GetBlockByNumber(deepBlockNum, false)
 	return block != nil && block.Coinbase() == self.coinbase
 }
 
