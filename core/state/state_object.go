@@ -24,7 +24,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -91,7 +90,8 @@ type StateObject struct {
 
 func NewStateObject(address common.Address, ca *access.ChainAccess) *StateObject {
 	object := &StateObject{ca: ca, address: address, balance: new(big.Int), gasPool: new(big.Int), dirty: true}
-	object.trie, _ = trie.NewSecure(common.Hash{}, db)
+	trie, _ := trie.NewSecure(common.Hash{}, ca.Db())
+	object.trie = NewStateTrieAccess(ca, trie, address)
 	object.storage = make(Storage)
 	object.gasPool = new(big.Int)
 	return object
@@ -109,7 +109,7 @@ func NewStateObjectFromBytes(address common.Address, data []byte, ca *access.Cha
 		glog.Errorf("can't decode state object %x: %v", address, err)
 		return nil
 	}
-	trie, err := trie.NewSecure(extobject.Root, ca)
+	trie, err := trie.NewSecure(extobject.Root, ca.Db())
 	if err != nil {
 		// TODO: bubble this up or panic
 		glog.Errorf("can't create account trie with root %x: %v", extobject.Root[:], err)
@@ -330,7 +330,7 @@ func (c *StateObject) RlpDecode(data []byte) {
 	decoder := common.NewValueFromBytes(data)
 	c.nonce = decoder.Get(0).Uint()
 	c.balance = decoder.Get(1).BigInt()
-	trie, _ := trie.NewSecure(common.BytesToHash(decoder.Get(2).Bytes()), c.ca)
+	trie, _ := trie.NewSecure(common.BytesToHash(decoder.Get(2).Bytes()), c.ca.Db())
 	c.trie = NewStateTrieAccess(c.ca, trie, c.Address())
 	c.storage = make(map[string]common.Hash)
 	c.gasPool = new(big.Int)

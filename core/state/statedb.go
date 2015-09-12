@@ -49,15 +49,15 @@ type StateDB struct {
 
 // Create a new state from a given trie
 func New(root common.Hash, ca *access.ChainAccess) *StateDB {
-	tr, err := trie.NewSecure(root, ca)
+	tr, err := trie.NewSecure(root, ca.Db())
 	if err != nil {
 		// TODO: bubble this up
-		tr, _ = trie.NewSecure(common.Hash{}, ca)
+		tr, _ = trie.NewSecure(common.Hash{}, ca.Db())
 		glog.Errorf("can't create state trie with root %x: %v", root[:], err)
 	}
 	return &StateDB{
 		ca:           ca,
-		trie:         tr,
+		trie:         NewAccountTrieAccess(ca, tr),
 		stateObjects: make(map[string]*StateObject),
 		refund:       new(big.Int),
 		logs:         make(map[common.Hash]Logs),
@@ -325,19 +325,19 @@ func (s *StateDB) IntermediateRoot() common.Hash {
 			stateObject.dirty = false
 		}
 	}
-	return s.trie.Hash()
+	return s.trie.Trie().Hash()
 }
 
 // Commit commits all state changes to the database.
 func (s *StateDB) Commit() (root common.Hash, err error) {
-	return s.commit(s.db)
+	return s.commit(s.ca.Db())
 }
 
 // CommitBatch commits all state changes to a write batch but does not
 // execute the batch. It is used to validate state changes against
 // the root hash stored in a block.
 func (s *StateDB) CommitBatch() (root common.Hash, batch ethdb.Batch) {
-	batch = s.db.NewBatch()
+	batch = s.ca.Db().NewBatch()
 	root, _ = s.commit(batch)
 	return root, batch
 }
@@ -357,7 +357,7 @@ func (s *StateDB) commit(db trie.DatabaseWriter) (common.Hash, error) {
 			// This updates the trie root internally, so
 			// getting the root hash of the storage trie
 			// through UpdateStateObject is fast.
-			if _, err := stateObject.trie.CommitTo(db); err != nil {
+			if _, err := stateObject.trie.Trie().CommitTo(db); err != nil {
 				return common.Hash{}, err
 			}
 			// Update the object in the account trie.
@@ -365,7 +365,7 @@ func (s *StateDB) commit(db trie.DatabaseWriter) (common.Hash, error) {
 		}
 		stateObject.dirty = false
 	}
-	return s.trie.CommitTo(db)
+	return s.trie.Trie().CommitTo(db)
 }
 
 func (self *StateDB) Refunds() *big.Int {

@@ -23,13 +23,14 @@ import (
 	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
 type BlockAccess struct {
-	db        common.Database
+	db        ethdb.Database
 	blockHash common.Hash
 	rlp		  []byte
 }
@@ -68,7 +69,7 @@ func (self *BlockAccess) DbPut() {
 }
 
 type ReceiptAccess struct {
-	db      common.Database
+	db      ethdb.Database
 	txHash  common.Hash
 	receipt *types.Receipt
 }

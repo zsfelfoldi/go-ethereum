@@ -10,6 +10,8 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+type MerkleProof []rlp.RawValue
+
 // Prove constructs a merkle proof for key. The result contains all
 // encoded nodes on the path to the value at key. The value itself is
 // also included in the last node and can be retrieved by verifying
@@ -17,7 +19,7 @@ import (
 //
 // The returned proof is nil if the trie does not contain a value for key.
 // For existing keys, the proof will have at least one element.
-func (t *Trie) Prove(key []byte) []rlp.RawValue {
+func (t *Trie) Prove(key []byte) MerkleProof {
 	// Collect all nodes on the path to key.
 	key = compactHexDecode(key)
 	nodes := []node{}
@@ -67,7 +69,7 @@ func (t *Trie) Prove(key []byte) []rlp.RawValue {
 // value for key in a trie with the given root hash. VerifyProof
 // returns an error if the proof contains invalid trie nodes or the
 // wrong value.
-func VerifyProof(rootHash common.Hash, key []byte, proof []rlp.RawValue) (value []byte, err error) {
+func VerifyProof(rootHash common.Hash, key []byte, proof MerkleProof) (value []byte, err error) {
 	key = compactHexDecode(key)
 	sha := sha3.NewKeccak256()
 	wantHash := rootHash.Bytes()

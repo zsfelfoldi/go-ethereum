@@ -23,6 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
@@ -35,15 +36,15 @@ type TrieAccess struct {
 	address common.Address // if nullAddress, it's the account trie
 }
 
-func NewAccountTrieAccess(ca *access.ChainAccess, root common.Hash) *TrieAccess {
-	return NewStateTrieAccess(ca, root, nullAddress) //
+func NewAccountTrieAccess(ca *access.ChainAccess, trie *trie.SecureTrie) *TrieAccess {
+	return NewStateTrieAccess(ca, trie, nullAddress) //
 }
 
-func NewStateTrieAccess(ca *access.ChainAccess, root common.Hash, address common.Address) *TrieAccess {
+func NewStateTrieAccess(ca *access.ChainAccess, trie *trie.SecureTrie, address common.Address) *TrieAccess {
 	return &TrieAccess{
 		ca:      ca,
-		trie:    trie.NewSecure(root[:], ca.Db()),
-		root:    root,
+		trie:    trie,
+		root:    common.BytesToHash(trie.Root()),
 		address: address,
 	}
 }
@@ -62,7 +63,7 @@ type TrieEntryAccess struct {
 	trie       *trie.SecureTrie
 	address    common.Address // if nullAddress, it's the account trie
 	key, value []byte
-	proof      *trie.TrieProof
+	proof      trie.MerkleProof
 	skipLevels int // set by DbGet() if unsuccessful
 }
 
@@ -90,13 +91,14 @@ func (self *TrieEntryAccess) Valid(msg *access.Msg) bool {
 	if msg.MsgType != access.MsgProof {
 		return false
 	}
-	proof := msg.Obj.(*trie.TrieProof)
-	valid := proof.Verify(self.key, proof.Value, self.trie.Root())
-	if valid {
+	proof := msg.Obj.(trie.MerkleProof)
+	value, err := trie.VerifyProof(common.BytesToHash(self.trie.Root()), self.key, proof)
+	if err == nil {
 		self.proof = proof
-		self.value = proof.Value
+		self.value = value
+		return true
 	}
-	return valid
+	return false
 }
 
 func (self *TrieEntryAccess) DbGet() bool {
@@ -110,7 +112,7 @@ func (self *TrieEntryAccess) DbPut() {
 }
 
 type NodeDataAccess struct {
-	db   common.Database
+	db   ethdb.Database
 	hash common.Hash
 	data []byte
 }

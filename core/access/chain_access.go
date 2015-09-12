@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
 )
@@ -37,7 +38,7 @@ var (
 var requestTimeout = time.Second * 1
 
 type ChainAccess struct {
-	db          common.Database
+	db          ethdb.Database
 	lock        sync.Mutex
 	valFunc     validatorFunc
 	deliverChan chan *Msg
@@ -47,11 +48,11 @@ type ChainAccess struct {
 	// parameters (light/full/archive)
 }
 
-func NewDbChainAccess(db common.Database) *ChainAccess {
+func NewDbChainAccess(db ethdb.Database) *ChainAccess {
 	return &ChainAccess{db: db, peers: newPeerSet()}
 }
 
-func (self *ChainAccess) Db() common.Database {
+func (self *ChainAccess) Db() ethdb.Database {
 	return self.db
 }
 
