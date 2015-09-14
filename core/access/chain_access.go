@@ -56,9 +56,9 @@ func (self *ChainAccess) Db() ethdb.Database {
 	return self.db
 }
 
-func (self *ChainAccess) RegisterPeer(id string, version int, head common.Hash, getBlockBodies getBlockBodiesFn, getNodeData getNodeDataFn, getReceipts getReceiptsFn, getAcctProof getAcctProofFn, getStorageDataProof getStorageDataProofFn) error {
+func (self *ChainAccess) RegisterPeer(id string, version int, head common.Hash, getBlockBodies getBlockBodiesFn, getNodeData getNodeDataFn, getReceipts getReceiptsFn, getProof getProofFn) error {
 	glog.V(logger.Detail).Infoln("Registering peer", id)
-	if err := self.peers.Register(newPeer(id, version, head, getBlockBodies, getNodeData, getReceipts, getAcctProof, getStorageDataProof)); err != nil {
+	if err := self.peers.Register(newPeer(id, version, head, getBlockBodies, getNodeData, getReceipts, getProof)); err != nil {
 		glog.V(logger.Error).Infoln("Register failed:", err)
 		return err
 	}

@@ -91,7 +91,7 @@ type StateObject struct {
 func NewStateObject(address common.Address, ca *access.ChainAccess) *StateObject {
 	object := &StateObject{ca: ca, address: address, balance: new(big.Int), gasPool: new(big.Int), dirty: true}
 	trie, _ := trie.NewSecure(common.Hash{}, ca.Db())
-	object.trie = NewStateTrieAccess(ca, trie, address)
+	object.trie = NewTrieAccess(ca, trie)
 	object.storage = make(Storage)
 	object.gasPool = new(big.Int)
 	return object
@@ -120,7 +120,7 @@ func NewStateObjectFromBytes(address common.Address, data []byte, ca *access.Cha
 	object.nonce = extobject.Nonce
 	object.balance = extobject.Balance
 	object.codeHash = extobject.CodeHash
-	object.trie = NewStateTrieAccess(ca, trie, address)
+	object.trie = NewTrieAccess(ca, trie)
 	object.storage = make(map[string]common.Hash)
 	object.gasPool = new(big.Int)
 	object.code = RetrieveNodeData(ca, common.BytesToHash(extobject.CodeHash))
@@ -331,7 +331,7 @@ func (c *StateObject) RlpDecode(data []byte) {
 	c.nonce = decoder.Get(0).Uint()
 	c.balance = decoder.Get(1).BigInt()
 	trie, _ := trie.NewSecure(common.BytesToHash(decoder.Get(2).Bytes()), c.ca.Db())
-	c.trie = NewStateTrieAccess(c.ca, trie, c.Address())
+	c.trie = NewTrieAccess(c.ca, trie)
 	c.storage = make(map[string]common.Hash)
 	c.gasPool = new(big.Int)
 

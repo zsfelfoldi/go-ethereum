@@ -41,6 +41,7 @@ var (
 	MaxBodyFetch    = 128 // Amount of block bodies to be fetched per retrieval request
 	MaxStateFetch   = 384 // Amount of node state values to allow fetching per request
 	MaxReceiptFetch = 256 // Amount of transaction receipts to allow fetching per request
+	MaxProofsFetch   = 64  // Amount of merkle proofs to allow fetching per request
 
 	hashTTL        = 5 * time.Second    // [eth/61] Time it takes for a hash request to time out
 	blockSoftTTL   = 3 * time.Second    // [eth/61] Request completion threshold for increasing or decreasing a peer's bandwidth

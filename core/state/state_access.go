@@ -30,22 +30,14 @@ import (
 var nullAddress = common.Address{}
 
 type TrieAccess struct {
-	ca      *access.ChainAccess
-	trie    *trie.SecureTrie
-	root    common.Hash
-	address common.Address // if nullAddress, it's the account trie
+	ca   *access.ChainAccess
+	trie *trie.SecureTrie
 }
 
-func NewAccountTrieAccess(ca *access.ChainAccess, trie *trie.SecureTrie) *TrieAccess {
-	return NewStateTrieAccess(ca, trie, nullAddress) //
-}
-
-func NewStateTrieAccess(ca *access.ChainAccess, trie *trie.SecureTrie, address common.Address) *TrieAccess {
+func NewTrieAccess(ca *access.ChainAccess, trie *trie.SecureTrie) *TrieAccess {
 	return &TrieAccess{
-		ca:      ca,
-		trie:    trie,
-		root:    common.BytesToHash(trie.Root()),
-		address: address,
+		ca:   ca,
+		trie: trie,
 	}
 }
 
@@ -68,22 +60,11 @@ type TrieEntryAccess struct {
 }
 
 func (self *TrieEntryAccess) Request(peer *access.Peer) error {
-	if self.address == nullAddress {
-		req := &access.AcctProofReq{
-			RootHash:   common.BytesToHash(self.trie.Root()),
-			Address:    common.BytesToAddress(self.key),
-			SkipLevels: self.skipLevels,
-		}
-		return peer.GetAcctProof([]*access.AcctProofReq{req})
-	} else {
-		req := &access.StorageDataProofReq{
-			RootHash:   common.BytesToHash(self.trie.Root()),
-			Address:    self.address,
-			Key:        common.BytesToHash(self.key),
-			SkipLevels: self.skipLevels,
-		}
-		return peer.GetStorageDataProof([]*access.StorageDataProofReq{req})
+	req := &access.ProofReq{
+		Root: common.BytesToHash(self.trie.Root()),
+		Key:  self.key,
 	}
+	return peer.GetProof([]*access.ProofReq{req})
 }
 
 func (self *TrieEntryAccess) Valid(msg *access.Msg) bool {

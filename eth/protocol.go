@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/trie"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -92,9 +93,8 @@ const (
 	ReceiptsMsg    = 0x10
 
 	// Protocol messages belonging to eth/64
-	GetAcctProofMsg     = 0x11
-	GetStorageDataProof = 0x12
-	Proof               = 0x13
+	GetProofsMsg = 0x11
+	ProofsMsg    = 0x12
 )
 
 type errCode int
@@ -234,3 +234,5 @@ type blockBodiesData []*blockBody
 type nodeDataData []struct {
 	Value []byte
 }
+
+type proofsData []trie.MerkleProof

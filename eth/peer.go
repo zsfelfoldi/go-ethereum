@@ -23,6 +23,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/logger"
@@ -203,6 +204,11 @@ func (p *peer) SendReceiptsRLP(receipts []rlp.RawValue) error {
 	return p2p.Send(p.rw, ReceiptsMsg, receipts)
 }
 
+// SendProofs sends a batch of merkle proofs, corresponding to the ones requested.
+func (p *peer) SendProofs(proofs proofsData) error {
+	return p2p.Send(p.rw, NodeDataMsg, proofs)
+}
+
 // RequestHashes fetches a batch of hashes from a peer, starting at from, going
 // towards the genesis block.
 func (p *peer) RequestHashes(from common.Hash) error {
@@ -262,6 +268,12 @@ func (p *peer) RequestNodeData(hashes []common.Hash) error {
 func (p *peer) RequestReceipts(hashes []common.Hash) error {
 	glog.V(logger.Debug).Infof("%v fetching %v receipts", p, len(hashes))
 	return p2p.Send(p.rw, GetReceiptsMsg, hashes)
+}
+
+// RequestProofs fetches a batch of merkle proofs from a remote node.
+func (p *peer) RequestProofs(reqs []*access.ProofReq) error {
+	glog.V(logger.Debug).Infof("%v fetching %v proofs", p, len(reqs))
+	return p2p.Send(p.rw, GetProofsMsg, reqs)
 }
 
 // Handshake executes the eth protocol handshake, negotiating version number,

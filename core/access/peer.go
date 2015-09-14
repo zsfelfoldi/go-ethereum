@@ -31,27 +31,18 @@ const ethVersionRequired = 64
 var (
 	errAlreadyRegistered = errors.New("peer is already registered")
 	errNotRegistered     = errors.New("peer is not registered")
-	errNoOdr		      = errors.New("peer cannot serve on-demand requests")
+	errNoOdr             = errors.New("peer cannot serve on-demand requests")
 )
 
-type AcctProofReq struct {
-	RootHash  common.Hash
-	Address    common.Address
-	SkipLevels int
-}
-
-type StorageDataProofReq struct {
-	RootHash  common.Hash
-	Address    common.Address
-	Key			common.Hash
-	SkipLevels int
+type ProofReq struct {
+	Root common.Hash
+	Key  []byte
 }
 
 type getBlockBodiesFn func([]common.Hash) error
 type getNodeDataFn func([]common.Hash) error
 type getReceiptsFn func([]common.Hash) error
-type getAcctProofFn func([]*AcctProofReq) error
-type getStorageDataProofFn func([]*StorageDataProofReq) error
+type getProofFn func([]*ProofReq) error
 
 type Peer struct {
 	id   string      // Unique identifier of the peer
@@ -59,25 +50,23 @@ type Peer struct {
 
 	rep int32 // Simple peer reputation
 
-	GetBlockBodies      getBlockBodiesFn
-	GetNodeData         getNodeDataFn
-	GetReceipts         getReceiptsFn
-	GetAcctProof        getAcctProofFn
-	GetStorageDataProof getStorageDataProofFn
+	GetBlockBodies getBlockBodiesFn
+	GetNodeData    getNodeDataFn
+	GetReceipts    getReceiptsFn
+	GetProof       getProofFn
 
 	version int // Eth protocol version number to switch strategies
 }
 
-func newPeer(id string, version int, head common.Hash, getBlockBodies getBlockBodiesFn, getNodeData getNodeDataFn, getReceipts getReceiptsFn, getAcctProof getAcctProofFn, getStorageDataProof getStorageDataProofFn) *Peer {
+func newPeer(id string, version int, head common.Hash, getBlockBodies getBlockBodiesFn, getNodeData getNodeDataFn, getReceipts getReceiptsFn, getProof getProofFn) *Peer {
 	return &Peer{
-		id:                  id,
-		head:                head,
-		GetBlockBodies:      getBlockBodies,
-		GetNodeData:         getNodeData,
-		GetReceipts:         getReceipts,
-		GetAcctProof:        getAcctProof,
-		GetStorageDataProof: getStorageDataProof,
-		version:             version,
+		id:             id,
+		head:           head,
+		GetBlockBodies: getBlockBodies,
+		GetNodeData:    getNodeData,
+		GetReceipts:    getReceipts,
+		GetProof:       getProof,
+		version:        version,
 	}
 }
 

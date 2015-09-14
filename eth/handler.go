@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/pow"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 )
 
 const (
@@ -91,10 +92,10 @@ func NewProtocolManager(mode Mode, networkId int, mux *event.TypeMux, txpool txP
 		txpool:    txpool,
 		chainman:  chainman,
 		chainAccess: ca,
-		peers:     newPeerSet(),
-		newPeerCh: make(chan *peer, 1),
-		txsyncCh:  make(chan *txsync),
-		quitSync:  make(chan struct{}),
+		peers:       newPeerSet(),
+		newPeerCh:   make(chan *peer, 1),
+		txsyncCh:    make(chan *txsync),
+		quitSync:    make(chan struct{}),
 	}
 	// Initiate a sub-protocol for every implemented version we can handle
 	manager.SubProtocols = make([]p2p.Protocol, 0, len(ProtocolVersions))
@@ -224,9 +225,8 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		return err
 	}
 
-//	pm.chainAccess.RegisterPeer(p.id, p.version, p.Head(), p.RequestBlockBodies, p.RequestNodeData, p.RequestReceipts, p.RequestAcctProof, p.RequestStorageDataProof)
-	pm.chainAccess.RegisterPeer(p.id, p.version, p.Head(), p.RequestBodies, p.RequestNodeData, p.RequestReceipts, nil, nil)
-	
+	pm.chainAccess.RegisterPeer(p.id, p.version, p.Head(), p.RequestBodies, p.RequestNodeData, p.RequestReceipts, p.RequestProofs)
+
 	// Propagate existing transactions. new transactions appearing
 	// after this will be sent via broadcasts.
 	pm.syncTransactions(p)
@@ -286,7 +286,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			request.Amount = uint64(downloader.MaxHashFetch)
 		}
 		// Calculate the last block that should be retrieved, and short circuit if unavailable
-		last := pm.chainman.GetBlockByNumber(request.Number + request.Amount - 1, false)
+		last := pm.chainman.GetBlockByNumber(request.Number+request.Amount-1, false)
 		if last == nil {
 			last = pm.chainman.CurrentBlock()
 			request.Amount = last.NumberU64() - request.Number + 1
@@ -553,6 +553,34 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			}
 		}
 		return p.SendReceiptsRLP(receipts)
+
+	case p.version >= eth64 && msg.Code == GetProofsMsg:
+		// Decode the retrieval message
+		msgStream := rlp.NewStream(msg.Payload, uint64(msg.Size))
+		if _, err := msgStream.List(); err != nil {
+			return err
+		}
+		// Gather state data until the fetch or network limits is reached
+		var (
+			req  access.ProofReq
+			bytes int
+			proofs proofsData
+		)
+		for bytes < softResponseLimit && len(proofs) < downloader.MaxProofsFetch {
+			// Retrieve the hash of the next state entry
+			if err := msgStream.Decode(&req); err == rlp.EOL {
+				break
+			} else if err != nil {
+				return errResp(ErrDecode, "msg %v: %v", msg, err)
+			}
+			// Retrieve the requested state entry, stopping if enough was found
+			if trie, _ := trie.NewSecure(req.Root, pm.chainAccess.Db()); trie != nil {
+				proof := trie.Prove(req.Key)
+				proofs = append(proofs, proof)
+				bytes += len(proof)
+			}
+		}
+		return p.SendProofs(proofs)
 
 	case msg.Code == NewBlockHashesMsg:
 		// Retrieve and deseralize the remote new block hashes notification

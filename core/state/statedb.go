@@ -57,7 +57,7 @@ func New(root common.Hash, ca *access.ChainAccess) *StateDB {
 	}
 	return &StateDB{
 		ca:           ca,
-		trie:         NewAccountTrieAccess(ca, tr),
+		trie:         NewTrieAccess(ca, tr),
 		stateObjects: make(map[string]*StateObject),
 		refund:       new(big.Int),
 		logs:         make(map[common.Hash]Logs),
