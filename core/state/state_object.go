@@ -58,7 +58,7 @@ func (self Storage) Copy() Storage {
 type StateObject struct {
 	// State database for storing state changes
 	ca   *access.ChainAccess
-	trie *TrieAccess
+	trie *trie.SecureTrie
 
 	// Address belonging to this account
 	address common.Address
@@ -90,8 +90,7 @@ type StateObject struct {
 
 func NewStateObject(address common.Address, ca *access.ChainAccess) *StateObject {
 	object := &StateObject{ca: ca, address: address, balance: new(big.Int), gasPool: new(big.Int), dirty: true}
-	trie, _ := trie.NewSecure(common.Hash{}, ca.Db())
-	object.trie = NewTrieAccess(ca, trie)
+	object.trie, _ = trie.NewSecure(common.Hash{}, ca.Db(), nil)
 	object.storage = make(Storage)
 	object.gasPool = new(big.Int)
 	return object
@@ -109,7 +108,7 @@ func NewStateObjectFromBytes(address common.Address, data []byte, ca *access.Cha
 		glog.Errorf("can't decode state object %x: %v", address, err)
 		return nil
 	}
-	trie, err := trie.NewSecure(extobject.Root, ca.Db())
+	trie, err := trie.NewSecure(extobject.Root, ca.Db(), NewTrieAccess(ca, extobject.Root, ca.Db()))
 	if err != nil {
 		// TODO: bubble this up or panic
 		glog.Errorf("can't create account trie with root %x: %v", extobject.Root[:], err)
@@ -120,7 +119,7 @@ func NewStateObjectFromBytes(address common.Address, data []byte, ca *access.Cha
 	object.nonce = extobject.Nonce
 	object.balance = extobject.Balance
 	object.codeHash = extobject.CodeHash
-	object.trie = NewTrieAccess(ca, trie)
+	object.trie = trie
 	object.storage = make(map[string]common.Hash)
 	object.gasPool = new(big.Int)
 	object.code = RetrieveNodeData(ca, common.BytesToHash(extobject.CodeHash))
@@ -138,7 +137,7 @@ func (self *StateObject) MarkForDeletion() {
 
 func (c *StateObject) getAddr(addr common.Hash) common.Hash {
 	var ret []byte
-	value, _ := c.trie.Get(addr[:])
+	value := c.trie.Get(addr[:])
 	rlp.DecodeBytes(value, &ret)
 	return common.BytesToHash(ret)
 }
@@ -149,7 +148,7 @@ func (c *StateObject) setAddr(addr []byte, value common.Hash) {
 		// if RLPing failed we better panic and not fail silently. This would be considered a consensus issue
 		panic(err)
 	}
-	c.trie.Trie().Update(addr, v)
+	c.trie.Update(addr, v)
 }
 
 func (self *StateObject) Storage() Storage {
@@ -178,7 +177,7 @@ func (self *StateObject) SetState(k, value common.Hash) {
 func (self *StateObject) Update() {
 	for key, value := range self.storage {
 		if (value == common.Hash{}) {
-			self.trie.Trie().Delete([]byte(key))
+			self.trie.Delete([]byte(key))
 			continue
 		}
 
@@ -272,11 +271,11 @@ func (c *StateObject) Address() common.Address {
 }
 
 func (self *StateObject) Trie() *trie.SecureTrie {
-	return self.trie.Trie()
+	return self.trie
 }
 
 func (self *StateObject) Root() []byte {
-	return self.trie.Trie().Root()
+	return self.trie.Root()
 }
 
 func (self *StateObject) Code() []byte {
@@ -303,10 +302,10 @@ func (self *StateObject) EachStorage(cb func(key, value []byte)) {
 		cb([]byte(h), v.Bytes())
 	}
 
-	it := self.trie.Trie().Iterator()
+	it := self.trie.Iterator()
 	for it.Next() {
 		// ignore cached values
-		key := self.trie.Trie().GetKey(it.Key)
+		key := self.trie.GetKey(it.Key)
 		if _, ok := self.storage[string(key)]; !ok {
 			cb(key, it.Value)
 		}
@@ -330,8 +329,8 @@ func (c *StateObject) RlpDecode(data []byte) {
 	decoder := common.NewValueFromBytes(data)
 	c.nonce = decoder.Get(0).Uint()
 	c.balance = decoder.Get(1).BigInt()
-	trie, _ := trie.NewSecure(common.BytesToHash(decoder.Get(2).Bytes()), c.ca.Db())
-	c.trie = NewTrieAccess(c.ca, trie)
+	hash := common.BytesToHash(decoder.Get(2).Bytes())
+	c.trie, _ = trie.NewSecure(hash, c.ca.Db(), NewTrieAccess(c.ca, hash, c.ca.Db()))
 	c.storage = make(map[string]common.Hash)
 	c.gasPool = new(big.Int)
 

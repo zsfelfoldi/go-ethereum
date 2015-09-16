@@ -49,11 +49,11 @@ type SecureTrie struct {
 // trie is initially empty. Otherwise, New will panics if db is nil
 // and returns ErrMissingRoot if the root node cannpt be found.
 // Accessing the trie loads nodes from db on demand.
-func NewSecure(root common.Hash, db Database) (*SecureTrie, error) {
+func NewSecure(root common.Hash, db Database, access OdrAccess) (*SecureTrie, error) {
 	if db == nil {
 		panic("NewSecure called with nil database")
 	}
-	trie, err := New(root, db)
+	trie, err := New(root, db, access)
 	if err != nil {
 		return nil, err
 	}

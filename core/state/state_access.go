@@ -30,29 +30,27 @@ import (
 var nullAddress = common.Address{}
 
 type TrieAccess struct {
-	ca   *access.ChainAccess
-	trie *trie.SecureTrie
+	ca     *access.ChainAccess
+	root   common.Hash
+	trieDb trie.Database
 }
 
-func NewTrieAccess(ca *access.ChainAccess, trie *trie.SecureTrie) *TrieAccess {
+func NewTrieAccess(ca *access.ChainAccess, root common.Hash, trieDb trie.Database) *TrieAccess {
 	return &TrieAccess{
-		ca:   ca,
-		trie: trie,
+		ca:     ca,
+		root:   root,
+		trieDb: trieDb,
 	}
 }
 
-func (self *TrieAccess) Trie() *trie.SecureTrie {
-	return self.trie
-}
-
-func (self *TrieAccess) Get(key []byte) ([]byte, error) {
-	r := &TrieEntryAccess{trie: self.trie, key: key}
-	err := self.ca.Retrieve(r, true)
-	return r.value, err
+func (self *TrieAccess) RetrieveKey(key []byte) bool {
+	r := &TrieEntryAccess{root: self.root, trieDb: self.trieDb, key: key}
+	return self.ca.Retrieve(r, true) == nil
 }
 
 type TrieEntryAccess struct {
-	trie       *trie.SecureTrie
+	root       common.Hash
+	trieDb     trie.Database
 	address    common.Address // if nullAddress, it's the account trie
 	key, value []byte
 	proof      trie.MerkleProof
@@ -61,7 +59,7 @@ type TrieEntryAccess struct {
 
 func (self *TrieEntryAccess) Request(peer *access.Peer) error {
 	req := &access.ProofReq{
-		Root: common.BytesToHash(self.trie.Root()),
+		Root: self.root,
 		Key:  self.key,
 	}
 	return peer.GetProof([]*access.ProofReq{req})
@@ -73,7 +71,7 @@ func (self *TrieEntryAccess) Valid(msg *access.Msg) bool {
 		return false
 	}
 	proof := msg.Obj.(trie.MerkleProof)
-	value, err := trie.VerifyProof(common.BytesToHash(self.trie.Root()), self.key, proof)
+	value, err := trie.VerifyProof(self.root, self.key, proof)
 	if err == nil {
 		self.proof = proof
 		self.value = value
@@ -83,13 +81,11 @@ func (self *TrieEntryAccess) Valid(msg *access.Msg) bool {
 }
 
 func (self *TrieEntryAccess) DbGet() bool {
-	//self.value, self.skipLevels := self.trie.Get(self.key)
-	self.value = self.trie.Get(self.key)
-	return self.value != nil // distinguish no entry from unsuccessful retrieve
+	return false // not used
 }
 
 func (self *TrieEntryAccess) DbPut() {
-	//recreate nodes from merkle proof, store
+	trie.StoreProof(self.trieDb, self.proof)
 }
 
 type NodeDataAccess struct {

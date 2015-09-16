@@ -574,7 +574,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return errResp(ErrDecode, "msg %v: %v", msg, err)
 			}
 			// Retrieve the requested state entry, stopping if enough was found
-			if trie, _ := trie.NewSecure(req.Root, pm.chainAccess.Db()); trie != nil {
+			if trie, _ := trie.NewSecure(req.Root, pm.chainAccess.Db(), nil); trie != nil {
 				proof := trie.Prove(req.Key)
 				proofs = append(proofs, proof)
 				bytes += len(proof)

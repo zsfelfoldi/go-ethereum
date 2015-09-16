@@ -35,7 +35,7 @@ import (
 // * Accounts
 type StateDB struct {
 	ca   *access.ChainAccess
-	trie *TrieAccess
+	trie *trie.SecureTrie
 
 	stateObjects map[string]*StateObject
 
@@ -49,15 +49,16 @@ type StateDB struct {
 
 // Create a new state from a given trie
 func New(root common.Hash, ca *access.ChainAccess) *StateDB {
-	tr, err := trie.NewSecure(root, ca.Db())
+	tr, err := trie.NewSecure(root, ca.Db(), NewTrieAccess(ca, root, ca.Db()))
+
 	if err != nil {
 		// TODO: bubble this up
-		tr, _ = trie.NewSecure(common.Hash{}, ca.Db())
+		tr, _ = trie.NewSecure(common.Hash{}, ca.Db(), nil)
 		glog.Errorf("can't create state trie with root %x: %v", root[:], err)
 	}
 	return &StateDB{
 		ca:           ca,
-		trie:         NewTrieAccess(ca, tr),
+		trie:         tr,
 		stateObjects: make(map[string]*StateObject),
 		refund:       new(big.Int),
 		logs:         make(map[common.Hash]Logs),
@@ -204,7 +205,7 @@ func (self *StateDB) UpdateStateObject(stateObject *StateObject) {
 		self.ca.Db().Put(stateObject.CodeHash(), stateObject.code)
 	}
 	addr := stateObject.Address()
-	self.trie.Trie().Update(addr[:], stateObject.RlpEncode())
+	self.trie.Update(addr[:], stateObject.RlpEncode())
 }
 
 // Delete the given state object and delete it from the state trie
@@ -212,7 +213,7 @@ func (self *StateDB) DeleteStateObject(stateObject *StateObject) {
 	stateObject.deleted = true
 
 	addr := stateObject.Address()
-	self.trie.Trie().Delete(addr[:])
+	self.trie.Delete(addr[:])
 }
 
 // Retrieve a state object given my the address. Nil if not found
@@ -226,8 +227,8 @@ func (self *StateDB) GetStateObject(addr common.Address) (stateObject *StateObje
 		return stateObject
 	}
 
-	data, err := self.trie.Get(addr[:])
-	if (err != nil) || (len(data) == 0) {
+	data := self.trie.Get(addr[:])
+	if len(data) == 0 {
 		return nil
 	}
 
@@ -325,7 +326,7 @@ func (s *StateDB) IntermediateRoot() common.Hash {
 			stateObject.dirty = false
 		}
 	}
-	return s.trie.Trie().Hash()
+	return s.trie.Hash()
 }
 
 // Commit commits all state changes to the database.
@@ -357,7 +358,7 @@ func (s *StateDB) commit(db trie.DatabaseWriter) (common.Hash, error) {
 			// This updates the trie root internally, so
 			// getting the root hash of the storage trie
 			// through UpdateStateObject is fast.
-			if _, err := stateObject.trie.Trie().CommitTo(db); err != nil {
+			if _, err := stateObject.trie.CommitTo(db); err != nil {
 				return common.Hash{}, err
 			}
 			// Update the object in the account trie.
@@ -365,7 +366,7 @@ func (s *StateDB) commit(db trie.DatabaseWriter) (common.Hash, error) {
 		}
 		stateObject.dirty = false
 	}
-	return s.trie.Trie().CommitTo(db)
+	return s.trie.CommitTo(db)
 }
 
 func (self *StateDB) Refunds() *big.Int {
