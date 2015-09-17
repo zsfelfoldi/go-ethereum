@@ -19,10 +19,12 @@ package state
 
 import (
 	"bytes"
+	//"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/access"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/crypto/sha3"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/trie"
 )
@@ -44,6 +46,7 @@ func NewTrieAccess(ca *access.ChainAccess, root common.Hash, trieDb trie.Databas
 }
 
 func (self *TrieAccess) RetrieveKey(key []byte) bool {
+	//fmt.Println("request trie %v key %v", self.root, key)
 	r := &TrieEntryAccess{root: self.root, trieDb: self.trieDb, key: key}
 	return self.ca.Retrieve(r, true) == nil
 }
@@ -128,7 +131,13 @@ func (self *NodeDataAccess) DbPut() {
 	self.db.Put(self.hash[:], self.data)
 }
 
+var sha3_nil = sha3.NewKeccak256().Sum(nil)
+
 func RetrieveNodeData(ca *access.ChainAccess, hash common.Hash) []byte {
+	//fmt.Println("request node data %v", hash)
+	if bytes.Compare(hash[:], sha3_nil) == 0 {
+		return nil
+	}
 	r := &NodeDataAccess{db: ca.Db(), hash: hash}
 	ca.Retrieve(r, true)
 	return r.data

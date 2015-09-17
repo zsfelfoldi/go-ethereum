@@ -18,6 +18,7 @@ package core
 
 import (
 	"bytes"
+	//"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -167,6 +168,7 @@ func GetHeader(db ethdb.Database, hash common.Hash) *types.Header {
 
 // GetBodyRLP retrieves the block body (transactions and uncles) in RLP encoding.
 func GetBodyRLP(ca *access.ChainAccess, hash common.Hash, odr bool) rlp.RawValue {
+	//fmt.Println("request block %v", hash)
 	r := &BlockAccess{db: ca.Db(), blockHash: hash}
 	ca.Retrieve(r, odr)
 	return r.rlp

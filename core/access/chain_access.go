@@ -102,6 +102,7 @@ func (self *ChainAccess) Deliver(id string, msg *Msg) (processed bool) {
 }
 
 func (self *ChainAccess) networkRequest(rqFunc requestFunc, valFunc validatorFunc) (*Msg, error) {
+
 	self.lock.Lock()
 	self.deliverChan = make(chan *Msg)
 	self.valFunc = valFunc
