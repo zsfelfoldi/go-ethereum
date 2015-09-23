@@ -151,7 +151,7 @@ var (
 	}
 	EthVersionFlag = cli.IntFlag{
 		Name:  "eth",
-		Value: 63,
+		Value: 64,
 		Usage: "Highest eth protocol to advertise (temporary, dev option)",
 	}
 

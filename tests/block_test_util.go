@@ -439,7 +439,7 @@ func (test *BlockTest) ValidateImportedHeaders(cm *core.ChainManager, validBlock
 	// block-by-block, so we can only validate imported headers after
 	// all blocks have been processed by ChainManager, as they may not
 	// be part of the longest chain until last block is imported.
-	for b := cm.CurrentBlock(); b != nil && b.NumberU64() != 0; b = cm.GetBlock(b.Header().ParentHash) {
+	for b := cm.CurrentBlock(); b != nil && b.NumberU64() != 0; b = cm.GetBlock(b.Header().ParentHash, false) {
 		bHash := common.Bytes2Hex(b.Hash().Bytes()) // hex without 0x prefix
 		if err := validateHeader(bmap[bHash].BlockHeader, b.Header()); err != nil {
 			return fmt.Errorf("Imported block header validation failed: %v", err)

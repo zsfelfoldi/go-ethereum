@@ -150,7 +150,7 @@ func (self *ChainManager) loadLastState() error {
 		// Corrupt or empty database, init from scratch
 		self.Reset()
 	} else {
-		if block := self.GetBlock(head); block != nil {
+		if block := self.GetBlock(head, false); block != nil {
 			// Block found, set as the current head
 			self.currentBlock = block
 		} else {
@@ -200,10 +200,10 @@ func (bc *ChainManager) SetHead(head uint64) {
 	bc.currentHeader = GetHeader(bc.chainDb, GetCanonicalHash(bc.chainDb, head))
 
 	// Rewind the block chain until a whole block is found
-	for bc.GetBlockByNumber(head) == nil {
+	for bc.GetBlockByNumber(head, false) == nil {
 		head--
 	}
-	bc.currentBlock = bc.GetBlockByNumber(head)
+	bc.currentBlock = bc.GetBlockByNumber(head, false)
 
 	// Clear out any stale content from the caches
 	bc.headerCache.Purge()
