@@ -538,7 +538,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return errResp(ErrDecode, "msg %v: %v", msg, err)
 			}
 			// Retrieve the requested block's receipts, skipping if unknown to us
-			results := core.GetBlockReceipts(pm.chainAccess, hash)
+			results := core.GetBlockReceipts(pm.chainAccess.Db(), hash)
 			if results == nil {
 				if header := pm.chainman.GetHeader(hash); header == nil || header.ReceiptHash != types.EmptyRootHash {
 					continue
