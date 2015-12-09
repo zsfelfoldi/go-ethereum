@@ -19,12 +19,13 @@ package v2
 import (
 	"fmt"
 	"reflect"
-
 	"runtime"
+	"time"
 
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
+	"golang.org/x/net/context"
 )
 
 // NewServer will create a new server instance with no registered handlers.
@@ -37,6 +38,15 @@ func NewServer() *Server {
 	server.RegisterName("rpc", rpcService)
 
 	return server
+}
+
+// NewServerWithTimeout will create a new server instance with no registered
+// handlers. It also sets a context timeout for each request. Methods that receive
+// a context will be cancelled after the specified duration.
+func NewServerWithTimeout(t time.Duration) *Server {
+	s := NewServer()
+	s.timeOut = t
+	return s
 }
 
 // RPCService gives meta information about the server.
@@ -110,7 +120,10 @@ func (s *Server) RegisterName(name string, rcvr interface{}) error {
 // 2. supports notifications (pub/sub)
 // 3. supports request batches
 func (s *Server) ServeCodec(codec ServerCodec) {
+	pctx, pcancel := context.WithCancel(context.Background())
+
 	defer func() {
+		pcancel()
 		if err := recover(); err != nil {
 			const size = 64 << 10
 			buf := make([]byte, size)
@@ -128,10 +141,24 @@ func (s *Server) ServeCodec(codec ServerCodec) {
 			break
 		}
 
-		if batch {
-			go s.execBatch(codec, reqs)
+		var ctx context.Context
+		var cancel context.CancelFunc
+		if s.timeOut == 0 {
+			ctx, cancel = context.WithCancel(pctx)
 		} else {
-			go s.exec(codec, reqs[0])
+			ctx, cancel = context.WithTimeout(pctx, s.timeOut)
+		}
+
+		if batch {
+			go func() {
+				s.execBatch(ctx, codec, reqs)
+				cancel()
+			}()
+		} else {
+			go func() {
+				s.exec(ctx, codec, reqs[0])
+				cancel()
+			}()
 		}
 	}
 }
@@ -220,7 +247,7 @@ func (s *Server) unsubscribe(subid string) bool {
 }
 
 // exec executes the given request and writes the result back using the codec.
-func (s *Server) exec(codec ServerCodec, req *serverRequest) {
+func (s *Server) exec(ctx context.Context, codec ServerCodec, req *serverRequest) {
 	if req.err != nil { // error during request parsing
 		rpcErr := codec.CreateErrorResponse(&req.id, req.err)
 		if err := codec.Write(rpcErr); err != nil {
@@ -281,6 +308,9 @@ func (s *Server) exec(codec ServerCodec, req *serverRequest) {
 	}
 
 	arguments := []reflect.Value{req.callb.rcvr}
+	if req.callb.hasCtx {
+		arguments = append(arguments, reflect.ValueOf(ctx))
+	}
 	if len(req.args) > 0 {
 		arguments = append(arguments, req.args...)
 	}
@@ -312,7 +342,7 @@ func (s *Server) exec(codec ServerCodec, req *serverRequest) {
 
 // execBatch executes the given requests and writes the result back using the codec. It will only write the response
 // back when the last request is processed.
-func (s *Server) execBatch(codec ServerCodec, requests []*serverRequest) {
+func (s *Server) execBatch(ctx context.Context, codec ServerCodec, requests []*serverRequest) {
 	responses := make([]interface{}, len(requests))
 
 	for i, req := range requests {
@@ -360,6 +390,9 @@ func (s *Server) execBatch(codec ServerCodec, requests []*serverRequest) {
 		}
 
 		arguments := []reflect.Value{req.callb.rcvr}
+		if req.callb.hasCtx {
+			arguments = append(arguments, reflect.ValueOf(ctx))
+		}
 		if len(req.args) > 0 {
 			arguments = append(arguments, req.args...)
 		}

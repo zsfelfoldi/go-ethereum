@@ -24,6 +24,8 @@ import (
 	"reflect"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/net/context"
 )
 
 // Is this an exported - upper case - name?
@@ -129,12 +131,19 @@ METHODS:
 		h.method = method
 		h.errPos = -1
 
+		firstArg := 1
+		numIn := mtype.NumIn()
+		if numIn >= 2 && mtype.In(1) == reflect.TypeOf(context.Background()) {
+			h.hasCtx = true
+			firstArg = 2
+		}
+
 		if h.isSubscribe {
-			h.argTypes = make([]reflect.Type, mtype.NumIn()-1) // skip rcvr type
-			for i := 1; i < mtype.NumIn(); i++ {
+			h.argTypes = make([]reflect.Type, numIn-firstArg) // skip rcvr type
+			for i := firstArg; i < numIn; i++ {
 				argType := mtype.In(i)
 				if isExportedOrBuiltinType(argType) {
-					h.argTypes[i-1] = argType
+					h.argTypes[i-firstArg] = argType
 				} else {
 					continue METHODS
 				}
@@ -144,17 +153,15 @@ METHODS:
 			continue METHODS
 		}
 
-		numIn := mtype.NumIn()
-
 		// determine method arguments, ignore first arg since it's the receiver type
 		// Arguments must be exported or builtin types
-		h.argTypes = make([]reflect.Type, numIn-1)
-		for i := 1; i < numIn; i++ {
+		h.argTypes = make([]reflect.Type, numIn-firstArg)
+		for i := firstArg; i < numIn; i++ {
 			argType := mtype.In(i)
 			if !isExportedOrBuiltinType(argType) {
 				continue METHODS
 			}
-			h.argTypes[i-1] = argType
+			h.argTypes[i-firstArg] = argType
 		}
 
 		// check that all returned values are exported or builtin types
