@@ -31,7 +31,6 @@ import (
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/registrar"
-	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/internal/web3ext"
 	re "github.com/ethereum/go-ethereum/jsre"
 	"github.com/ethereum/go-ethereum/node"
@@ -257,17 +256,18 @@ func (self *jsre) AskPassword() (string, bool) {
 
 func (self *jsre) ConfirmTransaction(tx string) bool {
 	// Retrieve the Ethereum instance from the node
-	var ethereum *eth.Ethereum
+	//disabled for now
+/*	var ethereum *eth.Ethereum
 	if err := self.stack.Service(&ethereum); err != nil {
 		return false
 	}
 	// If natspec is enabled, ask for permission
-	if ethereum.NatSpec && false /* disabled for now */ {
+	if ethereum.NatSpec && false  {
 		//		notice := natspec.GetNotice(self.xeth, tx, ethereum.HTTPClient())
 		//		fmt.Println(notice)
 		//		answer, _ := self.Prompt("Confirm Transaction [y/n]")
 		//		return strings.HasPrefix(strings.Trim(answer, " "), "y")
-	}
+	}*/
 	return true
 }
 
@@ -278,12 +278,12 @@ func (self *jsre) UnlockAccount(addr []byte) bool {
 		return false
 	}
 	// TODO: allow retry
-	var ethereum *eth.Ethereum
-	if err := self.stack.Service(&ethereum); err != nil {
+	var accman *accounts.Manager
+	if err := self.stack.Service(&accman); err != nil {
 		return false
 	}
 	a := accounts.Account{Address: common.BytesToAddress(addr)}
-	if err := ethereum.AccountManager().Unlock(a, pass); err != nil {
+	if err := accman.Unlock(a, pass); err != nil {
 		return false
 	} else {
 		fmt.Println("Account is now unlocked for this session.")

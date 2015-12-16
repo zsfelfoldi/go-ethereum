@@ -22,8 +22,10 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethapi"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
+	"golang.org/x/net/context"
 )
 
 // ContractBackend implements bind.ContractBackend with direct calls to Ethereum
@@ -34,27 +36,30 @@ import (
 // object. These should be rewritten to internal Go method calls when the Go API
 // is refactored to support a clean library use.
 type ContractBackend struct {
-	eapi  *PublicEthereumAPI        // Wrapper around the Ethereum object to access metadata
-	bcapi *PublicBlockChainAPI      // Wrapper around the blockchain to access chain data
-	txapi *PublicTransactionPoolAPI // Wrapper around the transaction pool to access transaction data
+	eapi  *ethapi.PublicEthereumAPI        // Wrapper around the Ethereum object to access metadata
+	bcapi *ethapi.PublicBlockChainAPI      // Wrapper around the blockchain to access chain data
+	txapi *ethapi.PublicTransactionPoolAPI // Wrapper around the transaction pool to access transaction data
 }
 
 // NewContractBackend creates a new native contract backend using an existing
 // Etheruem object.
-func NewContractBackend(eth *Ethereum) *ContractBackend {
+func NewContractBackend(eth *FullNodeService) *ContractBackend {
 	return &ContractBackend{
-		eapi:  NewPublicEthereumAPI(eth),
-		bcapi: NewPublicBlockChainAPI(eth.chainConfig, eth.blockchain, eth.miner, eth.chainDb, eth.gpo, eth.eventMux, eth.accountManager),
-		txapi: NewPublicTransactionPoolAPI(eth),
+		eapi:  ethapi.NewPublicEthereumAPI(eth.apiBackend),
+		bcapi: ethapi.NewPublicBlockChainAPI(eth.apiBackend),
+		txapi: ethapi.NewPublicTransactionPoolAPI(eth.apiBackend),
 	}
 }
 
 // ContractCall implements bind.ContractCaller executing an Ethereum contract
 // call with the specified data as the input. The pending flag requests execution
 // against the pending block, not the stable head of the chain.
-func (b *ContractBackend) ContractCall(contract common.Address, data []byte, pending bool) ([]byte, error) {
+func (b *ContractBackend) ContractCall(ctx context.Context, contract common.Address, data []byte, pending bool) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Convert the input args to the API spec
-	args := CallArgs{
+	args := ethapi.CallArgs{
 		To:   &contract,
 		Data: common.ToHex(data),
 	}
@@ -63,8 +68,8 @@ func (b *ContractBackend) ContractCall(contract common.Address, data []byte, pen
 		block = rpc.PendingBlockNumber
 	}
 	// Execute the call and convert the output back to Go types
-	out, err := b.bcapi.Call(args, block)
-	if err == errNoCode {
+	out, err := b.bcapi.Call(ctx, args, block)
+	if err == ethapi.ErrNoCode {
 		err = bind.ErrNoCode
 	}
 	return common.FromHex(out), err
@@ -72,15 +77,21 @@ func (b *ContractBackend) ContractCall(contract common.Address, data []byte, pen
 
 // PendingAccountNonce implements bind.ContractTransactor retrieving the current
 // pending nonce associated with an account.
-func (b *ContractBackend) PendingAccountNonce(account common.Address) (uint64, error) {
-	out, err := b.txapi.GetTransactionCount(account, rpc.PendingBlockNumber)
+func (b *ContractBackend) PendingAccountNonce(ctx context.Context, account common.Address) (uint64, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	out, err := b.txapi.GetTransactionCount(ctx, account, rpc.PendingBlockNumber)
 	return out.Uint64(), err
 }
 
 // SuggestGasPrice implements bind.ContractTransactor retrieving the currently
 // suggested gas price to allow a timely execution of a transaction.
-func (b *ContractBackend) SuggestGasPrice() (*big.Int, error) {
-	return b.eapi.GasPrice(), nil
+func (b *ContractBackend) SuggestGasPrice(ctx context.Context) (*big.Int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return b.eapi.GasPrice(ctx)
 }
 
 // EstimateGasLimit implements bind.ContractTransactor triing to estimate the gas
@@ -88,14 +99,17 @@ func (b *ContractBackend) SuggestGasPrice() (*big.Int, error) {
 // the backend blockchain. There is no guarantee that this is the true gas limit
 // requirement as other transactions may be added or removed by miners, but it
 // should provide a basis for setting a reasonable default.
-func (b *ContractBackend) EstimateGasLimit(sender common.Address, contract *common.Address, value *big.Int, data []byte) (*big.Int, error) {
-	out, err := b.bcapi.EstimateGas(CallArgs{
+func (b *ContractBackend) EstimateGasLimit(ctx context.Context, sender common.Address, contract *common.Address, value *big.Int, data []byte) (*big.Int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	out, err := b.bcapi.EstimateGas(ctx, ethapi.CallArgs{
 		From:  sender,
 		To:    contract,
 		Value: *rpc.NewHexNumber(value),
 		Data:  common.ToHex(data),
 	})
-	if err == errNoCode {
+	if err == ethapi.ErrNoCode {
 		err = bind.ErrNoCode
 	}
 	return out.BigInt(), err
@@ -103,8 +117,11 @@ func (b *ContractBackend) EstimateGasLimit(sender common.Address, contract *comm
 
 // SendTransaction implements bind.ContractTransactor injects the transaction
 // into the pending pool for execution.
-func (b *ContractBackend) SendTransaction(tx *types.Transaction) error {
+func (b *ContractBackend) SendTransaction(ctx context.Context, tx *types.Transaction) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	raw, _ := rlp.EncodeToBytes(tx)
-	_, err := b.txapi.SendRawTransaction(common.ToHex(raw))
+	_, err := b.txapi.SendRawTransaction(ctx, common.ToHex(raw))
 	return err
 }
