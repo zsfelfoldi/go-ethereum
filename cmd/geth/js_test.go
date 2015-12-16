@@ -32,15 +32,12 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/compiler"
 	"github.com/ethereum/go-ethereum/common/httpclient"
-	"github.com/ethereum/go-ethereum/common/natspec"
-	"github.com/ethereum/go-ethereum/common/registrar"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/rpc/codec"
-	"github.com/ethereum/go-ethereum/rpc/comms"
+	"github.com/ethereum/go-ethereum/cmd/utils"
 )
 
 const (
@@ -77,15 +74,16 @@ func (self *testjethre) UnlockAccount(acc []byte) bool {
 	return true
 }
 
-func (self *testjethre) ConfirmTransaction(tx string) bool {
-	var ethereum *eth.Ethereum
-	self.stack.Service(&ethereum)
-
-	if ethereum.NatSpec {
-		self.lastConfirm = natspec.GetNotice(self.xeth, tx, self.client)
-	}
-	return true
-}
+// Temporary disabled while natspec hasn't been migrated
+//func (self *testjethre) ConfirmTransaction(tx string) bool {
+//	var ethereum *eth.Ethereum
+//	self.stack.Service(&ethereum)
+//
+//	if ethereum.NatSpec {
+//		self.lastConfirm = natspec.GetNotice(self.xeth, tx, self.client)
+//	}
+//	return true
+//}
 
 func testJEthRE(t *testing.T) (string, *testjethre, *node.Node) {
 	return testREPL(t, nil)
@@ -141,9 +139,10 @@ func testREPL(t *testing.T, config func(*eth.Config)) (string, *testjethre, *nod
 	stack.Service(&ethereum)
 
 	assetPath := filepath.Join(os.Getenv("GOPATH"), "src", "github.com", "ethereum", "go-ethereum", "cmd", "mist", "assets", "ext")
-	client := comms.NewInProcClient(codec.JSON)
+	//client := comms.NewInProcClient(codec.JSON)
+	client := utils.NewInProcRPCClient(stack)
 	tf := &testjethre{client: ethereum.HTTPClient()}
-	repl := newJSRE(stack, assetPath, "", client, false, tf)
+	repl := newJSRE(stack, assetPath, "", client, false)
 	tf.jsre = repl
 	return tmp, tf, stack
 }
@@ -278,19 +277,20 @@ func TestContract(t *testing.T) {
 	defer ethereum.Stop()
 	defer os.RemoveAll(tmp)
 
-	reg := registrar.New(repl.xeth)
-	_, err := reg.SetGlobalRegistrar("", coinbase)
-	if err != nil {
-		t.Errorf("error setting HashReg: %v", err)
-	}
-	_, err = reg.SetHashReg("", coinbase)
-	if err != nil {
-		t.Errorf("error setting HashReg: %v", err)
-	}
-	_, err = reg.SetUrlHint("", coinbase)
-	if err != nil {
-		t.Errorf("error setting HashReg: %v", err)
-	}
+	// Temporary disabled while registrar isn't migrated
+	//reg := registrar.New(repl.xeth)
+	//_, err := reg.SetGlobalRegistrar("", coinbase)
+	//if err != nil {
+	//	t.Errorf("error setting HashReg: %v", err)
+	//}
+	//_, err = reg.SetHashReg("", coinbase)
+	//if err != nil {
+	//	t.Errorf("error setting HashReg: %v", err)
+	//}
+	//_, err = reg.SetUrlHint("", coinbase)
+	//if err != nil {
+	//	t.Errorf("error setting HashReg: %v", err)
+	//}
 	/* TODO:
 	* lookup receipt and contract addresses by tx hash
 	* name registration for HashReg and UrlHint addresses
@@ -474,7 +474,8 @@ func processTxs(repl *testjethre, t *testing.T, expTxc int) bool {
 	defer ethereum.StopMining()
 
 	timer := time.NewTimer(100 * time.Second)
-	height := new(big.Int).Add(repl.xeth.CurrentBlock().Number(), big.NewInt(1))
+	blockNr := ethereum.BlockChain().CurrentBlock().Number()
+	height := new(big.Int).Add(blockNr, big.NewInt(1))
 	repl.wait <- height
 	select {
 	case <-timer.C:

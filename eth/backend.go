@@ -44,7 +44,7 @@ import (
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
-	rpc "github.com/ethereum/go-ethereum/rpc/v2"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 const (
@@ -121,14 +121,15 @@ type Ethereum struct {
 	eventMux *event.TypeMux
 	miner    *miner.Miner
 
-	Mining       bool
-	MinerThreads int
-	NatSpec      bool
-	AutoDAG      bool
-	PowTest      bool
-	autodagquit  chan bool
-	etherbase    common.Address
-	netVersionId int
+	Mining        bool
+	MinerThreads  int
+	NatSpec       bool
+	AutoDAG       bool
+	PowTest       bool
+	autodagquit   chan bool
+	etherbase     common.Address
+	netVersionId  int
+	netRPCService *PublicNetAPI
 }
 
 func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
@@ -262,12 +263,12 @@ func (s *Ethereum) APIs() []rpc.API {
 		}, {
 			Namespace: "eth",
 			Version:   "1.0",
-			Service:   NewPublicBlockChainAPI(s.BlockChain(), s.ChainDb(), s.EventMux(), s.AccountManager()),
+			Service:   NewPublicBlockChainAPI(s.BlockChain(), s.Miner(), s.ChainDb(), s.EventMux(), s.AccountManager()),
 			Public:    true,
 		}, {
 			Namespace: "eth",
 			Version:   "1.0",
-			Service:   NewPublicTransactionPoolAPI(s.TxPool(), s.ChainDb(), s.EventMux(), s.BlockChain(), s.AccountManager()),
+			Service:   NewPublicTransactionPoolAPI(s.TxPool(), s.Miner(), s.ChainDb(), s.EventMux(), s.BlockChain(), s.AccountManager()),
 			Public:    true,
 		}, {
 			Namespace: "eth",
@@ -307,6 +308,11 @@ func (s *Ethereum) APIs() []rpc.API {
 			Namespace: "debug",
 			Version:   "1.0",
 			Service:   NewPrivateDebugAPI(s),
+		}, {
+			Namespace: "net",
+			Version:   "1.0",
+			Service:   s.netRPCService,
+			Public:    true,
 		},
 	}
 }
@@ -356,11 +362,12 @@ func (s *Ethereum) Protocols() []p2p.Protocol {
 
 // Start implements node.Service, starting all internal goroutines needed by the
 // Ethereum protocol implementation.
-func (s *Ethereum) Start(*p2p.Server) error {
+func (s *Ethereum) Start(srvr *p2p.Server) error {
 	if s.AutoDAG {
 		s.StartAutoDAG()
 	}
 	s.protocolManager.Start()
+	s.netRPCService = NewPublicNetAPI(srvr, s.NetVersion())
 	return nil
 }
 

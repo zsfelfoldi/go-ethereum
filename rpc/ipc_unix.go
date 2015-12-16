@@ -13,37 +13,33 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-//
-// +build ignore
 
-package ethreg
+// +build darwin dragonfly freebsd linux nacl netbsd openbsd solaris
+
+package rpc
 
 import (
-	"math/big"
-
-	"github.com/ethereum/go-ethereum/common/registrar"
+	"net"
+	"os"
+	"path/filepath"
 )
 
-// implements a versioned Registrar on an archiving full node
-type EthReg struct {
-	backend  *xeth.XEth
-	registry *registrar.Registrar
-}
-
-func New(xe *xeth.XEth) (self *EthReg) {
-	self = &EthReg{backend: xe}
-	self.registry = registrar.New(xe)
-	return
-}
-
-func (self *EthReg) Registry() *registrar.Registrar {
-	return self.registry
-}
-
-func (self *EthReg) Resolver(n *big.Int) *registrar.Registrar {
-	xe := self.backend
-	if n != nil {
-		xe = self.backend.AtStateNum(n.Int64())
+// ipcListen will create a Unix socket on the given endpoint.
+func ipcListen(endpoint string) (net.Listener, error) {
+	// Ensure the IPC path exists and remove any previous leftover
+	if err := os.MkdirAll(filepath.Dir(endpoint), 0751); err != nil {
+		return nil, err
 	}
-	return registrar.New(xe)
+	os.Remove(endpoint)
+	l, err := net.Listen("unix", endpoint)
+	if err != nil {
+		return nil, err
+	}
+	os.Chmod(endpoint, 0600)
+	return l, nil
+}
+
+// newIPCConnection will connect to a Unix socket on the given endpoint.
+func newIPCConnection(endpoint string) (net.Conn, error) {
+	return net.DialUnix("unix", nil, &net.UnixAddr{endpoint, "unix"})
 }
