@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
@@ -52,6 +53,7 @@ type filter struct {
 // PublicFilterAPI offers support to create and manage filters. This will allow external clients to retrieve various
 // information related to the Ethereum protocol such als blocks, transactions and logs.
 type PublicFilterAPI struct {
+	apiBackend ethapi.Backend
 	mux       *event.TypeMux
 	quit      chan struct{}
 	chainDb   ethdb.Database
@@ -61,12 +63,13 @@ type PublicFilterAPI struct {
 }
 
 // NewPublicFilterAPI returns a new PublicFilterAPI instance.
-func NewPublicFilterAPI(chainDb ethdb.Database, mux *event.TypeMux) *PublicFilterAPI {
+func NewPublicFilterAPI(apiBackend ethapi.Backend) *PublicFilterAPI {
 	api := &PublicFilterAPI{
-		mux:     mux,
-		chainDb: chainDb,
-		events:  NewEventSystem(mux),
-		filters: make(map[rpc.ID]*filter),
+		apiBackend:       apiBackend,
+		mux:              apiBackend.EventMux(),
+		chainDb:          apiBackend.ChainDb(),
+		events:  	NewEventSystem(apiBackend.EventMux()),
+		filters: 	make(map[rpc.ID]*filter),
 	}
 
 	go api.timeoutLoop()
@@ -314,7 +317,7 @@ func (api *PublicFilterAPI) NewFilter(crit FilterCriteria) rpc.ID {
 // GetLogs returns logs matching the given argument that are stored within the state.
 //
 // https://github.com/ethereum/wiki/wiki/JSON-RPC#eth_getlogs
-func (api *PublicFilterAPI) GetLogs(crit FilterCriteria) []Log {
+func (api *PublicFilterAPI) GetLogs(ctx context.Context, crit FilterCriteria) ([]Log, error) {
 	if crit.FromBlock == nil {
 		crit.FromBlock = big.NewInt(rpc.LatestBlockNumber.Int64())
 	}
@@ -322,13 +325,14 @@ func (api *PublicFilterAPI) GetLogs(crit FilterCriteria) []Log {
 		crit.ToBlock = big.NewInt(rpc.LatestBlockNumber.Int64())
 	}
 
-	filter := New(api.chainDb)
+	filter := New(api.apiBackend)
 	filter.SetBeginBlock(crit.FromBlock.Int64())
 	filter.SetEndBlock(crit.ToBlock.Int64())
 	filter.SetAddresses(crit.Addresses)
 	filter.SetTopics(crit.Topics)
 
-	return returnLogs(filter.Find())
+	logs, err := filter.Find(ctx)
+	return returnLogs(logs), err
 }
 
 // UninstallFilter removes the filter with the given filter id.
@@ -352,22 +356,23 @@ func (api *PublicFilterAPI) UninstallFilter(id rpc.ID) bool {
 // If the filter could not be found an empty array of logs is returned.
 //
 // https://github.com/ethereum/wiki/wiki/JSON-RPC#eth_getfilterlogs
-func (api *PublicFilterAPI) GetFilterLogs(id rpc.ID) []Log {
+func (api *PublicFilterAPI) GetFilterLogs(ctx context.Context, id rpc.ID) ([]Log, error) {
 	api.filtersMu.Lock()
 	f, found := api.filters[id]
 	api.filtersMu.Unlock()
 
 	if !found || f.typ != LogsSubscription {
-		return []Log{}
+		return []Log{}, nil
 	}
 
-	filter := New(api.chainDb)
+	filter := New(api.apiBackend)
 	filter.SetBeginBlock(f.crit.FromBlock.Int64())
 	filter.SetEndBlock(f.crit.ToBlock.Int64())
 	filter.SetAddresses(f.crit.Addresses)
 	filter.SetTopics(f.crit.Topics)
 
-	return returnLogs(filter.Find())
+	logs, err := filter.Find(ctx)
+	return returnLogs(logs), err
 }
 
 // GetFilterChanges returns the logs for the filter with the given id since
@@ -536,3 +541,4 @@ func (args *FilterCriteria) UnmarshalJSON(data []byte) error {
 
 	return nil
 }
+

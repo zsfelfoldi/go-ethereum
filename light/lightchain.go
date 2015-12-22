@@ -70,7 +70,7 @@ type LightChain struct {
 // NewLightChain returns a fully initialised light chain using information
 // available in the database. It initialises the default Ethereum header
 // validator.
-func NewLightChain(odr OdrBackend, pow pow.PoW, mux *event.TypeMux) (*LightChain, error) {
+func NewLightChain(odr OdrBackend, config *core.ChainConfig, pow pow.PoW, mux *event.TypeMux) (*LightChain, error) {
 	bodyCache, _ := lru.New(bodyCacheLimit)
 	bodyRLPCache, _ := lru.New(bodyCacheLimit)
 	blockCache, _ := lru.New(blockCacheLimit)
@@ -87,8 +87,8 @@ func NewLightChain(odr OdrBackend, pow pow.PoW, mux *event.TypeMux) (*LightChain
 	}
 
 	var err error
-	bc.hc, err = core.NewHeaderChain(odr.Database(), bc.Validator, bc.getProcInterrupt)
-	bc.SetValidator(core.NewHeaderValidator(bc.hc, pow))
+	bc.hc, err = core.NewHeaderChain(odr.Database(), config, bc.Validator, bc.getProcInterrupt)
+	bc.SetValidator(core.NewHeaderValidator(config, bc.hc, pow))
 	if err != nil {
 		return nil, err
 	}
@@ -101,12 +101,31 @@ func NewLightChain(odr OdrBackend, pow pow.PoW, mux *event.TypeMux) (*LightChain
 		}
 		glog.V(logger.Info).Infoln("WARNING: Wrote default ethereum genesis block")
 	}
+	
+	if bc.genesisBlock.Hash() == (common.Hash{212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69, 161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163}) {
+		// add trusted CHT
+		WriteTrustedCht(bc.chainDb, TrustedCht{
+			Number: 450,
+			Root: common.HexToHash("994600aa16c5af30f2830f37231bebfa46981a45ad0f16eff89702718ef56229"),
+		})
+		glog.V(logger.Info).Infoln("Added trusted CHT for mainnet")
+	}
+	
+	if bc.genesisBlock.Hash() == (common.Hash{12, 215, 134, 162, 66, 93, 22, 241, 82, 198, 88, 49, 108, 66, 62, 108, 225, 24, 30, 21, 195, 41, 88, 38, 215, 201, 144, 76, 186, 156, 227, 3}) {
+		// add trusted CHT
+		WriteTrustedCht(bc.chainDb, TrustedCht{
+			Number: 310,
+			Root: common.HexToHash("1f6c79e8d5326dc5cf208f0bc8e4a62d5e8ab769b0d14ad7c26819a1e8cf3d6d"),
+		})
+		glog.V(logger.Info).Infoln("Added trusted CHT for testnet")
+	}
+
 	if err := bc.loadLastState(); err != nil {
 		return nil, err
 	}
 	// Check the current state of the block hashes and make sure that we do not have any of the bad blocks in our chain
 	for hash, _ := range core.BadHashes {
-		if header := bc.GetHeader(hash); header != nil {
+		if header := bc.GetHeaderByHash(hash); header != nil {
 			glog.V(logger.Error).Infof("Found bad hash, rewinding chain to block #%d [%x…]", header.Number, header.ParentHash[:4])
 			bc.SetHead(header.Number.Uint64() - 1)
 			glog.V(logger.Error).Infoln("Chain rewind was successful, resuming normal operation")
@@ -131,13 +150,14 @@ func (self *LightChain) loadLastState() error {
 		// Corrupt or empty database, init from scratch
 		self.Reset()
 	} else {
-		if header := self.GetHeader(head); header != nil {
+		if header := self.GetHeaderByHash(head); header != nil {
 			self.hc.SetCurrentHeader(header)
 		}
 	}
 
 	// Issue a status log and return
-	headerTd := self.GetTd(self.hc.CurrentHeader().Hash())
+	header := self.hc.CurrentHeader()
+	headerTd := self.GetTd(header.Hash(), header.Number.Uint64())
 	glog.V(logger.Info).Infof("Last header: #%d [%x…] TD=%v", self.hc.CurrentHeader().Number, self.hc.CurrentHeader().Hash().Bytes()[:4], headerTd)
 
 	return nil
@@ -149,7 +169,7 @@ func (bc *LightChain) SetHead(head uint64) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
-	bc.hc.SetHead(head)
+	bc.hc.SetHead(head, nil)
 	bc.loadLastState()
 }
 
@@ -175,8 +195,9 @@ func (self *LightChain) Status() (td *big.Int, currentBlock common.Hash, genesis
 	self.mu.RLock()
 	defer self.mu.RUnlock()
 
-	hash := self.hc.CurrentHeader().Hash()
-	return self.GetTd(hash), hash, self.genesisBlock.Hash()
+	header := self.hc.CurrentHeader()
+	hash := header.Hash()
+	return self.GetTd(hash, header.Number.Uint64()), hash, self.genesisBlock.Hash()
 }
 
 // SetValidator sets the validator which is used to validate incoming headers.
@@ -213,7 +234,7 @@ func (bc *LightChain) ResetWithGenesisBlock(genesis *types.Block) {
 	defer bc.mu.Unlock()
 
 	// Prepare the genesis block and reinitialise the chain
-	if err := core.WriteTd(bc.chainDb, genesis.Hash(), genesis.Difficulty()); err != nil {
+	if err := core.WriteTd(bc.chainDb, genesis.Hash(), genesis.NumberU64(), genesis.Difficulty()); err != nil {
 		glog.Fatalf("failed to write genesis block TD: %v", err)
 	}
 	if err := core.WriteBlock(bc.chainDb, genesis); err != nil {
@@ -239,7 +260,7 @@ func (self *LightChain) GetBody(ctx context.Context, hash common.Hash) (*types.B
 		body := cached.(*types.Body)
 		return body, nil
 	}
-	body, err := GetBody(ctx, self.odr, hash)
+	body, err := GetBody(ctx, self.odr, hash, self.hc.GetBlockNumber(hash))
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +276,7 @@ func (self *LightChain) GetBodyRLP(ctx context.Context, hash common.Hash) (rlp.R
 	if cached, ok := self.bodyRLPCache.Get(hash); ok {
 		return cached.(rlp.RawValue), nil
 	}
-	body, err := GetBodyRLP(ctx, self.odr, hash)
+	body, err := GetBodyRLP(ctx, self.odr, hash, self.hc.GetBlockNumber(hash))
 	if err != nil {
 		return nil, err
 	}
@@ -267,18 +288,18 @@ func (self *LightChain) GetBodyRLP(ctx context.Context, hash common.Hash) (rlp.R
 // HasBlock checks if a block is fully present in the database or not, caching
 // it if present.
 func (bc *LightChain) HasBlock(hash common.Hash) bool {
-	blk, _ := bc.GetBlock(NoOdr, hash)
+	blk, _ := bc.GetBlockByHash(NoOdr, hash)
 	return blk != nil
 }
 
-// GetBlock retrieves a block from the database or ODR service by hash,
+// GetBlock retrieves a block from the database or ODR service by hash and number,
 // caching it if found.
-func (self *LightChain) GetBlock(ctx context.Context, hash common.Hash) (*types.Block, error) {
+func (self *LightChain) GetBlock(ctx context.Context, hash common.Hash, number uint64) (*types.Block, error) {
 	// Short circuit if the block's already in the cache, retrieve otherwise
 	if block, ok := self.blockCache.Get(hash); ok {
 		return block.(*types.Block), nil
 	}
-	block, err := GetBlock(ctx, self.odr, hash)
+	block, err := GetBlock(ctx, self.odr, hash, number)
 	if err != nil {
 		return nil, err
 	}
@@ -287,14 +308,20 @@ func (self *LightChain) GetBlock(ctx context.Context, hash common.Hash) (*types.
 	return block, nil
 }
 
+// GetBlockByHash retrieves a block from the database or ODR service by hash,
+// caching it if found.
+func (self *LightChain) GetBlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error) {
+	return self.GetBlock(ctx, hash, self.hc.GetBlockNumber(hash))
+}
+
 // GetBlockByNumber retrieves a block from the database or ODR service by
 // number, caching it (associated with its hash) if found.
 func (self *LightChain) GetBlockByNumber(ctx context.Context, number uint64) (*types.Block, error) {
-	hash := core.GetCanonicalHash(self.chainDb, number)
-	if hash == (common.Hash{}) {
-		return nil, nil
+	hash, err := GetCanonicalHash(ctx, self.odr, number)
+	if hash == (common.Hash{}) || err != nil {
+		return nil, err
 	}
-	return self.GetBlock(ctx, hash)
+	return self.GetBlock(ctx, hash, number)
 }
 
 // Stop stops the blockchain service. If any imports are currently in progress
@@ -320,8 +347,8 @@ func (self *LightChain) Rollback(chain []common.Hash) {
 	for i := len(chain) - 1; i >= 0; i-- {
 		hash := chain[i]
 
-		if self.hc.CurrentHeader().Hash() == hash {
-			self.hc.SetCurrentHeader(self.GetHeader(self.hc.CurrentHeader().ParentHash))
+		if head := self.hc.CurrentHeader(); head.Hash() == hash {
+			self.hc.SetCurrentHeader(self.GetHeader(head.ParentHash, head.Number.Uint64()-1))
 		}
 	}
 }
@@ -330,9 +357,9 @@ func (self *LightChain) Rollback(chain []common.Hash) {
 // posts them into the event mux.
 func (self *LightChain) postChainEvents(events []interface{}) {
 	for _, event := range events {
-		if event, ok := event.(LightChainEvent); ok {
+		if event, ok := event.(core.ChainEvent); ok {
 			if self.LastBlockHash() == event.Hash {
-				self.eventMux.Post(LightChainHeadEvent{event.Header})
+				self.eventMux.Post(core.ChainHeadEvent{Block: event.Block})
 			}
 		}
 		// Fire the insertion events individually too
@@ -371,16 +398,16 @@ func (self *LightChain) InsertHeaderChain(chain []*types.Header, checkFreq int) 
 			if glog.V(logger.Debug) {
 				glog.Infof("[%v] inserted header #%d (%x...).\n", time.Now().UnixNano(), header.Number, header.Hash().Bytes()[0:4])
 			}
-			events = append(events, LightChainEvent{header, header.Hash()})
+			events = append(events, core.ChainEvent{Block: types.NewBlockWithHeader(header), Hash: header.Hash()})
 
 		case core.SideStatTy:
 			if glog.V(logger.Detail) {
 				glog.Infof("inserted forked header #%d (TD=%v) (%x...).\n", header.Number, header.Difficulty, header.Hash().Bytes()[0:4])
 			}
-			events = append(events, LightChainSideEvent{header})
+			events = append(events, core.ChainSideEvent{Block: types.NewBlockWithHeader(header)})
 
 		case core.SplitStatTy:
-			events = append(events, LightChainSplitEvent{header})
+			events = append(events, core.ChainSplitEvent{Block: types.NewBlockWithHeader(header)})
 		}
 
 		return err
@@ -400,15 +427,27 @@ func (self *LightChain) CurrentHeader() *types.Header {
 }
 
 // GetTd retrieves a block's total difficulty in the canonical chain from the
-// database by hash, caching it if found.
-func (self *LightChain) GetTd(hash common.Hash) *big.Int {
-	return self.hc.GetTd(hash)
+// database by hash and number, caching it if found.
+func (self *LightChain) GetTd(hash common.Hash, number uint64) *big.Int {
+	return self.hc.GetTd(hash, number)
 }
 
-// GetHeader retrieves a block header from the database by hash, caching it if
+// GetTdByHash retrieves a block's total difficulty in the canonical chain from the
+// database by hash, caching it if found.
+func (self *LightChain) GetTdByHash(hash common.Hash) *big.Int {
+	return self.hc.GetTdByHash(hash)
+}
+
+// GetHeader retrieves a block header from the database by hash and number,
+// caching it if found.
+func (self *LightChain) GetHeader(hash common.Hash, number uint64) *types.Header {
+	return self.hc.GetHeader(hash, number)
+}
+
+// GetHeaderByHash retrieves a block header from the database by hash, caching it if
 // found.
-func (self *LightChain) GetHeader(hash common.Hash) *types.Header {
-	return self.hc.GetHeader(hash)
+func (self *LightChain) GetHeaderByHash(hash common.Hash) *types.Header {
+	return self.hc.GetHeaderByHash(hash)
 }
 
 // HasHeader checks if a block header is present in the database or not, caching
@@ -427,4 +466,31 @@ func (self *LightChain) GetBlockHashesFromHash(hash common.Hash, max uint64) []c
 // caching it (associated with its hash) if found.
 func (self *LightChain) GetHeaderByNumber(number uint64) *types.Header {
 	return self.hc.GetHeaderByNumber(number)
+}
+
+// GetHeaderByNumberOdr retrieves a block header from the database or network
+// by number, caching it (associated with its hash) if found.
+func (self *LightChain) GetHeaderByNumberOdr(ctx context.Context, number uint64) (*types.Header, error) {
+	if header := self.hc.GetHeaderByNumber(number); header != nil {
+		return header, nil
+	}
+	return GetHeaderByNumber(ctx, self.odr, number)
+}
+
+func (self *LightChain) SyncCht(ctx context.Context) bool {
+	headNum := self.CurrentHeader().Number.Uint64()
+	cht := GetTrustedCht(self.chainDb)
+	if headNum+1 < cht.Number*ChtFrequency {
+		num := cht.Number*ChtFrequency-1
+		header, err := GetHeaderByNumber(ctx, self.odr, num)
+		if header != nil && err == nil {
+			self.mu.Lock()
+			if self.hc.CurrentHeader().Number.Uint64() < header.Number.Uint64() {
+				self.hc.SetCurrentHeader(header)
+			}
+			self.mu.Unlock()
+			return true
+		}
+	}	
+	return false
 }

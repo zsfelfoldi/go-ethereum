@@ -305,14 +305,15 @@ func NewPublicBlockChainAPI(b Backend) *PublicBlockChainAPI {
 
 // BlockNumber returns the block number of the chain head.
 func (s *PublicBlockChainAPI) BlockNumber() *big.Int {
-	return s.b.HeaderByNumber(rpc.LatestBlockNumber).Number
+	header, _ := s.b.HeaderByNumber(context.Background(), rpc.LatestBlockNumber) // latest header should always be available
+	return header.Number
 }
 
 // GetBalance returns the amount of wei for the given address in the state of the
 // given block number. The rpc.LatestBlockNumber and rpc.PendingBlockNumber meta
 // block numbers are also allowed.
 func (s *PublicBlockChainAPI) GetBalance(ctx context.Context, address common.Address, blockNr rpc.BlockNumber) (*big.Int, error) {
-	state, _, err := s.b.StateAndHeaderByNumber(blockNr)
+	state, _, err := s.b.StateAndHeaderByNumber(ctx, blockNr)
 	if state == nil || err != nil {
 		return nil, err
 	}
@@ -397,7 +398,7 @@ func (s *PublicBlockChainAPI) GetUncleCountByBlockHash(ctx context.Context, bloc
 
 // GetCode returns the code stored at the given address in the state for the given block number.
 func (s *PublicBlockChainAPI) GetCode(ctx context.Context, address common.Address, blockNr rpc.BlockNumber) (string, error) {
-	state, _, err := s.b.StateAndHeaderByNumber(blockNr)
+	state, _, err := s.b.StateAndHeaderByNumber(ctx, blockNr)
 	if state == nil || err != nil {
 		return "", err
 	}
@@ -412,7 +413,7 @@ func (s *PublicBlockChainAPI) GetCode(ctx context.Context, address common.Addres
 // block number. The rpc.LatestBlockNumber and rpc.PendingBlockNumber meta block
 // numbers are also allowed.
 func (s *PublicBlockChainAPI) GetStorageAt(ctx context.Context, address common.Address, key string, blockNr rpc.BlockNumber) (string, error) {
-	state, _, err := s.b.StateAndHeaderByNumber(blockNr)
+	state, _, err := s.b.StateAndHeaderByNumber(ctx, blockNr)
 	if state == nil || err != nil {
 		return "0x", err
 	}
@@ -456,7 +457,7 @@ type CallArgs struct {
 func (s *PublicBlockChainAPI) doCall(ctx context.Context, args CallArgs, blockNr rpc.BlockNumber) (string, *big.Int, error) {
 	defer func(start time.Time) { glog.V(logger.Debug).Infof("call took %v", time.Since(start)) }(time.Now())
 
-	state, header, err := s.b.StateAndHeaderByNumber(blockNr)
+	state, header, err := s.b.StateAndHeaderByNumber(ctx, blockNr)
 	if state == nil || err != nil {
 		return "0x", common.Big0, err
 	}
@@ -473,10 +474,15 @@ func (s *PublicBlockChainAPI) doCall(ctx context.Context, args CallArgs, blockNr
 	} else {
 		addr = args.From
 	}
+	nonce, err := state.GetNonce(ctx, addr)
+	if err != nil {
+		return "0x", common.Big0, err
+	}
 
 	// Assemble the CALL invocation
 	msg := callmsg{
 		addr:     addr,
+		nonce:    nonce,
 		to:       args.To,
 		gas:      args.Gas.BigInt(),
 		gasPrice: args.GasPrice.BigInt(),
@@ -772,7 +778,7 @@ func (s *PublicTransactionPoolAPI) GetTransactionByBlockHashAndIndex(ctx context
 
 // GetTransactionCount returns the number of transactions the given address has sent for the given block number
 func (s *PublicTransactionPoolAPI) GetTransactionCount(ctx context.Context, address common.Address, blockNr rpc.BlockNumber) (*rpc.HexNumber, error) {
-	state, _, err := s.b.StateAndHeaderByNumber(blockNr)
+	state, _, err := s.b.StateAndHeaderByNumber(ctx, blockNr)
 	if state == nil || err != nil {
 		return nil, err
 	}
@@ -837,6 +843,7 @@ func (s *PublicTransactionPoolAPI) GetTransactionByHash(ctx context.Context, txH
 
 // GetTransactionReceipt returns the transaction receipt for the given transaction hash.
 func (s *PublicTransactionPoolAPI) GetTransactionReceipt(txHash common.Hash) (map[string]interface{}, error) {
+	//fmt.Println("API GetTransactionReceipt", txHash)
 	receipt := core.GetReceipt(s.b.ChainDb(), txHash)
 	if receipt == nil {
 		glog.V(logger.Debug).Infof("receipt not found for transaction %s", txHash.Hex())
@@ -844,12 +851,14 @@ func (s *PublicTransactionPoolAPI) GetTransactionReceipt(txHash common.Hash) (ma
 	}
 
 	tx, _, err := getTransaction(s.b.ChainDb(), s.b, txHash)
+	//fmt.Println("getTransaction", err)
 	if err != nil {
 		glog.V(logger.Debug).Infof("%v\n", err)
 		return nil, nil
 	}
 
 	txBlock, blockIndex, index, err := getTransactionBlockData(s.b.ChainDb(), txHash)
+	//fmt.Println("getTransactionBlockData", txBlock, blockIndex, index, err)
 	if err != nil {
 		glog.V(logger.Debug).Infof("%v\n", err)
 		return nil, nil

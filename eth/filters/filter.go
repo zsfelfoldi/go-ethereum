@@ -17,17 +17,22 @@
 package filters
 
 import (
-	"math"
+//	"math"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core"
+//	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/internal/ethapi"
+	"github.com/ethereum/go-ethereum/rpc"
+	"golang.org/x/net/context"
 )
 
 // Filter can be used to retrieve and filter logs
 type Filter struct {
+	apiBackend ethapi.Backend
+
 	created time.Time
 
 	db         ethdb.Database
@@ -36,10 +41,20 @@ type Filter struct {
 	topics     [][]common.Hash
 }
 
+<<<<<<< 7707e886b3e5d0aaaf495a89346c106ecfda1e02
 // New creates a new filter which uses a bloom filter on blocks to figure out whether
 // a particular block is interesting or not.
 func New(db ethdb.Database) *Filter {
 	return &Filter{db: db}
+=======
+// Create a new filter which uses a bloom filter on blocks to figure out whether a particular block
+// is interesting or not.
+func New(apiBackend ethapi.Backend) *Filter {
+	return &Filter{
+		apiBackend: apiBackend,
+		db:         apiBackend.ChainDb(),
+	}
+>>>>>>> les: light client protocol and API
 }
 
 // SetBeginBlock sets the earliest block for filtering.
@@ -66,6 +81,7 @@ func (f *Filter) SetTopics(topics [][]common.Hash) {
 }
 
 // Run filters logs with the current parameters set
+<<<<<<< 7707e886b3e5d0aaaf495a89346c106ecfda1e02
 func (f *Filter) Find() []Log {
 	latestHash := core.GetHeadBlockHash(f.db)
 	latestBlock := core.GetBlock(f.db, latestHash, core.GetBlockNumber(f.db, latestHash))
@@ -81,11 +97,25 @@ func (f *Filter) Find() []Log {
 	endBlockNo := uint64(f.end)
 	if f.end == -1 {
 		endBlockNo = latestBlock.NumberU64()
+=======
+func (self *Filter) Find(ctx context.Context) (vm.Logs, error) {
+	head, _ := self.apiBackend.HeaderByNumber(ctx, rpc.LatestBlockNumber)
+	headBlockNumber := head.Number.Uint64()
+	
+	var beginBlockNo uint64 = uint64(self.begin)
+	if self.begin == -1 {
+		beginBlockNo = headBlockNumber
+	}
+	var endBlockNo uint64 = uint64(self.end)
+	if self.end == -1 {
+		endBlockNo = headBlockNumber
+>>>>>>> les: light client protocol and API
 	}
 
 	// if no addresses are present we can't make use of fast search which
 	// uses the mipmap bloom filters to check for fast inclusion and uses
 	// higher range probability in order to ensure at least a false positive
+<<<<<<< 7707e886b3e5d0aaaf495a89346c106ecfda1e02
 	if len(f.addresses) == 0 {
 		return f.getLogs(beginBlockNo, endBlockNo)
 	}
@@ -93,6 +123,15 @@ func (f *Filter) Find() []Log {
 }
 
 func (f *Filter) mipFind(start, end uint64, depth int) (logs []Log) {
+=======
+//	if len(self.addresses) == 0 {
+		return self.getLogs(ctx, beginBlockNo, endBlockNo)
+//	}
+//	return self.mipFind(beginBlockNo, endBlockNo, 0)
+}
+
+/*func (self *Filter) mipFind(start, end uint64, depth int) (logs vm.Logs) {
+>>>>>>> les: light client protocol and API
 	level := core.MIPMapLevels[depth]
 	// normalise numerator so we can work in level specific batches and
 	// work with the proper range checks
@@ -120,17 +159,28 @@ func (f *Filter) mipFind(start, end uint64, depth int) (logs []Log) {
 	}
 
 	return logs
+<<<<<<< 7707e886b3e5d0aaaf495a89346c106ecfda1e02
 }
 
 func (f *Filter) getLogs(start, end uint64) (logs []Log) {
 	var block *types.Block
+=======
+}*/
+>>>>>>> les: light client protocol and API
 
+func (self *Filter) getLogs(ctx context.Context, start, end uint64) (logs vm.Logs, err error) {
 	for i := start; i <= end; i++ {
+<<<<<<< 7707e886b3e5d0aaaf495a89346c106ecfda1e02
 		hash := core.GetCanonicalHash(f.db, i)
 		if hash != (common.Hash{}) {
 			block = core.GetBlock(f.db, hash, i)
 		} else { // block not found
 			return logs
+=======
+		header, err := self.apiBackend.HeaderByNumber(ctx, rpc.BlockNumber(i))
+		if header == nil || err != nil {
+			return logs, err
+>>>>>>> les: light client protocol and API
 		}
 		if block == nil { // block not found/written
 			return logs
@@ -138,12 +188,22 @@ func (f *Filter) getLogs(start, end uint64) (logs []Log) {
 
 		// Use bloom filtering to see if this block is interesting given the
 		// current parameters
+<<<<<<< 7707e886b3e5d0aaaf495a89346c106ecfda1e02
 		if f.bloomFilter(block) {
 			// Get the logs of the block
 			var (
 				receipts   = core.GetBlockReceipts(f.db, block.Hash(), i)
 				unfiltered []Log
 			)
+=======
+		if self.bloomFilter(header.Bloom) {
+			// Get the logs of the block
+			receipts, err := self.apiBackend.GetReceipts(ctx, header.Hash())
+			if err != nil {
+				return nil, err
+			}
+			var 	unfiltered vm.Logs
+>>>>>>> les: light client protocol and API
 			for _, receipt := range receipts {
 				rl := make([]Log, len(receipt.Logs))
 				for i, l := range receipt.Logs {
@@ -155,7 +215,7 @@ func (f *Filter) getLogs(start, end uint64) (logs []Log) {
 		}
 	}
 
-	return logs
+	return logs, nil
 }
 
 func includes(addresses []common.Address, a common.Address) bool {
@@ -207,11 +267,19 @@ Logs:
 	return ret
 }
 
+<<<<<<< 7707e886b3e5d0aaaf495a89346c106ecfda1e02
 func (f *Filter) bloomFilter(block *types.Block) bool {
 	if len(f.addresses) > 0 {
 		var included bool
 		for _, addr := range f.addresses {
 			if types.BloomLookup(block.Bloom(), addr) {
+=======
+func (self *Filter) bloomFilter(bloom types.Bloom) bool {
+	if len(self.addresses) > 0 {
+		var included bool
+		for _, addr := range self.addresses {
+			if types.BloomLookup(bloom, addr) {
+>>>>>>> les: light client protocol and API
 				included = true
 				break
 			}
@@ -225,7 +293,7 @@ func (f *Filter) bloomFilter(block *types.Block) bool {
 	for _, sub := range f.topics {
 		var included bool
 		for _, topic := range sub {
-			if (topic == common.Hash{}) || types.BloomLookup(block.Bloom(), topic) {
+			if (topic == common.Hash{}) || types.BloomLookup(bloom, topic) {
 				included = true
 				break
 			}

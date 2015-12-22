@@ -39,6 +39,8 @@ import (
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/les"
+	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/metrics"
@@ -149,6 +151,24 @@ var (
 	FastSyncFlag = cli.BoolFlag{
 		Name:  "fast",
 		Usage: "Enable fast syncing through state downloads",
+	}
+	LightModeFlag = cli.BoolFlag{
+		Name:  "light",
+		Usage: "Enable light client mode",
+	}
+	NoDefSrvFlag = cli.BoolFlag{
+		Name: "nodefsrv",
+		Usage: "Don't add default LES server (only for test version)",
+	}
+	LightServFlag = cli.IntFlag{
+		Name:  "lightserv",
+		Usage: "Maximum percentage of time allowed for serving LES requests (0-90)",
+		Value: 20,
+	}
+	LightPeersFlag = cli.IntFlag{
+		Name:  "lightpeers",
+		Usage: "Maximum number of LES client peers",
+		Value: 10,
 	}
 	LightKDFFlag = cli.BoolFlag{
 		Name:  "lightkdf",
@@ -679,6 +699,11 @@ func RegisterEthService(ctx *cli.Context, stack *node.Node, extra []byte) {
 		Etherbase:               MakeEtherbase(stack.AccountManager(), ctx),
 		ChainConfig:             MakeChainConfig(ctx, stack),
 		FastSync:                ctx.GlobalBool(FastSyncFlag.Name),
+		LightMode:               ctx.GlobalBool(LightModeFlag.Name),
+		NoDefSrv:                ctx.GlobalBool(NoDefSrvFlag.Name),
+		LightServ:               ctx.GlobalInt(LightServFlag.Name),
+		LightPeers:              ctx.GlobalInt(LightPeersFlag.Name),
+		BlockChainVersion:       ctx.GlobalInt(BlockchainVersionFlag.Name),
 		DatabaseCache:           ctx.GlobalInt(CacheFlag.Name),
 		DatabaseHandles:         MakeDatabaseHandles(),
 		NetworkId:               ctx.GlobalInt(NetworkIdFlag.Name),
@@ -713,6 +738,7 @@ func RegisterEthService(ctx *cli.Context, stack *node.Node, extra []byte) {
 		}
 		ethConf.Genesis = core.TestNetGenesisBlock()
 		state.StartingNonce = 1048576 // (2**20)
+		light.StartingNonce = 1048576 // (2**20)
 
 	case ctx.GlobalBool(DevModeFlag.Name):
 		ethConf.Genesis = core.OlympicGenesisBlock()
@@ -722,10 +748,23 @@ func RegisterEthService(ctx *cli.Context, stack *node.Node, extra []byte) {
 		ethConf.PowTest = true
 	}
 
-	if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
-		return eth.New(ctx, ethConf)
-	}); err != nil {
-		Fatalf("Failed to register the Ethereum service: %v", err)
+	if ethConf.LightMode {
+		if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
+			return les.New(ctx, ethConf)
+		}); err != nil {
+			Fatalf("Failed to register the Ethereum light node service: %v", err)
+		}
+	} else {
+		if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
+			fullNode, err := eth.New(ctx, ethConf)
+			if fullNode != nil {
+				ls, _ := les.NewLesServer(fullNode, ethConf)
+				fullNode.AddLesServer(ls)
+			}
+			return fullNode, err
+		}); err != nil {
+			Fatalf("Failed to register the Ethereum full node service: %v", err)
+		}
 	}
 }
 
@@ -802,14 +841,23 @@ func MakeChainConfigFromDb(ctx *cli.Context, db ethdb.Database) *core.ChainConfi
 	return config
 }
 
+func ChainDbName(ctx *cli.Context) string {
+	if ctx.GlobalBool(LightModeFlag.Name) {
+		return "lightchaindata"
+	} else {
+		return "chaindata"
+	}
+}
+
 // MakeChainDatabase open an LevelDB using the flags passed to the client and will hard crash if it fails.
 func MakeChainDatabase(ctx *cli.Context, stack *node.Node) ethdb.Database {
 	var (
 		cache   = ctx.GlobalInt(CacheFlag.Name)
 		handles = MakeDatabaseHandles()
+		name    = ChainDbName(ctx)
 	)
 
-	chainDb, err := stack.OpenDatabase("chaindata", cache, handles)
+	chainDb, err := stack.OpenDatabase(name, cache, handles)
 	if err != nil {
 		Fatalf("Could not open database: %v", err)
 	}

@@ -48,7 +48,7 @@ func makeTestState() (common.Hash, ethdb.Database) {
 
 func TestLightStateOdr(t *testing.T) {
 	root, sdb := makeTestState()
-	header := &types.Header{Root: root}
+	header := &types.Header{Root: root, Number: big.NewInt(0)}
 	core.WriteHeader(sdb, header)
 	ldb, _ := ethdb.NewMemDatabase()
 	odr := &testOdr{sdb: sdb, ldb: ldb}
@@ -134,7 +134,7 @@ func TestLightStateOdr(t *testing.T) {
 
 func TestLightStateSetCopy(t *testing.T) {
 	root, sdb := makeTestState()
-	header := &types.Header{Root: root}
+	header := &types.Header{Root: root, Number: big.NewInt(0)}
 	core.WriteHeader(sdb, header)
 	ldb, _ := ethdb.NewMemDatabase()
 	odr := &testOdr{sdb: sdb, ldb: ldb}
@@ -212,7 +212,7 @@ func TestLightStateSetCopy(t *testing.T) {
 
 func TestLightStateDelete(t *testing.T) {
 	root, sdb := makeTestState()
-	header := &types.Header{Root: root}
+	header := &types.Header{Root: root, Number: big.NewInt(0)}
 	core.WriteHeader(sdb, header)
 	ldb, _ := ethdb.NewMemDatabase()
 	odr := &testOdr{sdb: sdb, ldb: ldb}
