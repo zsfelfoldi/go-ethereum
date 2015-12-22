@@ -42,9 +42,9 @@ type ContractBackend struct {
 
 // NewContractBackend creates a new native contract backend using an existing
 // Etheruem object.
-func NewContractBackend(eth *Ethereum) *ContractBackend {
+func NewContractBackend(apiBackend ethapi.Backend) *ContractBackend {
 	return &ContractBackend{
-		eapi:  ethapi.NewPublicEthereumAPI(eth.apiBackend),
+		eapi:  ethapi.NewPublicEthereumAPI(eth.apiBackend, nil, nil),
 		bcapi: ethapi.NewPublicBlockChainAPI(eth.apiBackend),
 		txapi: ethapi.NewPublicTransactionPoolAPI(eth.apiBackend),
 	}

@@ -1,4 +1,4 @@
-// Copyright 2015 The go-ethereum Authors
+// Copyright 2016 The go-ethereum Authors
 // This file is part of the go-ethereum library.
 //
 // The go-ethereum library is free software: you can redistribute it and/or modify
@@ -14,20 +14,17 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package light
+// package mclock is a wrapper for a monotonic clock source
+package mclock
 
 import (
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
+	"time"
+
+	"github.com/aristanetworks/goarista/atime"
 )
 
-type LightChainSplitEvent struct{ Header *types.Header }
+type AbsTime time.Duration  // absolute monotonic time
 
-type LightChainEvent struct {
-	Header *types.Header
-	Hash   common.Hash
+func Now() AbsTime {
+	return AbsTime(atime.NanoTime())
 }
-
-type LightChainSideEvent struct{ Header *types.Header }
-
-type LightChainHeadEvent struct{ Header *types.Header }

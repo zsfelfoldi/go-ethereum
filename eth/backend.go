@@ -66,9 +66,13 @@ var (
 type Config struct {
 	ChainConfig *core.ChainConfig // chain configuration
 
-	NetworkId int    // Network ID to use for selecting peers to connect to
-	Genesis   string // Genesis JSON to seed the chain database with
-	FastSync  bool   // Enables the state download based fast synchronisation algorithm
+	NetworkId  int    // Network ID to use for selecting peers to connect to
+	Genesis    string // Genesis JSON to seed the chain database with
+	FastSync   bool   // Enables the state download based fast synchronisation algorithm
+	LightMode  bool   // Running in light client mode
+	NoDefSrv   bool   // No default LES server
+	LightServ  int    // Maximum percentage of time allowed for serving LES requests
+	LightPeers int    // Maximum number of LES client peers
 
 	BlockChainVersion  int
 	SkipBcVersionCheck bool // e.g. blockchain export
@@ -101,6 +105,12 @@ type Config struct {
 	TestGenesisState ethdb.Database // Genesis state to seed the database with (testing only!)
 }
 
+type LesServer interface {
+	Start()
+	Stop()
+	Protocols() []p2p.Protocol
+}
+
 // Ethereum implements the Ethereum full node service.
 type Ethereum struct {
 	chainConfig *core.ChainConfig
@@ -112,6 +122,7 @@ type Ethereum struct {
 	txMu            sync.Mutex
 	blockchain      *core.BlockChain
 	protocolManager *ProtocolManager
+	ls              LesServer
 	// DB interfaces
 	chainDb ethdb.Database // Block chain database
 
@@ -120,7 +131,7 @@ type Ethereum struct {
 	httpclient     *httpclient.HTTPClient
 	accountManager *accounts.Manager
 
-	apiBackend *EthApiBackend
+	ApiBackend *EthApiBackend
 
 	miner        *miner.Miner
 	Mining       bool
@@ -136,10 +147,14 @@ type Ethereum struct {
 	netRPCService *ethapi.PublicNetAPI
 }
 
+func (s *Ethereum) AddLesServer(ls LesServer) {
+	s.ls = ls
+}
+
 // New creates a new Ethereum object (including the
 // initialisation of the common Ethereum object)
 func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
-	chainDb, err := createDB(ctx, config)
+	chainDb, err := createDB(ctx, config, "chaindata")
 	if err != nil {
 		return nil, err
 	}
@@ -234,14 +249,14 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 		GpobaseCorrectionFactor: config.GpobaseCorrectionFactor,
 	}
 	gpo := gasprice.NewGasPriceOracle(eth.blockchain, chainDb, eth.eventMux, gpoParams)
-	eth.apiBackend = &EthApiBackend{eth, gpo}
+	eth.ApiBackend = &EthApiBackend{eth, gpo}
 
 	return eth, nil
 }
 
 // createDB creates the chain database.
-func createDB(ctx *node.ServiceContext, config *Config) (ethdb.Database, error) {
-	db, err := ctx.OpenDatabase("chaindata", config.DatabaseCache, config.DatabaseHandles)
+func createDB(ctx *node.ServiceContext, config *Config, name string) (ethdb.Database, error) {
+	db, err := ctx.OpenDatabase(name, config.DatabaseCache, config.DatabaseHandles)
 	if db, ok := db.(*ethdb.LDBDatabase); ok {
 		db.Meter("eth/db/chaindata/")
 	}
@@ -313,7 +328,7 @@ func (s *Ethereum) APIs() []rpc.API {
 		}, {
 			Namespace: "eth",
 			Version:   "1.0",
-			Service:   filters.NewPublicFilterAPI(s.chainDb, s.eventMux),
+			Service:   filters.NewPublicFilterAPI(s.ApiBackend),
 			Public:    true,
 		}, {
 			Namespace: "admin",
@@ -381,7 +396,11 @@ func (s *Ethereum) Downloader() *downloader.Downloader { return s.protocolManage
 // Protocols implements node.Service, returning all the currently configured
 // network protocols to start.
 func (s *Ethereum) Protocols() []p2p.Protocol {
-	return s.protocolManager.SubProtocols
+	if s.ls == nil {
+		return s.protocolManager.SubProtocols
+	} else {
+		return append(s.protocolManager.SubProtocols, s.ls.Protocols()...)
+	}
 }
 
 // Start implements node.Service, starting all internal goroutines needed by the
@@ -392,6 +411,9 @@ func (s *Ethereum) Start(srvr *p2p.Server) error {
 		s.StartAutoDAG()
 	}
 	s.protocolManager.Start()
+	if s.ls != nil {
+		s.ls.Start()
+	}
 	return nil
 }
 
@@ -403,6 +425,9 @@ func (s *Ethereum) Stop() error {
 	}
 	s.blockchain.Stop()
 	s.protocolManager.Stop()
+	if s.ls != nil {
+		s.ls.Stop()
+	}
 	s.txPool.Stop()
 	s.miner.Stop()
 	s.eventMux.Stop()

@@ -19,6 +19,8 @@
 package light
 
 import (
+	"math/big"
+	
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -45,17 +47,17 @@ type OdrRequest interface {
 
 // TrieID identifies a state or account storage trie
 type TrieID struct {
-	blockHash, root common.Hash
-	accKey          []byte
+	BlockHash, Root common.Hash
+	AccKey          []byte
 }
 
 // StateTrieID returns a TrieID for a state trie belonging to a certain block
 // header.
 func StateTrieID(header *types.Header) *TrieID {
 	return &TrieID{
-		blockHash: header.Hash(),
-		accKey:    nil,
-		root:      header.Root,
+		BlockHash: header.Hash(),
+		AccKey:    nil,
+		Root:      header.Root,
 	}
 }
 
@@ -64,9 +66,9 @@ func StateTrieID(header *types.Header) *TrieID {
 // checking Merkle proofs.
 func StorageTrieID(state *TrieID, addr common.Address, root common.Hash) *TrieID {
 	return &TrieID{
-		blockHash: state.blockHash,
-		accKey:    crypto.Keccak256(addr[:]),
-		root:      root,
+		BlockHash: state.BlockHash,
+		AccKey:    crypto.Keccak256(addr[:]),
+		Root:      root,
 	}
 }
 
@@ -111,22 +113,44 @@ func (req *CodeRequest) StoreResult(db ethdb.Database) {
 type BlockRequest struct {
 	OdrRequest
 	Hash common.Hash
+	Number uint64
 	Rlp  []byte
 }
 
 // StoreResult stores the retrieved data in local database
 func (req *BlockRequest) StoreResult(db ethdb.Database) {
-	core.WriteBodyRLP(db, req.Hash, req.Rlp)
+	core.WriteBodyRLP(db, req.Hash, req.Number, req.Rlp)
 }
 
 // ReceiptsRequest is the ODR request type for retrieving block bodies
 type ReceiptsRequest struct {
 	OdrRequest
 	Hash     common.Hash
+	Number uint64
 	Receipts types.Receipts
 }
 
 // StoreResult stores the retrieved data in local database
 func (req *ReceiptsRequest) StoreResult(db ethdb.Database) {
-	core.WriteBlockReceipts(db, req.Hash, req.Receipts)
+	core.WriteBlockReceipts(db, req.Hash, req.Number, req.Receipts)
+}
+
+// TrieRequest is the ODR request type for state/storage trie entries
+type ChtRequest struct {
+	OdrRequest
+	ChtNum, BlockNum uint64
+	ChtRoot common.Hash
+	Header *types.Header
+	Td *big.Int
+	Proof []rlp.RawValue
+}
+
+// StoreResult stores the retrieved data in local database
+func (req *ChtRequest) StoreResult(db ethdb.Database) {
+	// if there is a canonical hash, there is a header too
+	core.WriteHeader(db, req.Header)
+	hash, num := req.Header.Hash(), req.Header.Number.Uint64()
+	core.WriteTd(db, hash, num, req.Td)
+	core.WriteCanonicalHash(db, hash, num)
+	//storeProof(db, req.Proof)
 }
