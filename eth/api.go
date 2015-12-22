@@ -69,12 +69,12 @@ func blockByNumber(m *miner.Miner, bc *core.BlockChain, blockNr rpc.BlockNumber)
 // PublicEthereumAPI provides an API to access Ethereum related information.
 // It offers only methods that operate on public data that is freely available to anyone.
 type PublicEthereumAPI struct {
-	e   *Ethereum
+	e   *FullEthereum
 	gpo *GasPriceOracle
 }
 
 // NewPublicEthereumAPI creates a new Etheruem protocol API.
-func NewPublicEthereumAPI(e *Ethereum) *PublicEthereumAPI {
+func NewPublicEthereumAPI(e *FullEthereum) *PublicEthereumAPI {
 	return &PublicEthereumAPI{e, NewGasPriceOracle(e)}
 }
 
@@ -152,11 +152,11 @@ func (s *PublicEthereumAPI) Syncing() (interface{}, error) {
 // PrivateMinerAPI provides private RPC methods to control the miner.
 // These methods can be abused by external users and must be considered insecure for use by untrusted users.
 type PrivateMinerAPI struct {
-	e *Ethereum
+	e *FullEthereum
 }
 
 // NewPrivateMinerAPI create a new RPC service which controls the miner of this node.
-func NewPrivateMinerAPI(e *Ethereum) *PrivateMinerAPI {
+func NewPrivateMinerAPI(e *FullEthereum) *PrivateMinerAPI {
 	return &PrivateMinerAPI{e: e}
 }
 
@@ -219,11 +219,11 @@ func (s *PrivateMinerAPI) MakeDAG(blockNr rpc.BlockNumber) (bool, error) {
 
 // PublicTxPoolAPI offers and API for the transaction pool. It only operates on data that is non confidential.
 type PublicTxPoolAPI struct {
-	e *Ethereum
+	e *FullEthereum
 }
 
 // NewPublicTxPoolAPI creates a new tx pool service that gives information about the transaction pool.
-func NewPublicTxPoolAPI(e *Ethereum) *PublicTxPoolAPI {
+func NewPublicTxPoolAPI(e *FullEthereum) *PublicTxPoolAPI {
 	return &PublicTxPoolAPI{e}
 }
 
@@ -564,6 +564,10 @@ func (s *PublicBlockChainAPI) EstimateGas(args CallArgs) (*rpc.HexNumber, error)
 // returned. When fullTx is true the returned block contains full transaction details, otherwise it will only contain
 // transaction hashes.
 func (s *PublicBlockChainAPI) rpcOutputBlock(b *types.Block, inclTx bool, fullTx bool) (map[string]interface{}, error) {
+	return RpcOutputBlock(b, inclTx, fullTx, s.bc.GetTd(b.Hash()))
+}
+
+func RpcOutputBlock(b *types.Block, inclTx bool, fullTx bool, td *big.Int) (map[string]interface{}, error) {
 	fields := map[string]interface{}{
 		"number":           rpc.NewHexNumber(b.Number()),
 		"hash":             b.Hash(),
@@ -574,7 +578,7 @@ func (s *PublicBlockChainAPI) rpcOutputBlock(b *types.Block, inclTx bool, fullTx
 		"stateRoot":        b.Root(),
 		"miner":            b.Coinbase(),
 		"difficulty":       rpc.NewHexNumber(b.Difficulty()),
-		"totalDifficulty":  rpc.NewHexNumber(s.bc.GetTd(b.Hash())),
+		"totalDifficulty":  rpc.NewHexNumber(td),
 		"extraData":        fmt.Sprintf("0x%x", b.Extra()),
 		"size":             rpc.NewHexNumber(b.Size().Int64()),
 		"gasLimit":         rpc.NewHexNumber(b.GasLimit()),
@@ -1230,12 +1234,12 @@ func (s *PublicTransactionPoolAPI) Resend(tx *Tx, gasPrice, gasLimit *rpc.HexNum
 // PrivateAdminAPI is the collection of Etheruem APIs exposed over the private
 // admin endpoint.
 type PrivateAdminAPI struct {
-	eth *Ethereum
+	eth *FullEthereum
 }
 
 // NewPrivateAdminAPI creates a new API definition for the private admin methods
 // of the Ethereum service.
-func NewPrivateAdminAPI(eth *Ethereum) *PrivateAdminAPI {
+func NewPrivateAdminAPI(eth *FullEthereum) *PrivateAdminAPI {
 	return &PrivateAdminAPI{eth: eth}
 }
 
@@ -1304,12 +1308,12 @@ func (api *PrivateAdminAPI) ImportChain(file string) (bool, error) {
 // PublicDebugAPI is the collection of Etheruem APIs exposed over the public
 // debugging endpoint.
 type PublicDebugAPI struct {
-	eth *Ethereum
+	eth *FullEthereum
 }
 
 // NewPublicDebugAPI creates a new API definition for the public debug methods
 // of the Ethereum service.
-func NewPublicDebugAPI(eth *Ethereum) *PublicDebugAPI {
+func NewPublicDebugAPI(eth *FullEthereum) *PublicDebugAPI {
 	return &PublicDebugAPI{eth: eth}
 }
 
@@ -1364,12 +1368,12 @@ func (api *PublicDebugAPI) SeedHash(number uint64) (string, error) {
 // PrivateDebugAPI is the collection of Etheruem APIs exposed over the private
 // debugging endpoint.
 type PrivateDebugAPI struct {
-	eth *Ethereum
+	eth *FullEthereum
 }
 
 // NewPrivateDebugAPI creates a new API definition for the private debug methods
 // of the Ethereum service.
-func NewPrivateDebugAPI(eth *Ethereum) *PrivateDebugAPI {
+func NewPrivateDebugAPI(eth *FullEthereum) *PrivateDebugAPI {
 	return &PrivateDebugAPI{eth: eth}
 }
 

@@ -180,7 +180,7 @@ func runBlockTest(test *BlockTest) error {
 		Etherbase:        common.Address{},
 		AccountManager:   am,
 	}
-	ethereum, err := eth.New(&node.ServiceContext{EventMux: new(event.TypeMux)}, cfg)
+	ethereum, err := eth.NewFullEthereum(&node.ServiceContext{EventMux: new(event.TypeMux)}, cfg)
 	if err != nil {
 		return err
 	}

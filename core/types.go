@@ -38,7 +38,7 @@ import (
 // ValidateHeader validates the given header and parent and returns an error
 // if it failed to do so.
 //
-// ValidateStack validates the given statedb and optionally the receipts and
+// ValidateState validates the given statedb and optionally the receipts and
 // gas used. The implementor should decide what to do with the given input.
 type Validator interface {
 	HeaderValidator

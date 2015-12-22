@@ -15,7 +15,6 @@
 // along with go-ethereum. If not, see <http://www.gnu.org/licenses/>.
 
 package main
-
 import (
 	"fmt"
 	"io/ioutil"
@@ -116,7 +115,7 @@ func testREPL(t *testing.T, config func(*eth.Config)) (string, *testjethre, *nod
 	if config != nil {
 		config(ethConf)
 	}
-	if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) { return eth.New(ctx, ethConf) }); err != nil {
+	if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) { return eth.NewFullEthereum(ctx, ethConf) }); err != nil {
 		t.Fatalf("failed to register ethereum protocol: %v", err)
 	}
 	// Initialize all the keys for testing
@@ -200,7 +199,7 @@ func TestBlockChain(t *testing.T) {
 	tmpfile := filepath.Join(extmp, "export.chain")
 	tmpfileq := strconv.Quote(tmpfile)
 
-	var ethereum *eth.Ethereum
+	var ethereum *eth.FullEthereum
 	node.Service(&ethereum)
 	ethereum.BlockChain().Reset()
 
@@ -435,7 +434,7 @@ multiply7 = Multiply7.at(contractaddress);
 }
 
 func pendingTransactions(repl *testjethre, t *testing.T) (txc int64, err error) {
-	var ethereum *eth.Ethereum
+	var ethereum *eth.FullEthereum
 	repl.stack.Service(&ethereum)
 
 	txs := ethereum.TxPool().GetTransactions()
@@ -463,7 +462,7 @@ func processTxs(repl *testjethre, t *testing.T, expTxc int) bool {
 		t.Errorf("incorrect number of pending transactions, expected %v, got %v", expTxc, txc)
 		return false
 	}
-	var ethereum *eth.Ethereum
+	var ethereum *eth.FullEthereum
 	repl.stack.Service(&ethereum)
 
 	err = ethereum.StartMining(runtime.NumCPU(), "")

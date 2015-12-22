@@ -99,7 +99,7 @@ const (
 
 type testFrontend struct {
 	t           *testing.T
-	ethereum    *eth.Ethereum
+	ethereum    *eth.FullEthereum
 	xeth        *xe.XEth
 	wait        chan *big.Int
 	lastConfirm string
@@ -123,7 +123,7 @@ func (self *testFrontend) ConfirmTransaction(tx string) bool {
 	return true
 }
 
-func testEth(t *testing.T) (ethereum *eth.Ethereum, err error) {
+func testEth(t *testing.T) (ethereum *eth.FullEthereum, err error) {
 
 	tmp, err := ioutil.TempDir("", "natspec-test")
 	if err != nil {
@@ -150,7 +150,7 @@ func testEth(t *testing.T) (ethereum *eth.Ethereum, err error) {
 	}
 
 	// only use minimalistic stack with no networking
-	return eth.New(&node.ServiceContext{EventMux: new(event.TypeMux)}, &eth.Config{
+	return eth.NewFullEthereum(&node.ServiceContext{EventMux: new(event.TypeMux)}, &eth.Config{
 		AccountManager:          am,
 		Etherbase:               common.HexToAddress(testAddress),
 		PowTest:                 true,

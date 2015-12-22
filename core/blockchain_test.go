@@ -476,6 +476,7 @@ func chm(genesis *types.Block, db ethdb.Database) *BlockChain {
 	bc.hc.getValidator = func() HeaderValidator { return bc.Validator() }
 	bc.hc.procInterrupt = &bc.procInterrupt
 	bc.hc.wg = &bc.wg
+	bc.hc.mu = &bc.mu
 	bc.hc.headerCache, _ = lru.New(100)
 	bc.bodyCache, _ = lru.New(100)
 	bc.bodyRLPCache, _ = lru.New(100)

@@ -133,7 +133,7 @@ func NewBlockChain(chainDb ethdb.Database, pow pow.PoW, mux *event.TypeMux) (*Bl
 
 	gv := func() HeaderValidator { return bc.Validator() }
 	var err error
-	bc.hc, err = NewHeaderChain(chainDb, gv, &bc.procInterrupt, &bc.wg)
+	bc.hc, err = NewHeaderChain(chainDb, gv, &bc.procInterrupt, &bc.wg, &bc.mu)
 	if err != nil {
 		return nil, err
 	}
@@ -1145,10 +1145,7 @@ func (self *BlockChain) InsertHeaderChain(chain []*types.Header, checkFreq int) 
 // in two scenarios: pure-header mode of operation (light clients), or properly
 // separated header/block phases (non-archive clients).
 func (self *BlockChain) writeHeader(header *types.Header) error {
-	self.mu.Lock()
-	defer self.mu.Unlock()
-
-	return self.hc.writeHeader(header)
+	return self.hc.WriteHeader(header)
 }
 
 // CurrentHeader retrieves the current head header of the canonical chain. The

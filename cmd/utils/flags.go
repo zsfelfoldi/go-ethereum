@@ -43,6 +43,8 @@ import (
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/les"
+	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/metrics"
@@ -153,6 +155,10 @@ var (
 	FastSyncFlag = cli.BoolFlag{
 		Name:  "fast",
 		Usage: "Enable fast syncing through state downloads",
+	}
+	LightModeFlag = cli.BoolFlag{
+		Name:  "light",
+		Usage: "Enable light client mode",
 	}
 	LightKDFFlag = cli.BoolFlag{
 		Name:  "lightkdf",
@@ -604,6 +610,7 @@ func MakeSystemNode(name, version string, extra []byte, ctx *cli.Context) *node.
 	ethConf := &eth.Config{
 		Genesis:                 MakeGenesisBlock(ctx),
 		FastSync:                ctx.GlobalBool(FastSyncFlag.Name),
+		LightMode:               ctx.GlobalBool(LightModeFlag.Name),
 		BlockChainVersion:       ctx.GlobalInt(BlockchainVersionFlag.Name),
 		DatabaseCache:           ctx.GlobalInt(CacheFlag.Name),
 		NetworkId:               ctx.GlobalInt(NetworkIdFlag.Name),
@@ -623,6 +630,7 @@ func MakeSystemNode(name, version string, extra []byte, ctx *cli.Context) *node.
 		SolcPath:                ctx.GlobalString(SolcPathFlag.Name),
 		AutoDAG:                 ctx.GlobalBool(AutoDAGFlag.Name) || ctx.GlobalBool(MiningEnabledFlag.Name),
 	}
+
 	// Configure the Whisper service
 	shhEnable := ctx.GlobalBool(WhisperEnabledFlag.Name)
 
@@ -644,6 +652,7 @@ func MakeSystemNode(name, version string, extra []byte, ctx *cli.Context) *node.
 			ethConf.Genesis = core.TestNetGenesisBlock()
 		}
 		state.StartingNonce = 1048576 // (2**20)
+		light.StartingNonce = 1048576 // (2**20)
 
 	case ctx.GlobalBool(DevModeFlag.Name):
 		// Override the base network stack configs
@@ -676,8 +685,42 @@ func MakeSystemNode(name, version string, extra []byte, ctx *cli.Context) *node.
 	if err != nil {
 		Fatalf("Failed to create the protocol stack: %v", err)
 	}
+
+	var e *eth.Ethereum
+	if ethConf.LightMode {
+		if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
+			lightEth, err := les.NewLightEthereum(ctx, ethConf)
+			if lightEth != nil {
+				e = lightEth.Ethereum
+			}
+			return lightEth, err
+		}); err != nil {
+			Fatalf("Failed to register the LightEthereum service: %v", err)
+		}
+	} else {
+		var fullEth *eth.FullEthereum
+		var ls *les.LesServer
+		if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
+			var err error
+			fullEth, err = eth.NewFullEthereum(ctx, ethConf)
+			if fullEth != nil {
+				e = fullEth.Ethereum
+				ls, _ = les.NewLesServer(fullEth, ethConf)
+				fullEth.AddLesServer(ls)
+			}
+			return fullEth, err
+		}); err != nil {
+			Fatalf("Failed to register the Ethereum service: %v", err)
+		}
+		if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
+			return ls, nil
+		}); err != nil {
+			Fatalf("Failed to register the LesServer service: %v", err)
+		}
+	}
+	
 	if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
-		return eth.New(ctx, ethConf)
+		return e, nil
 	}); err != nil {
 		Fatalf("Failed to register the Ethereum service: %v", err)
 	}

@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
+	"github.com/ethereum/go-ethereum/pow"
 	"github.com/hashicorp/golang-lru"
 )
 
@@ -49,6 +50,7 @@ type HeaderChain struct {
 	// procInterrupt must be atomically called
 	procInterrupt *int32 // interrupt signaler for header processing
 	wg            *sync.WaitGroup
+	mu            *sync.RWMutex
 
 	rand         *mrand.Rand
 	getValidator getHeaderValidatorFn
@@ -61,7 +63,7 @@ type getHeaderValidatorFn func() HeaderValidator
 //  getValidator should return the parent's validator
 //  procInterrupt points to the parent's interrupt semaphore
 //  wg points to the parent's shutdown wait group
-func NewHeaderChain(chainDb ethdb.Database, getValidator getHeaderValidatorFn, procInterrupt *int32, wg *sync.WaitGroup) (*HeaderChain, error) {
+func NewHeaderChain(chainDb ethdb.Database, getValidator getHeaderValidatorFn, procInterrupt *int32, wg *sync.WaitGroup, mu *sync.RWMutex) (*HeaderChain, error) {
 	headerCache, _ := lru.New(headerCacheLimit)
 	tdCache, _ := lru.New(tdCacheLimit)
 
@@ -77,6 +79,7 @@ func NewHeaderChain(chainDb ethdb.Database, getValidator getHeaderValidatorFn, p
 		tdCache:       tdCache,
 		procInterrupt: procInterrupt,
 		wg:            wg,
+		mu:            mu,
 		rand:          mrand.New(mrand.NewSource(seed.Int64())),
 		getValidator:  getValidator,
 	}
@@ -101,7 +104,7 @@ func NewHeaderChain(chainDb ethdb.Database, getValidator getHeaderValidatorFn, p
 	return hc, nil
 }
 
-// writeHeader writes a header into the local chain, given that its parent is
+// WriteHeader writes a header into the local chain, given that its parent is
 // already known. If the total difficulty of the newly inserted header becomes
 // greater than the current known TD, the canonical chain is re-routed.
 //
@@ -110,7 +113,7 @@ func NewHeaderChain(chainDb ethdb.Database, getValidator getHeaderValidatorFn, p
 // without the real blocks. Hence, writing headers directly should only be done
 // in two scenarios: pure-header mode of operation (light clients), or properly
 // separated header/block phases (non-archive clients).
-func (self *HeaderChain) writeHeader(header *types.Header) error {
+func (self *HeaderChain) WriteHeader(header *types.Header) error {
 	self.wg.Add(1)
 	defer self.wg.Done()
 
@@ -122,6 +125,8 @@ func (self *HeaderChain) writeHeader(header *types.Header) error {
 	td := new(big.Int).Add(header.Difficulty, ptd)
 
 	// Make sure no inconsistent state is leaked during insertion
+	self.mu.Lock()
+	defer self.mu.Unlock()
 
 	// If the total difficulty is higher than our known, add it to the canonical chain
 	if td.Cmp(self.GetTd(self.currentHeader.Hash())) > 0 {
@@ -149,7 +154,7 @@ func (self *HeaderChain) writeHeader(header *types.Header) error {
 		glog.Fatalf("failed to write header total difficulty: %v", err)
 	}
 	if err := WriteHeader(self.chainDb, header); err != nil {
-		glog.Fatalf("filed to write header contents: %v", err)
+		glog.Fatalf("failed to write header contents: %v", err)
 	}
 	return nil
 }
@@ -258,7 +263,7 @@ func (self *HeaderChain) InsertHeaderChain(chain []*types.Header, checkFreq int)
 			stats.ignored++
 			continue
 		}
-		if err := self.writeHeader(header); err != nil {
+		if err := self.WriteHeader(header); err != nil {
 			return i, err
 		}
 		stats.processed++
@@ -401,4 +406,36 @@ func (self *HeaderChain) Rollback(chain []common.Hash) {
 // SetGenesis sets a new genesis block header for the chain
 func (self *HeaderChain) SetGenesis(head *types.Header) {
 	self.genesisHeader = head
+}
+
+// HdrValidator is responsible for validating block headers
+//
+// HdrValidator implements HeaderValidator.
+type HdrValidator struct {
+	bc  *HeaderChain // Canonical header chain
+	Pow pow.PoW      // Proof of work used for validating
+}
+
+// NewBlockValidator returns a new block validator which is safe for re-use
+func NewHdrValidator(chain *HeaderChain, pow pow.PoW) *HdrValidator {
+	validator := &HdrValidator{
+		Pow: pow,
+		bc:  chain,
+	}
+	return validator
+}
+
+// ValidateHeader validates the given header and, depending on the pow arg,
+// checks the proof of work of the given header. Returns an error if the
+// validation failed.
+func (v *HdrValidator) ValidateHeader(header, parent *types.Header, checkPow bool) error {
+	// Short circuit if the parent is missing.
+	if parent == nil {
+		return ParentError(header.ParentHash)
+	}
+	// Short circuit if the header's already known or its parent missing
+	if v.bc.HasHeader(header.Hash()) {
+		return nil
+	}
+	return ValidateHeader(v.Pow, header, parent, checkPow, false)
 }
