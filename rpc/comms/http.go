@@ -225,7 +225,7 @@ type httpClient struct {
 	address string
 	port    uint
 	codec   codec.ApiCoder
-	lastRes interface{}
+	lastRes map[string]interface{}
 	lastErr error
 }
 
@@ -269,21 +269,13 @@ func (self *httpClient) Send(req interface{}) error {
 
 	if resp.Status == "200 OK" {
 		reply, _ := ioutil.ReadAll(resp.Body)
-		var rpcSuccessResponse shared.SuccessResponse
-		if err = self.codec.Decode(reply, &rpcSuccessResponse); err == nil {
-			self.lastRes = &rpcSuccessResponse
-			self.lastErr = err
+		var response map[string]interface{}
+		if err = self.codec.Decode(reply, &response); err == nil {
+			self.lastRes = response
+			self.lastErr = nil
 			return nil
-		} else {
-			var rpcErrorResponse shared.ErrorResponse
-			if err = self.codec.Decode(reply, &rpcErrorResponse); err == nil {
-				self.lastRes = &rpcErrorResponse
-				self.lastErr = err
-				return nil
-			} else {
-				return err
-			}
 		}
+		return err
 	}
 
 	return fmt.Errorf("Not implemented")
@@ -294,52 +286,52 @@ func (self *httpClient) Recv() (interface{}, error) {
 }
 
 func (self *httpClient) SupportedModules() (map[string]string, error) {
-	var body []byte
-	var err error
+	methods := []string{"modules", "rpc_modules"} // remove "modules" after migration
 
-	payload := shared.Request{
-		Id:      1,
-		Jsonrpc: "2.0",
-		Method:  "modules",
-	}
+	for i := 0; i < len(methods); i++ {
+		var body []byte
+		var err error
+		payload := shared.Request{
+			Id:      1,
+			Jsonrpc: "2.0",
+			Method:  methods[i],
+		}
 
-	if body, err = self.codec.Encode(payload); err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s:%d", self.address, self.port), bytes.NewBuffer(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-
-	defer resp.Body.Close()
-
-	if resp.Status == "200 OK" {
-		reply, _ := ioutil.ReadAll(resp.Body)
-		var rpcRes shared.SuccessResponse
-		if err = self.codec.Decode(reply, &rpcRes); err != nil {
+		if body, err = self.codec.Encode(payload); err != nil {
 			return nil, err
 		}
 
-		result := make(map[string]string)
-		if modules, ok := rpcRes.Result.(map[string]interface{}); ok {
-			for a, v := range modules {
-				result[a] = fmt.Sprintf("%s", v)
-			}
-			return result, nil
+		req, err := http.NewRequest("POST", fmt.Sprintf("%s:%d", self.address, self.port), bytes.NewBuffer(body))
+		if err != nil {
+			return nil, err
 		}
-		err = fmt.Errorf("Unable to parse module response - %v", rpcRes.Result)
-	} else {
-		fmt.Printf("resp.Status = %s\n", resp.Status)
-		fmt.Printf("err = %v\n", err)
+		req.Header.Set("Content-Type", "application/json")
+
+		client := http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		defer resp.Body.Close()
+
+		if resp.Status == "200 OK" {
+			reply, _ := ioutil.ReadAll(resp.Body)
+			var rpcRes map[string]interface{}
+			if err = self.codec.Decode(reply, &rpcRes); err != nil {
+				return nil, err
+			}
+			if result, ok := rpcRes["result"]; ok {
+				mods := make(map[string]string)
+				if modules, ok := result.(map[string]interface{}); ok {
+					for m, v := range modules {
+						mods[m] = fmt.Sprintf("%s", v)
+					}
+					return mods, nil
+				}
+			}
+		}
 	}
 
-	return nil, err
+	return nil, fmt.Errorf("Unable to parse module response")
 }

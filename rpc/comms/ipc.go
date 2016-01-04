@@ -22,8 +22,6 @@ import (
 	"net"
 	"os"
 
-	"encoding/json"
-
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/rpc/codec"
@@ -62,14 +60,17 @@ func (self *ipcClient) Send(msg interface{}) error {
 }
 
 func (self *ipcClient) Recv() (interface{}, error) {
-	return self.coder.ReadResponse()
+	response, err := self.coder.ReadResponse()
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 func (self *ipcClient) SupportedModules() (map[string]string, error) {
-	req := shared.Request{
-		Id:      1,
-		Jsonrpc: "2.0",
-		Method:  "rpc_modules",
+	req := map[string]interface{}{
+		"id":     1,
+		"method": "rpc_modules",
 	}
 
 	if err := self.coder.WriteResponse(req); err != nil {
@@ -77,31 +78,34 @@ func (self *ipcClient) SupportedModules() (map[string]string, error) {
 	}
 
 	res, _ := self.coder.ReadResponse()
-	if sucRes, ok := res.(*shared.SuccessResponse); ok {
-		data, _ := json.Marshal(sucRes.Result)
-		modules := make(map[string]string)
-		if err := json.Unmarshal(data, &modules); err == nil {
-			return modules, nil
+	if response, ok := res.(map[string]interface{}); ok {
+		if payload, ok := response["result"]; ok {
+			mods := make(map[string]string)
+			if modules, ok := payload.(map[string]interface{}); ok {
+				for m, v := range modules {
+					mods[m] = fmt.Sprintf("%s", v)
+				}
+				return mods, nil
+			}
 		}
 	}
 
 	// old version uses modules instead of rpc_modules, this can be removed after full migration
-	req.Method = "modules"
+	req["method"] = "modules"
 	if err := self.coder.WriteResponse(req); err != nil {
 		return nil, err
 	}
 
-	res, err := self.coder.ReadResponse()
-	if err != nil {
-		return nil, err
-	}
-
-	if sucRes, ok := res.(*shared.SuccessResponse); ok {
-		data, _ := json.Marshal(sucRes.Result)
-		modules := make(map[string]string)
-		err = json.Unmarshal(data, &modules)
-		if err == nil {
-			return modules, nil
+	res, _ = self.coder.ReadResponse()
+	if response, ok := res.(map[string]interface{}); ok {
+		if payload, ok := response["result"]; ok {
+			mods := make(map[string]string)
+			if modules, ok := payload.(map[string]interface{}); ok {
+				for m, v := range modules {
+					mods[m] = fmt.Sprintf("%s", v)
+				}
+				return mods, nil
+			}
 		}
 	}
 

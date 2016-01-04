@@ -18,10 +18,8 @@ package codec
 
 import (
 	"encoding/json"
-	"fmt"
 	"net"
 	"time"
-	"strings"
 
 	"github.com/ethereum/go-ethereum/rpc/shared"
 )
@@ -75,7 +73,7 @@ func (self *JsonCodec) ReadRequest() (requests []*shared.Request, isBatch bool, 
 }
 
 func (self *JsonCodec) Recv() (interface{}, error) {
-	var msg json.RawMessage
+	var msg map[string]interface{}
 	err := self.d.Decode(&msg)
 	if err != nil {
 		self.c.Close()
@@ -86,29 +84,31 @@ func (self *JsonCodec) Recv() (interface{}, error) {
 }
 
 func (self *JsonCodec) ReadResponse() (interface{}, error) {
-	in, err := self.Recv()
-	if err != nil {
-		return nil, err
-	}
+	return self.Recv()
 
-	if msg, ok := in.(json.RawMessage); ok {
-		var req *shared.Request
-		if err = json.Unmarshal(msg, &req); err == nil && strings.HasPrefix(req.Method, "agent_") {
-			return req, nil
-		}
-
-		var failure *shared.ErrorResponse
-		if err = json.Unmarshal(msg, &failure); err == nil && failure.Error != nil {
-			return failure, fmt.Errorf(failure.Error.Message)
-		}
-
-		var success *shared.SuccessResponse
-		if err = json.Unmarshal(msg, &success); err == nil {
-			return success, nil
-		}
-	}
-
-	return in, err
+	//in, err := self.Recv()
+	//if err != nil {
+	//	return nil, err
+	//}
+	//
+	//if msg, ok := in.(json.RawMessage); ok {
+	//	var req *shared.Request
+	//	if err = json.Unmarshal(msg, &req); err == nil && strings.HasPrefix(req.Method, "agent_") {
+	//		return req, nil
+	//	}
+	//
+	//	var failure *shared.ErrorResponse
+	//	if err = json.Unmarshal(msg, &failure); err == nil && failure.Error != nil {
+	//		return failure, fmt.Errorf(failure.Error.Message)
+	//	}
+	//
+	//	var success *shared.SuccessResponse
+	//	if err = json.Unmarshal(msg, &success); err == nil {
+	//		return success, nil
+	//	}
+	//}
+	//
+	//return in, err
 }
 
 // Decode data
