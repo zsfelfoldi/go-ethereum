@@ -152,39 +152,71 @@ func (self *Jeth) Send(call otto.FunctionCall) (response otto.Value) {
 			return self.err(call, -32603, err.Error(), req.Id)
 		}
 
-	recv:
 		respif, err = self.client.Recv()
 		if err != nil {
 			return self.err(call, -32603, err.Error(), req.Id)
 		}
 
-		agentreq, isRequest := respif.(*shared.Request)
-		if isRequest {
-			self.handleRequest(agentreq)
-			goto recv // receive response after agent interaction
+		var result map[string]interface{}
+		var ok bool
+		if result, ok = respif.(map[string]interface{}); !ok {
+			return self.err(call, -32603, fmt.Sprintf("Invalid response type (%T)", respif), 0)
 		}
 
-		sucres, isSuccessResponse := respif.(*shared.SuccessResponse)
-		errres, isErrorResponse := respif.(*shared.ErrorResponse)
+		_, isSuccessResponse := result["result"]
+		_, isErrorResponse := result["error"]
 		if !isSuccessResponse && !isErrorResponse {
-			return self.err(call, -32603, fmt.Sprintf("Invalid response type (%T)", respif), req.Id)
+			return self.err(call, -32603, fmt.Sprintf("Invalid response ", result), 0)
 		}
 
-		call.Otto.Set("ret_jsonrpc", shared.JsonRpcVersion)
-		call.Otto.Set("ret_id", req.Id)
+		fmt.Printf("result: %T %v\n", result, result)
 
-		var res []byte
+		id, _ := result["id"]
+		call.Otto.Set("ret_id", id)
+
+		jsonver, _ := result["jsonrpc"]
+		call.Otto.Set("ret_jsonrpc", jsonver)
+
+		var payload string
 		if isSuccessResponse {
-			res, err = json.Marshal(sucres.Result)
+			payload = fmt.Sprint(result["result"])
 		} else if isErrorResponse {
-			res, err = json.Marshal(errres.Error)
+			payload = fmt.Sprint(result["error"])
 		}
-
-		call.Otto.Set("ret_result", string(res))
+		call.Otto.Set("ret_result", payload)
 		call.Otto.Set("response_idx", i)
+
 		response, err = call.Otto.Run(`
 		ret_response[response_idx] = { jsonrpc: ret_jsonrpc, id: ret_id, result: JSON.parse(ret_result) };
 		`)
+
+		//agentreq, isRequest := respif.(*shared.Request)
+		//if isRequest {
+		//	self.handleRequest(agentreq)
+		//	goto recv // receive response after agent interaction
+		//}
+		//
+		//sucres, isSuccessResponse := respif.(*shared.SuccessResponse)
+		//errres, isErrorResponse := respif.(*shared.ErrorResponse)
+		//if !isSuccessResponse && !isErrorResponse {
+		//	return self.err(call, -32603, fmt.Sprintf("Invalid response type (%T)", respif), req.Id)
+		//}
+		//
+		//call.Otto.Set("ret_jsonrpc", shared.JsonRpcVersion)
+		//call.Otto.Set("ret_id", req.Id)
+		//
+		//var res []byte
+		//if isSuccessResponse {
+		//	res, err = json.Marshal(sucres.Result)
+		//} else if isErrorResponse {
+		//	res, err = json.Marshal(errres.Error)
+		//}
+		//
+		//call.Otto.Set("ret_result", string(res))
+		//call.Otto.Set("response_idx", i)
+		//response, err = call.Otto.Run(`
+		//ret_response[response_idx] = { jsonrpc: ret_jsonrpc, id: ret_id, result: JSON.parse(ret_result) };
+		//`)
 	}
 
 	if !batch {

@@ -431,7 +431,8 @@ func console(ctx *cli.Context) {
 	startNode(ctx, node)
 
 	// Attach to the newly started node, and either execute script or become interactive
-	client := comms.NewInProcClient(codec.JSON)
+	client, _ := NewInProcClient(node)
+
 	repl := newJSRE(node,
 		ctx.GlobalString(utils.JSpathFlag.Name),
 		ctx.GlobalString(utils.RPCCORSDomainFlag.Name),
