@@ -20,11 +20,15 @@ package light
 
 import (
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
 	"golang.org/x/net/context"
 )
+
+var NoOdr = context.Background()
 
 // OdrBackend is an interface to a backend service that handles odr retrievals
 type OdrBackend interface {
@@ -40,14 +44,14 @@ type OdrRequest interface {
 // TrieRequest is the ODR request type for state/storage trie entries
 type TrieRequest struct {
 	OdrRequest
-	root  common.Hash
-	key   []byte
-	proof []rlp.RawValue
+	Root  common.Hash
+	Key   []byte
+	Proof []rlp.RawValue
 }
 
 // StoreResult stores the retrieved data in local database
 func (req *TrieRequest) StoreResult(db ethdb.Database) {
-	storeProof(db, req.proof)
+	storeProof(db, req.Proof)
 }
 
 // storeProof stores the new trie nodes obtained from a merkle proof in the database
@@ -64,35 +68,35 @@ func storeProof(db ethdb.Database, proof []rlp.RawValue) {
 // NodeDataRequest is the ODR request type for node data (used for retrieving contract code)
 type NodeDataRequest struct {
 	OdrRequest
-	hash common.Hash
-	data []byte
-}
-
-// GetData returns the retrieved node data after a successful request
-func (req *NodeDataRequest) GetData() []byte {
-	return req.data
+	Hash common.Hash
+	Data []byte
 }
 
 // StoreResult stores the retrieved data in local database
 func (req *NodeDataRequest) StoreResult(db ethdb.Database) {
-	db.Put(req.hash[:], req.GetData())
+	db.Put(req.Hash[:], req.Data)
 }
 
-var sha3_nil = crypto.Sha3Hash(nil)
+// BlockRequest is the ODR request type for retrieving block bodies
+type BlockRequest struct {
+	OdrRequest
+	Hash common.Hash
+	Rlp []byte
+}
 
-// retrieveNodeData tries to retrieve node data with the given hash from the network
-func retrieveNodeData(ctx context.Context, odr OdrBackend, hash common.Hash) ([]byte, error) {
-	if hash == sha3_nil {
-		return nil, nil
-	}
-	res, _ := odr.Database().Get(hash[:])
-	if res != nil {
-		return res, nil
-	}
-	r := &NodeDataRequest{hash: hash}
-	if err := odr.Retrieve(ctx, r); err != nil {
-		return nil, err
-	} else {
-		return r.GetData(), nil
-	}
+// StoreResult stores the retrieved data in local database
+func (req *BlockRequest) StoreResult(db ethdb.Database) {
+	core.WriteBodyRLP(db, req.Hash, req.Rlp)
+}
+
+// ReceiptsRequest is the ODR request type for retrieving block bodies
+type ReceiptsRequest struct {
+	OdrRequest
+	Hash common.Hash
+	Receipts types.Receipts
+}
+
+// StoreResult stores the retrieved data in local database
+func (req *ReceiptsRequest) StoreResult(db ethdb.Database) {
+	core.WriteBlockReceipts(db, req.Hash, req.Receipts)
 }

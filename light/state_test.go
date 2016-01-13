@@ -40,11 +40,11 @@ func (odr *testOdr) Database() ethdb.Database {
 func (odr *testOdr) Retrieve(ctx context.Context, req OdrRequest) error {
 	switch req := req.(type) {
 	case *TrieRequest:
-		t, _ := trie.New(req.root, odr.sdb)
-		req.proof = t.Prove(req.key)
+		t, _ := trie.New(req.Root, odr.sdb)
+		req.Proof = t.Prove(req.Key)
 		trie.ClearGlobalCache()
 	case *NodeDataRequest:
-		req.data, _ = odr.sdb.Get(req.hash[:])
+		req.Data, _ = odr.sdb.Get(req.Hash[:])
 	}
 	req.StoreResult(odr.ldb)
 	return nil

@@ -181,6 +181,9 @@ func (c *StateObject) SetBalance(amount *big.Int) {
 	c.dirty = true
 }
 
+// ReturnGas returns the gas back to the origin. Used by the Virtual machine or Closures
+func (c *StateObject) ReturnGas(gas, price *big.Int) {}
+
 // Copy creates a copy of the state object
 func (self *StateObject) Copy() *StateObject {
 	stateObject := NewStateObject(self.Address(), self.odr)

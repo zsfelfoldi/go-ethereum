@@ -35,8 +35,8 @@ var StartingNonce uint64
 type LightState struct {
 	odr  OdrBackend
 	trie *LightTrie
-
 	stateObjects map[string]*StateObject
+	refund *big.Int
 }
 
 // NewLightState creates a new LightState with the specified root.
@@ -50,7 +50,12 @@ func NewLightState(root common.Hash, odr OdrBackend) *LightState {
 		odr:          odr,
 		trie:         tr,
 		stateObjects: make(map[string]*StateObject),
+		refund:       new(big.Int),
 	}
+}
+
+func (self *LightState) AddRefund(gas *big.Int) {
+	self.refund.Add(self.refund, gas)
 }
 
 // HasAccount returns true if an account exists at the given address
@@ -264,6 +269,7 @@ func (self *LightState) Copy() *LightState {
 		state.stateObjects[k] = stateObject.Copy()
 	}
 
+	state.refund.Set(self.refund)
 	return state
 }
 
@@ -272,4 +278,9 @@ func (self *LightState) Copy() *LightState {
 func (self *LightState) Set(state *LightState) {
 	self.trie = state.trie
 	self.stateObjects = state.stateObjects
+	self.refund = state.refund
+}
+
+func (self *LightState) GetRefund() *big.Int {
+	return self.refund
 }
