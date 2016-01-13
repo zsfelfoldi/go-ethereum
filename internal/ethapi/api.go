@@ -838,6 +838,7 @@ func (s *PublicTransactionPoolAPI) GetTransactionByHash(ctx context.Context, txH
 
 // GetTransactionReceipt returns the transaction receipt for the given transaction hash.
 func (s *PublicTransactionPoolAPI) GetTransactionReceipt(txHash common.Hash) (map[string]interface{}, error) {
+	//fmt.Println("API GetTransactionReceipt", txHash)
 	receipt := core.GetReceipt(s.b.ChainDb(), txHash)
 	if receipt == nil {
 		glog.V(logger.Debug).Infof("receipt not found for transaction %s", txHash.Hex())
@@ -845,12 +846,14 @@ func (s *PublicTransactionPoolAPI) GetTransactionReceipt(txHash common.Hash) (ma
 	}
 
 	tx, _, err := getTransaction(s.b.ChainDb(), s.b, txHash)
+	//fmt.Println("getTransaction", err)
 	if err != nil {
 		glog.V(logger.Debug).Infof("%v\n", err)
 		return nil, nil
 	}
 
 	txBlock, blockIndex, index, err := getTransactionBlockData(s.b.ChainDb(), txHash)
+	//fmt.Println("getTransactionBlockData", txBlock, blockIndex, index, err)
 	if err != nil {
 		glog.V(logger.Debug).Infof("%v\n", err)
 		return nil, nil
