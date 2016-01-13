@@ -28,28 +28,6 @@ import (
 	"golang.org/x/net/context"
 )
 
-type testOdr struct {
-	OdrBackend
-	sdb, ldb ethdb.Database
-}
-
-func (odr *testOdr) Database() ethdb.Database {
-	return odr.ldb
-}
-
-func (odr *testOdr) Retrieve(ctx context.Context, req OdrRequest) error {
-	switch req := req.(type) {
-	case *TrieRequest:
-		t, _ := trie.New(req.root, odr.sdb)
-		req.proof = t.Prove(req.key)
-		trie.ClearGlobalCache()
-	case *NodeDataRequest:
-		req.data, _ = odr.sdb.Get(req.hash[:])
-	}
-	req.StoreResult(odr.ldb)
-	return nil
-}
-
 func makeTestState() (common.Hash, ethdb.Database) {
 	sdb, _ := ethdb.NewMemDatabase()
 	st, _ := state.New(common.Hash{}, sdb)

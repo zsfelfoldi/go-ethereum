@@ -590,10 +590,10 @@ func (self *BlockChain) procFutureBlocks() {
 	}
 }
 
-type writeStatus byte
+type WriteStatus byte
 
 const (
-	NonStatTy writeStatus = iota
+	NonStatTy WriteStatus = iota
 	CanonStatTy
 	SplitStatTy
 	SideStatTy
@@ -765,7 +765,7 @@ func (self *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain
 }
 
 // WriteBlock writes the block to the chain.
-func (self *BlockChain) WriteBlock(block *types.Block) (status writeStatus, err error) {
+func (self *BlockChain) WriteBlock(block *types.Block) (status WriteStatus, err error) {
 	self.wg.Add(1)
 	defer self.wg.Done()
 
@@ -1132,7 +1132,7 @@ func (self *BlockChain) InsertHeaderChain(chain []*types.Header, checkFreq int) 
 	self.chainmu.Lock()
 	defer self.chainmu.Unlock()
 
-	return self.hc.InsertHeaderChain(chain, checkFreq)
+	return self.hc.InsertHeaderChain(chain, checkFreq, nil)
 }
 
 // writeHeader writes a header into the local chain, given that its parent is
@@ -1145,7 +1145,8 @@ func (self *BlockChain) InsertHeaderChain(chain []*types.Header, checkFreq int) 
 // in two scenarios: pure-header mode of operation (light clients), or properly
 // separated header/block phases (non-archive clients).
 func (self *BlockChain) writeHeader(header *types.Header) error {
-	return self.hc.WriteHeader(header)
+	_, err := self.hc.WriteHeader(header)
+	return err
 }
 
 // CurrentHeader retrieves the current head header of the canonical chain. The

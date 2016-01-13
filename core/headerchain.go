@@ -113,14 +113,14 @@ func NewHeaderChain(chainDb ethdb.Database, getValidator getHeaderValidatorFn, p
 // without the real blocks. Hence, writing headers directly should only be done
 // in two scenarios: pure-header mode of operation (light clients), or properly
 // separated header/block phases (non-archive clients).
-func (self *HeaderChain) WriteHeader(header *types.Header) error {
+func (self *HeaderChain) WriteHeader(header *types.Header) (status WriteStatus, err error) {
 	self.wg.Add(1)
 	defer self.wg.Done()
 
 	// Calculate the total difficulty of the header
 	ptd := self.GetTd(header.ParentHash)
 	if ptd == nil {
-		return ParentError(header.ParentHash)
+		return NonStatTy, ParentError(header.ParentHash)
 	}
 	td := new(big.Int).Add(header.Difficulty, ptd)
 
@@ -148,6 +148,9 @@ func (self *HeaderChain) WriteHeader(header *types.Header) error {
 			glog.Fatalf("failed to insert head header hash: %v", err)
 		}
 		self.currentHeader = types.CopyHeader(header)
+		status = CanonStatTy
+	} else {
+		status = SideStatTy
 	}
 	// Irrelevant of the canonical status, write the header itself to the database
 	if err := WriteTd(self.chainDb, header.Hash(), td); err != nil {
@@ -156,8 +159,11 @@ func (self *HeaderChain) WriteHeader(header *types.Header) error {
 	if err := WriteHeader(self.chainDb, header); err != nil {
 		glog.Fatalf("failed to write header contents: %v", err)
 	}
-	return nil
+	return
 }
+
+// WsCallBack is a callback function to process header insertion status
+type WsCallBack func(*types.Header, WriteStatus)
 
 // InsertHeaderChain attempts to insert the given header chain in to the local
 // chain, possibly creating a reorg. If an error is returned, it will return the
@@ -167,7 +173,7 @@ func (self *HeaderChain) WriteHeader(header *types.Header) error {
 // should be done or not. The reason behind the optional check is because some
 // of the header retrieval mechanisms already need to verfy nonces, as well as
 // because nonces can be verified sparsely, not needing to check each.
-func (self *HeaderChain) InsertHeaderChain(chain []*types.Header, checkFreq int) (int, error) {
+func (self *HeaderChain) InsertHeaderChain(chain []*types.Header, checkFreq int, cbStatus WsCallBack) (int, error) {
 	self.wg.Add(1)
 	defer self.wg.Done()
 
@@ -263,8 +269,13 @@ func (self *HeaderChain) InsertHeaderChain(chain []*types.Header, checkFreq int)
 			stats.ignored++
 			continue
 		}
-		if err := self.WriteHeader(header); err != nil {
+		status, err := self.WriteHeader(header)
+		if err != nil {
 			return i, err
+		}
+
+		if cbStatus != nil {
+			cbStatus(header, status)
 		}
 		stats.processed++
 	}

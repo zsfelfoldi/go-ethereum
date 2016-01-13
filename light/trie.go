@@ -46,7 +46,7 @@ func NewLightTrie(root common.Hash, odr OdrBackend, useFakeMap bool) *LightTrie 
 // retrieveKey retrieves a single key, returns true and stores nodes in local
 // database if successful
 func (t *LightTrie) retrieveKey(ctx context.Context, key []byte) bool {
-	r := &TrieRequest{root: t.originalRoot, key: key}
+	r := &TrieRequest{Root: t.originalRoot, Key: key}
 	return t.odr.Retrieve(ctx, r) == nil
 }
 
