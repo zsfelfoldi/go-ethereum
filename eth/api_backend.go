@@ -98,7 +98,7 @@ func (b *EthApiBackend) GetState(header *types.Header) (ethapi.State, error) {
 }
 
 func (b *EthApiBackend) GetReceipts(ctx context.Context, blockHash common.Hash) (types.Receipts, error) {
-	return core.GetBlockReceipts(b.eth.chainDb, blockHash), nil
+	return core.GetBlockReceipts(b.eth.chainDb, blockHash, core.GetBlockNumber(b.eth.chainDb, blockHash)), nil
 }
 
 func (b *EthApiBackend) GetTd(blockHash common.Hash) *big.Int {

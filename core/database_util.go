@@ -36,32 +36,70 @@ var (
 	headBlockKey  = []byte("LastBlock")
 	headFastKey   = []byte("LastFast")
 
-	blockPrefix    = []byte("block-")
-	blockNumPrefix = []byte("block-num-")
+	blockPrefix     = []byte("blk-")      // blockPrefix + num (uint64 big endian) + hash + suffix -> data
+	headerPrefix    = []byte("header-")   // headerPrefix + num (uint64 big endian) + hash -> header
+	headerNumSuffix = []byte("-num")      // headerPrefix + num (uint64 big endian) + headerNumSuffix -> hash
+	blockHashPrefix = []byte("blk-hash-") // blockHashPrefix + hash -> num (uint64 big endian)
 
-	headerSuffix = []byte("-header")
-	bodySuffix   = []byte("-body")
-	tdSuffix     = []byte("-td")
-
-	txMetaSuffix        = []byte{0x01}
-	receiptsPrefix      = []byte("receipts-")
-	blockReceiptsPrefix = []byte("receipts-block-")
+	bodySuffix          = []byte("-body")
+	tdSuffix            = []byte("-td")
+	blockReceiptsSuffix = []byte("-receipts")
+	//
+	txMetaSuffix   = []byte{0x01}
+	receiptsPrefix = []byte("receipts-")
 
 	mipmapPre    = []byte("mipmap-log-bloom-")
 	MIPMapLevels = []uint64{1000000, 500000, 100000, 50000, 1000}
 
-	blockHashPrefix = []byte("block-hash-") // [deprecated by the header/block split, remove eventually]
-
 	configPrefix = []byte("ethereum-config-") // config prefix for the db
+
+	// used by old (non-sequential keys) db, now only used for conversion
+	oldBlockPrefix      = []byte("block-")
+	blockNumPrefix      = []byte("block-num-")
+	headerSuffix        = []byte("-header")
+	blockReceiptsPrefix = []byte("receipts-block-")
+	oldBlockHashPrefix  = []byte("block-hash-") // [deprecated by the header/block split, remove eventually]
 )
+
+// encodeBlockNumber encodes a block number as big endian uint64
+func encodeBlockNumber(number uint64) []byte {
+	enc := make([]byte, 8)
+	binary.BigEndian.PutUint64(enc, number)
+	return enc
+}
 
 // GetCanonicalHash retrieves a hash assigned to a canonical block number.
 func GetCanonicalHash(db ethdb.Database, number uint64) common.Hash {
-	data, _ := db.Get(append(blockNumPrefix, big.NewInt(int64(number)).Bytes()...))
+	data, _ := db.Get(append(append(headerPrefix, encodeBlockNumber(number)...), headerNumSuffix...))
 	if len(data) == 0 {
-		return common.Hash{}
+		data, _ = db.Get(append(blockNumPrefix, big.NewInt(int64(number)).Bytes()...))
+		if len(data) == 0 {
+			return common.Hash{}
+		}
 	}
 	return common.BytesToHash(data)
+}
+
+// missingNumber is returned by GetBlockNumber if no header with the
+// given block hash has been stored in the database
+const missingNumber = uint64(0xffffffffffffffff)
+
+// GetBlockNumber returns the block number assigned to a block hash
+// if the corresponding header is present in the database
+func GetBlockNumber(db ethdb.Database, hash common.Hash) uint64 {
+	data, _ := db.Get(append(blockHashPrefix, hash.Bytes()...))
+	if len(data) != 8 {
+		data, _ := db.Get(append(append(oldBlockPrefix, hash.Bytes()...), headerSuffix...))
+		if len(data) == 0 {
+			return missingNumber
+		}
+		header := new(types.Header)
+		if err := rlp.Decode(bytes.NewReader(data), header); err != nil {
+			return missingNumber
+		}
+		return header.Number.Uint64()
+	}
+	return binary.BigEndian.Uint64(data)
 }
 
 // GetHeadHeaderHash retrieves the hash of the current canonical head block's
@@ -100,15 +138,18 @@ func GetHeadFastBlockHash(db ethdb.Database) common.Hash {
 
 // GetHeaderRLP retrieves a block header in its raw RLP database encoding, or nil
 // if the header's not found.
-func GetHeaderRLP(db ethdb.Database, hash common.Hash) rlp.RawValue {
-	data, _ := db.Get(append(append(blockPrefix, hash[:]...), headerSuffix...))
+func GetHeaderRLP(db ethdb.Database, hash common.Hash, number uint64) rlp.RawValue {
+	data, _ := db.Get(append(append(headerPrefix, encodeBlockNumber(number)...), hash.Bytes()...))
+	if len(data) == 0 {
+		data, _ = db.Get(append(append(oldBlockPrefix, hash.Bytes()...), headerSuffix...))
+	}
 	return data
 }
 
 // GetHeader retrieves the block header corresponding to the hash, nil if none
 // found.
-func GetHeader(db ethdb.Database, hash common.Hash) *types.Header {
-	data := GetHeaderRLP(db, hash)
+func GetHeader(db ethdb.Database, hash common.Hash, number uint64) *types.Header {
+	data := GetHeaderRLP(db, hash, number)
 	if len(data) == 0 {
 		return nil
 	}
@@ -121,15 +162,18 @@ func GetHeader(db ethdb.Database, hash common.Hash) *types.Header {
 }
 
 // GetBodyRLP retrieves the block body (transactions and uncles) in RLP encoding.
-func GetBodyRLP(db ethdb.Database, hash common.Hash) rlp.RawValue {
-	data, _ := db.Get(append(append(blockPrefix, hash[:]...), bodySuffix...))
+func GetBodyRLP(db ethdb.Database, hash common.Hash, number uint64) rlp.RawValue {
+	data, _ := db.Get(append(append(append(blockPrefix, encodeBlockNumber(number)...), hash.Bytes()...), bodySuffix...))
+	if len(data) == 0 {
+		data, _ = db.Get(append(append(oldBlockPrefix, hash.Bytes()...), bodySuffix...))
+	}
 	return data
 }
 
 // GetBody retrieves the block body (transactons, uncles) corresponding to the
 // hash, nil if none found.
-func GetBody(db ethdb.Database, hash common.Hash) *types.Body {
-	data := GetBodyRLP(db, hash)
+func GetBody(db ethdb.Database, hash common.Hash, number uint64) *types.Body {
+	data := GetBodyRLP(db, hash, number)
 	if len(data) == 0 {
 		return nil
 	}
@@ -143,10 +187,13 @@ func GetBody(db ethdb.Database, hash common.Hash) *types.Body {
 
 // GetTd retrieves a block's total difficulty corresponding to the hash, nil if
 // none found.
-func GetTd(db ethdb.Database, hash common.Hash) *big.Int {
-	data, _ := db.Get(append(append(blockPrefix, hash.Bytes()...), tdSuffix...))
+func GetTd(db ethdb.Database, hash common.Hash, number uint64) *big.Int {
+	data, _ := db.Get(append(append(append(blockPrefix, encodeBlockNumber(number)...), hash[:]...), tdSuffix...))
 	if len(data) == 0 {
-		return nil
+		data, _ = db.Get(append(append(oldBlockPrefix, hash.Bytes()...), tdSuffix...))
+		if len(data) == 0 {
+			return nil
+		}
 	}
 	td := new(big.Int)
 	if err := rlp.Decode(bytes.NewReader(data), td); err != nil {
@@ -158,13 +205,13 @@ func GetTd(db ethdb.Database, hash common.Hash) *big.Int {
 
 // GetBlock retrieves an entire block corresponding to the hash, assembling it
 // back from the stored header and body.
-func GetBlock(db ethdb.Database, hash common.Hash) *types.Block {
+func GetBlock(db ethdb.Database, hash common.Hash, number uint64) *types.Block {
 	// Retrieve the block header and body contents
-	header := GetHeader(db, hash)
+	header := GetHeader(db, hash, number)
 	if header == nil {
 		return nil
 	}
-	body := GetBody(db, hash)
+	body := GetBody(db, hash, header.Number.Uint64())
 	if body == nil {
 		return nil
 	}
@@ -174,10 +221,13 @@ func GetBlock(db ethdb.Database, hash common.Hash) *types.Block {
 
 // GetBlockReceipts retrieves the receipts generated by the transactions included
 // in a block given by its hash.
-func GetBlockReceipts(db ethdb.Database, hash common.Hash) types.Receipts {
-	data, _ := db.Get(append(blockReceiptsPrefix, hash[:]...))
+func GetBlockReceipts(db ethdb.Database, hash common.Hash, number uint64) types.Receipts {
+	data, _ := db.Get(append(append(append(blockPrefix, encodeBlockNumber(number)...), hash[:]...), blockReceiptsSuffix...))
 	if len(data) == 0 {
-		return nil
+		data, _ = db.Get(append(blockReceiptsPrefix, hash.Bytes()...))
+		if len(data) == 0 {
+			return nil
+		}
 	}
 	storageReceipts := []*types.ReceiptForStorage{}
 	if err := rlp.DecodeBytes(data, &storageReceipts); err != nil {
@@ -235,7 +285,7 @@ func GetReceipt(db ethdb.Database, txHash common.Hash) *types.Receipt {
 
 // WriteCanonicalHash stores the canonical hash for the given block number.
 func WriteCanonicalHash(db ethdb.Database, hash common.Hash, number uint64) error {
-	key := append(blockNumPrefix, big.NewInt(int64(number)).Bytes()...)
+	key := append(append(headerPrefix, encodeBlockNumber(number)...), headerNumSuffix...)
 	if err := db.Put(key, hash.Bytes()); err != nil {
 		glog.Fatalf("failed to store number to hash mapping into database: %v", err)
 		return err
@@ -276,27 +326,41 @@ func WriteHeader(db ethdb.Database, header *types.Header) error {
 	if err != nil {
 		return err
 	}
-	key := append(append(blockPrefix, header.Hash().Bytes()...), headerSuffix...)
+	hash := header.Hash().Bytes()
+	num := header.Number.Uint64()
+	encNum := encodeBlockNumber(num)
+	key := append(blockHashPrefix, hash...)
+	if err := db.Put(key, encNum); err != nil {
+		glog.Fatalf("failed to store hash to number mapping into database: %v", err)
+		return err
+	}
+	if num == 0 {
+		if err := db.Put([]byte("useSequentialKeys"), []byte{1}); err != nil {
+			glog.Fatalf("failed to store sequential key flag: %v", err)
+			return err
+		}
+	}
+	key = append(append(headerPrefix, encNum...), hash...)
 	if err := db.Put(key, data); err != nil {
 		glog.Fatalf("failed to store header into database: %v", err)
 		return err
 	}
-	glog.V(logger.Debug).Infof("stored header #%v [%x…]", header.Number, header.Hash().Bytes()[:4])
+	glog.V(logger.Debug).Infof("stored header #%v [%x…]", header.Number, hash[:4])
 	return nil
 }
 
 // WriteBody serializes the body of a block into the database.
-func WriteBody(db ethdb.Database, hash common.Hash, body *types.Body) error {
+func WriteBody(db ethdb.Database, hash common.Hash, number uint64, body *types.Body) error {
 	data, err := rlp.EncodeToBytes(body)
 	if err != nil {
 		return err
 	}
-	return WriteBodyRLP(db, hash, data)
+	return WriteBodyRLP(db, hash, number, data)
 }
 
 // WriteBodyRLP writes a serialized body of a block into the database.
-func WriteBodyRLP(db ethdb.Database, hash common.Hash, rlp rlp.RawValue) error {
-	key := append(append(blockPrefix, hash.Bytes()...), bodySuffix...)
+func WriteBodyRLP(db ethdb.Database, hash common.Hash, number uint64, rlp rlp.RawValue) error {
+	key := append(append(append(blockPrefix, encodeBlockNumber(number)...), hash.Bytes()...), bodySuffix...)
 	if err := db.Put(key, rlp); err != nil {
 		glog.Fatalf("failed to store block body into database: %v", err)
 		return err
@@ -306,12 +370,12 @@ func WriteBodyRLP(db ethdb.Database, hash common.Hash, rlp rlp.RawValue) error {
 }
 
 // WriteTd serializes the total difficulty of a block into the database.
-func WriteTd(db ethdb.Database, hash common.Hash, td *big.Int) error {
+func WriteTd(db ethdb.Database, hash common.Hash, number uint64, td *big.Int) error {
 	data, err := rlp.EncodeToBytes(td)
 	if err != nil {
 		return err
 	}
-	key := append(append(blockPrefix, hash.Bytes()...), tdSuffix...)
+	key := append(append(append(blockPrefix, encodeBlockNumber(number)...), hash.Bytes()...), tdSuffix...)
 	if err := db.Put(key, data); err != nil {
 		glog.Fatalf("failed to store block total difficulty into database: %v", err)
 		return err
@@ -323,7 +387,7 @@ func WriteTd(db ethdb.Database, hash common.Hash, td *big.Int) error {
 // WriteBlock serializes a block into the database, header and body separately.
 func WriteBlock(db ethdb.Database, block *types.Block) error {
 	// Store the body first to retain database consistency
-	if err := WriteBody(db, block.Hash(), block.Body()); err != nil {
+	if err := WriteBody(db, block.Hash(), block.NumberU64(), block.Body()); err != nil {
 		return err
 	}
 	// Store the header too, signaling full block ownership
@@ -336,7 +400,7 @@ func WriteBlock(db ethdb.Database, block *types.Block) error {
 // WriteBlockReceipts stores all the transaction receipts belonging to a block
 // as a single receipt slice. This is used during chain reorganisations for
 // rescheduling dropped transactions.
-func WriteBlockReceipts(db ethdb.Database, hash common.Hash, receipts types.Receipts) error {
+func WriteBlockReceipts(db ethdb.Database, hash common.Hash, number uint64, receipts types.Receipts) error {
 	// Convert the receipts into their storage form and serialize them
 	storageReceipts := make([]*types.ReceiptForStorage, len(receipts))
 	for i, receipt := range receipts {
@@ -347,7 +411,8 @@ func WriteBlockReceipts(db ethdb.Database, hash common.Hash, receipts types.Rece
 		return err
 	}
 	// Store the flattened receipt slice
-	if err := db.Put(append(blockReceiptsPrefix, hash.Bytes()...), bytes); err != nil {
+	key := append(append(append(blockPrefix, encodeBlockNumber(number)...), hash.Bytes()...), blockReceiptsSuffix...)
+	if err := db.Put(key, bytes); err != nil {
 		glog.Fatalf("failed to store block receipts into database: %v", err)
 		return err
 	}
@@ -423,35 +488,36 @@ func WriteReceipts(db ethdb.Database, receipts types.Receipts) error {
 
 // DeleteCanonicalHash removes the number to hash canonical mapping.
 func DeleteCanonicalHash(db ethdb.Database, number uint64) {
-	db.Delete(append(blockNumPrefix, big.NewInt(int64(number)).Bytes()...))
+	db.Delete(append(append(headerPrefix, encodeBlockNumber(number)...), headerNumSuffix...))
 }
 
 // DeleteHeader removes all block header data associated with a hash.
-func DeleteHeader(db ethdb.Database, hash common.Hash) {
-	db.Delete(append(append(blockPrefix, hash.Bytes()...), headerSuffix...))
+func DeleteHeader(db ethdb.Database, hash common.Hash, number uint64) {
+	db.Delete(append(blockHashPrefix, hash.Bytes()...))
+	db.Delete(append(append(headerPrefix, encodeBlockNumber(number)...), hash.Bytes()...))
 }
 
 // DeleteBody removes all block body data associated with a hash.
-func DeleteBody(db ethdb.Database, hash common.Hash) {
-	db.Delete(append(append(blockPrefix, hash.Bytes()...), bodySuffix...))
+func DeleteBody(db ethdb.Database, hash common.Hash, number uint64) {
+	db.Delete(append(append(append(blockPrefix, encodeBlockNumber(number)...), hash.Bytes()...), bodySuffix...))
 }
 
 // DeleteTd removes all block total difficulty data associated with a hash.
-func DeleteTd(db ethdb.Database, hash common.Hash) {
-	db.Delete(append(append(blockPrefix, hash.Bytes()...), tdSuffix...))
+func DeleteTd(db ethdb.Database, hash common.Hash, number uint64) {
+	db.Delete(append(append(append(blockPrefix, encodeBlockNumber(number)...), hash.Bytes()...), tdSuffix...))
 }
 
 // DeleteBlock removes all block data associated with a hash.
-func DeleteBlock(db ethdb.Database, hash common.Hash) {
-	DeleteBlockReceipts(db, hash)
-	DeleteHeader(db, hash)
-	DeleteBody(db, hash)
-	DeleteTd(db, hash)
+func DeleteBlock(db ethdb.Database, hash common.Hash, number uint64) {
+	DeleteBlockReceipts(db, hash, number)
+	DeleteHeader(db, hash, number)
+	DeleteBody(db, hash, number)
+	DeleteTd(db, hash, number)
 }
 
 // DeleteBlockReceipts removes all receipt data associated with a block hash.
-func DeleteBlockReceipts(db ethdb.Database, hash common.Hash) {
-	db.Delete(append(blockReceiptsPrefix, hash.Bytes()...))
+func DeleteBlockReceipts(db ethdb.Database, hash common.Hash, number uint64) {
+	db.Delete(append(append(append(blockPrefix, encodeBlockNumber(number)...), hash.Bytes()...), blockReceiptsSuffix...))
 }
 
 // DeleteTransaction removes all transaction data associated with a hash.
@@ -471,7 +537,7 @@ func DeleteReceipt(db ethdb.Database, hash common.Hash) {
 // access the old combined block representation. It will be dropped after the
 // network transitions to eth/63.
 func GetBlockByHashOld(db ethdb.Database, hash common.Hash) *types.Block {
-	data, _ := db.Get(append(blockHashPrefix, hash[:]...))
+	data, _ := db.Get(append(oldBlockHashPrefix, hash[:]...))
 	if len(data) == 0 {
 		return nil
 	}

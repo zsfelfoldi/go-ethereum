@@ -54,9 +54,7 @@ var (
 )
 
 const (
-	headerCacheLimit    = 512
 	bodyCacheLimit      = 256
-	tdCacheLimit        = 1024
 	blockCacheLimit     = 256
 	maxFutureBlocks     = 256
 	maxTimeFutureBlocks = 30
@@ -218,8 +216,8 @@ func (bc *BlockChain) SetHead(head uint64) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
-	delFn := func(hash common.Hash) {
-		DeleteBody(bc.chainDb, hash)
+	delFn := func(hash common.Hash, num uint64) {
+		DeleteBody(bc.chainDb, hash, num)
 	}
 	bc.hc.SetHead(head, delFn)
 
@@ -367,7 +365,7 @@ func (bc *BlockChain) ResetWithGenesisBlock(genesis *types.Block) {
 	defer bc.mu.Unlock()
 
 	// Prepare the genesis block and reinitialise the chain
-	if err := bc.hc.WriteTd(genesis.Hash(), genesis.Difficulty()); err != nil {
+	if err := bc.hc.WriteTd(genesis.Hash(), genesis.NumberU64(), genesis.Difficulty()); err != nil {
 		glog.Fatalf("failed to write genesis block TD: %v", err)
 	}
 	if err := WriteBlock(bc.chainDb, genesis); err != nil {
@@ -457,7 +455,7 @@ func (self *BlockChain) GetBody(hash common.Hash) *types.Body {
 		body := cached.(*types.Body)
 		return body
 	}
-	body := GetBody(self.chainDb, hash)
+	body := GetBody(self.chainDb, hash, self.hc.getBlockNumber(hash))
 	if body == nil {
 		return nil
 	}
@@ -473,7 +471,7 @@ func (self *BlockChain) GetBodyRLP(hash common.Hash) rlp.RawValue {
 	if cached, ok := self.bodyRLPCache.Get(hash); ok {
 		return cached.(rlp.RawValue)
 	}
-	body := GetBodyRLP(self.chainDb, hash)
+	body := GetBodyRLP(self.chainDb, hash, self.hc.getBlockNumber(hash))
 	if len(body) == 0 {
 		return nil
 	}
@@ -501,19 +499,25 @@ func (bc *BlockChain) HasBlockAndState(hash common.Hash) bool {
 	return err == nil
 }
 
-// GetBlock retrieves a block from the database by hash, caching it if found.
-func (self *BlockChain) GetBlock(hash common.Hash) *types.Block {
+// getBlock retrieves a block from the database by hash and number,
+// caching it if found.
+func (self *BlockChain) getBlock(hash common.Hash, number uint64) *types.Block {
 	// Short circuit if the block's already in the cache, retrieve otherwise
 	if block, ok := self.blockCache.Get(hash); ok {
 		return block.(*types.Block)
 	}
-	block := GetBlock(self.chainDb, hash)
+	block := GetBlock(self.chainDb, hash, number)
 	if block == nil {
 		return nil
 	}
 	// Cache the found block for next time and return
 	self.blockCache.Add(block.Hash(), block)
 	return block
+}
+
+// GetBlock retrieves a block from the database by hash, caching it if found.
+func (self *BlockChain) GetBlock(hash common.Hash) *types.Block {
+	return self.getBlock(hash, self.hc.getBlockNumber(hash))
 }
 
 // GetBlockByNumber retrieves a block from the database by number, caching it
@@ -523,19 +527,21 @@ func (self *BlockChain) GetBlockByNumber(number uint64) *types.Block {
 	if hash == (common.Hash{}) {
 		return nil
 	}
-	return self.GetBlock(hash)
+	return self.getBlock(hash, number)
 }
 
 // [deprecated by eth/62]
 // GetBlocksFromHash returns the block corresponding to hash and up to n-1 ancestors.
 func (self *BlockChain) GetBlocksFromHash(hash common.Hash, n int) (blocks []*types.Block) {
+	number := self.hc.getBlockNumber(hash)
 	for i := 0; i < n; i++ {
-		block := self.GetBlock(hash)
+		block := self.getBlock(hash, number)
 		if block == nil {
 			break
 		}
 		blocks = append(blocks, block)
 		hash = block.ParentHash()
+		number--
 	}
 	return
 }
@@ -678,13 +684,13 @@ func (self *BlockChain) InsertReceiptChain(blockChain types.Blocks, receiptChain
 				}
 			}
 			// Write all the data out into the database
-			if err := WriteBody(self.chainDb, block.Hash(), block.Body()); err != nil {
+			if err := WriteBody(self.chainDb, block.Hash(), block.NumberU64(), block.Body()); err != nil {
 				errs[index] = fmt.Errorf("failed to write block body: %v", err)
 				atomic.AddInt32(&failed, 1)
 				glog.Fatal(errs[index])
 				return
 			}
-			if err := WriteBlockReceipts(self.chainDb, block.Hash(), receipts); err != nil {
+			if err := WriteBlockReceipts(self.chainDb, block.Hash(), block.NumberU64(), receipts); err != nil {
 				errs[index] = fmt.Errorf("failed to write block receipts: %v", err)
 				atomic.AddInt32(&failed, 1)
 				glog.Fatal(errs[index])
@@ -788,7 +794,7 @@ func (self *BlockChain) WriteBlock(block *types.Block) (status WriteStatus, err 
 		status = SideStatTy
 	}
 	// Irrelevant of the canonical status, write the block itself to the database
-	if err := self.hc.WriteTd(block.Hash(), externTd); err != nil {
+	if err := self.hc.WriteTd(block.Hash(), block.NumberU64(), externTd); err != nil {
 		glog.Fatalf("failed to write block total difficulty: %v", err)
 	}
 	if err := WriteBlock(self.chainDb, block); err != nil {
@@ -911,7 +917,7 @@ func (self *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 		// coalesce logs for later processing
 		coalescedLogs = append(coalescedLogs, logs...)
 
-		if err := WriteBlockReceipts(self.chainDb, block.Hash(), receipts); err != nil {
+		if err := WriteBlockReceipts(self.chainDb, block.Hash(), block.NumberU64(), receipts); err != nil {
 			return i, err
 		}
 
@@ -981,7 +987,7 @@ func (self *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 		// These logs are later announced as deleted.
 		collectLogs = func(h common.Hash) {
 			// Coalesce logs
-			receipts := GetBlockReceipts(self.chainDb, h)
+			receipts := GetBlockReceipts(self.chainDb, h, self.hc.getBlockNumber(h))
 			for _, receipt := range receipts {
 				deletedLogs = append(deletedLogs, receipt.Logs...)
 
@@ -1047,7 +1053,7 @@ func (self *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 		if err := WriteTransactions(self.chainDb, block); err != nil {
 			return err
 		}
-		receipts := GetBlockReceipts(self.chainDb, block.Hash())
+		receipts := GetBlockReceipts(self.chainDb, block.Hash(), block.NumberU64())
 		// write receipts
 		if err := WriteReceipts(self.chainDb, receipts); err != nil {
 			return err
