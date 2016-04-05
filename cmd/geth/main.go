@@ -68,6 +68,7 @@ func init() {
 	app.Action = geth
 	app.HideVersion = true // we have a command to print the version
 	app.Commands = []cli.Command{
+		headerBenchCommand,
 		importCommand,
 		exportCommand,
 		upgradedbCommand,

@@ -21,6 +21,7 @@ import (
 	"io/ioutil"
 	"math/big"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -175,4 +176,72 @@ func benchInsertChain(b *testing.B, disk bool, gen func(int, *BlockGen)) {
 	if i, err := chainman.InsertChain(chain); err != nil {
 		b.Fatalf("insert error (block %d): %v\n", i, err)
 	}
+}
+
+func BenchmarkReadChain_old_header_10k(b *testing.B) {
+	benchReadChain(b, false, false, 10000)
+}
+func BenchmarkReadChain_new_header_10k(b *testing.B) {
+	benchReadChain(b, true, false, 10000)
+}
+func BenchmarkReadChain_old_full_10k(b *testing.B) {
+	benchReadChain(b, false, true, 10000)
+}
+func BenchmarkReadChain_new_full_10k(b *testing.B) {
+	benchReadChain(b, true, true, 10000)
+}
+func BenchmarkReadChain_old_header_100k(b *testing.B) {
+	benchReadChain(b, false, false, 100000)
+}
+func BenchmarkReadChain_new_header_100k(b *testing.B) {
+	benchReadChain(b, true, false, 100000)
+}
+func BenchmarkReadChain_old_full_100k(b *testing.B) {
+	benchReadChain(b, false, true, 100000)
+}
+func BenchmarkReadChain_new_full_100k(b *testing.B) {
+	benchReadChain(b, true, true, 100000)
+}
+func BenchmarkReadChain_old_header_500k(b *testing.B) {
+	benchReadChain(b, false, false, 500000)
+}
+func BenchmarkReadChain_new_header_500k(b *testing.B) {
+	benchReadChain(b, true, false, 500000)
+}
+func BenchmarkReadChain_old_full_500k(b *testing.B) {
+	benchReadChain(b, false, true, 500000)
+}
+func BenchmarkReadChain_new_full_500k(b *testing.B) {
+	benchReadChain(b, true, true, 500000)
+}
+
+func benchReadChain(b *testing.B, newDb, full bool, count uint64) {
+	var datadir string
+	useNewDb = newDb
+	if newDb {
+		datadir = common.DefaultDataDir()+"/_new"
+	} else {
+		datadir = common.DefaultDataDir()+"/_old"
+	}
+	for i:=0; i<b.N; i++ {
+		db, err := ethdb.NewLDBDatabase(filepath.Join(datadir, "chaindata"), 128, 1024)
+		if err != nil {
+			b.Fatalf("error opening database at %v: %v", datadir, err)
+		}
+		chain, _ := NewBlockChain(db, testChainConfig(), FakePow{}, new(event.TypeMux))
+		if chain.CurrentBlock().NumberU64() < count-1 {
+			b.Fatalf("test chain is empty or too short")
+		}
+		
+		for n:=uint64(0); n<count; n++ {
+			header := chain.GetHeaderByNumber(n)
+			if full {
+				hash := header.Hash()
+				GetBody(db, hash, n)
+				GetBlockReceipts(db, hash, n)
+			}
+		}
+		
+		db.Close()
+	}	
 }

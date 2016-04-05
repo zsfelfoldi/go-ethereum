@@ -158,6 +158,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	if err := addMipmapBloomBins(chainDb); err != nil {
 		return nil, err
 	}
+	core.CheckDbVersion(chainDb)
 
 	dappDb, err := ctx.OpenDatabase("dapp", config.DatabaseCache, config.DatabaseHandles)
 	if err != nil {
@@ -182,7 +183,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 		chainDb = config.TestGenesisState
 	}
 	if config.TestGenesisBlock != nil {
-		core.WriteTd(chainDb, config.TestGenesisBlock.Hash(), config.TestGenesisBlock.Difficulty())
+		core.WriteTd(chainDb, config.TestGenesisBlock.Hash(), config.TestGenesisBlock.NumberU64(), config.TestGenesisBlock.Difficulty())
 		core.WriteBlock(chainDb, config.TestGenesisBlock)
 		core.WriteCanonicalHash(chainDb, config.TestGenesisBlock.Hash(), config.TestGenesisBlock.NumberU64())
 		core.WriteHeadBlockHash(chainDb, config.TestGenesisBlock.Hash())
@@ -235,7 +236,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 
 	// load the genesis block or write a new one if no genesis
 	// block is prenent in the database.
-	genesis := core.GetBlock(chainDb, core.GetCanonicalHash(chainDb, 0))
+	genesis := core.GetBlock(chainDb, core.GetCanonicalHash(chainDb, 0), 0)
 	if genesis == nil {
 		genesis, err = core.WriteDefaultGenesisBlock(chainDb)
 		if err != nil {
@@ -554,10 +555,10 @@ func upgradeChainDatabase(db ethdb.Database) error {
 			// Load the block, split and serialize (order!)
 			block := core.GetBlockByHashOld(db, common.BytesToHash(bytes.TrimPrefix(it.Key(), blockPrefix)))
 
-			if err := core.WriteTd(db, block.Hash(), block.DeprecatedTd()); err != nil {
+			if err := core.WriteTd(db, block.Hash(), block.NumberU64(), block.DeprecatedTd()); err != nil {
 				return err
 			}
-			if err := core.WriteBody(db, block.Hash(), &types.Body{block.Transactions(), block.Uncles()}); err != nil {
+			if err := core.WriteBody(db, block.Hash(), block.NumberU64(), &types.Body{block.Transactions(), block.Uncles()}); err != nil {
 				return err
 			}
 			if err := core.WriteHeader(db, block.Header()); err != nil {
@@ -570,10 +571,10 @@ func upgradeChainDatabase(db ethdb.Database) error {
 		// Lastly, upgrade the head block, disabling the upgrade mechanism
 		current := core.GetBlockByHashOld(db, head)
 
-		if err := core.WriteTd(db, current.Hash(), current.DeprecatedTd()); err != nil {
+		if err := core.WriteTd(db, current.Hash(), current.NumberU64(), current.DeprecatedTd()); err != nil {
 			return err
 		}
-		if err := core.WriteBody(db, current.Hash(), &types.Body{current.Transactions(), current.Uncles()}); err != nil {
+		if err := core.WriteBody(db, current.Hash(), current.NumberU64(), &types.Body{current.Transactions(), current.Uncles()}); err != nil {
 			return err
 		}
 		if err := core.WriteHeader(db, current.Header()); err != nil {
@@ -607,7 +608,8 @@ func addMipmapBloomBins(db ethdb.Database) (err error) {
 			return
 		}
 	}()
-	latestBlock := core.GetBlock(db, core.GetHeadBlockHash(db))
+	latestHash := core.GetHeadBlockHash(db)
+	latestBlock := core.GetBlock(db, latestHash, core.GetBlockNumber(db, latestHash))
 	if latestBlock == nil { // clean database
 		return
 	}
@@ -619,7 +621,7 @@ func addMipmapBloomBins(db ethdb.Database) (err error) {
 		if (hash == common.Hash{}) {
 			return fmt.Errorf("chain db corrupted. Could not find block %d.", i)
 		}
-		core.WriteMipmapBloom(db, i, core.GetBlockReceipts(db, hash))
+		core.WriteMipmapBloom(db, i, core.GetBlockReceipts(db, hash, i))
 	}
 	glog.V(logger.Info).Infoln("upgrade completed in", time.Since(tstart))
 	return nil

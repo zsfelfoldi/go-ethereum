@@ -34,6 +34,11 @@ import (
 )
 
 var (
+	headerBenchCommand = cli.Command{
+		Action: headerBenchmark,
+		Name:   "headerbenchmark",
+		Usage:  `read all headers from db in a consecutive order`,
+	}
 	importCommand = cli.Command{
 		Action: importChain,
 		Name:   "import",
@@ -71,6 +76,19 @@ Use "ethereum dump 0" to dump the genesis block.
 	}
 )
 
+func headerBenchmark(ctx *cli.Context) {
+	chain, chainDb := utils.MakeChain(ctx)
+	start := time.Now()
+	last := chain.CurrentHeader().Number.Uint64()
+	for i:=uint64(0);i<=last;i++ {
+		chain.GetHeaderByNumber(i)
+		if (i % 10000 == 0) || (i == last) {
+			fmt.Printf("%d headers fetched in %v\n", i, time.Since(start))
+		}
+	}
+	chainDb.Close()
+}
+
 func importChain(ctx *cli.Context) {
 	if len(ctx.Args()) != 1 {
 		utils.Fatalf("This command requires an argument.")
@@ -82,7 +100,7 @@ func importChain(ctx *cli.Context) {
 	if err != nil {
 		utils.Fatalf("Import error: %v", err)
 	}
-	fmt.Printf("Import done in %v", time.Since(start))
+	fmt.Printf("Import done in %v\n", time.Since(start))
 }
 
 func exportChain(ctx *cli.Context) {
@@ -112,7 +130,7 @@ func exportChain(ctx *cli.Context) {
 	if err != nil {
 		utils.Fatalf("Export error: %v\n", err)
 	}
-	fmt.Printf("Export done in %v", time.Since(start))
+	fmt.Printf("Export done in %v\n", time.Since(start))
 }
 
 func removeDB(ctx *cli.Context) {
