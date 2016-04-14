@@ -164,7 +164,7 @@ func runBlockTest(homesteadBlock *big.Int, test *BlockTest) error {
 		return fmt.Errorf("InsertPreState: %v", err)
 	}
 
-	core.WriteTd(db, test.Genesis.Hash(), test.Genesis.Difficulty())
+	core.WriteTd(db, test.Genesis.Hash(), 0, test.Genesis.Difficulty())
 	core.WriteBlock(db, test.Genesis)
 	core.WriteCanonicalHash(db, test.Genesis.Hash(), test.Genesis.NumberU64())
 	core.WriteHeadBlockHash(db, test.Genesis.Hash())
