@@ -60,6 +60,7 @@ type Network struct {
 
 	// State of the main loop.
 	tab           *Table
+	topic         *TopicTable
 	nursery       []*Node
 	nodes         map[NodeID]*Node // tracks active nodes with state != known
 	timeoutTimers map[timeoutEvent]*time.Timer
@@ -113,6 +114,7 @@ func newNetwork(conn transport, ourPubkey ecdsa.PublicKey, natm nat.Interface, d
 		db:            db,
 		conn:          conn,
 		tab:           newTable(ourID, conn.localAddr()),
+		topic:         NewTopicTable(),
 		refreshReq:    make(chan []*Node),
 		refreshResp:   make(chan (<-chan struct{})),
 		closed:        make(chan struct{}),
