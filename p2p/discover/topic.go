@@ -74,7 +74,7 @@ func (t *TopicTable) deleteEntry(e *topicEntry) {
 	delete(te.entries, e.fifoIdx)
 	if len(te.entries) == 0 {
 		delete(t.topicEntries, e.topic)
-		heap.Remove(t.requested, te.rqItem.index)
+		heap.Remove(&t.requested, te.rqItem.index)
 	}
 	t.globalEntries--
 }
@@ -82,7 +82,7 @@ func (t *TopicTable) deleteEntry(e *topicEntry) {
 // removes least requested element from the fifo
 func (t *TopicTable) leastRequested() *topicEntry {
 	for t.requested.Len() > 0 && t.topicEntries[t.requested[0].topic] == nil {
-		heap.Pop(t.requested)
+		heap.Pop(&t.requested)
 	}
 	if t.requested.Len() == 0 {
 		return nil
@@ -129,7 +129,7 @@ func (t *TopicTable) AddEntries(topics []Topic, node *Node, expiry time.Time) {
 				rqItem: rqItem,
 			}
 			t.topicEntries[topic] = te
-			heap.Push(t.requested, rqItem)
+			heap.Push(&t.requested, rqItem)
 		}
 		
 		if len(te.entries) == MaxEntriesPerTopic {
@@ -191,7 +191,7 @@ func (tq *topicRequestQueue) Pop() interface{} {
 	return item
 }
 
-func (tq *topicRequestQueue) update(item *Item, priority uint64) {
+func (tq *topicRequestQueue) update(item *topicRequestQueueItem, priority uint64) {
 	item.priority = priority
 	heap.Fix(tq, item.index)
 }
