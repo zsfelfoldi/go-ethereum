@@ -24,7 +24,10 @@ package discover
 
 import (
 	"container/heap"
+	"math/rand"
 	"time"
+	
+	"github.com/aristanetworks/goarista/atime"
 )
 
 const MaxEntries = 10000
@@ -43,6 +46,7 @@ type topicInfo struct {
 	entries            map[uint64]*topicEntry
 	fifoHead, fifoTail uint64
 	rqItem             *topicRequestQueueItem
+	wcl 				waitControlLoop
 }
 
 // removes tail element from the fifo
@@ -57,6 +61,7 @@ func (t *topicInfo) getFifoTail() *topicEntry {
 
 type nodeInfo struct {
 	entries map[Topic]*topicEntry
+	waitPeriod map[Topic]*waitEntry
 }
 
 type TopicTable struct {
@@ -158,15 +163,24 @@ func (t *TopicTable) leastRequested() *topicEntry {
 	return t.topics[t.requested[0].topic].getFifoTail()
 }
 
+func (t *TopicTable) checkDeleteNode(node *Node) {
+	n := t.nodes[node]
+	if len(n.entries) == 0 && len(n.waitPeriod == 0) {
+		delete(t.nodes, node)
+	}
+}
+
+// entry should exist
 func (t *TopicTable) deleteEntry(e *topicEntry) {
 	ne := t.nodes[e.node].entries
 	delete(ne, e.topic)
 	if len(ne) == 0 {
-		delete(t.nodes, e.node)
+		t.checkDeleteNode(e.node)
 	}
-	te := t.topics[e.topic]
+	te := t.topics[e.topic[]
 	delete(te.entries, e.fifoIdx)
 	if len(te.entries) == 0 {
+		t.checkDeleteTopic(e.topic)
 		delete(t.topics, e.topic)
 		heap.Remove(&t.requested, te.rqItem.index)
 	}
@@ -174,7 +188,7 @@ func (t *TopicTable) deleteEntry(e *topicEntry) {
 	e.timer.Stop()
 }
 
-func (t *TopicTable) DeleteExpiredEntry(d time.Duration, e *topicEntry) {
+func (t *TopicTable) DeleteExpiredRegEntry(e *topicEntry) {
 	if n := t.nodes[e.node]; n != nil {
 		if ee := n.entries[e.topic]; ee == e {
 			t.deleteEntry(e)
@@ -182,14 +196,87 @@ func (t *TopicTable) DeleteExpiredEntry(d time.Duration, e *topicEntry) {
 	}
 }
 
-func (t *TopicTable) expireEntry(d time.Duration, e *topicEntry) {
+func (t *TopicTable) expireRegEntry(d time.Duration, e *topicEntry) {
 	e.timer = time.AfterFunc(d, func() {
 		select {
-		case t.expired <- e:
+		case t.regExpired <- e:
 		case <-t.closed:
 		}
 	})
 }
+
+type waitEntry struct {
+	node	 *Node
+	topic Topic
+	waitUntil uint64
+	timer *time.Timer
+}
+
+func (t *TopicTable) DeleteExpiredWaitEntry(w *waitEntry) {
+	if n := t.nodes[w.node]; n != nil {
+		if ww := n.waitPeriod[w.topic]; ww == w {
+			delete(n.waitPeriod, w.topic)
+			t.checkDeleteNode(w.node)
+		}
+	}
+}
+
+func (t *TopicTable) expireWaitEntry(d time.Duration, w *waitEntry) {
+	w.timer = time.AfterFunc(d, func() {
+		select {
+		case t.waitExpired <- w:
+		case <-t.closed:
+		}
+	})
+}
+
+// waitPeriod starts a wait period for a given node and topic and returns its
+// length in milliseconds.
+// If a wait period was already started, it just returns the remaining time.
+func (t *TopicTable) waitPeriod(node *Node, t Topic) uint {
+	// check if there was a running or already finished waiting period
+	tm := atime.NanoTime()
+	n := t.getOrNewNode(node)
+	if w := n.waitPeriod[t]; w != nil {
+		if w.waitUntil <= tm {
+			return 0
+		} else {
+			return uint((w-tm-1)/1000000+1)
+		}
+	}
+	// start a new waiting period
+	if len(n.)
+}
+
+func (t *TopicTable) regAllowed(node *Node, t Topic) bool {
+	n := t.nodes[node]
+	if n == nil {
+		return false
+	}
+	if w := n.waitPeriod[t]; w != nil {
+		tm := atime.NanoTime()
+		if w.waitUntil > tm {
+			return false
+		} else {
+			w.waitUntil
+		}
+	} else {
+		return false
+	}	
+}
+
+const (
+	// target average interval between two incoming ad requests
+	wcTargetReqInterval = 600000000000/MaxEntriesPerTopic
+	// average interval is adjusted by difference / wcAdjustConst each time
+	wcAdjustConst = 10
+)
+
+type waitControlLoop struct {
+	lastIncoming, avgInterval	uint64
+}
+
+
 
 type topicRequestQueueItem struct {
 	topic    Topic
