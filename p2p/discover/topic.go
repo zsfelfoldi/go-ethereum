@@ -39,14 +39,14 @@ type topicEntry struct {
 	timer   *time.Timer
 }
 
-type topicEntries struct {
+type topicInfo struct {
 	entries            map[uint64]*topicEntry
 	fifoHead, fifoTail uint64
 	rqItem             *topicRequestQueueItem
 }
 
 // removes tail element from the fifo
-func (t *topicEntries) getFifoTail() *topicEntry {
+func (t *topicInfo) getFifoTail() *topicEntry {
 	for t.entries[t.fifoTail] == nil {
 		t.fifoTail++
 	}
@@ -55,9 +55,13 @@ func (t *topicEntries) getFifoTail() *topicEntry {
 	return tail
 }
 
+type nodeInfo struct {
+	entries map[Topic]*topicEntry
+}
+
 type TopicTable struct {
-	nodeEntries   map[*Node]map[Topic]*topicEntry
-	topicEntries  map[Topic]*topicEntries
+	nodes   map[*Node]*nodeInfo
+	topics  map[Topic]*topicInfo
 	globalEntries uint64
 	requested     topicRequestQueue
 	requestCnt    uint64
@@ -67,8 +71,8 @@ type TopicTable struct {
 
 func NewTopicTable() *TopicTable {
 	return &TopicTable{
-		nodeEntries:  make(map[*Node]map[Topic]*topicEntry),
-		topicEntries: make(map[Topic]*topicEntries),
+		nodes:  make(map[*Node]*nodeInfo),
+		topics: make(map[Topic]*topicInfo),
 		closed:       make(chan struct{}),
 		expired:      make(chan *topicEntry),
 	}
@@ -79,7 +83,7 @@ func (t *TopicTable) Stop() {
 }
 
 func (t *TopicTable) GetEntries(topic Topic) []*Node {
-	te := t.topicEntries[topic]
+	te := t.topics[topic]
 	if te == nil {
 		return nil
 	}
@@ -96,26 +100,28 @@ func (t *TopicTable) GetEntries(topic Topic) []*Node {
 
 func (t *TopicTable) AddEntries(topics []Topic, node *Node, expiry time.Duration) {
 	// clear previous entries by the same node
-	if entries, ok := t.nodeEntries[node]; ok {
-		for _, entry := range entries {
-			delete(t.topicEntries[entry.topic].entries, entry.fifoIdx)
+	if n, ok := t.nodes[node]; ok {
+		for _, entry := range n.entries {
+			delete(t.topics[entry.topic].entries, entry.fifoIdx)
 			t.globalEntries--
 		}
+	} else {
+		t.nodes[node] = &nodeInfo{}
 	}
 	entries := make(map[Topic]*topicEntry)
-	t.nodeEntries[node] = entries
+	t.nodes[node].entries = entries
 	for _, topic := range topics {
-		te := t.topicEntries[topic]
+		te := t.topics[topic]
 		if te == nil {
 			rqItem := &topicRequestQueueItem{
 				topic:    topic,
 				priority: t.requestCnt,
 			}
-			te = &topicEntries{
+			te = &topicInfo{
 				entries: make(map[uint64]*topicEntry),
 				rqItem:  rqItem,
 			}
-			t.topicEntries[topic] = te
+			t.topics[topic] = te
 			heap.Push(&t.requested, rqItem)
 		}
 
@@ -143,25 +149,25 @@ func (t *TopicTable) AddEntries(topics []Topic, node *Node, expiry time.Duration
 
 // removes least requested element from the fifo
 func (t *TopicTable) leastRequested() *topicEntry {
-	for t.requested.Len() > 0 && t.topicEntries[t.requested[0].topic] == nil {
+	for t.requested.Len() > 0 && t.topics[t.requested[0].topic] == nil {
 		heap.Pop(&t.requested)
 	}
 	if t.requested.Len() == 0 {
 		return nil
 	}
-	return t.topicEntries[t.requested[0].topic].getFifoTail()
+	return t.topics[t.requested[0].topic].getFifoTail()
 }
 
 func (t *TopicTable) deleteEntry(e *topicEntry) {
-	ne := t.nodeEntries[e.node]
+	ne := t.nodes[e.node].entries
 	delete(ne, e.topic)
 	if len(ne) == 0 {
-		delete(t.nodeEntries, e.node)
+		delete(t.nodes, e.node)
 	}
-	te := t.topicEntries[e.topic]
+	te := t.topics[e.topic]
 	delete(te.entries, e.fifoIdx)
 	if len(te.entries) == 0 {
-		delete(t.topicEntries, e.topic)
+		delete(t.topics, e.topic)
 		heap.Remove(&t.requested, te.rqItem.index)
 	}
 	t.globalEntries--
@@ -169,8 +175,8 @@ func (t *TopicTable) deleteEntry(e *topicEntry) {
 }
 
 func (t *TopicTable) DeleteExpiredEntry(d time.Duration, e *topicEntry) {
-	if ne := t.nodeEntries[e.node]; ne != nil {
-		if ee := ne[e.topic]; ee == e {
+	if n := t.nodes[e.node]; n != nil {
+		if ee := n.entries[e.topic]; ee == e {
 			t.deleteEntry(e)
 		}
 	}
