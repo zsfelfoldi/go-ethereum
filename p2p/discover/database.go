@@ -63,6 +63,7 @@ var (
 	nodeDBDiscoverPong          = nodeDBDiscoverRoot + ":lastpong"
 	nodeDBDiscoverFindFails     = nodeDBDiscoverRoot + ":findfail"
 	nodeDBDiscoverLocalEndpoint = nodeDBDiscoverRoot + ":localendpoint"
+	nodeDBTopicRegTickets       = ":tickets"
 )
 
 // newNodeDB creates a new node database for storing and retrieving infos about
@@ -364,6 +365,25 @@ seek:
 		nodes = append(nodes, n)
 	}
 	return nodes
+}
+
+func (db *nodeDB) fetchTopicRegTickets(id NodeID) (issued, used uint32) {
+	key := makeKey(id, nodeDBTopicRegTickets)
+	blob, _ := db.lvl.Get(key, nil)
+	if len(blob) != 8 {
+		return 0, 0
+	}
+	issued = binary.BigEndian.Uint32(blob[0:4])
+	used = binary.BigEndian.Uint32(blob[4:8])
+	return 
+}
+
+func (db *nodeDB) updateTopicRegTickets(id NodeID, issued, used uint32) error {
+	key := makeKey(id, nodeDBTopicRegTickets)
+	blob := make([]byte, 8)
+	binary.BigEndian.PutUint32(blob[0:4], issued)
+	binary.BigEndian.PutUint32(blob[4:8], used)
+	return db.lvl.Put(key, blob, nil)
 }
 
 // reads the next node record from the iterator, skipping over other

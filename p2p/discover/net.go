@@ -114,7 +114,7 @@ func newNetwork(conn transport, ourPubkey ecdsa.PublicKey, natm nat.Interface, d
 		db:            db,
 		conn:          conn,
 		tab:           newTable(ourID, conn.localAddr()),
-		topic:         NewTopicTable(),
+		topic:         NewTopicTable(db),
 		refreshReq:    make(chan []*Node),
 		refreshResp:   make(chan (<-chan struct{})),
 		closed:        make(chan struct{}),
