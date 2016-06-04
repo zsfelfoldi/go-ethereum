@@ -304,7 +304,7 @@ const (
 	regTimeWindow = 10 // seconds
 	avgNoTicketTimeout = uint64(time.Minute)*10
 	// target average interval between two incoming ad requests
-	wcTargetReqInterval = uint64(time.Minute)*10/MaxEntriesPerTopic
+	wcTargetRegInterval = uint64(time.Minute)*10/MaxEntriesPerTopic
 	// 
 	wcTimeConst = uint64(time.Minute)*10
 )
@@ -321,7 +321,7 @@ func (w *waitControlLoop) registered(tm uint64) {
 
 func (w *waitControlLoop) nextWaitPeriod(tm uint64) uint64 {
 	period := tm-w.lastIncoming
- 	wp := uint64(float64(w.waitPeriod) * math.Exp((float64(wcTargetReqInterval)-float64(period))/float64(wcTimeConst)))
+ 	wp := uint64(float64(w.waitPeriod) * math.Exp((float64(wcTargetRegInterval)-float64(period))/float64(wcTimeConst)))
 	if wp < minWaitPeriod {
 		wp = minWaitPeriod
 	}
