@@ -27,7 +27,7 @@ import (
 	"math"
 	"math/rand"
 	"time"
-	
+
 	"github.com/aristanetworks/goarista/atime"
 )
 
@@ -40,14 +40,14 @@ type topicEntry struct {
 	topic   Topic
 	fifoIdx uint64
 	node    *Node
-	expire	uint64 // nanotime
+	expire  uint64 // nanotime
 }
 
 type topicInfo struct {
 	entries            map[uint64]*topicEntry
 	fifoHead, fifoTail uint64
 	rqItem             *topicRequestQueueItem
-	wcl 				waitControlLoop
+	wcl                waitControlLoop
 }
 
 // removes tail element from the fifo
@@ -61,24 +61,24 @@ func (t *topicInfo) getFifoTail() *topicEntry {
 }
 
 type nodeInfo struct {
-	entries map[Topic]*topicEntry
-	noTicketUntil uint64 // nanotime
+	entries                          map[Topic]*topicEntry
+	noTicketUntil                    uint64 // nanotime
 	lastIssuedTicket, lastUsedTicket uint32
 }
 
 type TopicTable struct {
-	db *nodeDB
-	nodes   map[*Node]*nodeInfo
-	topics  map[Topic]*topicInfo
-	globalEntries uint64
-	requested     topicRequestQueue
-	requestCnt    uint64
+	db                    *nodeDB
+	nodes                 map[*Node]*nodeInfo
+	topics                map[Topic]*topicInfo
+	globalEntries         uint64
+	requested             topicRequestQueue
+	requestCnt            uint64
 	lastGarbageCollection uint64 // nanotime
 }
 
 func NewTopicTable(db *nodeDB) *TopicTable {
 	return &TopicTable{
-		db: db,
+		db:     db,
 		nodes:  make(map[*Node]*nodeInfo),
 		topics: make(map[Topic]*topicInfo),
 	}
@@ -117,9 +117,9 @@ func (t *TopicTable) getOrNewNode(node *Node) *nodeInfo {
 	if n == nil {
 		issued, used := t.db.fetchTopicRegTickets(node.ID)
 		n = &nodeInfo{
-			entries: make(map[Topic]*topicEntry),
+			entries:          make(map[Topic]*topicEntry),
 			lastIssuedTicket: issued,
-			lastUsedTicket: used,
+			lastUsedTicket:   used,
 		}
 		t.nodes[node] = n
 	}
@@ -230,14 +230,14 @@ func (t *TopicTable) useTicket(node *Node, serialNo uint32, topics []Topic, wait
 		n.lastUsedTicket = serialNo
 		t.storeTicket(node)
 	}
-	
+
 	tm := atime.NanoTime()
 	currTime := uint32(tm / 1000000000)
 	var regTopics []Topic
 	for i, w := range waitPeriods {
-		relTime := int32(currTime-w)		// make it safe even if time turns around
-		if relTime >= -1 && relTime <= regTimeWindow+1 &&		// give clients a little security margin on both ends
-		   n.entries[topics[i]] == nil {		// don't register again if there is an active entry
+		relTime := int32(currTime - w)                    // make it safe even if time turns around
+		if relTime >= -1 && relTime <= regTimeWindow+1 && // give clients a little security margin on both ends
+			n.entries[topics[i]] == nil { // don't register again if there is an active entry
 			regTopics = append(regTopics, topics[i])
 		}
 	}
@@ -247,14 +247,14 @@ func (t *TopicTable) useTicket(node *Node, serialNo uint32, topics []Topic, wait
 		return true
 	} else {
 		return false
-	}	
+	}
 }
 
 func (t *TopicTable) getTicket(node *Node, topics []Topic) (serialNo, currTime uint32, waitUntil []uint32) {
 	t.collectGarbage()
 
 	tm := atime.NanoTime()
-	currTime = uint32(tm/1000000000)
+	currTime = uint32(tm / 1000000000)
 	n := t.getOrNewNode(node)
 	if n.noTicketUntil > tm {
 		return
@@ -279,39 +279,39 @@ const gcInterval = uint64(time.Minute)
 
 func (t *TopicTable) collectGarbage() {
 	tm := atime.NanoTime()
-	if tm - t.lastGarbageCollection < gcInterval {
+	if tm-t.lastGarbageCollection < gcInterval {
 		return
 	}
 	t.lastGarbageCollection = tm
-	
+
 	for node, n := range t.nodes {
 		for _, e := range n.entries {
 			if e.expire <= tm {
 				t.deleteEntry(e)
 			}
 		}
-		
+
 		t.checkDeleteNode(node)
 	}
-	
+
 	for topic, _ := range t.topics {
 		t.checkDeleteTopic(topic)
 	}
 }
 
 const (
-	minWaitPeriod = uint64(time.Minute)
-	regTimeWindow = 10 // seconds
-	avgNoTicketTimeout = uint64(time.Minute)*10
+	minWaitPeriod      = uint64(time.Minute)
+	regTimeWindow      = 10 // seconds
+	avgNoTicketTimeout = uint64(time.Minute) * 10
 	// target average interval between two incoming ad requests
-	wcTargetRegInterval = uint64(time.Minute)*10/MaxEntriesPerTopic
-	// 
-	wcTimeConst = uint64(time.Minute)*10
+	wcTargetRegInterval = uint64(time.Minute) * 10 / MaxEntriesPerTopic
+	//
+	wcTimeConst = uint64(time.Minute) * 10
 )
 
 // initialization is not required, will set to minWaitPeriod at first registration
 type waitControlLoop struct {
-	lastIncoming, waitPeriod	uint64
+	lastIncoming, waitPeriod uint64
 }
 
 func (w *waitControlLoop) registered(tm uint64) {
@@ -320,8 +320,8 @@ func (w *waitControlLoop) registered(tm uint64) {
 }
 
 func (w *waitControlLoop) nextWaitPeriod(tm uint64) uint64 {
-	period := tm-w.lastIncoming
- 	wp := uint64(float64(w.waitPeriod) * math.Exp((float64(wcTargetRegInterval)-float64(period))/float64(wcTimeConst)))
+	period := tm - w.lastIncoming
+	wp := uint64(float64(w.waitPeriod) * math.Exp((float64(wcTargetRegInterval)-float64(period))/float64(wcTimeConst)))
 	if wp < minWaitPeriod {
 		wp = minWaitPeriod
 	}

@@ -375,7 +375,7 @@ func (db *nodeDB) fetchTopicRegTickets(id NodeID) (issued, used uint32) {
 	}
 	issued = binary.BigEndian.Uint32(blob[0:4])
 	used = binary.BigEndian.Uint32(blob[4:8])
-	return 
+	return
 }
 
 func (db *nodeDB) updateTopicRegTickets(id NodeID, issued, used uint32) error {

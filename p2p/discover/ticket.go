@@ -23,55 +23,60 @@
 package discover
 
 import (
-	"encoding/binary"
 	"container/heap"
+	"encoding/binary"
 	"math"
 	"math/rand"
 	"time"
-	
-	"github.com/ethereum/go-ethereum/crypto"
+
 	"github.com/aristanetworks/goarista/atime"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 type ticket struct {
-	id	NodeID
-	topics []Topic
-	regTime []uint32   // local absolute time
-	pong []byte
-	refCnt int
+	id      NodeID
+	topics  []Topic
+	regTime []uint32 // local absolute time
+	pong    []byte
+	refCnt  int
 }
 
 const (
 	ticketGroupTime = 60
-	timeWindow = 30	
+	timeWindow      = 30
 )
 
 type topicTickets struct {
-	rad topicRadius
+	rad  topicRadius
 	time map[uint32][]*ticket
 }
 
 type ticketStore struct {
-	topics map[Topic]*topicTickets
-	nodes map[NodeID]*ticket
+	topics    map[Topic]*topicTickets
+	nodes     map[NodeID]*ticket
+	lastGroup uint32
 }
 
 func (s *ticketStore) add(localTime uint32, t *ticket) {
-	if s.nodes[t] != nil {
+	if s.nodes[t.id] != nil {
 		return
+	}
+	
+	if s.lastGroup == 0 {
+		s.lastGroup = localTime / ticketGroupTime
 	}
 
 	for _, topic := range t.topics {
 		if tt, ok := s.topics[topic]; ok && tt.rad.isInRadius(t) {
 			tt.rad.adjust(t)
-			
+
 			if tt.rad.converged {
 				wait := t.regTime[topic] - localTime
 				rnd := rand.ExpFloat64()
 				if rnd > 10 {
 					rnd = 10
 				}
-				if float64(wait) < keepTicketConst + keepTicketExp * rnd {
+				if float64(wait) < keepTicketConst+keepTicketExp*rnd {
 					// use the ticket to register this topic
 					tgroup := t.regTime[topic] / ticketGroupTime
 					tt.time[tgroup] = append(tt.time[tgroup], t)
@@ -80,49 +85,59 @@ func (s *ticketStore) add(localTime uint32, t *ticket) {
 			}
 		}
 	}
-	
+
+	if t.refCnt > 0 {
+		s.nodes[t.id] = t
+	}
 }
 
 func (s *ticketStore) register(localTime uint32) (res []*ticket) {
-	m := make(map[*ticket]struct{})
 	ltGroup := localTime / ticketGroupTime
 	for topic, tt := range s.topics {
-		list := tt.time[ltGroup]
-		i := 0
-		for i < len(list) {
-			t := list[i]
-			if t.regTime[topic] <= localTime {
-				list = append(list[:i], list[i+1:]...)
-				if _, ok := m[t]; !ok {		// don't add a ticket twice
+		for g := s.lastGroup; g <= ltGroup; g++ {
+			list := tt.time[g]
+			i := 0
+			for i < len(list) {
+				t := list[i]
+				if t.regTime[topic] <= localTime {
+					list = append(list[:i], list[i+1:]...)
 					res = append(res, t)
-					m[t] = struct{}{}
+					t.refCnt--
+					if t.refCnt == 0 {
+						delete(s.nodes, t.id)
+					}
+				} else {
+					i++
 				}
-				t.refCnt--
-				if t.refCnt == 0 {
-					
-				}
-			} else {
-				i++
+			}
+			if g != ltGroup {
+				delete(tt.time, g)
 			}
 		}
 	}
+	s.lastGroup = ltGroup
 	return
 }
 
-func (s *ticketStore) needMoreTickets(t Topic) {
-	
+func (s *ticketStore) ticketsInWindow(localTime uint32, t Topic) int {
+	ltGroup := localTime / ticketGroupTime
+	sum := 0
+	for g := ltGroup; g < ltGroup+timeWindow; g++ {
+		sum += len(s.topics[t].time[g])
+	}
+	return sum
 }
 
 func (s *ticketStore) getNodeTicket(id NodeID) *ticket {
-	
+	return s.nodes[id]
 }
 
 type topicRadius struct {
-	topic Topic
+	topic           Topic
 	topicHashPrefix uint64
-	radius uint64
-	filteredRadius float64 // only for convergence detection
-	converged bool
+	radius          uint64
+	filteredRadius  float64 // only for convergence detection
+	converged       bool
 }
 
 const targetWaitTime = 600
@@ -135,7 +150,7 @@ func (r *topicRadius) isInRadius(t *ticket) bool {
 
 func (r *topicRadius) adjust(t *ticket) {
 	wait := t.wait[r.topic] - t.currTime
-	adjust := (float64(wait) / float64(targetWaitTime) - 1) * 2
+	adjust := (float64(wait)/float64(targetWaitTime) - 1) * 2
 	if adjust > 1 {
 		adjust = 1
 	}
@@ -147,7 +162,7 @@ func (r *topicRadius) adjust(t *ticket) {
 	} else {
 		adjust *= 0.1
 	}
-	
+
 	radius := float64(r.radius) * (1 + adjust)
 	if radius > float64(uint64(-1)) {
 		r.radius = uint64(-1)
@@ -173,10 +188,10 @@ func newTopicRadius(t Topic) *topicRadius {
 	topicHashPrefix := binary.BigEndian.Uint64(topicHash[0:8])
 
 	return &topicRadius{
-		topic: t,
+		topic:           t,
 		topicHashPrefix: topicHashPrefix,
-		radius: 	uint64(-1),
-		filteredRadius: float64(uint64(-1)),
-		converged: false,
+		radius:          uint64(-1),
+		filteredRadius:  float64(uint64(-1)),
+		converged:       false,
 	}
 }
