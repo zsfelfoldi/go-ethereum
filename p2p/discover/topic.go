@@ -34,7 +34,7 @@ import (
 const MaxEntries = 10000
 const MaxEntriesPerTopic = 50
 
-type Topic uint64
+type Topic string
 
 type topicEntry struct {
 	topic   Topic

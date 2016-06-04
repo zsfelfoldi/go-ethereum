@@ -23,63 +23,61 @@
 package discover
 
 import (
-	"container/heap"
 	"encoding/binary"
-	"math"
 	"math/rand"
 	"time"
 
-	"github.com/aristanetworks/goarista/atime"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
 type ticket struct {
 	id      NodeID
 	topics  []Topic
-	regTime []uint32 // local absolute time
+	regTime []uint64 // local absolute time
 	pong    []byte
 	refCnt  int
 }
 
 const (
-	ticketGroupTime = 60
+	ticketGroupTime = uint64(time.Minute)
 	timeWindow      = 30
+	keepTicketConst = uint64(time.Minute) * 20
+	keepTicketExp   = uint64(time.Minute) * 20
+	maxRadius = 0xffffffffffffffff
+	minRadAverage = 1024
 )
 
-type topicTickets struct {
-	rad  topicRadius
-	time map[uint32][]*ticket
-}
-
 type ticketStore struct {
-	topics    map[Topic]*topicTickets
-	nodes     map[NodeID]*ticket
-	lastGroup uint32
+	topics           map[Topic]*topicTickets
+	nodes            map[NodeID]*ticket
+	lastGroupFetched uint64
+	minRadSum		float64
+	minRadCnt, minRadius uint64
 }
 
-func (s *ticketStore) add(localTime uint32, t *ticket) {
+func (s *ticketStore) add(localTime uint64, t *ticket) {
 	if s.nodes[t.id] != nil {
 		return
 	}
-	
-	if s.lastGroup == 0 {
-		s.lastGroup = localTime / ticketGroupTime
+
+	if s.lastGroupFetched == 0 {
+		s.lastGroupFetched = localTime / ticketGroupTime
 	}
 
-	for _, topic := range t.topics {
-		if tt, ok := s.topics[topic]; ok && tt.rad.isInRadius(t) {
-			tt.rad.adjust(t)
+	for i, topic := range t.topics {
+		if tt, ok := s.topics[topic]; ok && tt.isInRadius(t) {
+			tt.adjust(localTime, ticketRef{t, i}, s.minRadius)
 
-			if tt.rad.converged {
-				wait := t.regTime[topic] - localTime
+			if tt.converged {
+				wait := t.regTime[i] - localTime
 				rnd := rand.ExpFloat64()
 				if rnd > 10 {
 					rnd = 10
 				}
-				if float64(wait) < keepTicketConst+keepTicketExp*rnd {
+				if float64(wait) < float64(keepTicketConst)+float64(keepTicketExp)*rnd {
 					// use the ticket to register this topic
-					tgroup := t.regTime[topic] / ticketGroupTime
-					tt.time[tgroup] = append(tt.time[tgroup], t)
+					tgroup := t.regTime[i] / ticketGroupTime
+					tt.time[tgroup] = append(tt.time[tgroup], ticketRef{t, i})
 					t.refCnt++
 				}
 			}
@@ -91,20 +89,20 @@ func (s *ticketStore) add(localTime uint32, t *ticket) {
 	}
 }
 
-func (s *ticketStore) register(localTime uint32) (res []*ticket) {
+func (s *ticketStore) fetch(localTime uint64) (res []*ticket) {
 	ltGroup := localTime / ticketGroupTime
-	for topic, tt := range s.topics {
-		for g := s.lastGroup; g <= ltGroup; g++ {
+	for _, tt := range s.topics {
+		for g := s.lastGroupFetched; g <= ltGroup; g++ {
 			list := tt.time[g]
 			i := 0
 			for i < len(list) {
 				t := list[i]
-				if t.regTime[topic] <= localTime {
+				if t.t.regTime[t.idx] <= localTime {
 					list = append(list[:i], list[i+1:]...)
-					res = append(res, t)
-					t.refCnt--
-					if t.refCnt == 0 {
-						delete(s.nodes, t.id)
+					res = append(res, t.t)
+					t.t.refCnt--
+					if t.t.refCnt == 0 {
+						delete(s.nodes, t.t.id)
 					}
 				} else {
 					i++
@@ -115,11 +113,11 @@ func (s *ticketStore) register(localTime uint32) (res []*ticket) {
 			}
 		}
 	}
-	s.lastGroup = ltGroup
+	s.lastGroupFetched = ltGroup
 	return
 }
 
-func (s *ticketStore) ticketsInWindow(localTime uint32, t Topic) int {
+func (s *ticketStore) ticketsInWindow(localTime uint64, t Topic) int {
 	ltGroup := localTime / ticketGroupTime
 	sum := 0
 	for g := ltGroup; g < ltGroup+timeWindow; g++ {
@@ -132,24 +130,56 @@ func (s *ticketStore) getNodeTicket(id NodeID) *ticket {
 	return s.nodes[id]
 }
 
-type topicRadius struct {
+func (s *ticketStore) adjustMinRadius(target, found NodeID) {
+	tp := binary.BigEndian.Uint64(target[0:8])
+	fp := binary.BigEndian.Uint64(found[0:8])
+	dist := tp ^ fp
+	mrAdjust := float64(dist) * 16
+	if mrAdjust > maxRadius / 2 {
+		mrAdjust = maxRadius / 2
+	}
+	
+	if s.minRadCnt < minRadAverage {
+		s.minRadCnt++
+	} else {
+		s.minRadSum -= s.minRadSum / minRadAverage
+	}
+	s.minRadSum += mrAdjust
+	s.minRadius = uint64(s.minRadSum / float64(s.minRadCnt))
+}
+
+type ticketRef struct {
+	t *ticket
+	idx int
+}
+
+type topicTickets struct {
 	topic           Topic
 	topicHashPrefix uint64
 	radius          uint64
 	filteredRadius  float64 // only for convergence detection
 	converged       bool
+
+	time map[uint64][]ticketRef
 }
 
-const targetWaitTime = 600
+const targetWaitTime = uint64(time.Minute) * 10
 
-func (r *topicRadius) isInRadius(t *ticket) bool {
+func (r *topicTickets) isInRadius(t *ticket) bool {
 	nodePrefix := binary.BigEndian.Uint64(t.id[0:8])
 	dist := nodePrefix ^ r.topicHashPrefix
 	return dist < r.radius
 }
 
-func (r *topicRadius) adjust(t *ticket) {
-	wait := t.wait[r.topic] - t.currTime
+func (r *topicTickets) newTarget() (target NodeID) {
+	rnd := uint64(rand.Int63n(int64(r.radius/2))) * 2
+	prefix := r.topicHashPrefix ^ rnd
+	binary.BigEndian.PutUint64(target[0:8], prefix)
+	return
+}
+
+func (r *topicTickets) adjust(localTime uint64, t ticketRef, minRadius uint64) {
+	wait := t.t.regTime[t.idx] - localTime
 	adjust := (float64(wait)/float64(targetWaitTime) - 1) * 2
 	if adjust > 1 {
 		adjust = 1
@@ -164,8 +194,8 @@ func (r *topicRadius) adjust(t *ticket) {
 	}
 
 	radius := float64(r.radius) * (1 + adjust)
-	if radius > float64(uint64(-1)) {
-		r.radius = uint64(-1)
+	if radius > float64(maxRadius) {
+		r.radius = maxRadius
 		radius = float64(r.radius)
 	} else {
 		r.radius = uint64(radius)
@@ -183,15 +213,15 @@ func (r *topicRadius) adjust(t *ticket) {
 	}
 }
 
-func newTopicRadius(t Topic) *topicRadius {
-	topicHash := crypto.Keccak256Hash(t)
+func newtopicTickets(t Topic) *topicTickets {
+	topicHash := crypto.Keccak256Hash([]byte(t))
 	topicHashPrefix := binary.BigEndian.Uint64(topicHash[0:8])
 
-	return &topicRadius{
+	return &topicTickets{
 		topic:           t,
 		topicHashPrefix: topicHashPrefix,
-		radius:          uint64(-1),
-		filteredRadius:  float64(uint64(-1)),
+		radius:          maxRadius,
+		filteredRadius:  float64(maxRadius),
 		converged:       false,
 	}
 }
