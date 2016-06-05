@@ -43,15 +43,15 @@ const (
 	timeWindow      = 30
 	keepTicketConst = uint64(time.Minute) * 20
 	keepTicketExp   = uint64(time.Minute) * 20
-	maxRadius = 0xffffffffffffffff
-	minRadAverage = 1024
+	maxRadius       = 0xffffffffffffffff
+	minRadAverage   = 1024
 )
 
 type ticketStore struct {
-	topics           map[Topic]*topicTickets
-	nodes            map[NodeID]*ticket
-	lastGroupFetched uint64
-	minRadSum		float64
+	topics               map[Topic]*topicTickets
+	nodes                map[NodeID]*ticket
+	lastGroupFetched     uint64
+	minRadSum            float64
 	minRadCnt, minRadius uint64
 }
 
@@ -135,10 +135,10 @@ func (s *ticketStore) adjustMinRadius(target, found NodeID) {
 	fp := binary.BigEndian.Uint64(found[0:8])
 	dist := tp ^ fp
 	mrAdjust := float64(dist) * 16
-	if mrAdjust > maxRadius / 2 {
+	if mrAdjust > maxRadius/2 {
 		mrAdjust = maxRadius / 2
 	}
-	
+
 	if s.minRadCnt < minRadAverage {
 		s.minRadCnt++
 	} else {
@@ -149,7 +149,7 @@ func (s *ticketStore) adjustMinRadius(target, found NodeID) {
 }
 
 type ticketRef struct {
-	t *ticket
+	t   *ticket
 	idx int
 }
 
