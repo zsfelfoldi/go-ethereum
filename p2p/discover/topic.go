@@ -62,9 +62,9 @@ func (t *topicInfo) getFifoTail() *topicEntry {
 
 type nodeInfo struct {
 	entries                          map[Topic]*topicEntry
-	noRegUntil                       uint64 // nanotime
-	noRegTicket                      uint32 // you can't register a ticket newer than this one before noRegUntil (absolute time)
 	lastIssuedTicket, lastUsedTicket uint32
+	// you can't register a ticket newer than lastUsedTicket before noRegUntil (absolute time)
+	noRegUntil                       uint64
 }
 
 type TopicTable struct {
@@ -229,11 +229,12 @@ func (t *TopicTable) useTicket(node *Node, serialNo uint32, topics []Topic, wait
 	}
 
 	tm := atime.NanoTime()
-	if serialNo > n.noRegTicket && tm < n.noRegUntil {
+	if serialNo > n.lastUsedTicket && tm < n.noRegUntil {
 		return false
 	}
 	if serialNo != n.lastUsedTicket {
 		n.lastUsedTicket = serialNo
+		n.noRegUntil = tm + noRegTimeout()
 		t.storeTicket(node)
 	}
 
@@ -248,8 +249,6 @@ func (t *TopicTable) useTicket(node *Node, serialNo uint32, topics []Topic, wait
 	}
 	if regTopics != nil {
 		t.AddEntries(node, regTopics, expiry)
-		n.noRegUntil = tm + noRegTimeout()
-		n.noRegTicket = serialNo
 		return true
 	} else {
 		return false
