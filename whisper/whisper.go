@@ -94,7 +94,7 @@ func New() *Whisper {
 		Name:    protocolName,
 		Version: uint(protocolVersion),
 		Length:  2,
-		Run:     whisper.handlePeer,
+		//Run:     whisper.handlePeer,
 	}
 
 	return whisper

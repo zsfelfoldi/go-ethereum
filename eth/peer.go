@@ -56,7 +56,7 @@ type PeerInfo struct {
 type peer struct {
 	id string
 
-	*p2p.Peer
+	p2p.Session
 	rw p2p.MsgReadWriter
 
 	version int // Protocol version negotiated
@@ -68,12 +68,11 @@ type peer struct {
 	knownBlocks *set.Set // Set of block hashes known to be known by this peer
 }
 
-func newPeer(version int, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
+func newPeer(version int, s p2p.Session) *peer {
 	id := p.ID()
 
 	return &peer{
-		Peer:        p,
-		rw:          rw,
+		Session:     s,
 		version:     version,
 		id:          fmt.Sprintf("%x", id[:8]),
 		knownTxs:    set.New(),

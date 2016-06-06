@@ -61,10 +61,15 @@ type protoHandshake struct {
 	Rest []rlp.RawValue `rlp:"tail"`
 }
 
+type protoInit struct{
+	rw *protoRW
+	sessionChn chan Session
+}
+
 // Peer represents a connected remote node.
 type Peer struct {
 	rw      *conn
-	running map[string]*protoRW
+	running map[string]protoInit
 
 	wg       sync.WaitGroup
 	protoErr chan error
@@ -121,8 +126,8 @@ func (p *Peer) String() string {
 	return fmt.Sprintf("Peer %x %v", p.rw.id[:8], p.RemoteAddr())
 }
 
-func newPeer(conn *conn, protocols []Protocol) *Peer {
-	protomap := matchProtocols(protocols, conn.caps, conn)
+func newPeer(conn *conn, listening map[Protocol]chan Session) *Peer {
+	protomap := matchProtocols(listening, conn.caps, conn)
 	p := &Peer{
 		rw:       conn,
 		running:  protomap,
@@ -267,21 +272,24 @@ func countMatchingProtocols(protocols []Protocol, caps []Cap) int {
 }
 
 // matchProtocols creates structures for matching named subprotocols.
-func matchProtocols(protocols []Protocol, caps []Cap, rw MsgReadWriter) map[string]*protoRW {
+func matchProtocols(listening map[Protocol]chan Session, caps []Cap, rw MsgReadWriter) map[string]protoInit {
 	sort.Sort(capsByNameAndVersion(caps))
 	offset := baseProtocolLength
-	result := make(map[string]*protoRW)
+	result := make(map[string]protoInit)
 
 outer:
 	for _, cap := range caps {
-		for _, proto := range protocols {
+		for proto, chn := range listening {
 			if proto.Name == cap.Name && proto.Version == cap.Version {
 				// If an old protocol version matched, revert it
-				if old := result[cap.Name]; old != nil {
-					offset -= old.Length
+				if old, ok := result[cap.Name]; ok {
+					offset -= old.rw.Length
 				}
 				// Assign the new match
-				result[cap.Name] = &protoRW{Protocol: proto, offset: offset, in: make(chan Msg), w: rw}
+				result[cap.Name] = protoInit{
+					rw: &protoRW{Protocol: proto, offset: offset, in: make(chan Msg), w: rw},
+					sessionChn: chn,
+				}
 				offset += proto.Length
 
 				continue outer
@@ -293,14 +301,23 @@ outer:
 
 func (p *Peer) startProtocols(writeStart <-chan struct{}, writeErr chan<- error) {
 	p.wg.Add(len(p.running))
-	for _, proto := range p.running {
-		proto := proto
+	for _, init := range p.running {
+		proto := init.rw
 		proto.closed = p.closed
 		proto.wstart = writeStart
 		proto.werr = writeErr
 		glog.V(logger.Detail).Infof("%v: Starting protocol %s/%d\n", p, proto.Name, proto.Version)
+		
+		session := &protocolSession{
+			protoRW: proto,
+			peer: p,
+			closed: make(chan error),
+		}
+		init.sessionChn <- session
+		
+		
 		go func() {
-			err := proto.Run(p, proto)
+			err := <-session.closed
 			if err == nil {
 				glog.V(logger.Detail).Infof("%v: Protocol %s/%d returned\n", p, proto.Name, proto.Version)
 				err = errors.New("protocol returned")
@@ -316,7 +333,8 @@ func (p *Peer) startProtocols(writeStart <-chan struct{}, writeErr chan<- error)
 // getProto finds the protocol responsible for handling
 // the given message code.
 func (p *Peer) getProto(code uint64) (*protoRW, error) {
-	for _, proto := range p.running {
+	for _, init := range p.running {
+		proto := init.rw
 		if code >= proto.offset && code < proto.offset+proto.Length {
 			return proto, nil
 		}
@@ -395,16 +413,16 @@ func (p *Peer) Info() *PeerInfo {
 	info.Network.RemoteAddress = p.RemoteAddr().String()
 
 	// Gather all the running protocol infos
-	for _, proto := range p.running {
+	for _, init := range p.running {
 		protoInfo := interface{}("unknown")
-		if query := proto.Protocol.PeerInfo; query != nil {
+		/*if query := init.rw.Protocol.PeerInfo; query != nil {
 			if metadata := query(p.ID()); metadata != nil {
 				protoInfo = metadata
 			} else {
 				protoInfo = "handshake"
 			}
-		}
-		info.Protocols[proto.Name] = protoInfo
+		}*/
+		info.Protocols[init.rw.Name] = protoInfo
 	}
 	return info
 }

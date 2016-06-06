@@ -407,7 +407,7 @@ func (s *Ethereum) Start(srvr *p2p.Server) error {
 	if s.AutoDAG {
 		s.StartAutoDAG()
 	}
-	s.protocolManager.Start()
+	s.protocolManager.Start(srvr)
 	s.netRPCService = NewPublicNetAPI(srvr, s.NetVersion())
 	return nil
 }

@@ -35,7 +35,6 @@ import (
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/p2p"
-	"github.com/ethereum/go-ethereum/p2p/discover"
 	"github.com/ethereum/go-ethereum/pow"
 	"github.com/ethereum/go-ethereum/rlp"
 )
@@ -124,18 +123,7 @@ func NewProtocolManager(config *core.ChainConfig, fastSync bool, networkId int, 
 			Name:    ProtocolName,
 			Version: version,
 			Length:  ProtocolLengths[i],
-			Run: func(p *p2p.Peer, rw p2p.MsgReadWriter) error {
-				peer := manager.newPeer(int(version), p, rw)
-				select {
-				case manager.newPeerCh <- peer:
-					manager.wg.Add(1)
-					defer manager.wg.Done()
-					return manager.handle(peer)
-				case <-manager.quitSync:
-					return p2p.DiscQuitting
-				}
-			},
-			NodeInfo: func() interface{} {
+/*			NodeInfo: func() interface{} {
 				return manager.NodeInfo()
 			},
 			PeerInfo: func(id discover.NodeID) interface{} {
@@ -143,7 +131,7 @@ func NewProtocolManager(config *core.ChainConfig, fastSync bool, networkId int, 
 					return p.Info()
 				}
 				return nil
-			},
+			},*/
 		})
 	}
 	if len(manager.SubProtocols) == 0 {
@@ -169,6 +157,35 @@ func NewProtocolManager(config *core.ChainConfig, fastSync bool, networkId int, 
 	}
 
 	return manager, nil
+}
+
+func (pm *ProtocolManager) listenLoop(srvr *p2p.Server) {
+	for _, protocol := range pm.SubProtocols {		
+		go func(p p2p.Protocol) {
+			listener := srvr.Listen(p)			
+			for {
+				session, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				go func() {
+					peer := pm.newPeer(int(p.Version), session)
+					var err error
+					select {
+					case pm.newPeerCh <- peer:
+						pm.wg.Add(1)
+						defer pm.wg.Done()
+						err = pm.handle(peer)
+					case <-pm.quitSync:
+						err = p2p.DiscQuitting
+					}
+					if err != nil {
+						session.Close(err)
+					}
+				}()
+			}
+		}(protocol)
+	}
 }
 
 func (pm *ProtocolManager) insertChain(blocks types.Blocks) (i int, err error) {
@@ -198,7 +215,8 @@ func (pm *ProtocolManager) removePeer(id string) {
 	}
 }
 
-func (pm *ProtocolManager) Start() {
+func (pm *ProtocolManager) Start(srvr *p2p.Server) {
+	go pm.listenLoop(srvr)
 	// broadcast transactions
 	pm.txSub = pm.eventMux.Subscribe(core.TxPreEvent{})
 	go pm.txBroadcastLoop()

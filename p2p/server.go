@@ -146,6 +146,9 @@ type Server struct {
 	addpeer       chan *conn
 	delpeer       chan *Peer
 	loopWG        sync.WaitGroup // loop, listenLoop
+
+	listen	chan *protocolListener
+	listenMap map[Protocol]chan Session
 }
 
 type peerOpFunc func(map[discover.NodeID]*Peer)
@@ -330,6 +333,9 @@ func (srv *Server) Start() (err error) {
 	srv.peerOp = make(chan peerOpFunc)
 	srv.peerOpDone = make(chan struct{})
 
+	srv.listen = make(chan *protocolListener)
+	srv.listenMap = make(map[Protocol]chan Session)
+
 	// node table
 	if srv.Discovery {
 		ntab, err := discover.ListenUDP(srv.PrivateKey, srv.ListenAddr, srv.NAT, srv.NodeDatabase)
@@ -397,6 +403,79 @@ type dialer interface {
 	addStatic(*discover.Node)
 }
 
+type Listener interface {
+    Accept() (Session, error)
+    Close() error
+}
+
+type Session interface {
+    MsgReadWriter
+    Close(error)
+
+    ID() discover.NodeID
+	Name() string
+    RemoteAddr() net.Addr
+    LocalAddr() net.Addr
+}
+
+type protocolListener struct {
+	srv *Server
+	protocol Protocol
+	session chan Session
+}
+
+func (pl *protocolListener) Accept() (Session, error) {
+	pl.srv.listen <- pl
+	session, ok := <-pl.session
+	if ok {
+		return session, nil
+	} else {
+		return nil, errors.New("listener closed")
+	}
+}
+
+func (pl *protocolListener) Close() error {
+	return nil
+}
+
+type protocolSession struct {
+	*protoRW
+	peer *Peer
+	closed chan error
+}
+
+func (ps *protocolSession) Close(err error) {
+	ps.closed <- err
+}
+
+func (ps *protocolSession) ID() discover.NodeID {
+	return ps.peer.ID()
+}
+
+func (ps *protocolSession) Name() string {
+	return ps.peer.Name()
+}
+
+func (ps *protocolSession) RemoteAddr() net.Addr {
+	return ps.peer.RemoteAddr()
+}
+
+func (ps *protocolSession) LocalAddr() net.Addr {
+	return ps.peer.LocalAddr()
+}
+
+func (srv *Server) Listen(p Protocol) Listener {
+	return &protocolListener {
+		srv: srv,
+		protocol: p,
+		session: make(chan Session),
+	}
+}
+
+func (srv *Server) Dial(p Protocol, n *discover.Node) (Session, error) {
+	return nil, nil
+}
+
 func (srv *Server) run(dialstate dialer) {
 	defer srv.loopWG.Done()
 	var (
@@ -448,6 +527,8 @@ running:
 		scheduleTasks()
 
 		select {
+		case listen := <-srv.listen:
+			srv.listenMap[listen.protocol] = listen.session
 		case <-srv.quit:
 			// The server was stopped. Run the cleanup logic.
 			glog.V(logger.Detail).Infoln("<-quit: spinning down")
@@ -488,7 +569,10 @@ running:
 				glog.V(logger.Detail).Infof("Not adding %v as peer: %v", c, err)
 			} else {
 				// The handshakes are done and it passed all checks.
-				p := newPeer(c, srv.Protocols)
+				p := newPeer(c, srv.listenMap)
+				for _, init := range p.running {
+					delete(srv.listenMap, init.rw.Protocol)
+				}
 				peers[c.id] = p
 				go srv.runPeer(p)
 			}
@@ -728,9 +812,9 @@ func (srv *Server) NodeInfo() *NodeInfo {
 	for _, proto := range srv.Protocols {
 		if _, ok := info.Protocols[proto.Name]; !ok {
 			nodeInfo := interface{}("unknown")
-			if query := proto.NodeInfo; query != nil {
+			/*if query := proto.NodeInfo; query != nil {
 				nodeInfo = proto.NodeInfo()
-			}
+			}*/
 			info.Protocols[proto.Name] = nodeInfo
 		}
 	}
