@@ -143,7 +143,7 @@ func (s *simulation) launchNode() *Network {
 	transport := &simTransport{joinTime: time.Now(), sender: id, senderAddr: addr, sim: s}
 	net, err := newNetwork(transport, key.PublicKey, nil, "<no database>")
 	if err != nil {
-		panic("cannot launch new node: %v")
+		panic("cannot launch new node: " + err.Error())
 	}
 	s.mu.Lock()
 	s.nodes[id] = net
@@ -207,16 +207,43 @@ func (st *simTransport) sendPong(remote *Node, pingHash []byte) {
 	})
 }
 
-func (st *simTransport) sendFindnode(remote *Node, target NodeID) {
+func (st *simTransport) sendFindnodeHash(remote *Node, target common.Hash) {
 	st.sendPacket(remote.ID, ingressPacket{
 		remoteID:   st.sender,
 		remoteAddr: st.senderAddr,
 		hash:       st.nextHash(),
-		ev:         findnodePacket,
-		data: &findnode{
+		ev:         findnodeHashPacket,
+		data: &findnodeHash{
 			Target:     target,
 			Expiration: uint64(time.Now().Unix() + int64(expiration)),
 		},
+	})
+}
+
+func (st *simTransport) sendTopicRegister(remote *Node, topics []Topic, pong []byte) {
+	st.sendPacket(remote.ID, ingressPacket{
+		remoteID:   st.sender,
+		remoteAddr: st.senderAddr,
+		hash:       st.nextHash(),
+		ev:         topicRegisterPacket,
+		data: &topicRegister{
+			Topics: topics,
+			Pong:   pong,
+		},
+	})
+}
+
+func (st *simTransport) sendTopicNodes(remote *Node, queryHash common.Hash, nodes []*Node) {
+	rnodes := make([]rpcNode, len(nodes))
+	for i := range nodes {
+		rnodes[i] = nodeToRPC(nodes[i])
+	}
+	st.sendPacket(remote.ID, ingressPacket{
+		remoteID:   st.sender,
+		remoteAddr: st.senderAddr,
+		hash:       st.nextHash(),
+		ev:         topicNodesPacket,
+		data:       &topicNodes{Echo: queryHash, Nodes: rnodes},
 	})
 }
 

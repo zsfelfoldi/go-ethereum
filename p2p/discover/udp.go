@@ -24,6 +24,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
@@ -62,6 +63,10 @@ type (
 		Version    uint
 		From, To   rpcEndpoint
 		Expiration uint64
+
+		// v5
+		Topics []Topic
+
 		// Ignore additional fields (for forward compatibility).
 		Rest []rlp.RawValue `rlp:"tail"`
 	}
@@ -75,6 +80,12 @@ type (
 
 		ReplyTok   []byte // This contains the hash of the ping packet.
 		Expiration uint64 // Absolute timestamp at which the packet becomes invalid.
+
+		// v5
+		TopicHash    common.Hash
+		TicketSerial uint32
+		WaitPeriods  []uint32
+
 		// Ignore additional fields (for forward compatibility).
 		Rest []rlp.RawValue `rlp:"tail"`
 	}
@@ -87,12 +98,36 @@ type (
 		Rest []rlp.RawValue `rlp:"tail"`
 	}
 
+	// findnode is a query for nodes close to the given target.
+	findnodeHash struct {
+		Target     common.Hash
+		Expiration uint64
+		// Ignore additional fields (for forward compatibility).
+		Rest []rlp.RawValue `rlp:"tail"`
+	}
+
 	// reply to findnode
 	neighbors struct {
 		Nodes      []rpcNode
 		Expiration uint64
 		// Ignore additional fields (for forward compatibility).
 		Rest []rlp.RawValue `rlp:"tail"`
+	}
+
+	topicRegister struct {
+		Topics []Topic
+		Pong   []byte
+	}
+
+	topicQuery struct {
+		Topic      Topic
+		Expiration uint64
+	}
+
+	// reply to topicQuery
+	topicNodes struct {
+		Echo  common.Hash
+		Nodes []rpcNode
 	}
 
 	rpcNode struct {
@@ -120,6 +155,22 @@ const (
 // of entries by stuffing a packet until it grows too large.
 var maxNeighbors = func() int {
 	p := neighbors{Expiration: ^uint64(0)}
+	maxSizeNode := rpcNode{IP: make(net.IP, 16), UDP: ^uint16(0), TCP: ^uint16(0)}
+	for n := 0; ; n++ {
+		p.Nodes = append(p.Nodes, maxSizeNode)
+		size, _, err := rlp.EncodeToReader(p)
+		if err != nil {
+			// If this ever happens, it will be caught by the unit tests.
+			panic("cannot encode: " + err.Error())
+		}
+		if headSize+size+1 >= 1280 {
+			return n
+		}
+	}
+}()
+
+var maxTopicNodes = func() int {
+	p := topicNodes{}
 	maxSizeNode := rpcNode{IP: make(net.IP, 16), UDP: ^uint16(0), TCP: ^uint16(0)}
 	for n := 0; ; n++ {
 		p.Nodes = append(p.Nodes, maxSizeNode)
@@ -163,6 +214,7 @@ type ingressPacket struct {
 	ev         nodeEvent
 	hash       []byte
 	data       interface{} // one of the RPC structs
+	rawData    []byte
 }
 
 type conn interface {
@@ -248,6 +300,31 @@ func (t *udp) sendNeighbours(remote *Node, results []*Node) {
 	for i, result := range results {
 		p.Nodes = append(p.Nodes, nodeToRPC(result))
 		if len(p.Nodes) == maxNeighbors || i == len(results)-1 {
+			t.send(remote.ID, remote.addr(), byte(neighborsPacket), p)
+			p.Nodes = p.Nodes[:0]
+		}
+	}
+}
+
+func (t *udp) sendFindnodeHash(remote *Node, target common.Hash) {
+	t.send(remote.ID, remote.addr(), byte(findnodeHashPacket), findnodeHash{
+		Target:     target,
+		Expiration: uint64(time.Now().Add(expiration).Unix()),
+	})
+}
+
+func (t *udp) sendTopicRegister(remote *Node, topics []Topic, pong []byte) {
+	t.send(remote.ID, remote.addr(), byte(topicRegisterPacket), topicRegister{
+		Topics: topics,
+		Pong:   pong,
+	})
+}
+
+func (t *udp) sendTopicNodes(remote *Node, queryHash common.Hash, nodes []*Node) {
+	p := topicNodes{Echo: queryHash}
+	for i, result := range nodes {
+		p.Nodes = append(p.Nodes, nodeToRPC(result))
+		if len(p.Nodes) == maxTopicNodes || i == len(nodes)-1 {
 			t.send(remote.ID, remote.addr(), byte(neighborsPacket), p)
 			p.Nodes = p.Nodes[:0]
 		}
@@ -344,6 +421,7 @@ func decodePacket(buf []byte, pkt *ingressPacket) error {
 	if err != nil {
 		return err
 	}
+	pkt.rawData = buf
 	pkt.hash = hash
 	pkt.remoteID = fromID
 	switch pkt.ev = nodeEvent(sigdata[0]); pkt.ev {
@@ -355,6 +433,14 @@ func decodePacket(buf []byte, pkt *ingressPacket) error {
 		pkt.data = new(findnode)
 	case neighborsPacket:
 		pkt.data = new(neighbors)
+	case findnodeHashPacket:
+		pkt.data = new(findnodeHash)
+	case topicRegisterPacket:
+		pkt.data = new(topicRegister)
+	case topicQueryPacket:
+		pkt.data = new(topicQuery)
+	case topicNodesPacket:
+		pkt.data = new(topicNodes)
 	default:
 		return fmt.Errorf("unknown packet type: %d", sigdata[0])
 	}

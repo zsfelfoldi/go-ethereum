@@ -266,6 +266,10 @@ type preminedTestnet struct {
 }
 
 func (tn *preminedTestnet) sendFindnode(to *Node, target NodeID) {
+	panic("sendFindnode called")
+}
+
+func (tn *preminedTestnet) sendFindnodeHash(to *Node, target common.Hash) {
 	// current log distance is encoded in port number
 	// fmt.Println("findnode query at dist", toaddr.Port)
 	if to.UDP == 0 {
@@ -281,6 +285,18 @@ func (tn *preminedTestnet) sendFindnode(to *Node, target NodeID) {
 
 func (tn *preminedTestnet) sendNeighbours(to *Node, nodes []*Node) {
 	panic("sendNeighbours called")
+}
+
+func (tn *preminedTestnet) sendTopicQuery(to *Node, topic Topic) {
+	panic("sendTopicQuery called")
+}
+
+func (tn *preminedTestnet) sendTopicNodes(to *Node, queryHash common.Hash, nodes []*Node) {
+	panic("sendTopicNodes called")
+}
+
+func (tn *preminedTestnet) sendTopicRegister(to *Node, topics []Topic, pong []byte) {
+	panic("sendTopicRegister called")
 }
 
 func (tn *preminedTestnet) sendPing(to *Node, addr *net.UDPAddr) []byte {
