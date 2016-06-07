@@ -31,6 +31,7 @@ import (
 
 // In this test, nodes try to randomly resolve each other.
 func TestSimRandomResolve(t *testing.T) {
+	t.Skip("boring")
 	if runWithPlaygroundTime(t) {
 		return
 	}
@@ -44,6 +45,36 @@ func TestSimRandomResolve(t *testing.T) {
 		for range launcher.C {
 			net := sim.launchNode()
 			go randomResolves(t, sim, net)
+			if err := net.SetFallbackNodes([]*Node{bootnode.Self()}); err != nil {
+				panic(err)
+			}
+			fmt.Printf("launched @ %v: %x\n", time.Now(), net.Self().ID[:16])
+		}
+	}()
+
+	time.Sleep(3 * time.Hour)
+	launcher.Stop()
+	sim.shutdown()
+	sim.printStats()
+}
+
+func TestSimTopics(t *testing.T) {
+	if runWithPlaygroundTime(t) {
+		return
+	}
+
+	// glog.SetV(6)
+	// glog.SetToStderr(true)
+
+	sim := newSimulation()
+	bootnode := sim.launchNode()
+
+	// A new node joins every 10s.
+	launcher := time.NewTicker(10 * time.Second)
+	go func() {
+		for range launcher.C {
+			net := sim.launchNode()
+			go net.RegisterTopic("foo", nil)
 			if err := net.SetFallbackNodes([]*Node{bootnode.Self()}); err != nil {
 				panic(err)
 			}
@@ -82,7 +113,7 @@ func randomResolves(t *testing.T, s *simulation, net *Network) {
 }
 
 type simulation struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	nodes   map[NodeID]*Network
 	nodectr uint32
 }
@@ -92,9 +123,14 @@ func newSimulation() *simulation {
 }
 
 func (s *simulation) shutdown() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	alive := make([]*Network, 0, len(s.nodes))
 	for _, n := range s.nodes {
+		alive = append(alive, n)
+	}
+	defer s.mu.RUnlock()
+
+	for _, n := range alive {
 		n.Close()
 	}
 }
@@ -175,7 +211,18 @@ func (st *simTransport) localAddr() *net.UDPAddr {
 
 func (st *simTransport) Close() {}
 
-func (st *simTransport) sendPing(remote *Node, remoteAddr *net.UDPAddr) []byte {
+func (st *simTransport) send(remote *Node, ptype nodeEvent, data interface{}) {
+	hash := st.nextHash()
+	st.sendPacket(remote.ID, ingressPacket{
+		remoteID:   st.sender,
+		remoteAddr: st.senderAddr,
+		hash:       hash,
+		ev:         ptype,
+		data:       data,
+	})
+}
+
+func (st *simTransport) sendPing(remote *Node, remoteAddr *net.UDPAddr, topics []Topic) []byte {
 	hash := st.nextHash()
 	st.sendPacket(remote.ID, ingressPacket{
 		remoteID:   st.sender,
@@ -187,6 +234,7 @@ func (st *simTransport) sendPing(remote *Node, remoteAddr *net.UDPAddr) []byte {
 			From:       rpcEndpoint{IP: st.senderAddr.IP, UDP: uint16(st.senderAddr.Port), TCP: 30303},
 			To:         rpcEndpoint{IP: remoteAddr.IP, UDP: uint16(remoteAddr.Port), TCP: 30303},
 			Expiration: uint64(time.Now().Unix() + int64(expiration)),
+			Topics:     topics,
 		},
 	})
 	return hash
@@ -273,9 +321,9 @@ func (st *simTransport) nextHash() []byte {
 }
 
 func (st *simTransport) sendPacket(remote NodeID, p ingressPacket) {
-	st.sim.mu.Lock()
+	st.sim.mu.RLock()
 	recipient := st.sim.nodes[remote]
-	st.sim.mu.Unlock()
+	st.sim.mu.RUnlock()
 
 	// TODO: apply packet loss
 	time.AfterFunc(200*time.Millisecond, func() {

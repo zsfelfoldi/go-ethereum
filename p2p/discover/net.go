@@ -50,25 +50,24 @@ type Network struct {
 	db   *nodeDB // database of known nodes
 	conn transport
 
-	closed         chan struct{}          // closed when loop is done
-	closeReq       chan struct{}          // 'request to close'
-	refreshReq     chan []*Node           // lookups ask for refresh on this channel
-	refreshResp    chan (<-chan struct{}) // ...and get the channel to block on from this one
-	read           chan ingressPacket     // ingress packets arrive here
-	timeout        chan timeoutEvent
-	queryReq       chan *findnodeQuery // lookups submit findnode queries on this channel
-	tableOpReq     chan func()
-	tableOpResp    chan struct{}
-	topicTargetReq chan topicTargetReq
+	closed           chan struct{}          // closed when loop is done
+	closeReq         chan struct{}          // 'request to close'
+	refreshReq       chan []*Node           // lookups ask for refresh on this channel
+	refreshResp      chan (<-chan struct{}) // ...and get the channel to block on from this one
+	read             chan ingressPacket     // ingress packets arrive here
+	timeout          chan timeoutEvent
+	queryReq         chan *findnodeQuery // lookups submit findnode queries on this channel
+	tableOpReq       chan func()
+	tableOpResp      chan struct{}
+	topicRegisterReq chan topicRegisterReq
 
 	// State of the main loop.
-	tab             *Table
-	topictab        *TopicTable
-	ticketStore     *ticketStore
-	nursery         []*Node
-	nodes           map[NodeID]*Node // tracks active nodes with state != known
-	timeoutTimers   map[timeoutEvent]*time.Timer
-	currentTopicSet []Topic
+	tab           *Table
+	topictab      *TopicTable
+	ticketStore   *ticketStore
+	nursery       []*Node
+	nodes         map[NodeID]*Node // tracks active nodes with state != known
+	timeoutTimers map[timeoutEvent]*time.Timer
 
 	// Revalidation queues.
 	// Nodes put on these queues will be pinged eventually.
@@ -83,12 +82,13 @@ type Network struct {
 // it is an interface so we can test without opening lots of UDP
 // sockets and without generating a private key.
 type transport interface {
-	sendPing(remote *Node, remoteAddr *net.UDPAddr) (hash []byte)
-	sendPong(remote *Node, pingHash []byte)
+	sendPing(remote *Node, remoteAddr *net.UDPAddr, topics []Topic) (hash []byte)
 	sendNeighbours(remote *Node, nodes []*Node)
 	sendFindnodeHash(remote *Node, target common.Hash)
 	sendTopicRegister(remote *Node, topic []Topic, pong []byte)
 	sendTopicNodes(remote *Node, queryHash common.Hash, nodes []*Node)
+
+	send(remote *Node, ptype nodeEvent, p interface{})
 
 	localAddr() *net.UDPAddr
 	Close()
@@ -101,11 +101,9 @@ type findnodeQuery struct {
 	nresults int // counter for received nodes
 }
 
-// "request for new lookup target" while registering/searching topics
-type topicTargetReq struct {
-	topic  Topic
-	target common.Hash
-	reply  chan struct{}
+type topicRegisterReq struct {
+	add   bool
+	topic Topic
 }
 
 type timeoutEvent struct {
@@ -125,22 +123,23 @@ func newNetwork(conn transport, ourPubkey ecdsa.PublicKey, natm nat.Interface, d
 	}
 
 	net := &Network{
-		db:            db,
-		conn:          conn,
-		tab:           newTable(ourID, conn.localAddr()),
-		topictab:      NewTopicTable(db),
-		ticketStore:   newTicketStore(),
-		refreshReq:    make(chan []*Node),
-		refreshResp:   make(chan (<-chan struct{})),
-		closed:        make(chan struct{}),
-		closeReq:      make(chan struct{}),
-		read:          make(chan ingressPacket, 100),
-		timeout:       make(chan timeoutEvent),
-		timeoutTimers: make(map[timeoutEvent]*time.Timer),
-		tableOpReq:    make(chan func()),
-		tableOpResp:   make(chan struct{}),
-		queryReq:      make(chan *findnodeQuery),
-		nodes:         make(map[NodeID]*Node),
+		db:               db,
+		conn:             conn,
+		tab:              newTable(ourID, conn.localAddr()),
+		topictab:         NewTopicTable(db),
+		ticketStore:      newTicketStore(),
+		refreshReq:       make(chan []*Node),
+		refreshResp:      make(chan (<-chan struct{})),
+		closed:           make(chan struct{}),
+		closeReq:         make(chan struct{}),
+		read:             make(chan ingressPacket, 100),
+		timeout:          make(chan timeoutEvent),
+		timeoutTimers:    make(map[timeoutEvent]*time.Timer),
+		tableOpReq:       make(chan func()),
+		tableOpResp:      make(chan struct{}),
+		queryReq:         make(chan *findnodeQuery),
+		topicRegisterReq: make(chan topicRegisterReq),
+		nodes:            make(map[NodeID]*Node),
 	}
 	go net.loop()
 	return net, nil
@@ -252,22 +251,17 @@ func (net *Network) lookup(target common.Hash, stopOnMatch bool) []*Node {
 }
 
 func (net *Network) RegisterTopic(topic Topic, stop <-chan struct{}) {
-	for {
-		req := topicTargetReq{topic: topic, reply: make(chan struct{})}
+	select {
+	case net.topicRegisterReq <- topicRegisterReq{true, topic}:
+	case <-net.closed:
+		return
+	}
+	select {
+	case <-net.closed:
+	case <-stop:
 		select {
-		case net.topicTargetReq <- req:
-			<-req.reply
-			// This lookup is for-effect. While approaching nodes
-			// close to the target, the current topic set is sent
-			// in all ping packets.
-			net.lookup(req.target, false)
-
-			// Sleep until
-
+		case net.topicRegisterReq <- topicRegisterReq{false, topic}:
 		case <-net.closed:
-			return
-		case <-stop:
-			return
 		}
 	}
 }
@@ -342,6 +336,15 @@ func (net *Network) loop() {
 		}
 	}
 
+	// Tracking registration lookups.
+	var topicRegisterLookupTarget common.Hash
+	var topicRegisterLookupDone chan []*Node
+	inRegLookupDelay := true
+	topicRegisterLookupTick := time.NewTimer(0)
+	<-topicRegisterLookupTick.C
+
+	statsDump := time.NewTicker(10 * time.Minute)
+
 loop:
 	for {
 		resetNextTicket()
@@ -393,15 +396,48 @@ loop:
 			net.tableOpResp <- struct{}{}
 
 		// Topic registration stuff.
-		case req := <-net.topicTargetReq:
+		case req := <-net.topicRegisterReq:
+			if !req.add {
+				net.ticketStore.removeRegisterTopic(req.topic)
+			}
 			net.ticketStore.addTopic(req.topic, true)
-			req.target = net.ticketStore.nextTarget(req.topic)
-			// TODO: somehow need to find the next time to do the
-			// lookup for this topic.
+			// If we're currently waiting to do the next lookup, give the ticket store a
+			// chance to start it sooner. This should speed up convergence of the radius
+			// determination for new topics.
+			if inRegLookupDelay {
+				if topicRegisterLookupTick.Stop() {
+					<-topicRegisterLookupTick.C
+				}
+				target, delay := net.ticketStore.nextRegisterLookup()
+				topicRegisterLookupTarget = target
+				topicRegisterLookupTick.Reset(delay)
+			}
+
+		case <-topicRegisterLookupDone:
+			target, delay := net.ticketStore.nextRegisterLookup()
+			topicRegisterLookupTarget = target
+			topicRegisterLookupTick.Reset(delay)
+			inRegLookupDelay = true
+
+		case <-topicRegisterLookupTick.C:
+			inRegLookupDelay = false
+			topicRegisterLookupDone = make(chan []*Node)
+			target := topicRegisterLookupTarget
+			go func() { topicRegisterLookupDone <- net.lookup(target, false) }()
 
 		case <-nextRegisterTime:
 			net.ticketStore.ticketRegistered(*nextTicket)
 			net.conn.sendTopicRegister(nextTicket.t.node, nextTicket.t.topics, nextTicket.t.pong)
+
+		case <-statsDump.C:
+			r, ok := net.ticketStore.radius["foo"]
+			if !ok {
+				fmt.Printf("(%x) no radius @ %v\n", net.tab.self.ID[:8], time.Now())
+			} else {
+				topics := len(net.ticketStore.tickets)
+				tickets := len(net.ticketStore.nodes)
+				fmt.Printf("(%x) topics:%d radius:%d tickets:%d @ %v\n", net.tab.self.ID[:8], topics, r.radius, tickets, time.Now())
+			}
 
 		// Periodic / lookup-initiated bucket refresh.
 		case <-refreshTimer.C:
@@ -672,8 +708,8 @@ func init() {
 				net.handlePing(n, pkt)
 				return verifywait, nil
 			case pongPacket:
-				net.abortTimedEvent(n, pongTimeout)
-				return remoteverifywait, nil
+				err := net.handleKnownPong(n, pkt)
+				return remoteverifywait, err
 			case pongTimeout:
 				return unknown, nil
 			default:
@@ -687,8 +723,8 @@ func init() {
 		handle: func(net *Network, n *Node, ev nodeEvent, pkt *ingressPacket) (*nodeState, error) {
 			switch ev {
 			case pongPacket:
-				net.abortTimedEvent(n, pongTimeout)
-				return known, nil
+				err := net.handleKnownPong(n, pkt)
+				return known, err
 			case pongTimeout:
 				return unknown, nil
 			default:
@@ -705,7 +741,7 @@ func init() {
 		handle: func(net *Network, n *Node, ev nodeEvent, pkt *ingressPacket) (*nodeState, error) {
 			switch ev {
 			case pingPacket:
-				net.conn.sendPong(n, pkt.hash)
+				net.handlePing(n, pkt)
 				return remoteverifywait, nil
 			case pingTimeout:
 				return known, nil
@@ -734,10 +770,11 @@ func init() {
 			case pingPacket:
 				net.handlePing(n, pkt)
 				return known, nil
-			case findnodePacket, neighborsPacket, neighboursTimeout:
-				return net.handleQueryEvent(n, ev, pkt)
+			case pongPacket:
+				err := net.handleKnownPong(n, pkt)
+				return known, err
 			default:
-				return known, errInvalidEvent
+				return net.handleQueryEvent(n, ev, pkt)
 			}
 		},
 	}
@@ -751,18 +788,17 @@ func init() {
 		handle: func(net *Network, n *Node, ev nodeEvent, pkt *ingressPacket) (*nodeState, error) {
 			switch ev {
 			case pongPacket:
-				net.abortTimedEvent(n, pongTimeout)
-				return known, nil
+				// Node is still alive.
+				err := net.handleKnownPong(n, pkt)
+				return known, err
 			case pongTimeout:
 				net.tab.deleteReplace(n)
 				return unresponsive, nil
 			case pingPacket:
 				net.handlePing(n, pkt)
 				return contested, nil
-			case findnodePacket, neighborsPacket, neighboursTimeout:
-				return net.handleQueryEvent(n, ev, pkt)
 			default:
-				return contested, errInvalidEvent
+				return net.handleQueryEvent(n, ev, pkt)
 			}
 		},
 	}
@@ -775,10 +811,11 @@ func init() {
 			case pingPacket:
 				net.handlePing(n, pkt)
 				return known, nil
-			case findnodePacket, neighborsPacket, neighboursTimeout:
-				return net.handleQueryEvent(n, ev, pkt)
+			case pongPacket:
+				err := net.handleKnownPong(n, pkt)
+				return known, err
 			default:
-				return unresponsive, errInvalidEvent
+				return net.handleQueryEvent(n, ev, pkt)
 			}
 		},
 	}
@@ -812,6 +849,7 @@ func (net *Network) checkPacket(n *Node, ev nodeEvent, pkt *ingressPacket) error
 		// TODO: check ping version
 	case pongPacket:
 		if !bytes.Equal(pkt.data.(*pong).ReplyTok, n.pingEcho) {
+			// fmt.Println("pong reply token mismatch")
 			return fmt.Errorf("pong reply token mismatch")
 		}
 		n.pingEcho = nil
@@ -855,22 +893,37 @@ func (net *Network) abortTimedEvent(n *Node, ev nodeEvent) {
 }
 
 func (net *Network) ping(n *Node, addr *net.UDPAddr) {
-	n.pingTopics = net.currentTopicSet
-	n.pingEcho = net.conn.sendPing(n, addr)
+	n.pingTopics = net.ticketStore.regTopicSet()
+	n.pingEcho = net.conn.sendPing(n, addr, n.pingTopics)
 	net.timedEvent(respTimeout, n, pongTimeout)
 }
 
 func (net *Network) handlePing(n *Node, pkt *ingressPacket) {
-	n.TCP = pkt.data.(*ping).From.TCP
-	net.conn.sendPong(n, pkt.hash)
+	ping := pkt.data.(*ping)
+	n.TCP = ping.From.TCP
+	t := net.topictab.getTicket(n, ping.Topics)
+
+	pong := &pong{
+		To:         makeEndpoint(n.addr(), 0), // TODO: maybe use known TCP port from DB
+		ReplyTok:   pkt.hash,
+		Expiration: uint64(time.Now().Add(expiration).Unix()),
+	}
+	ticketToPong(t, pong)
+	net.conn.send(n, pongPacket, pong)
 }
 
-func (net *Network) handlePong(n *Node, pkt *ingressPacket) {
+func (net *Network) handleKnownPong(n *Node, pkt *ingressPacket) error {
 	net.abortTimedEvent(n, pongTimeout)
-
 	now := monotonicTime()
-	ticket := pongToTicket(now, n.pingTopics, n, pkt)
-	net.ticketStore.add(now, ticket)
+	ticket, err := pongToTicket(now, n.pingTopics, n, pkt)
+	if err == nil {
+		// fmt.Printf("(%x) ticket: %+v\n", net.tab.self.ID[:8], pkt.data)
+		net.ticketStore.add(now, ticket)
+	}
+
+	n.pingEcho = nil
+	n.pingTopics = nil
+	return err
 }
 
 func (net *Network) handleQueryEvent(n *Node, ev nodeEvent, pkt *ingressPacket) (*nodeState, error) {
@@ -933,7 +986,7 @@ func (net *Network) handleQueryEvent(n *Node, ev nodeEvent, pkt *ingressPacket) 
 		return n.state, nil
 
 	default:
-		panic("oops")
+		return n.state, errInvalidEvent
 	}
 }
 

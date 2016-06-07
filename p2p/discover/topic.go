@@ -14,12 +14,6 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-// Package discover implements the Node Discovery Protocol.
-//
-// The Node Discovery protocol provides a way to find RLPx nodes that
-// can be connected to. It uses a Kademlia-like protocol to maintain a
-// distributed database of the IDs and endpoints of all listening
-// nodes.
 package discover
 
 import (
@@ -115,7 +109,10 @@ func (t *TopicTable) checkDeleteTopic(topic Topic) {
 func (t *TopicTable) getOrNewNode(node *Node) *nodeInfo {
 	n := t.nodes[node]
 	if n == nil {
-		issued, used := t.db.fetchTopicRegTickets(node.ID)
+		var issued, used uint32
+		if t.db != nil {
+			issued, used = t.db.fetchTopicRegTickets(node.ID)
+		}
 		n = &nodeInfo{
 			entries:          make(map[Topic]*topicEntry),
 			lastIssuedTicket: issued,
@@ -136,7 +133,9 @@ func (t *TopicTable) checkDeleteNode(node *Node) {
 
 func (t *TopicTable) storeTicketCounters(node *Node) {
 	n := t.getOrNewNode(node)
-	t.db.updateTopicRegTickets(node.ID, n.lastIssuedTicket, n.lastUsedTicket)
+	if t.db != nil {
+		t.db.updateTopicRegTickets(node.ID, n.lastIssuedTicket, n.lastUsedTicket)
+	}
 }
 
 func (t *TopicTable) GetEntries(topic Topic) []*Node {

@@ -283,6 +283,34 @@ func (tn *preminedTestnet) sendFindnodeHash(to *Node, target common.Hash) {
 	injectResponse(tn.net, to, neighborsPacket, &neighbors{Nodes: result})
 }
 
+func (tn *preminedTestnet) sendPing(to *Node, addr *net.UDPAddr, topics []Topic) []byte {
+	injectResponse(tn.net, to, pongPacket, &pong{ReplyTok: []byte{1}})
+	return []byte{1}
+}
+
+func (tn *preminedTestnet) send(to *Node, ptype nodeEvent, data interface{}) {
+	switch ptype {
+	case pingPacket:
+		injectResponse(tn.net, to, pongPacket, &pong{ReplyTok: []byte{1}})
+	case pongPacket:
+		// ignored
+	case findnodeHashPacket:
+		// current log distance is encoded in port number
+		// fmt.Println("findnode query at dist", toaddr.Port)
+		if to.UDP == 0 {
+			panic("query to node at distance 0")
+		}
+		next := to.UDP - 1
+		var result []rpcNode
+		for i, id := range tn.dists[to.UDP] {
+			result = append(result, nodeToRPC(NewNode(id, net.ParseIP("127.0.0.1"), next, uint16(i)+1)))
+		}
+		injectResponse(tn.net, to, neighborsPacket, &neighbors{Nodes: result})
+	default:
+		panic("send(" + ptype.String() + ")")
+	}
+}
+
 func (tn *preminedTestnet) sendNeighbours(to *Node, nodes []*Node) {
 	panic("sendNeighbours called")
 }
@@ -297,14 +325,6 @@ func (tn *preminedTestnet) sendTopicNodes(to *Node, queryHash common.Hash, nodes
 
 func (tn *preminedTestnet) sendTopicRegister(to *Node, topics []Topic, pong []byte) {
 	panic("sendTopicRegister called")
-}
-
-func (tn *preminedTestnet) sendPing(to *Node, addr *net.UDPAddr) []byte {
-	injectResponse(tn.net, to, pongPacket, &pong{ReplyTok: []byte{1}})
-	return []byte{1}
-}
-
-func (tn *preminedTestnet) sendPong(to *Node, pingHash []byte) {
 }
 
 func (*preminedTestnet) Close()                  {}

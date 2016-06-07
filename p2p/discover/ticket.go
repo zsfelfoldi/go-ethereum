@@ -14,16 +14,11 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-// Package discover implements the Node Discovery Protocol.
-//
-// The Node Discovery protocol provides a way to find RLPx nodes that
-// can be connected to. It uses a Kademlia-like protocol to maintain a
-// distributed database of the IDs and endpoints of all listening
-// nodes.
 package discover
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -48,6 +43,8 @@ func monotonicTime() absTime {
 	return absTime(atime.NanoTime())
 }
 
+// timeBucket represents absolute monotonic time in minutes.
+// It is used as the index into the per-topic ticket buckets.
 type timeBucket int
 
 type ticket struct {
@@ -68,7 +65,7 @@ type ticket struct {
 // ticketRef refers to a single topic in a ticket.
 type ticketRef struct {
 	t   *ticket
-	idx int
+	idx int // index of the topic in t.topics and t.regTime
 }
 
 func (ref ticketRef) topic() Topic {
@@ -79,8 +76,14 @@ func (ref ticketRef) topicRegTime() absTime {
 	return ref.t.regTime[ref.idx]
 }
 
-func pongToTicket(localTime absTime, topics []Topic, node *Node, p *ingressPacket) *ticket {
+func pongToTicket(localTime absTime, topics []Topic, node *Node, p *ingressPacket) (*ticket, error) {
 	wps := p.data.(*pong).WaitPeriods
+	if len(topics) != len(wps) {
+		return nil, fmt.Errorf("bad wait period list: got %d values, want %d", len(topics), len(wps))
+	}
+	if rlpHash(topics) != p.data.(*pong).TopicHash {
+		return nil, fmt.Errorf("bad topic hash")
+	}
 	t := &ticket{
 		issueTime: localTime,
 		node:      node,
@@ -92,7 +95,7 @@ func pongToTicket(localTime absTime, topics []Topic, node *Node, p *ingressPacke
 	for i, wp := range wps {
 		t.regTime[i] = localTime + absTime(time.Second*time.Duration(wp))
 	}
-	return t
+	return t, nil
 }
 
 func ticketToPong(t *ticket, pong *pong) {
@@ -109,11 +112,13 @@ type ticketStore struct {
 	// radius detector and target address generator
 	// exists for both searched and registered topics
 	radius map[Topic]*topicRadius
+
 	// Contains buckets (for each absolute minute) of tickets
 	// that can be used in that minute.
 	// This is only set if the topic is being registered.
-	tickets map[Topic]topicTickets
-	nodes   map[*Node]*ticket
+	tickets   map[Topic]topicTickets
+	regtopics []Topic
+	nodes     map[*Node]*ticket
 
 	lastBucketFetched    timeBucket
 	minRadSum            float64
@@ -144,10 +149,57 @@ func (s *ticketStore) addTopic(t Topic, register bool) {
 	}
 }
 
-// nextTarget returns the target of the next lookup for registration
-// or topic search.
-func (s *ticketStore) nextTarget(t Topic) common.Hash {
-	return s.radius[t].nextTarget()
+// removeRegisterTopic deletes all tickets for the given topic.
+func (s *ticketStore) removeRegisterTopic(topic Topic) {
+	for _, list := range s.tickets[topic] {
+		for _, ref := range list {
+			ref.t.refCnt--
+			if ref.t.refCnt == 0 {
+				delete(s.nodes, ref.t.node)
+			}
+		}
+	}
+	delete(s.tickets, topic)
+}
+
+func (s *ticketStore) regTopicSet() []Topic {
+	topics := make([]Topic, 0, len(s.tickets))
+	for topic := range s.tickets {
+		topics = append(topics, topic)
+	}
+	return topics
+}
+
+// nextRegisterLookup returns the target of the next lookup for ticket collection.
+func (s *ticketStore) nextRegisterLookup() (target common.Hash, delay time.Duration) {
+	firstTopic, ok := s.iterRegTopics()
+	for topic := firstTopic; ok; {
+		if len(s.tickets[topic]) > 0 && s.ticketsInWindow(topic) < 10 {
+			return s.radius[topic].nextTarget(), 1 * time.Second
+		}
+		topic, ok = s.iterRegTopics()
+		if topic == firstTopic {
+			break // We have checked all topics.
+		}
+	}
+	return common.Hash{}, 40 * time.Second
+}
+
+// iterRegTopics returns topics to register in arbitrary order.
+// The second return value is false if there are no topics.
+func (s *ticketStore) iterRegTopics() (Topic, bool) {
+	if len(s.regtopics) == 0 {
+		if len(s.tickets) == 0 {
+			return "", false
+		}
+		// Refill register list.
+		for t := range s.tickets {
+			s.regtopics = append(s.regtopics, t)
+		}
+	}
+	topic := s.regtopics[len(s.regtopics)-1]
+	s.regtopics = s.regtopics[:len(s.regtopics)-1]
+	return topic, true
 }
 
 // ticketsInWindow returns the number of tickets in the registration window.
