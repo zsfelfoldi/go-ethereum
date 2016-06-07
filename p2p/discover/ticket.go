@@ -65,6 +65,20 @@ type ticket struct {
 	pong   []byte // encoded pong packet signed by the registrar
 }
 
+// ticketRef refers to a single topic in a ticket.
+type ticketRef struct {
+	t   *ticket
+	idx int
+}
+
+func (ref ticketRef) topic() Topic {
+	return ref.t.topics[ref.idx]
+}
+
+func (ref ticketRef) topicRegTime() absTime {
+	return ref.t.regTime[ref.idx]
+}
+
 func pongToTicket(localTime absTime, topics []Topic, node *Node, p *ingressPacket) *ticket {
 	wps := p.data.(*pong).WaitPeriods
 	t := &ticket{
@@ -104,7 +118,7 @@ type ticketStore struct {
 	lastBucketFetched    timeBucket
 	minRadSum            float64
 	minRadCnt, minRadius uint64
-	nextTicketCached     *ticket
+	nextTicketCached     *ticketRef
 	nextTicketReg        absTime
 }
 
@@ -151,40 +165,29 @@ func (s *ticketStore) ticketsInWindow(t Topic) int {
 // nextRegisterableTicket returns the next ticket that can be used
 // to register.
 //
-// If the returned wait time is zero the ticket can be used. For a non-zero
+// If the returned wait time <= zero the ticket can be used. For a positive
 // wait time, the caller should requery the next ticket later.
 //
-// A ticket can be returned more than once with zero wait time in case
+// A ticket can be returned more than once with <= zero wait time in case
 // the ticket contains multiple topics.
-func (s *ticketStore) nextRegisterableTicket() (t *ticket, wait time.Duration) {
+func (s *ticketStore) nextRegisterableTicket() (t *ticketRef, wait time.Duration) {
 	now := monotonicTime()
-	if s.nextTicketCached != nil && s.nextTicketReg > now {
-		return s.nextTicketCached, time.Duration(s.nextTicketReg - now)
+	if s.nextTicketCached != nil {
+		return s.nextTicketCached, time.Duration(s.nextTicketCached.topicRegTime() - now)
 	}
 
-	bucket := s.lastBucketFetched
-	if bucket == 0 {
-		return nil, 0
-	}
-
-	for {
-		empty := true
+	for bucket := s.lastBucketFetched; ; bucket++ {
 		var (
-			nextTicket      *ticket
-			nextTime        absTime
-			nextTicketTopic Topic
-			nextTicketIdx   int
+			empty      = true     // true if there are no tickets
+			nextTicket *ticketRef // nil if this bucket is empty
 		)
-		for topic, tickets := range s.tickets {
+		for _, tickets := range s.tickets {
 			if len(tickets) != 0 {
 				empty = false
 				if list := tickets[bucket]; list != nil {
-					for idx, ref := range list {
-						if nextTicket == nil || ref.t.regTime[ref.idx] < nextTime {
-							nextTicket = ref.t
-							nextTime = ref.t.regTime[ref.idx]
-							nextTicketTopic = topic
-							nextTicketIdx = idx
+					for _, ref := range list {
+						if nextTicket == nil || ref.topicRegTime() < nextTicket.topicRegTime() {
+							nextTicket = &ref
 						}
 					}
 				}
@@ -194,31 +197,37 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticket, wait time.Duration) {
 			return nil, 0
 		}
 		if nextTicket != nil {
-			if nextTime > now {
-				wait = time.Duration(nextTime - now)
-				s.nextTicketCached = nextTicket
-				s.nextTicketReg = nextTime
-			} else {
-				s.nextTicketCached = nil
-				// delete ticket
-				tickets := s.tickets[nextTicketTopic]
-				list := tickets[bucket]
-				list = append(list[:nextTicketIdx], list[nextTicketIdx+1:]...)
-				if len(list) != 0 {
-					tickets[bucket] = list
-				} else {
-					delete(tickets, bucket)
-				}
-			}
-			nextTicket.refCnt--
-			if nextTicket.refCnt == 0 {
-				delete(s.nodes, nextTicket.node)
-			}
+			wait = time.Duration(nextTicket.topicRegTime() - now)
+			s.nextTicketCached = nextTicket
 			return nextTicket, wait
 		}
-		bucket++
 		s.lastBucketFetched = bucket
 	}
+}
+
+// ticketRegistered is called when t has been used to register for a topic.
+func (s *ticketStore) ticketRegistered(ref ticketRef) {
+	bucket := timeBucket(ref.t.issueTime / absTime(ticketTimeBucketLen))
+	tickets := s.tickets[ref.topic()]
+	list := tickets[bucket]
+	for i, bt := range list {
+		if bt.t == ref.t {
+			list = append(list[:i], list[i+1:]...)
+			break
+		}
+	}
+	if len(list) != 0 {
+		tickets[bucket] = list
+	} else {
+		delete(tickets, bucket)
+	}
+	ref.t.refCnt--
+	if ref.t.refCnt == 0 {
+		delete(s.nodes, ref.t.node)
+	}
+
+	// Make nextRegisterableTicket return the next available ticket.
+	s.nextTicketCached = nil
 }
 
 func (s *ticketStore) add(localTime absTime, t *ticket) {
@@ -276,11 +285,6 @@ func (s *ticketStore) adjustMinRadius(target, found common.Hash) {
 	}
 	s.minRadSum += mrAdjust
 	s.minRadius = uint64(s.minRadSum / float64(s.minRadCnt))
-}
-
-type ticketRef struct {
-	t   *ticket
-	idx int
 }
 
 type topicRadius struct {

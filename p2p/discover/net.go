@@ -317,18 +317,27 @@ func (net *Network) loop() {
 	)
 
 	// Tracking the next ticket to register.
-	var nextTicket *ticket
-	nextRegisterTimeout := time.NewTimer(0)
-	<-nextRegisterTimeout.C // Ensure the timer doesn't fire just after creation.
-	defer nextRegisterTimeout.Stop()
+	var (
+		nextTicket        *ticketRef
+		nextRegisterTimer *time.Timer
+		nextRegisterTime  <-chan time.Time
+	)
+	defer func() {
+		if nextRegisterTimer != nil {
+			nextRegisterTimer.Stop()
+		}
+	}()
 	resetNextTicket := func() {
 		t, timeout := net.ticketStore.nextRegisterableTicket()
 		if t != nextTicket {
 			nextTicket = t
-			if t == nil {
-				nextRegisterTimeout.Stop()
-			} else {
-				nextRegisterTimeout.Reset(timeout)
+			if nextRegisterTimer != nil {
+				nextRegisterTimer.Stop()
+				nextRegisterTime = nil
+			}
+			if t != nil {
+				nextRegisterTimer = time.NewTimer(timeout)
+				nextRegisterTime = nextRegisterTimer.C
 			}
 		}
 	}
@@ -390,8 +399,9 @@ loop:
 			// TODO: somehow need to find the next time to do the
 			// lookup for this topic.
 
-		case <-nextRegisterTimeout.C:
-			net.conn.sendTopicRegister(nextTicket.node, nextTicket.topics, nextTicket.pong)
+		case <-nextRegisterTime:
+			net.ticketStore.ticketRegistered(*nextTicket)
+			net.conn.sendTopicRegister(nextTicket.t.node, nextTicket.t.topics, nextTicket.t.pong)
 
 		// Periodic / lookup-initiated bucket refresh.
 		case <-refreshTimer.C:
