@@ -337,10 +337,11 @@ func (net *Network) loop() {
 	}
 
 	// Tracking registration lookups.
-	var topicRegisterLookupTarget common.Hash
-	var topicRegisterLookupDone chan []*Node
-	inRegLookupDelay := true
-	topicRegisterLookupTick := time.NewTimer(0)
+	var (
+		topicRegisterLookupTarget common.Hash
+		topicRegisterLookupDone   chan []*Node
+		topicRegisterLookupTick   = time.NewTimer(0)
+	)
 	<-topicRegisterLookupTick.C
 
 	statsDump := time.NewTicker(10 * time.Minute)
@@ -399,12 +400,13 @@ loop:
 		case req := <-net.topicRegisterReq:
 			if !req.add {
 				net.ticketStore.removeRegisterTopic(req.topic)
+				continue
 			}
 			net.ticketStore.addTopic(req.topic, true)
 			// If we're currently waiting to do the next lookup, give the ticket store a
 			// chance to start it sooner. This should speed up convergence of the radius
 			// determination for new topics.
-			if inRegLookupDelay {
+			if topicRegisterLookupDone == nil {
 				if topicRegisterLookupTick.Stop() {
 					<-topicRegisterLookupTick.C
 				}
@@ -417,10 +419,9 @@ loop:
 			target, delay := net.ticketStore.nextRegisterLookup()
 			topicRegisterLookupTarget = target
 			topicRegisterLookupTick.Reset(delay)
-			inRegLookupDelay = true
+			topicRegisterLookupDone = nil
 
 		case <-topicRegisterLookupTick.C:
-			inRegLookupDelay = false
 			topicRegisterLookupDone = make(chan []*Node)
 			target := topicRegisterLookupTarget
 			go func() { topicRegisterLookupDone <- net.lookup(target, false) }()
