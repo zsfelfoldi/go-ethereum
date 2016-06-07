@@ -84,16 +84,18 @@ func ticketToPong(t *ticket, pong *pong) {
 
 type ticketStore struct {
 	topics               map[Topic]*topicTickets
-	nodes                map[NodeID]*ticket
+	nodes                map[*Node]*ticket
 	lastGroupFetched     uint64
 	minRadSum            float64
 	minRadCnt, minRadius uint64
+	nextTicketCached		*ticket
+	nextTicketReg		uint64
 }
 
 func newTicketStore() *ticketStore {
 	return &ticketStore{
 		topics: make(map[Topic]*topicTickets),
-		nodes:  make(map[NodeID]*ticket),
+		nodes:  make(map[*Node]*ticket),
 	}
 }
 
@@ -132,11 +134,71 @@ func (s *ticketStore) ticketsInWindow(t Topic) int {
 // A ticket can be returned more than once with zero wait time in case
 // the ticket contains multiple topics.
 func (s *ticketStore) nextRegisterableTicket() (t *ticket, wait time.Duration) {
-	return nil, 0
+	now := atime.NanoTime()
+	if s.nextTicketCached != nil && s.nextTicketReg > now {
+		return s.nextTicketCached, time.Duration(s.nextTicketReg-now)
+	}
+
+	group := s.lastGroupFetched
+	if group == 0 {
+		return nil, 0
+	}
+
+	for {
+		empty := true
+		var	(
+			nextTicket *ticket
+			nextTime uint64
+			nextTicketTopic Topic
+			nextTicketIdx int
+		)
+		for topic, tickets := range s.topics {
+			if len(tickets.time) != 0 {
+				empty = false
+				if list := tickets.time[group]; list != nil {
+					for idx, ref := range list {
+						if nextTicket == nil || ref.t.regTime[ref.idx] < nextTime {
+							nextTicket = ref.t
+							nextTime = ref.t.regTime[ref.idx]
+							nextTicketTopic = topic
+							nextTicketIdx = idx
+						}
+					}
+				}
+			}
+		}
+		if empty {
+			return nil, 0
+		}
+		if nextTicket != nil {
+			if nextTime > now {
+				wait = time.Duration(nextTime - now)
+				s.nextTicketCached = nextTicket
+				s.nextTicketReg = nextTime
+			} else {
+				s.nextTicketCached = nil
+				// delete ticket
+				list := s.topics[nextTicketTopic].time[group]
+				list = append(list[:nextTicketIdx], list[nextTicketIdx+1:]...)
+				if len(list) != 0 {
+					s.topics[nextTicketTopic].time[group] = list
+				} else {
+					delete(s.topics[nextTicketTopic].time, group)
+				}
+			}
+			nextTicket.refCnt--
+			if nextTicket.refCnt == 0 {
+				delete(s.nodes, nextTicket.node)
+			}
+			return nextTicket, wait
+		}
+		group++
+		s.lastGroupFetched = group
+	}
 }
 
 func (s *ticketStore) add(localTime uint64, t *ticket) {
-	if s.nodes[t.node.ID] != nil {
+	if s.nodes[t.node] != nil {
 		return
 	}
 
@@ -165,43 +227,16 @@ func (s *ticketStore) add(localTime uint64, t *ticket) {
 	}
 
 	if t.refCnt > 0 {
-		s.nodes[t.node.ID] = t
+		s.nextTicketCached = nil
+		s.nodes[t.node] = t
 	}
 }
 
-func (s *ticketStore) fetch(localTime uint64) (res []*ticket) {
-	ltGroup := localTime / ticketGroupTime
-	for _, tt := range s.topics {
-		for g := s.lastGroupFetched; g <= ltGroup; g++ {
-			list := tt.time[g]
-			i := 0
-			for i < len(list) {
-				t := list[i]
-				if t.t.regTime[t.idx] <= localTime {
-					list = append(list[:i], list[i+1:]...)
-					res = append(res, t.t)
-					t.t.refCnt--
-					if t.t.refCnt == 0 {
-						delete(s.nodes, t.t.node.ID)
-					}
-				} else {
-					i++
-				}
-			}
-			if g != ltGroup {
-				delete(tt.time, g)
-			}
-		}
-	}
-	s.lastGroupFetched = ltGroup
-	return res
+func (s *ticketStore) getNodeTicket(node *Node) *ticket {
+	return s.nodes[node]
 }
 
-func (s *ticketStore) getNodeTicket(id NodeID) *ticket {
-	return s.nodes[id]
-}
-
-func (s *ticketStore) adjustMinRadius(target, found NodeID) {
+func (s *ticketStore) adjustMinRadius(target, found common.Hash) {
 	tp := binary.BigEndian.Uint64(target[0:8])
 	fp := binary.BigEndian.Uint64(found[0:8])
 	dist := tp ^ fp
