@@ -27,28 +27,29 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/aristanetworks/goarista/atime"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
 const (
-	ticketGroupTime = uint64(time.Minute)
-	timeWindow      = 30
-	keepTicketConst = uint64(time.Minute) * 20
-	keepTicketExp   = uint64(time.Minute) * 20
+	ticketTimeBucketLen = time.Minute
+	timeWindow      = 30   // * ticketTimeBucketLen
+	keepTicketConst = time.Minute * 20
+	keepTicketExp   = time.Minute * 20
 	maxRadius       = 0xffffffffffffffff
 	minRadAverage   = 1024
 )
 
+type timeBucket int
+
 type ticket struct {
 	topics  []Topic
-	regTime []uint64 // Per-topic local absolute time when the ticket can be used.
+	regTime []absTime // Per-topic local absolute time when the ticket can be used.
 
 	// The serial number that was issued by the server.
 	serial uint32
 	// Used by registrar, tracks absolute time when the ticket was created.
-	issueTime uint64
+	issueTime absTime
 
 	// Fields used only by registrants
 	node   *Node  // the registrar node that signed this ticket
@@ -56,40 +57,40 @@ type ticket struct {
 	pong   []byte // encoded pong packet signed by the registrar
 }
 
-func pongToTicket(localTime uint64, topics []Topic, node *Node, p *ingressPacket) *ticket {
+func pongToTicket(localTime absTime, topics []Topic, node *Node, p *ingressPacket) *ticket {
 	wps := p.data.(*pong).WaitPeriods
 	t := &ticket{
 		issueTime: localTime,
 		node:      node,
 		topics:    topics,
 		pong:      p.rawData,
-		regTime:   make([]uint64, len(wps)),
+		regTime:   make([]absTime, len(wps)),
 	}
 	// Convert wait periods to local absolute time.
 	for i, wp := range wps {
-		t.regTime[i] = localTime + uint64(wp)*uint64(time.Second)
+		t.regTime[i] = localTime + absTime(time.Second * time.Duration(wp))
 	}
 	return t
 }
 
 func ticketToPong(t *ticket, pong *pong) {
-	pong.Expiration = uint64(time.Duration(t.issueTime) / time.Second)
+	pong.Expiration = uint64(t.issueTime / absTime(time.Second))
 	pong.TopicHash = rlpHash(t.topics)
 	pong.TicketSerial = t.serial
 	pong.WaitPeriods = make([]uint32, len(t.regTime))
 	for i, regTime := range t.regTime {
-		pong.WaitPeriods[i] = uint32(time.Duration(regTime) / time.Second)
+		pong.WaitPeriods[i] = uint32(time.Duration(regTime-t.issueTime) / time.Second)
 	}
 }
 
 type ticketStore struct {
 	topics               map[Topic]*topicTickets
 	nodes                map[*Node]*ticket
-	lastGroupFetched     uint64
+	lastBucketFetched    timeBucket
 	minRadSum            float64
 	minRadCnt, minRadius uint64
 	nextTicketCached		*ticket
-	nextTicketReg		uint64
+	nextTicketReg		absTime
 }
 
 func newTicketStore() *ticketStore {
@@ -116,10 +117,10 @@ func (s *ticketStore) nextTarget(t Topic) common.Hash {
 
 // ticketsInWindow returns the number of tickets in the registration window.
 func (s *ticketStore) ticketsInWindow(t Topic) int {
-	now := atime.NanoTime()
-	ltGroup := now / ticketGroupTime
+	now := monotonicTime()
+	ltBucket := timeBucket(now / absTime(ticketTimeBucketLen))
 	sum := 0
-	for g := ltGroup; g < ltGroup+timeWindow; g++ {
+	for g := ltBucket; g < ltBucket+timeWindow; g++ {
 		sum += len(s.topics[t].time[g])
 	}
 	return sum
@@ -134,13 +135,13 @@ func (s *ticketStore) ticketsInWindow(t Topic) int {
 // A ticket can be returned more than once with zero wait time in case
 // the ticket contains multiple topics.
 func (s *ticketStore) nextRegisterableTicket() (t *ticket, wait time.Duration) {
-	now := atime.NanoTime()
+	now := monotonicTime()
 	if s.nextTicketCached != nil && s.nextTicketReg > now {
 		return s.nextTicketCached, time.Duration(s.nextTicketReg-now)
 	}
 
-	group := s.lastGroupFetched
-	if group == 0 {
+	bucket := s.lastBucketFetched
+	if bucket == 0 {
 		return nil, 0
 	}
 
@@ -148,14 +149,14 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticket, wait time.Duration) {
 		empty := true
 		var	(
 			nextTicket *ticket
-			nextTime uint64
+			nextTime absTime
 			nextTicketTopic Topic
 			nextTicketIdx int
 		)
 		for topic, tickets := range s.topics {
 			if len(tickets.time) != 0 {
 				empty = false
-				if list := tickets.time[group]; list != nil {
+				if list := tickets.time[bucket]; list != nil {
 					for idx, ref := range list {
 						if nextTicket == nil || ref.t.regTime[ref.idx] < nextTime {
 							nextTicket = ref.t
@@ -178,12 +179,12 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticket, wait time.Duration) {
 			} else {
 				s.nextTicketCached = nil
 				// delete ticket
-				list := s.topics[nextTicketTopic].time[group]
+				list := s.topics[nextTicketTopic].time[bucket]
 				list = append(list[:nextTicketIdx], list[nextTicketIdx+1:]...)
 				if len(list) != 0 {
-					s.topics[nextTicketTopic].time[group] = list
+					s.topics[nextTicketTopic].time[bucket] = list
 				} else {
-					delete(s.topics[nextTicketTopic].time, group)
+					delete(s.topics[nextTicketTopic].time, bucket)
 				}
 			}
 			nextTicket.refCnt--
@@ -192,18 +193,18 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticket, wait time.Duration) {
 			}
 			return nextTicket, wait
 		}
-		group++
-		s.lastGroupFetched = group
+		bucket++
+		s.lastBucketFetched = bucket
 	}
 }
 
-func (s *ticketStore) add(localTime uint64, t *ticket) {
+func (s *ticketStore) add(localTime absTime, t *ticket) {
 	if s.nodes[t.node] != nil {
 		return
 	}
 
-	if s.lastGroupFetched == 0 {
-		s.lastGroupFetched = localTime / ticketGroupTime
+	if s.lastBucketFetched == 0 {
+		s.lastBucketFetched = timeBucket(localTime / absTime(ticketTimeBucketLen))
 	}
 
 	for i, topic := range t.topics {
@@ -218,8 +219,8 @@ func (s *ticketStore) add(localTime uint64, t *ticket) {
 				}
 				if tt.time != nil && float64(wait) < float64(keepTicketConst)+float64(keepTicketExp)*rnd {
 					// use the ticket to register this topic
-					tgroup := t.regTime[i] / ticketGroupTime
-					tt.time[tgroup] = append(tt.time[tgroup], ticketRef{t, i})
+					bucket := timeBucket(t.regTime[i] / absTime(ticketTimeBucketLen))
+					tt.time[bucket] = append(tt.time[bucket], ticketRef{t, i})
 					t.refCnt++
 				}
 			}
@@ -269,10 +270,10 @@ type topicTickets struct {
 	// Contains buckets (for each absolute minute) of tickets
 	// that can be used in that minute.
 	// This is only set if the topic is being registered.
-	time map[uint64][]ticketRef
+	time map[timeBucket][]ticketRef
 }
 
-const targetWaitTime = uint64(time.Minute) * 10
+const targetWaitTime = time.Minute * 10
 
 func newtopicTickets(t Topic, register bool) *topicTickets {
 	topicHash := crypto.Keccak256Hash([]byte(t))
@@ -286,7 +287,7 @@ func newtopicTickets(t Topic, register bool) *topicTickets {
 		converged:       false,
 	}
 	if register {
-		tt.time = make(map[uint64][]ticketRef)
+		tt.time = make(map[timeBucket][]ticketRef)
 	}
 	return tt
 }
@@ -305,7 +306,7 @@ func (r *topicTickets) nextTarget() common.Hash {
 	return target
 }
 
-func (r *topicTickets) adjust(localTime uint64, t ticketRef, minRadius uint64) {
+func (r *topicTickets) adjust(localTime absTime, t ticketRef, minRadius uint64) {
 	wait := t.t.regTime[t.idx] - localTime
 	adjust := (float64(wait)/float64(targetWaitTime) - 1) * 2
 	if adjust > 1 {

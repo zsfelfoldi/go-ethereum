@@ -24,7 +24,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/aristanetworks/goarista/atime"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/crypto/sha3"
@@ -859,7 +858,7 @@ func (net *Network) handlePing(n *Node, pkt *ingressPacket) {
 func (net *Network) handlePong(n *Node, pkt *ingressPacket) {
 	net.abortTimedEvent(n, pongTimeout)
 
-	now := atime.NanoTime()
+	now := monotonicTime()
 	ticket := pongToTicket(now, n.pingTopics, n, pkt)
 	net.ticketStore.add(now, ticket)
 }

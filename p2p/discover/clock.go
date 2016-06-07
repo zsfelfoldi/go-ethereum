@@ -23,9 +23,17 @@
 package discover
 
 import (
+	"time"
+
 	"github.com/aristanetworks/goarista/atime"
 	fbclock "github.com/facebookgo/clock"
 )
+
+type absTime time.Duration  // absolute monotonic time
+
+func monotonicTime() absTime {
+	return absTime(atime.NanoTime())
+}
 
 type clock interface {
 	fbclock.Clock
