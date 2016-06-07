@@ -27,6 +27,7 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/aristanetworks/goarista/atime"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
@@ -39,6 +40,13 @@ const (
 	maxRadius           = 0xffffffffffffffff
 	minRadAverage       = 1024
 )
+
+// absTime represents absolute monotonic time in nanoseconds.
+type absTime time.Duration
+
+func monotonicTime() absTime {
+	return absTime(atime.NanoTime())
+}
 
 type timeBucket int
 
