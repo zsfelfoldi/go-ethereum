@@ -33,11 +33,11 @@ import (
 
 const (
 	ticketTimeBucketLen = time.Minute
-	timeWindow      = 30   // * ticketTimeBucketLen
-	keepTicketConst = time.Minute * 20
-	keepTicketExp   = time.Minute * 20
-	maxRadius       = 0xffffffffffffffff
-	minRadAverage   = 1024
+	timeWindow          = 30 // * ticketTimeBucketLen
+	keepTicketConst     = time.Minute * 20
+	keepTicketExp       = time.Minute * 20
+	maxRadius           = 0xffffffffffffffff
+	minRadAverage       = 1024
 )
 
 type timeBucket int
@@ -68,7 +68,7 @@ func pongToTicket(localTime absTime, topics []Topic, node *Node, p *ingressPacke
 	}
 	// Convert wait periods to local absolute time.
 	for i, wp := range wps {
-		t.regTime[i] = localTime + absTime(time.Second * time.Duration(wp))
+		t.regTime[i] = localTime + absTime(time.Second*time.Duration(wp))
 	}
 	return t
 }
@@ -86,27 +86,27 @@ func ticketToPong(t *ticket, pong *pong) {
 type ticketStore struct {
 	// radius detector and target address generator
 	// exists for both searched and registered topics
-	radius          map[Topic]*topicRadius
+	radius map[Topic]*topicRadius
 	// Contains buckets (for each absolute minute) of tickets
 	// that can be used in that minute.
 	// This is only set if the topic is being registered.
-	tickets		 	map[Topic]topicTickets
-	nodes                map[*Node]*ticket
-	
+	tickets map[Topic]topicTickets
+	nodes   map[*Node]*ticket
+
 	lastBucketFetched    timeBucket
 	minRadSum            float64
 	minRadCnt, minRadius uint64
-	nextTicketCached		*ticket
-	nextTicketReg		absTime
+	nextTicketCached     *ticket
+	nextTicketReg        absTime
 }
 
 type topicTickets map[timeBucket][]ticketRef
 
 func newTicketStore() *ticketStore {
 	return &ticketStore{
-		radius: make(map[Topic]*topicRadius),
+		radius:  make(map[Topic]*topicRadius),
 		tickets: make(map[Topic]topicTickets),
-		nodes:  make(map[*Node]*ticket),
+		nodes:   make(map[*Node]*ticket),
 	}
 }
 
@@ -151,7 +151,7 @@ func (s *ticketStore) ticketsInWindow(t Topic) int {
 func (s *ticketStore) nextRegisterableTicket() (t *ticket, wait time.Duration) {
 	now := monotonicTime()
 	if s.nextTicketCached != nil && s.nextTicketReg > now {
-		return s.nextTicketCached, time.Duration(s.nextTicketReg-now)
+		return s.nextTicketCached, time.Duration(s.nextTicketReg - now)
 	}
 
 	bucket := s.lastBucketFetched
@@ -161,11 +161,11 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticket, wait time.Duration) {
 
 	for {
 		empty := true
-		var	(
-			nextTicket *ticket
-			nextTime absTime
+		var (
+			nextTicket      *ticket
+			nextTime        absTime
 			nextTicketTopic Topic
-			nextTicketIdx int
+			nextTicketIdx   int
 		)
 		for topic, tickets := range s.tickets {
 			if len(tickets) != 0 {

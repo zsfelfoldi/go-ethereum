@@ -325,7 +325,7 @@ const (
 // initialization is not required, will set to minWaitPeriod at first registration
 type waitControlLoop struct {
 	lastIncoming absTime
-	waitPeriod time.Duration
+	waitPeriod   time.Duration
 }
 
 func (w *waitControlLoop) registered(tm absTime) {
