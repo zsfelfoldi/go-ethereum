@@ -18,7 +18,6 @@ package discover
 
 import (
 	"encoding/binary"
-	"fmt"
 	"testing"
 	"time"
 
@@ -35,14 +34,17 @@ func TestTopicRadius(t *testing.T) {
 		prefix := binary.BigEndian.Uint64(addr[0:8])
 		dist := prefix ^ rad.topicHashPrefix
 		relDist := float64(dist) / float64(targetRad)
-		relTime := 1/(relDist+0.5)
+		relTime := (1-relDist)*2
+		if relTime < 0 {
+			relTime = 0
+		}
 		return time.Duration(float64(targetWaitTime)*relTime)
 	}
 	
 	bcnt := 0
 	cnt := 0
 	var sum float64
-	for cnt < 1000000 {
+	for cnt < 10000 {
 		addr := rad.nextTarget()
 		wait := waitFn(addr)
 		ticket := &ticket{
@@ -55,9 +57,14 @@ func TestTopicRadius(t *testing.T) {
 			sum += float64(rad.radius)
 		} else {
 			bcnt++
+			if bcnt > 500 {
+				t.Errorf("Radius did not converge in 500 iterations")
+			}
 		}
 	}
 	avgRel := sum/float64(cnt)/float64(targetRad)
-	fmt.Println(bcnt, cnt, avgRel)
+	if avgRel > 1.05 || avgRel < 0.95 {
+		t.Errorf("Average/target ratio is too far from 1 (%v)", avgRel)
+	}
 }
 

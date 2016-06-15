@@ -363,7 +363,7 @@ func newTopicRadius(t Topic) *topicRadius {
 }
 
 func (r *topicRadius) isInRadius(t *ticket) bool {
-	nodePrefix := binary.BigEndian.Uint64(t.node.ID[0:8])
+	nodePrefix := binary.BigEndian.Uint64(t.node.sha[0:8])
 	dist := nodePrefix ^ r.topicHashPrefix
 	return dist < r.radius
 }
