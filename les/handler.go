@@ -770,29 +770,3 @@ func (self *ProtocolManager) NodeInfo() *eth.EthNodeInfo {
 		Head:       self.blockchain.LastBlockHash(),
 	}
 }
-
-func (pm *ProtocolManager) broadcastBlockLoop() {
-	sub := pm.eventMux.Subscribe(	core.ChainHeadEvent{})
-	go func() {
-		for {
-			select {
-			case ev := <-sub.Chan():
-				peers := pm.peers.AllPeers()
-				if len(peers) > 0 {
-					header := ev.Data.(core.ChainHeadEvent).Block.Header()
-					hash := header.Hash()
-					number := header.Number.Uint64()
-					td := core.GetTd(pm.chainDb, hash, number)
-//fmt.Println("BROADCAST", number, hash, td)
-					announce := newBlockHashesData{{Hash: hash, Number: number, Td: td}}
-					for _, p := range peers {
-						p.SendNewBlockHashes(announce)
-					}
-				}
-			case <-pm.quitSync:
-				sub.Unsubscribe()
-				return
-			}
-		}
-	}()
-}
