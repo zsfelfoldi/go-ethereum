@@ -205,6 +205,12 @@ func (p *peer) RequestProofs(reqID, cost uint64, reqs []*ProofReq) error {
 	return sendRequest(p.rw, GetProofsMsg, reqID, cost, reqs)
 }
 
+// RequestHeaderProofs fetches a batch of header merkle proofs from a remote node.
+func (p *peer) RequestHeaderProofs(reqID, cost uint64, reqs []*ChtReq) error {
+	glog.V(logger.Debug).Infof("%v fetching %v header proofs", p, len(reqs))
+	return sendRequest(p.rw, GetHeaderProofsMsg, reqID, cost, reqs)
+}
+
 func (p *peer) SendTxs(cost uint64, txs types.Transactions) error {
 	glog.V(logger.Debug).Infof("%v relaying %v txs", p, len(txs))
 	p.fcServer.SendRequest(0, cost)

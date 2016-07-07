@@ -18,18 +18,14 @@
 package les
 
 import (
-"fmt"
-	"encoding/binary"
 	"sync"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/trie"
 )
 
 type LesServer struct {
@@ -63,7 +59,6 @@ func (s *LesServer) Protocols() []p2p.Protocol {
 }
 
 func (s *LesServer) Start() {
-	MakeCHT(s.protocolManager.chainDb)
 	s.protocolManager.Start()
 }
 
@@ -182,83 +177,12 @@ func (s *requestCostStats) update(msgCode, reqCnt, cost uint64) {
 	}
 }
 
-var (
-	lastChtKey = []byte("LastCHT") // num (uint64 big endian) + hash
-	chtPrefix = []byte("cht") // chtPrefix + num (uint64 big endian) + hash -> trie root hash
-	chtFrequency = uint64(4096)
-)
-
-func getCht(db ethdb.Database, hash common.Hash, num uint64) common.Hash {
-	var encNumber [8]byte
-	binary.BigEndian.PutUint64(encNumber[:], num)
-	data, _ := db.Get(append(append(chtPrefix, encNumber[:]...), hash.Bytes()...))
-	return common.BytesToHash(data)
-}
-
-func (pm *ProtocolManager) makeCht() {
-	headHash := core.GetHeadBlockHash(db)
-	headNum := core.GetBlockNumber(db, headHash)
-	x := (headNum+1)/chtFrequency
-	if x < 2 {
-		return
-	}
-	headCht := (x-1)*chtFrequency-1
-	
-	var lastHash common.Hash
-	var lastNum uint64
-	data, _ := db.Get(lastChtKey)
-	if len(data) == 40 {
-		lastNum = binary.BigEndian.Uint64(data[:8])
-		lastHash = common.BytesToHash(data[8:])
-	}
-	if headCht <= lastNum {
-		return
-	}
-	
-	var t *trie.Trie
-	if lastNum > 0 {
-		var err error
-		t, err = trie.New(getCht(db, lastHash, lastNum), db)
-		if err != nil {
-			lastNum = 0
-		}
-	}
-	if lastNum == 0 {
-		t, _ = trie.New(common.Hash{}, db)
-	}
-
-	ptr := lastNum + 1
-	if lastNum == 0 {
-		ptr = 0
-	}
-	for ; ptr <= headCht; ptr++ {
-		hash := core.GetCanonicalHash(db, ptr)
-		var encNumber [8]byte
-		binary.BigEndian.PutUint64(encNumber[:], ptr)
-		t.Update(encNumber[:], hash[:])
-		if (ptr+1)%chtFrequency == 0 {
-			root, err := t.Commit()
-			if err != nil {
-				return
-			}
-fmt.Println("CHT", ptr, root)
-			db.Put(append(append(chtPrefix, encNumber[:]...), hash.Bytes()...), root.Bytes())
-			var data [40]byte
-			binary.BigEndian.PutUint64(data[:8], ptr)
-			copy(data[8:], hash[:])
-			db.Put(lastChtKey, data[:])
-		}
-	}
-	
-}
-
 func (pm *ProtocolManager) broadcastBlockLoop() {
 	sub := pm.eventMux.Subscribe(	core.ChainHeadEvent{})
 	go func() {
 		for {
 			select {
 			case ev := <-sub.Chan():
-				MakeCHT(pm.chainDb)
 				peers := pm.peers.AllPeers()
 				if len(peers) > 0 {
 					header := ev.Data.(core.ChainHeadEvent).Block.Header()

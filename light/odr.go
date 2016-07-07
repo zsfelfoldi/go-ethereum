@@ -19,6 +19,8 @@
 package light
 
 import (
+	"math/big"
+	
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -131,4 +133,23 @@ type ReceiptsRequest struct {
 // StoreResult stores the retrieved data in local database
 func (req *ReceiptsRequest) StoreResult(db ethdb.Database) {
 	core.WriteBlockReceipts(db, req.Hash, req.Number, req.Receipts)
+}
+
+// TrieRequest is the ODR request type for state/storage trie entries
+type ChtRequest struct {
+	OdrRequest
+	ChtNum, BlockNum uint64
+	ChtRoot common.Hash
+	Header *types.Header
+	Td *big.Int
+	Proof []rlp.RawValue
+}
+
+// StoreResult stores the retrieved data in local database
+func (req *ChtRequest) StoreResult(db ethdb.Database) {
+	core.WriteHeader(db, req.Header)
+	hash, num := req.Header.Hash(), req.Header.Number.Uint64()
+	core.WriteCanonicalHash(db, hash, num)
+	core.WriteTd(db, hash, num, req.Td)
+	//storeProof(db, req.Proof)
 }
