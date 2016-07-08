@@ -19,7 +19,6 @@ package les
 
 import (
 	"encoding/binary"
-	"fmt"
 	"sync"
 	"time"
 
@@ -189,6 +188,7 @@ func (pm *ProtocolManager) blockLoop() {
 	newCht := make(chan struct{}, 10)
 	newCht <- struct{}{}
 	go func() {
+		var mu sync.Mutex
 		for {
 			select {
 			case ev := <-sub.Chan():
@@ -207,7 +207,10 @@ func (pm *ProtocolManager) blockLoop() {
 				newCht <- struct{}{}
 			case <-newCht:
 				go func() {
-					if makeCht(pm.chainDb) {
+					mu.Lock()
+					more := makeCht(pm.chainDb)
+					mu.Unlock()
+					if more {
 						time.Sleep(time.Millisecond * 10)
 						newCht <- struct{}{}
 					}
@@ -293,7 +296,7 @@ func makeCht(db ethdb.Database) bool {
 		lastChtNum = 0
 	} else {
 		lastChtNum++
-		fmt.Printf("CHT %d %064x\n", lastChtNum, root)
+		//fmt.Printf("CHT %d %064x\n", lastChtNum, root)
 		storeChtRoot(db, lastChtNum, root)
 		var data [8]byte
 		binary.BigEndian.PutUint64(data[:], lastChtNum)

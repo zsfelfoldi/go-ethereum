@@ -790,7 +790,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		p.fcServer.GotReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
-			MsgType: MsgProofs,
+			MsgType: MsgHeaderProofs,
 			ReqID:   resp.ReqID,
 			Obj:     resp.Data,
 		}

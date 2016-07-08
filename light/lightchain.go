@@ -100,13 +100,26 @@ func NewLightChain(odr OdrBackend, config *core.ChainConfig, pow pow.PoW, mux *e
 			return nil, err
 		}
 		glog.V(logger.Info).Infoln("WARNING: Wrote default ethereum genesis block")
+	}
+	
+	if bc.genesisBlock.Hash() == (common.Hash{212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69, 161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163}) {
 		// add trusted CHT
 		WriteTrustedCht(bc.chainDb, TrustedCht{
 			Number: 450,
-			Root: common.Hash{153, 70, 0, 170, 22, 197, 175, 48, 242, 131, 15, 55, 35, 27, 235, 250, 70, 152, 26, 69, 173, 15, 22, 239, 248, 151, 2, 113, 142, 245, 98, 41},
+			Root: common.HexToHash("994600aa16c5af30f2830f37231bebfa46981a45ad0f16eff89702718ef56229"),
 		})
+		glog.V(logger.Info).Infoln("Added trusted CHT for mainnet")
 	}
 	
+	if bc.genesisBlock.Hash() == (common.Hash{12, 215, 134, 162, 66, 93, 22, 241, 82, 198, 88, 49, 108, 66, 62, 108, 225, 24, 30, 21, 195, 41, 88, 38, 215, 201, 144, 76, 186, 156, 227, 3}) {
+		// add trusted CHT
+		WriteTrustedCht(bc.chainDb, TrustedCht{
+			Number: 310,
+			Root: common.HexToHash("1f6c79e8d5326dc5cf208f0bc8e4a62d5e8ab769b0d14ad7c26819a1e8cf3d6d"),
+		})
+		glog.V(logger.Info).Infoln("Added trusted CHT for testnet")
+	}
+
 	if err := bc.loadLastState(); err != nil {
 		return nil, err
 	}
@@ -465,16 +478,17 @@ func (self *LightChain) GetHeaderByNumberOdr(ctx context.Context, number uint64)
 }
 
 func (self *LightChain) SyncCht(ctx context.Context) bool {
-	self.mu.RLock()
-	defer self.mu.RUnlock()
-
 	headNum := self.CurrentHeader().Number.Uint64()
 	cht := GetTrustedCht(self.chainDb)
 	if headNum+1 < cht.Number*ChtFrequency {
 		num := cht.Number*ChtFrequency-1
 		header, err := GetHeaderByNumber(ctx, self.odr, num)
 		if header != nil && err == nil {
-			self.SetHead(num)
+			self.mu.Lock()
+			if self.hc.CurrentHeader().Number.Uint64() < header.Number.Uint64() {
+				self.hc.SetCurrentHeader(header)
+			}
+			self.mu.Unlock()
 			return true
 		}
 	}	
