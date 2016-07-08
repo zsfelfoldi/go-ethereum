@@ -100,7 +100,13 @@ func NewLightChain(odr OdrBackend, config *core.ChainConfig, pow pow.PoW, mux *e
 			return nil, err
 		}
 		glog.V(logger.Info).Infoln("WARNING: Wrote default ethereum genesis block")
+		// add trusted CHT
+		WriteTrustedCht(bc.chainDb, TrustedCht{
+			Number: 450,
+			Root: common.Hash{153, 70, 0, 170, 22, 197, 175, 48, 242, 131, 15, 55, 35, 27, 235, 250, 70, 152, 26, 69, 173, 15, 22, 239, 248, 151, 2, 113, 142, 245, 98, 41},
+		})
 	}
+	
 	if err := bc.loadLastState(); err != nil {
 		return nil, err
 	}

@@ -60,6 +60,11 @@ func GetTrustedCht(db ethdb.Database) TrustedCht {
 	return res	
 }
 
+func WriteTrustedCht(db ethdb.Database, cht TrustedCht) {
+	data, _ := rlp.EncodeToBytes(cht)
+	db.Put(trustedChtKey, data)
+}
+
 func GetHeaderByNumber(ctx context.Context, odr OdrBackend, number uint64) (*types.Header, error) {
 	db := odr.Database()
 	hash := core.GetCanonicalHash(db, number)
