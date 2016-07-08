@@ -298,9 +298,9 @@ func (self *LightChain) GetBlockByHash(ctx context.Context, hash common.Hash) (*
 // GetBlockByNumber retrieves a block from the database or ODR service by
 // number, caching it (associated with its hash) if found.
 func (self *LightChain) GetBlockByNumber(ctx context.Context, number uint64) (*types.Block, error) {
-	hash := core.GetCanonicalHash(self.chainDb, number)
-	if hash == (common.Hash{}) {
-		return nil, nil
+	hash, err := GetCanonicalHash(ctx, self.odr, number)
+	if hash == (common.Hash{}) || err != nil {
+		return nil, err
 	}
 	return self.GetBlock(ctx, hash, number)
 }
@@ -447,4 +447,13 @@ func (self *LightChain) GetBlockHashesFromHash(hash common.Hash, max uint64) []c
 // caching it (associated with its hash) if found.
 func (self *LightChain) GetHeaderByNumber(number uint64) *types.Header {
 	return self.hc.GetHeaderByNumber(number)
+}
+
+// GetHeaderByNumberOdr retrieves a block header from the database or network
+// by number, caching it (associated with its hash) if found.
+func (self *LightChain) GetHeaderByNumberOdr(ctx context.Context, number uint64) (*types.Header, error) {
+	if header := self.hc.GetHeaderByNumber(number); header != nil {
+		return header, nil
+	}
+	return GetHeaderByNumber(ctx, self.odr, number)
 }
