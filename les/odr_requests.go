@@ -308,7 +308,7 @@ func (self *ChtRequest) Valid(db ethdb.Database, msg *Msg) bool {
 		return false
 	}
 	var node light.ChtNode
-	if err := rlp.DecodeBytes(value, node); err != nil {
+	if err := rlp.DecodeBytes(value, &node); err != nil {
 		glog.V(logger.Debug).Infof("ODR: error decoding CHT node: %v", err)
 		return false
 	}

@@ -147,9 +147,10 @@ type ChtRequest struct {
 
 // StoreResult stores the retrieved data in local database
 func (req *ChtRequest) StoreResult(db ethdb.Database) {
+	// if there is a canonical hash, there is a header too
 	core.WriteHeader(db, req.Header)
 	hash, num := req.Header.Hash(), req.Header.Number.Uint64()
-	core.WriteCanonicalHash(db, hash, num)
 	core.WriteTd(db, hash, num, req.Td)
+	core.WriteCanonicalHash(db, hash, num)
 	//storeProof(db, req.Proof)
 }

@@ -31,7 +31,47 @@ import (
 
 var sha3_nil = crypto.Keccak256Hash(nil)
 
-var ErrNoHeader = errors.New("Block header not found")
+var (
+	ErrNoTrustedCht = errors.New("No trusted canonical hash trie")
+	ErrNoHeader = errors.New("Header not found")
+)
+
+func GetHeaderByNumber(ctx context.Context, odr OdrBackend, number uint64) (*types.Header, error) {
+	db := odr.Database()
+	hash := core.GetCanonicalHash(db, number)
+	if (hash != common.Hash{}) {
+		// if there is a canonical hash, there is a header too
+		header := core.GetHeader(db, hash, number)
+		if header == nil {
+			panic("Canonical hash present but header not found")
+		}
+		return header, nil
+	}
+	
+	cht := GetTrustedCht(db)
+	if number >= cht.Number * ChtFrequency {
+		return nil, ErrNoTrustedCht
+	}
+
+	r := &ChtRequest{ChtRoot: cht.Root, ChtNum: cht.Number, BlockNum: number}
+	if err := odr.Retrieve(ctx, r); err != nil {
+		return nil, err
+	} else {
+		return r.Header, nil
+	}
+}
+
+func GetCanonicalHash(ctx context.Context, odr OdrBackend, number uint64) (common.Hash, error) {
+	hash := core.GetCanonicalHash(odr.Database(), number)
+	if (hash != common.Hash{}) {
+		return hash, nil
+	}
+	header, err := GetHeaderByNumber(ctx, odr, number)
+	if header != nil {
+		return header.Hash(), nil
+	}
+	return common.Hash{}, err
+}
 
 // retrieveContractCode tries to retrieve the contract code of the given account
 // with the given hash from the network (id points to the storage trie belonging
