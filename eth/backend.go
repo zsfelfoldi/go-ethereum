@@ -71,6 +71,7 @@ type Config struct {
 	Genesis    string // Genesis JSON to seed the chain database with
 	FastSync   bool   // Enables the state download based fast synchronisation algorithm
 	LightMode  bool   // Running in light client mode
+	NoDefSrv   bool   // No default LES server
 	LightServ  int    // Maximum percentage of time allowed for serving LES requests
 	LightPeers int    // Maximum number of LES client peers
 

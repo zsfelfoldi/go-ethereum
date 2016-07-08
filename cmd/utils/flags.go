@@ -163,6 +163,10 @@ var (
 		Name:  "light",
 		Usage: "Enable light client mode",
 	}
+	NoDefSrvFlag = cli.BoolFlag{
+		Name: "nodefsrv",
+		Usage: "Don't add default LES server (only for test version)",
+	}
 	LightServFlag = cli.IntFlag{
 		Name:  "lightserv",
 		Usage: "Maximum percentage of time allowed for serving LES requests (0-90)",
@@ -708,6 +712,7 @@ func MakeSystemNode(name, version string, relconf release.Config, extra []byte, 
 		Genesis:                 MakeGenesisBlock(ctx),
 		FastSync:                ctx.GlobalBool(FastSyncFlag.Name),
 		LightMode:               ctx.GlobalBool(LightModeFlag.Name),
+		NoDefSrv:                ctx.GlobalBool(NoDefSrvFlag.Name),
 		LightServ:               ctx.GlobalInt(LightServFlag.Name),
 		LightPeers:              ctx.GlobalInt(LightPeersFlag.Name),
 		BlockChainVersion:       ctx.GlobalInt(BlockchainVersionFlag.Name),

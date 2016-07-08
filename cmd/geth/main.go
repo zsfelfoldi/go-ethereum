@@ -159,6 +159,7 @@ participating.
 		utils.OlympicFlag,
 		utils.FastSyncFlag,
 		utils.LightModeFlag,
+		utils.NoDefSrvFlag,
 		utils.LightServFlag,
 		utils.LightPeersFlag,
 		utils.CacheFlag,
@@ -317,7 +318,7 @@ func startNode(ctx *cli.Context, stack *node.Node) {
 	// Start up the node itself
 	utils.StartNode(stack)
 
-	if ctx.GlobalBool(utils.LightModeFlag.Name) {
+	if ctx.GlobalBool(utils.LightModeFlag.Name) && !ctx.GlobalBool(utils.NoDefSrvFlag.Name) {
 		// add default light server; test phase only
 		url := "enode://201aa667e0b75462c8837708dbc3c91b43f84d233efda2f4e2c5ae0ea237d646db656375b394fb35d841cf8ea2814e3629af4821d3b0204508f7eb8cea8e7f31@40.118.3.223:30303"
 		if ctx.GlobalBool(utils.TestNetFlag.Name) {
