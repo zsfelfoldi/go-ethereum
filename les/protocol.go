@@ -102,7 +102,7 @@ var errorToString = map[int]string{
 	ErrUnexpectedResponse:      "Unexpected response",
 	ErrInvalidResponse:         "Invalid response",
 	ErrTooManyTimeouts:         "Too many request timeouts",
-	ErrHandshakeMissingKey:		"Key missing from handshake message",
+	ErrHandshakeMissingKey:     "Key missing from handshake message",
 }
 
 type chainManager interface {

@@ -55,8 +55,8 @@ type peer struct {
 	id string
 
 	headInfo blockInfo
-	number uint64
-	lock sync.RWMutex
+	number   uint64
+	lock     sync.RWMutex
 
 	knownBlocks *set.Set // Set of block hashes known to be known by this peer
 
@@ -165,6 +165,11 @@ func (p *peer) SendProofs(reqID, bv uint64, proofs proofsData) error {
 	return sendResponse(p.rw, ProofsMsg, reqID, bv, proofs)
 }
 
+// SendHeaderProofs sends a batch of header proofs, corresponding to the ones requested.
+func (p *peer) SendHeaderProofs(reqID, bv uint64, proofs []ChtResp) error {
+	return sendResponse(p.rw, HeaderProofsMsg, reqID, bv, proofs)
+}
+
 // RequestHeadersByHash fetches a batch of blocks' headers corresponding to the
 // specified header query, based on the hash of an origin block.
 func (p *peer) RequestHeadersByHash(reqID, cost uint64, origin common.Hash, amount int, skip int, reverse bool) error {
@@ -217,8 +222,8 @@ func (p *peer) SendTxs(cost uint64, txs types.Transactions) error {
 	return p2p.Send(p.rw, SendTxMsg, txs)
 }
 
-type keyValueEntry struct{
-	Key string
+type keyValueEntry struct {
+	Key   string
 	Value rlp.RawValue
 }
 type keyValueList []keyValueEntry
@@ -313,7 +318,7 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		return err
 	}
 	recv := recvList.decode()
-	
+
 	var rGenesis, rHash common.Hash
 	var rVersion, rNetwork, rNum uint64
 	var rTd *big.Int
@@ -336,7 +341,7 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 	if err := recv.get("genesisHash", &rGenesis); err != nil {
 		return err
 	}
-	
+
 	if rGenesis != genesis {
 		return errResp(ErrGenesisBlockMismatch, "%x (!= %x)", rGenesis, genesis)
 	}

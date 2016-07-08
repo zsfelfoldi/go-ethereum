@@ -33,9 +33,9 @@ import (
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/filters"
 	"github.com/ethereum/go-ethereum/eth/gasprice"
-	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -62,8 +62,8 @@ type LightNodeService struct {
 	pow            *ethash.Ethash
 	httpclient     *httpclient.HTTPClient
 	accountManager *accounts.Manager
-	solcPath     string
-	solc         *compiler.Solidity
+	solcPath       string
+	solc           *compiler.Solidity
 
 	NatSpec       bool
 	PowTest       bool

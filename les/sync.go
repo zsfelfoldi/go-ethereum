@@ -69,7 +69,7 @@ func (pm *ProtocolManager) synchronise(peer *peer) {
 	if peer == nil {
 		return
 	}
-	
+
 	// Make sure the peer's TD is higher than our own.
 	if !pm.needToSync(peer.headBlockInfo()) {
 		return
@@ -103,7 +103,7 @@ func (pm *ProtocolManager) getSyncLock(acquire bool) chan struct{} {
 	} else {
 		pm.syncing = acquire
 		return nil
-	}	
+	}
 }
 
 func (pm *ProtocolManager) releaseSyncLock() {

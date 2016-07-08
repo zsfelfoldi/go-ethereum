@@ -26,17 +26,17 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/gasprice"
-	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/light"
 	rpc "github.com/ethereum/go-ethereum/rpc"
 	"golang.org/x/net/context"
 )
 
 type LesApiBackend struct {
-	eth      *LightNodeService
-	gpo      *gasprice.LightPriceOracle
+	eth *LightNodeService
+	gpo *gasprice.LightPriceOracle
 }
 
 func (b *LesApiBackend) SetHead(number uint64) {

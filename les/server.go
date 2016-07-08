@@ -18,8 +18,8 @@
 package les
 
 import (
-"fmt"
 	"encoding/binary"
+	"fmt"
 	"sync"
 	"time"
 
@@ -27,8 +27,8 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
+	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -185,7 +185,7 @@ func (s *requestCostStats) update(msgCode, reqCnt, cost uint64) {
 
 func (pm *ProtocolManager) blockLoop() {
 	pm.wg.Add(1)
-	sub := pm.eventMux.Subscribe(	core.ChainHeadEvent{})
+	sub := pm.eventMux.Subscribe(core.ChainHeadEvent{})
 	newCht := make(chan struct{}, 10)
 	newCht <- struct{}{}
 	go func() {
@@ -198,7 +198,7 @@ func (pm *ProtocolManager) blockLoop() {
 					hash := header.Hash()
 					number := header.Number.Uint64()
 					td := core.GetTd(pm.chainDb, hash, number)
-//fmt.Println("BROADCAST", number, hash, td)
+					//fmt.Println("BROADCAST", number, hash, td)
 					announce := newBlockHashesData{{Hash: hash, Number: number, Td: td}}
 					for _, p := range peers {
 						go p.SendNewBlockHashes(announce)
@@ -222,8 +222,8 @@ func (pm *ProtocolManager) blockLoop() {
 }
 
 var (
-	lastChtKey = []byte("LastChtNumber") // chtNum (uint64 big endian)
-	chtPrefix = []byte("cht") // chtPrefix + chtNum (uint64 big endian) -> trie root hash
+	lastChtKey       = []byte("LastChtNumber") // chtNum (uint64 big endian)
+	chtPrefix        = []byte("cht")           // chtPrefix + chtNum (uint64 big endian) -> trie root hash
 	chtConfirmations = light.ChtFrequency / 2
 )
 
@@ -246,9 +246,9 @@ func makeCht(db ethdb.Database) bool {
 
 	var newChtNum uint64
 	if headNum > chtConfirmations {
-		newChtNum = (headNum-chtConfirmations)/light.ChtFrequency
+		newChtNum = (headNum - chtConfirmations) / light.ChtFrequency
 	}
-	
+
 	var lastChtNum uint64
 	data, _ := db.Get(lastChtKey)
 	if len(data) == 8 {
@@ -257,7 +257,7 @@ func makeCht(db ethdb.Database) bool {
 	if newChtNum <= lastChtNum {
 		return false
 	}
-	
+
 	var t *trie.Trie
 	if lastChtNum > 0 {
 		var err error
@@ -270,7 +270,7 @@ func makeCht(db ethdb.Database) bool {
 		t, _ = trie.New(common.Hash{}, db)
 	}
 
-	for num := lastChtNum*light.ChtFrequency; num < (lastChtNum+1)*light.ChtFrequency; num++ {
+	for num := lastChtNum * light.ChtFrequency; num < (lastChtNum+1)*light.ChtFrequency; num++ {
 		hash := core.GetCanonicalHash(db, num)
 		if hash == (common.Hash{}) {
 			panic("Canonical hash not found")
@@ -293,12 +293,12 @@ func makeCht(db ethdb.Database) bool {
 		lastChtNum = 0
 	} else {
 		lastChtNum++
-fmt.Printf("CHT %d %064x\n", lastChtNum, root)
+		fmt.Printf("CHT %d %064x\n", lastChtNum, root)
 		storeChtRoot(db, lastChtNum, root)
 		var data [8]byte
 		binary.BigEndian.PutUint64(data[:], lastChtNum)
 		db.Put(lastChtKey, data[:])
 	}
-	
+
 	return newChtNum > lastChtNum
 }

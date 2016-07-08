@@ -111,13 +111,13 @@ func testRCL() RequestCostList {
 // channels for different events.
 func newTestProtocolManager(lightSync bool, blocks int, generator func(int, *core.BlockGen)) (*ProtocolManager, ethdb.Database, *LesOdr, error) {
 	var (
-		evmux   = new(event.TypeMux)
-		pow     = new(core.FakePow)
-		db, _   = ethdb.NewMemDatabase()
-		genesis = core.WriteGenesisBlockForTesting(db, core.GenesisAccount{testBankAddress, testBankFunds})
-		chainConfig   = &core.ChainConfig{HomesteadBlock: big.NewInt(0)} // homestead set to 0 because of chain maker
-		odr     *LesOdr
-		chain   BlockChain
+		evmux       = new(event.TypeMux)
+		pow         = new(core.FakePow)
+		db, _       = ethdb.NewMemDatabase()
+		genesis     = core.WriteGenesisBlockForTesting(db, core.GenesisAccount{testBankAddress, testBankFunds})
+		chainConfig = &core.ChainConfig{HomesteadBlock: big.NewInt(0)} // homestead set to 0 because of chain maker
+		odr         *LesOdr
+		chain       BlockChain
 	)
 
 	if lightSync {

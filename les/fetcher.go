@@ -18,7 +18,7 @@
 package les
 
 import (
-"fmt"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,26 +26,26 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 )
-		
-type lightFetcher struct{
-	pm *ProtocolManager
-	odr *LesOdr
-	chain BlockChain
-	reqMu sync.RWMutex
-	requested map[uint64]chan *types.Header
-	syncPoolMu sync.Mutex
-	syncPool map[*peer]struct{}
-	syncPoolNotify chan struct{}
+
+type lightFetcher struct {
+	pm               *ProtocolManager
+	odr              *LesOdr
+	chain            BlockChain
+	reqMu            sync.RWMutex
+	requested        map[uint64]chan *types.Header
+	syncPoolMu       sync.Mutex
+	syncPool         map[*peer]struct{}
+	syncPoolNotify   chan struct{}
 	syncPoolNotified uint32
-}	
-	
+}
+
 func newLightFetcher(pm *ProtocolManager) *lightFetcher {
 	f := &lightFetcher{
-		pm: pm,
-		chain: pm.blockchain,
-		odr: pm.odr,
-		requested: make(map[uint64]chan *types.Header),
-		syncPool: make(map[*peer]struct{}),
+		pm:             pm,
+		chain:          pm.blockchain,
+		odr:            pm.odr,
+		requested:      make(map[uint64]chan *types.Header),
+		syncPool:       make(map[*peer]struct{}),
 		syncPoolNotify: make(chan struct{}),
 	}
 	go f.syncLoop()
@@ -61,7 +61,7 @@ func (f *lightFetcher) requestedID(reqID uint64) bool {
 
 func (f *lightFetcher) deliverHeaders(reqID uint64, headers []*types.Header) {
 	f.reqMu.Lock()
-	chn := f.requested[reqID]	
+	chn := f.requested[reqID]
 	if len(headers) == 1 {
 		chn <- headers[0]
 	} else {
@@ -113,15 +113,15 @@ func (f *lightFetcher) fetchBestFromPool() *peer {
 		delete(f.syncPool, best)
 	}
 	f.syncPoolMu.Unlock()
-	return best	
+	return best
 }
 
 func (f *lightFetcher) syncLoop() {
 	f.pm.wg.Add(1)
 	defer f.pm.wg.Done()
-	
+
 	for {
-		select {	
+		select {
 		case <-f.pm.quitSync:
 			return
 		case <-f.syncPoolNotify:
@@ -152,7 +152,7 @@ func (f *lightFetcher) syncLoop() {
 func (f *lightFetcher) syncWithPeer(p *peer) bool {
 	f.pm.wg.Add(1)
 	defer f.pm.wg.Done()
-	
+
 	headNum := f.chain.CurrentHeader().Number.Uint64()
 	peerHead := p.headBlockInfo()
 
@@ -166,16 +166,16 @@ func (f *lightFetcher) syncWithPeer(p *peer) bool {
 		select {
 		case header = <-chn:
 			if header == nil || header.Hash() != peerHead.Hash ||
-			   header.Number.Uint64() != peerHead.Number {
+				header.Number.Uint64() != peerHead.Number {
 				// missing or wrong header returned
-fmt.Println("removePeer 1")
+				fmt.Println("removePeer 1")
 				f.pm.removePeer(p.id)
 				return false
 			}
-			
+
 		case <-time.After(hardRequestTimeout):
 			if !disableClientRemovePeer {
-fmt.Println("removePeer 2")
+				fmt.Println("removePeer 2")
 				f.pm.removePeer(p.id)
 			}
 			f.reqMu.Lock()
@@ -184,7 +184,7 @@ fmt.Println("removePeer 2")
 			f.reqMu.Unlock()
 			return false
 		}
-		
+
 		// got the header, try to insert
 		f.chain.InsertHeaderChain([]*types.Header{header}, 1)
 
@@ -192,7 +192,7 @@ fmt.Println("removePeer 2")
 			// check header td at the end of syncing, drop peer if it was fake
 			headerTd := core.GetTd(f.pm.chainDb, header.Hash(), header.Number.Uint64())
 			if headerTd != nil && headerTd.Cmp(peerHead.Td) != 0 {
-fmt.Println("removePeer 3")
+				fmt.Println("removePeer 3")
 				f.pm.removePeer(p.id)
 			}
 		}()

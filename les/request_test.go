@@ -56,13 +56,13 @@ func testAccess(t *testing.T, protocol int, fn accessTestFn) {
 	lpm, ldb, odr := newTestProtocolManagerMust(t, true, 0, nil)
 	_, err1, lpeer, err2 := newTestPeerPair("peer", protocol, pm, lpm)
 	select {
-	case <-time.After(time.Millisecond * 100):	
+	case <-time.After(time.Millisecond * 100):
 	case err := <-err1:
 		t.Fatalf("peer 1 handshake error: %v", err)
 	case err := <-err2:
 		t.Fatalf("peer 1 handshake error: %v", err)
 	}
-	
+
 	lpm.synchronise(lpeer)
 
 	test := func(expFail uint64) {

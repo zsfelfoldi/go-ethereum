@@ -159,7 +159,7 @@ func (self *ReceiptsRequest) Valid(db ethdb.Database, msg *Msg) bool {
 type ProofReq struct {
 	BHash       common.Hash
 	AccKey, Key []byte
-	FromLevel	uint
+	FromLevel   uint
 }
 
 // ODR request type for state/storage trie entries, see LesOdrRequest interface
@@ -257,12 +257,12 @@ func (self *CodeRequest) Valid(db ethdb.Database, msg *Msg) bool {
 }
 
 type ChtReq struct {
-	ChtNum, BlockNum, FromLevel	uint64
+	ChtNum, BlockNum, FromLevel uint64
 }
 
 type ChtResp struct {
 	Header *types.Header
-	Proof []rlp.RawValue
+	Proof  []rlp.RawValue
 }
 
 // ODR request type for requesting headers by Canonical Hash Trie, see LesOdrRequest interface
@@ -278,8 +278,8 @@ func (self *ChtRequest) GetCost(peer *peer) uint64 {
 func (self *ChtRequest) Request(reqID uint64, peer *peer) error {
 	glog.V(logger.Debug).Infof("ODR: requesting CHT #%d block #%d from peer %v", self.ChtNum, self.BlockNum, peer.id)
 	req := &ChtReq{
-		ChtNum:  self.ChtNum,
-		BlockNum:  self.BlockNum,
+		ChtNum:   self.ChtNum,
+		BlockNum: self.BlockNum,
 	}
 	return peer.RequestHeaderProofs(reqID, self.GetCost(peer), []*ChtReq{req})
 }
@@ -316,7 +316,7 @@ func (self *ChtRequest) Valid(db ethdb.Database, msg *Msg) bool {
 		glog.V(logger.Debug).Infof("ODR: CHT header hash does not match")
 		return false
 	}
-	
+
 	self.Proof = proof.Proof
 	self.Header = proof.Header
 	self.Td = node.Td
