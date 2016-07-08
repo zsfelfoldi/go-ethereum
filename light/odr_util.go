@@ -18,11 +18,13 @@ package light
 import (
 	"bytes"
 	"errors"
-
+	"math/big"
+	
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -34,7 +36,29 @@ var sha3_nil = crypto.Keccak256Hash(nil)
 var (
 	ErrNoTrustedCht = errors.New("No trusted canonical hash trie")
 	ErrNoHeader = errors.New("Header not found")
+
+	ChtFrequency = uint64(4096)
+	trustedChtKey = []byte("TrustedCHT")
 )
+
+type ChtNode struct {
+	Hash common.Hash
+	Td *big.Int
+}
+
+type TrustedCht struct {
+	Number uint64
+	Root common.Hash
+}
+
+func GetTrustedCht(db ethdb.Database) TrustedCht {
+	data, _ := db.Get(trustedChtKey)
+	var res TrustedCht
+	if err := rlp.DecodeBytes(data, &res); err != nil {
+		return TrustedCht{0, common.Hash{}}
+	}
+	return res	
+}
 
 func GetHeaderByNumber(ctx context.Context, odr OdrBackend, number uint64) (*types.Header, error) {
 	db := odr.Database()
