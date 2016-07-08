@@ -248,6 +248,10 @@ func (pool *TxPool) setNewHead(ctx context.Context, newHeader *types.Header) (tx
 		if oldh.GetNumberU64() < newh.GetNumberU64() {
 			newHashes = append(newHashes, newh.Hash())
 			newh = pool.chain.GetHeader(newh.ParentHash, newh.Number.Uint64()-1)
+			if newh == nil {
+				// happens when CHT syncing, nothing to do
+				newh = oldh
+			}
 		}
 	}
 	if oldh.GetNumberU64() < pool.clearIdx {
