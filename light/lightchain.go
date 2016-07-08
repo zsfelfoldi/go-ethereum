@@ -457,3 +457,20 @@ func (self *LightChain) GetHeaderByNumberOdr(ctx context.Context, number uint64)
 	}
 	return GetHeaderByNumber(ctx, self.odr, number)
 }
+
+func (self *LightChain) SyncCht(ctx context.Context) bool {
+	self.mu.RLock()
+	defer self.mu.RUnlock()
+
+	headNum := self.CurrentHeader().Number.Uint64()
+	cht := GetTrustedCht(self.chainDb)
+	if headNum+1 < cht.Number*ChtFrequency {
+		num := cht.Number*ChtFrequency-1
+		header, err := GetHeaderByNumber(ctx, self.odr, num)
+		if header != nil && err == nil {
+			self.SetHead(num)
+			return true
+		}
+	}	
+	return false
+}

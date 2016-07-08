@@ -21,6 +21,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/eth/downloader"
+	"github.com/ethereum/go-ethereum/light"
+	"golang.org/x/net/context"
 )
 
 const (
@@ -117,6 +119,9 @@ func (pm *ProtocolManager) releaseSyncLock() {
 }
 
 func (pm *ProtocolManager) syncWithLockAcquired(peer *peer) {
+	ctx, _ := context.WithTimeout(context.Background(), time.Second * 5)
+	pm.blockchain.(*light.LightChain).SyncCht(ctx)
+	
 	pm.downloader.Synchronise(peer.id, peer.Head(), peer.Td(), downloader.LightSync)
 	pm.releaseSyncLock()
 }
