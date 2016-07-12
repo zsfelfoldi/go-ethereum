@@ -160,42 +160,60 @@ func (f *lightFetcher) syncWithPeer(p *peer) bool {
 		return true
 	}
 
-	if peerHead.Number <= headNum+1 {
-		var header *types.Header
-		reqID, chn := f.request(p, peerHead)
-		select {
-		case header = <-chn:
-			if header == nil || header.Hash() != peerHead.Hash ||
-				header.Number.Uint64() != peerHead.Number {
-				// missing or wrong header returned
-				fmt.Println("removePeer 1")
-				f.pm.removePeer(p.id)
-				return false
+	if peerHead.Number <= headNum+10 {
+		var headerChain []*types.Header
+		ptr := peerHead
+		reqCnt := 20
+		
+		for core.GetCanonicalHash(f.pm.chainDb, ptr.Number) != ptr.Hash {
+			if reqCnt == 0 {
+				headerChain = nil
+				break
 			}
-
-		case <-time.After(hardRequestTimeout):
-			if !disableClientRemovePeer {
-				fmt.Println("removePeer 2")
-				f.pm.removePeer(p.id)
+			reqCnt--
+			header := core.GetHeader(f.pm.chainDb, ptr.Hash, ptr.Number)
+			if header == nil {
+				reqID, chn := f.request(p, ptr)
+				select {
+				case header = <-chn:
+					if header == nil || header.Hash() != ptr.Hash ||
+						header.Number.Uint64() != ptr.Number {
+						// missing or wrong header returned
+						fmt.Println("removePeer 1")
+						f.pm.removePeer(p.id)
+						return false
+					}
+		
+				case <-time.After(hardRequestTimeout):
+					if !disableClientRemovePeer {
+						fmt.Println("removePeer 2")
+						f.pm.removePeer(p.id)
+					}
+					f.reqMu.Lock()
+					close(f.requested[reqID])
+					delete(f.requested, reqID)
+					f.reqMu.Unlock()
+					return false
+				}
 			}
-			f.reqMu.Lock()
-			close(f.requested[reqID])
-			delete(f.requested, reqID)
-			f.reqMu.Unlock()
-			return false
+			ptr.Number--
+			ptr.Hash = header.ParentHash
 		}
+		
+		if len(headerChain) > 0 {
+			// got the header, try to insert
+			f.chain.InsertHeaderChain(headerChain, 1)
 
-		// got the header, try to insert
-		f.chain.InsertHeaderChain([]*types.Header{header}, 1)
-
-		defer func() {
-			// check header td at the end of syncing, drop peer if it was fake
-			headerTd := core.GetTd(f.pm.chainDb, header.Hash(), header.Number.Uint64())
-			if headerTd != nil && headerTd.Cmp(peerHead.Td) != 0 {
-				fmt.Println("removePeer 3")
-				f.pm.removePeer(p.id)
-			}
-		}()
+			defer func() {
+				// check header td at the end of syncing, drop peer if it was fake
+				header := headerChain[len(headerChain)-1]
+				headerTd := core.GetTd(f.pm.chainDb, header.Hash(), header.Number.Uint64())
+				if headerTd != nil && headerTd.Cmp(peerHead.Td) != 0 {
+					fmt.Println("removePeer 3")
+					f.pm.removePeer(p.id)
+				}
+			}()
+		}
 		if !f.pm.needToSync(peerHead) {
 			return true
 		}
