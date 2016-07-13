@@ -119,9 +119,9 @@ func (pm *ProtocolManager) releaseSyncLock() {
 }
 
 func (pm *ProtocolManager) syncWithLockAcquired(peer *peer) {
-	ctx, _ := context.WithTimeout(context.Background(), time.Second * 5)
+	ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
 	pm.blockchain.(*light.LightChain).SyncCht(ctx)
-	
+
 	pm.downloader.Synchronise(peer.id, peer.Head(), peer.Td(), downloader.LightSync)
 	pm.releaseSyncLock()
 }
