@@ -166,39 +166,41 @@ func (f *lightFetcher) syncWithPeer(p *peer) bool {
 		reqCnt := 20
 
 		for core.GetCanonicalHash(f.pm.chainDb, ptr.Number) != ptr.Hash {
-fmt.Println("reqCnt", reqCnt, "number", ptr.Number)
+			//fmt.Println("reqCnt", reqCnt, "number", ptr.Number)
 			if reqCnt == 0 {
 				headerChain = nil
 				break
 			}
 			reqCnt--
-			var header *types.Header
-			reqID, chn := f.request(p, ptr)
-			select {
-			case header = <-chn:
-				if header == nil || header.Hash() != ptr.Hash ||
-					header.Number.Uint64() != ptr.Number {
-					// missing or wrong header returned
-					fmt.Println("removePeer 1")
-					f.pm.removePeer(p.id)
+			header := core.GetHeader(f.pm.chainDb, ptr.Hash, ptr.Number)
+			if header == nil {
+				reqID, chn := f.request(p, ptr)
+				select {
+				case header = <-chn:
+					if header == nil || header.Hash() != ptr.Hash ||
+						header.Number.Uint64() != ptr.Number {
+						// missing or wrong header returned
+						fmt.Println("removePeer 1")
+						f.pm.removePeer(p.id)
+						return false
+					}
+					headerChain = append([]*types.Header{header}, headerChain...)
+				case <-time.After(hardRequestTimeout):
+					if !disableClientRemovePeer {
+						fmt.Println("removePeer 2")
+						f.pm.removePeer(p.id)
+					}
+					f.reqMu.Lock()
+					close(f.requested[reqID])
+					delete(f.requested, reqID)
+					f.reqMu.Unlock()
 					return false
 				}
-				headerChain = append([]*types.Header{header}, headerChain...)
-			case <-time.After(hardRequestTimeout):
-				if !disableClientRemovePeer {
-					fmt.Println("removePeer 2")
-					f.pm.removePeer(p.id)
-				}
-				f.reqMu.Lock()
-				close(f.requested[reqID])
-				delete(f.requested, reqID)
-				f.reqMu.Unlock()
-				return false
 			}
 			ptr.Number--
 			ptr.Hash = header.ParentHash
 		}
-fmt.Println("len(headerChain)", len(headerChain))
+		//fmt.Println("len(headerChain)", len(headerChain))
 		if len(headerChain) > 0 {
 			// got the header, try to insert
 			f.chain.InsertHeaderChain(headerChain, 1)

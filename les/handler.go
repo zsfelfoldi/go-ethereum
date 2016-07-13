@@ -346,7 +346,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 	var costs *requestCosts
 	var reqCnt, maxReqs int
 
-	fmt.Println("MSG", msg.Code, msg.Size)
+	//fmt.Println("MSG", msg.Code, msg.Size)
 	if rc, ok := p.fcCosts[msg.Code]; ok { // check if msg is a supported request type
 		costs = rc
 		if p.fcClient == nil {
