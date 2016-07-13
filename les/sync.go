@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	forceSyncCycle      = 10 * time.Second // Time interval to force syncs, even if few peers are available
+	//forceSyncCycle      = 10 * time.Second // Time interval to force syncs, even if few peers are available
 	minDesiredPeerCount = 5                // Amount of peers desired to start syncing
 )
 
@@ -39,7 +39,7 @@ func (pm *ProtocolManager) syncer() {
 	defer pm.downloader.Terminate()
 
 	// Wait for different events to fire synchronisation operations
-	forceSync := time.Tick(forceSyncCycle)
+	//forceSync := time.Tick(forceSyncCycle)
 	for {
 		select {
 		case <-pm.newPeerCh:
@@ -49,10 +49,10 @@ func (pm *ProtocolManager) syncer() {
 			}
 			go pm.synchronise(pm.peers.BestPeer())
 
-		case <-forceSync:
+		/*case <-forceSync:
 			// Force a sync even if not enough peers are present
 			go pm.synchronise(pm.peers.BestPeer())
-
+		*/
 		case <-pm.noMorePeers:
 			return
 		}
