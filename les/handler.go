@@ -356,11 +356,12 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if !ok || bv < costs.baseCost {
 			return errResp(ErrRequestRejected, "")
 		}
-		d := bv - costs.baseCost
-		if d/10000 < costs.reqCost {
-			maxReqs = int(d / costs.reqCost)
-		} else {
-			maxReqs = 10000
+		maxReqs = 10000
+		if bv < pm.server.defParams.BufLimit {
+			d := bv - costs.baseCost
+			if d/10000 < costs.reqCost {
+				maxReqs = int(d / costs.reqCost)
+			}
 		}
 	}
 
