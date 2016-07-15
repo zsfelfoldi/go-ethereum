@@ -62,6 +62,7 @@ type peer struct {
 
 	fcClient *flowcontrol.ClientNode // nil if the peer is server only
 	fcServer *flowcontrol.ServerNode // nil if the peer is client only
+	fcServerParams *flowcontrol.ServerParams
 	fcCosts  requestCostTable
 }
 
@@ -128,7 +129,11 @@ func sendResponse(w p2p.MsgWriter, msgcode, reqID, bv uint64, data interface{}) 
 }
 
 func (p *peer) GetRequestCost(msgcode uint64, amount int) uint64 {
-	return p.fcCosts[msgcode].baseCost + p.fcCosts[msgcode].reqCost*uint64(amount)
+	cost := p.fcCosts[msgcode].baseCost + p.fcCosts[msgcode].reqCost*uint64(amount)
+	if cost > p.fcServerParams.BufLimit {
+		cost = p.fcServerParams.BufLimit
+	}
+	return cost
 }
 
 // SendNewBlockHashes announces the availability of a number of blocks through
@@ -377,7 +382,9 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		if err := recv.get("flowControl/MRC", &MRC); err != nil {
 			return err
 		}
+		p.fcServerParams = params
 		p.fcServer = flowcontrol.NewServerNode(params)
+		p.fcServerParams = params
 		p.fcCosts = MRC.decode()
 	}
 	// Configure the remote peer, and sanity check out handshake too
