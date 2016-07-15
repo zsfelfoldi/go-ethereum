@@ -184,7 +184,6 @@ func (f *lightFetcher) syncWithPeer(p *peer) bool {
 						f.pm.removePeer(p.id)
 						return false
 					}
-					headerChain = append([]*types.Header{header}, headerChain...)
 				case <-time.After(hardRequestTimeout):
 					if !disableClientRemovePeer {
 						fmt.Println("removePeer 2")
@@ -197,6 +196,7 @@ func (f *lightFetcher) syncWithPeer(p *peer) bool {
 					return false
 				}
 			}
+			headerChain = append([]*types.Header{header}, headerChain...)
 			ptr.Number--
 			ptr.Hash = header.ParentHash
 		}
