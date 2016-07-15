@@ -27,7 +27,7 @@ import (
 
 const (
 	//forceSyncCycle      = 10 * time.Second // Time interval to force syncs, even if few peers are available
-	minDesiredPeerCount = 5                // Amount of peers desired to start syncing
+	minDesiredPeerCount = 5 // Amount of peers desired to start syncing
 )
 
 // syncer is responsible for periodically synchronising with the network, both
@@ -50,8 +50,8 @@ func (pm *ProtocolManager) syncer() {
 			go pm.synchronise(pm.peers.BestPeer())
 
 		/*case <-forceSync:
-			// Force a sync even if not enough peers are present
-			go pm.synchronise(pm.peers.BestPeer())
+		// Force a sync even if not enough peers are present
+		go pm.synchronise(pm.peers.BestPeer())
 		*/
 		case <-pm.noMorePeers:
 			return

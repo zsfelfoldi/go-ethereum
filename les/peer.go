@@ -60,10 +60,10 @@ type peer struct {
 
 	knownBlocks *set.Set // Set of block hashes known to be known by this peer
 
-	fcClient *flowcontrol.ClientNode // nil if the peer is server only
-	fcServer *flowcontrol.ServerNode // nil if the peer is client only
+	fcClient       *flowcontrol.ClientNode // nil if the peer is server only
+	fcServer       *flowcontrol.ServerNode // nil if the peer is client only
 	fcServerParams *flowcontrol.ServerParams
-	fcCosts  requestCostTable
+	fcCosts        requestCostTable
 }
 
 func newPeer(version, network int, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {

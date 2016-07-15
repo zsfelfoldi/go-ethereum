@@ -72,14 +72,16 @@ func (f *lightFetcher) deliverHeaders(reqID uint64, headers []*types.Header) {
 	f.reqMu.Unlock()
 }
 
-func (f *lightFetcher) notify(p *peer, block blockInfo) {
-	p.lock.Lock()
-	if block.Td.Cmp(p.headInfo.Td) <= 0 {
+func (f *lightFetcher) notify(p *peer, block blockInfo, forceCheck bool) {
+	if !forceCheck {
+		p.lock.Lock()
+		if block.Td.Cmp(p.headInfo.Td) <= 0 {
+			p.lock.Unlock()
+			return
+		}
+		p.headInfo = block
 		p.lock.Unlock()
-		return
 	}
-	p.headInfo = block
-	p.lock.Unlock()
 
 	head := f.pm.blockchain.CurrentHeader()
 	currentTd := core.GetTd(f.pm.chainDb, head.Hash(), head.Number.Uint64())

@@ -18,8 +18,8 @@
 package les
 
 import (
-"fmt"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -111,25 +111,25 @@ func (table requestCostTable) encode() RequestCostList {
 
 type linReg struct {
 	sumX, sumY, sumXX, sumXY float64
-	cnt uint64
+	cnt                      uint64
 }
 
 const linRegMaxCnt = 100000
 
 func (l *linReg) add(x, y float64) {
 	if l.cnt >= linRegMaxCnt {
-		sub := float64(l.cnt+1-linRegMaxCnt)/linRegMaxCnt
-		l.sumX -= l.sumX*sub
-		l.sumY -= l.sumY*sub
-		l.sumXX -= l.sumXX*sub
-		l.sumXY -= l.sumXY*sub
-		l.cnt = linRegMaxCnt-1
+		sub := float64(l.cnt+1-linRegMaxCnt) / linRegMaxCnt
+		l.sumX -= l.sumX * sub
+		l.sumY -= l.sumY * sub
+		l.sumXX -= l.sumXX * sub
+		l.sumXY -= l.sumXY * sub
+		l.cnt = linRegMaxCnt - 1
 	}
 	l.cnt++
 	l.sumX += x
 	l.sumY += y
-	l.sumXX += x*x
-	l.sumXY += x*y
+	l.sumXX += x * x
+	l.sumXY += x * y
 }
 
 func (l *linReg) calc() (b, m float64) {
@@ -139,10 +139,10 @@ func (l *linReg) calc() (b, m float64) {
 	cnt := float64(l.cnt)
 	d := cnt*l.sumXX - l.sumX*l.sumX
 	if d < 0.001 {
-		return l.sumY/cnt, 0
+		return l.sumY / cnt, 0
 	}
-    m = (cnt*l.sumXY - l.sumX*l.sumY) / d
-    b = (l.sumY/cnt) - (m*l.sumX/cnt)
+	m = (cnt*l.sumXY - l.sumX*l.sumY) / d
+	b = (l.sumY / cnt) - (m * l.sumX / cnt)
 	return b, m
 }
 
@@ -170,14 +170,14 @@ func linRegFromBytes(data []byte) *linReg {
 }
 
 type requestCostStats struct {
-	lock     sync.RWMutex
-	db       ethdb.Database
-	stats	map[uint64]*linReg
+	lock  sync.RWMutex
+	db    ethdb.Database
+	stats map[uint64]*linReg
 }
 
-type requestCostStatsRlp []struct{
+type requestCostStatsRlp []struct {
 	MsgCode uint64
-	Data []byte
+	Data    []byte
 }
 
 var rcStatsKey = []byte("_requestCostStats")
@@ -187,7 +187,7 @@ func newCostStats(db ethdb.Database) *requestCostStats {
 	for _, code := range reqList {
 		stats[code] = &linReg{cnt: 100}
 	}
-	
+
 	if db != nil {
 		data, err := db.Get(rcStatsKey)
 		var statsRlp requestCostStatsRlp
@@ -206,8 +206,8 @@ func newCostStats(db ethdb.Database) *requestCostStats {
 	}
 
 	return &requestCostStats{
-		db:       db,
-		stats:	stats,
+		db:    db,
+		stats: stats,
 	}
 }
 
@@ -231,10 +231,10 @@ func (s *requestCostStats) getCurrentList() RequestCostList {
 	defer s.lock.Unlock()
 
 	list := make(RequestCostList, len(reqList))
-fmt.Println("RequestCostList")
+	fmt.Println("RequestCostList")
 	for idx, code := range reqList {
 		b, m := s.stats[code].calc()
-fmt.Println(code, s.stats[code].cnt, b/1000000, m/1000000)
+		fmt.Println(code, s.stats[code].cnt, b/1000000, m/1000000)
 		if m < 0 {
 			b += m
 			m = 0
@@ -242,10 +242,10 @@ fmt.Println(code, s.stats[code].cnt, b/1000000, m/1000000)
 		if b < 0 {
 			b = 0
 		}
-		
+
 		list[idx].MsgCode = code
-		list[idx].BaseCost = uint64(b*2)
-		list[idx].ReqCost = uint64(m*2)
+		list[idx].BaseCost = uint64(b * 2)
+		list[idx].ReqCost = uint64(m * 2)
 	}
 	return list
 }

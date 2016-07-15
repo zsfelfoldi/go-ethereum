@@ -320,6 +320,8 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		if pm.txrelay != nil {
 			pm.txrelay.addPeer(p)
 		}
+
+		pm.fetcher.notify(p, p.headInfo, true)
 	}
 
 	// main loop. handle incoming messages.
@@ -388,7 +390,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		//fmt.Println("RECEIVED", req[0].Number, req[0].Hash, req[0].Td)
 		for _, r := range req {
-			pm.fetcher.notify(p, r)
+			pm.fetcher.notify(p, r, false)
 		}
 
 	case GetBlockHeadersMsg:
