@@ -53,6 +53,7 @@ const (
 	MaxCodeFetch         = 64  // Amount of contract codes to allow fetching per request
 	MaxProofsFetch       = 64  // Amount of merkle proofs to be fetched per retrieval request
 	MaxHeaderProofsFetch = 64  // Amount of merkle proofs to be fetched per retrieval request
+	MaxTxSend            = 64  // Amount of transactions to be send per request
 
 	disableClientRemovePeer = true
 )
@@ -400,7 +401,11 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&req); err != nil {
 			return errResp(ErrDecode, "%v: %v", msg, err)
 		}
+
 		query := req.Query
+		if query.Amount > uint64(maxReqs) || query.Amount > MaxHeaderFetch {
+			return errResp(ErrRequestRejected, "")
+		}
 
 		hashMode := query.Origin.Hash != (common.Hash{})
 
@@ -410,7 +415,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			headers []*types.Header
 			unknown bool
 		)
-		for !unknown && len(headers) < int(query.Amount) && bytes < softResponseLimit && len(headers) < downloader.MaxHeaderFetch {
+		for !unknown && len(headers) < int(query.Amount) && bytes < softResponseLimit {
 			// Retrieve the next header satisfying the query
 			var origin *types.Header
 			if hashMode {
@@ -507,11 +512,11 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			bodies []rlp.RawValue
 		)
 		reqCnt = len(req.Hashes)
-		if reqCnt > maxReqs {
+		if reqCnt > maxReqs || reqCnt > MaxBodyFetch {
 			return errResp(ErrRequestRejected, "")
 		}
 		for _, hash := range req.Hashes {
-			if bytes >= softResponseLimit || len(bodies) >= MaxBodyFetch {
+			if bytes >= softResponseLimit {
 				break
 			}
 			// Retrieve the requested block body, stopping if enough was found
@@ -561,13 +566,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			data  [][]byte
 		)
 		reqCnt = len(req.Reqs)
-		if reqCnt > maxReqs {
+		if reqCnt > maxReqs || reqCnt > MaxCodeFetch {
 			return errResp(ErrRequestRejected, "")
 		}
 		for _, req := range req.Reqs {
-			if len(data) >= MaxCodeFetch {
-				break
-			}
 			// Retrieve the requested state entry, stopping if enough was found
 			if header := core.GetHeader(pm.chainDb, req.BHash, core.GetBlockNumber(pm.chainDb, req.BHash)); header != nil {
 				if trie, _ := trie.New(header.Root, pm.chainDb); trie != nil {
@@ -624,11 +626,11 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			receipts []rlp.RawValue
 		)
 		reqCnt = len(req.Hashes)
-		if reqCnt > maxReqs {
+		if reqCnt > maxReqs || reqCnt > MaxReceiptFetch {
 			return errResp(ErrRequestRejected, "")
 		}
 		for _, hash := range req.Hashes {
-			if bytes >= softResponseLimit || len(receipts) >= MaxReceiptFetch {
+			if bytes >= softResponseLimit {
 				break
 			}
 			// Retrieve the requested block's receipts, skipping if unknown to us
@@ -687,11 +689,11 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			proofs proofsData
 		)
 		reqCnt = len(req.Reqs)
-		if reqCnt > maxReqs {
+		if reqCnt > maxReqs || reqCnt > MaxProofsFetch {
 			return errResp(ErrRequestRejected, "")
 		}
 		for _, req := range req.Reqs {
-			if bytes >= softResponseLimit || len(proofs) >= MaxProofsFetch {
+			if bytes >= softResponseLimit {
 				break
 			}
 			// Retrieve the requested state entry, stopping if enough was found
@@ -753,11 +755,11 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			proofs []ChtResp
 		)
 		reqCnt = len(req.Reqs)
-		if reqCnt > maxReqs {
+		if reqCnt > maxReqs || reqCnt > MaxHeaderProofsFetch {
 			return errResp(ErrRequestRejected, "")
 		}
 		for _, req := range req.Reqs {
-			if bytes >= softResponseLimit || len(proofs) >= MaxHeaderProofsFetch {
+			if bytes >= softResponseLimit {
 				break
 			}
 
@@ -807,7 +809,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		reqCnt = len(txs)
-		if reqCnt > maxReqs {
+		if reqCnt > maxReqs || reqCnt > MaxTxSend {
 			return errResp(ErrRequestRejected, "")
 		}
 		pm.txpool.AddTransactions(txs)
