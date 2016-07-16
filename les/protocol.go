@@ -47,7 +47,7 @@ const (
 const (
 	// Protocol messages belonging to LPV1
 	StatusMsg          = 0x00
-	NewBlockHashesMsg  = 0x01
+	NewBlockHashMsg  = 0x01
 	GetBlockHeadersMsg = 0x02
 	BlockHeadersMsg    = 0x03
 	GetBlockBodiesMsg  = 0x04
@@ -123,8 +123,11 @@ type statusData struct {
 	MRC             RequestCostList
 }
 
-// newBlockHashesData is the network packet for the block announcements.
-type newBlockHashesData []blockInfo
+// newBlockHashData is the network packet for the block announcements.
+type newBlockHashData struct{
+	blockInfo
+	ReorgDepth uint64
+}
 type blockInfo struct {
 	Hash   common.Hash // Hash of one particular block being announced
 	Number uint64      // Number of one particular block being announced

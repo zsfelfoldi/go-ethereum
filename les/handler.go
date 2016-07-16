@@ -324,6 +324,20 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		pm.fetcher.notify(p, p.headInfo, true)
 	}
 
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		// new block announce loop
+		for {
+			select {
+			case announce <- p.newBlockHashChn:
+				p.SendNewBlockHash(announce)
+			case <-stop:
+				return
+			}			
+		}		
+	}()
+
 	// main loop. handle incoming messages.
 	for {
 		if err := pm.handleMsg(p); err != nil {
@@ -383,15 +397,13 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		return errResp(ErrExtraStatusMsg, "uncontrolled status message")
 
 	// Block header query, collect the requested headers and reply
-	case NewBlockHashesMsg:
-		var req newBlockHashesData
+	case NewBlockHashMsg:
+		var req newBlockHashData
 		if err := msg.Decode(&req); err != nil {
 			return errResp(ErrDecode, "%v: %v", msg, err)
 		}
 		//fmt.Println("RECEIVED", req[0].Number, req[0].Hash, req[0].Td)
-		for _, r := range req {
-			pm.fetcher.notify(p, r, false)
-		}
+		pm.fetcher.notify(p, req, false)
 
 	case GetBlockHeadersMsg:
 		glog.V(logger.Debug).Infof("LES: received GetBlockHeadersMsg from peer %v", p.id)

@@ -40,10 +40,6 @@ var (
 	errNotRegistered     = errors.New("peer is not registered")
 )
 
-const (
-	maxKnownBlocks = 1024 // Maximum block hashes to keep in the known list (prevent DOS)
-)
-
 type peer struct {
 	*p2p.Peer
 
@@ -58,7 +54,7 @@ type peer struct {
 	number   uint64
 	lock     sync.RWMutex
 
-	knownBlocks *set.Set // Set of block hashes known to be known by this peer
+	newBlockHashChn chan newBlockHashData
 
 	fcClient       *flowcontrol.ClientNode // nil if the peer is server only
 	fcServer       *flowcontrol.ServerNode // nil if the peer is client only
@@ -75,7 +71,7 @@ func newPeer(version, network int, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
 		version:     version,
 		network:     network,
 		id:          fmt.Sprintf("%x", id[:8]),
-		knownBlocks: set.New(),
+		newBlockHashChn: make(chan newBlockHashData, 20),
 	}
 }
 
@@ -136,10 +132,10 @@ func (p *peer) GetRequestCost(msgcode uint64, amount int) uint64 {
 	return cost
 }
 
-// SendNewBlockHashes announces the availability of a number of blocks through
+// SendNewBlockHash announces the availability of a number of blocks through
 // a hash notification.
-func (p *peer) SendNewBlockHashes(request newBlockHashesData) error {
-	return p2p.Send(p.rw, NewBlockHashesMsg, request)
+func (p *peer) SendNewBlockHash(request newBlockHashData) error {
+	return p2p.Send(p.rw, NewBlockHashMsg, request)
 }
 
 // SendBlockHeaders sends a batch of block headers to the remote peer.
