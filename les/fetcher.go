@@ -19,10 +19,12 @@ package les
 
 import (
 	"fmt"
+	"math/big"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 )
@@ -31,12 +33,26 @@ type lightFetcher struct {
 	pm               *ProtocolManager
 	odr              *LesOdr
 	chain            BlockChain
+
+	headAnnouncedMu  sync.Mutex
+	headAnnouncedBy  map[common.Hash{}][]*peer	
+	currentTd		*big.Int
+	deliverChn		chan fetchResponse
 	reqMu            sync.RWMutex
-	requested        map[uint64]chan *types.Header
-	syncPoolMu       sync.Mutex
-	syncPool         map[*peer]struct{}
-	syncPoolNotify   chan struct{}
-	syncPoolNotified uint32
+	requested        map[uint64]fetchRequest
+	timeoutChn		chan uint64
+	notifyChn		chan bool   // true if initiated from outside
+}
+
+type fetchRequest struct {
+	hash common.Hash
+	amount uint64
+	peer *peer
+}
+
+type fetchResponse struct {
+	reqID uint64
+	headers []*types.Header
 }
 
 func newLightFetcher(pm *ProtocolManager) *lightFetcher {
@@ -45,11 +61,69 @@ func newLightFetcher(pm *ProtocolManager) *lightFetcher {
 		chain:          pm.blockchain,
 		odr:            pm.odr,
 		requested:      make(map[uint64]chan *types.Header),
-		syncPool:       make(map[*peer]struct{}),
-		syncPoolNotify: make(chan struct{}),
+		headAnnouncedBy: make(map[common.Hash{}][]*peer),
+		deliverChn:		make(chan fetchResponse, 100),
+		requested:       make(map[uint64]*newBlockHashData),
+		timeoutChn:		make(chan uint64),
+		notifyChn:		make(chan bool, 100),
 	}
 	go f.syncLoop()
 	return f
+}
+
+func (f *lightFetcher) notify(p *peer, head *newBlockHashData) {
+	if !p.addNotify(head) {
+		f.pm.removePeer(p.id)
+	}
+	f.headAnnouncedMu.Lock()
+	f.headAnnouncedBy[head.Hash] = append(f.headAnnouncedBy[head.Hash], p)
+	f.headAnnouncedMu.Unlock()
+	f.notifyChn <- true
+}
+
+func (f *lightFetcher) gotHeader(header *types.Header) {
+	f.headAnnouncedMu.Lock()
+	defer f.headAnnouncedMu.Unlock()
+
+	hash := header.Hash()
+	peerList := f.headAnnouncedBy[hash]
+	if peerList == nil {
+		return
+	}
+	number := header.GetNumberU64()
+	td := core.GetTd(f.pm.chainDb, hash, number)
+	for _, peer := range peerList {
+		if !peer.gotHeader(hash, number, td) {
+			f.pm.removePeer(p.id)
+		}
+	}	
+	delete(f.headAnnouncedBy, hash)
+}
+
+func (f *lightFetcher) nextRequest() (*peer, *newBlockHashData) {
+	var bestPeer *peer
+	bestTd := f.currentTd
+	for _, peer := range f.pm.peers.AllPeers() {
+		peer.lock.RLock()
+		if !peer.headInfo.requested && (td == nil || peer.headInfo.Td.Cmp(bestTd) > 0 ||
+		(bestPeer != nil && peer.headInfo.Td.Cmp(bestTd) == 0 && peer.headInfo.haveHeaders > bestPeer.headInfo.haveHeaders)) {
+			bestPeer = peer
+			bestTd = peer.headInfo.Td
+		}
+		peer.lock.RUnlock()
+	}
+	if bestPeer == nil {
+		return nil, nil
+	}
+	bestPeer.lock.Lock()
+	res := bestPeer.headInfo
+	res.requested = true
+	bestPeer.lock.Unlock()
+	return bestPeer, res
+}
+
+func (f *lightFetcher) deliverHeaders(reqID uint64, headers []*types.Header) {
+	f.deliverChn <- fetchResponse{reqID: reqID, headers: headers}
 }
 
 func (f *lightFetcher) requestedID(reqID uint64) bool {
@@ -59,187 +133,85 @@ func (f *lightFetcher) requestedID(reqID uint64) bool {
 	return ok
 }
 
-func (f *lightFetcher) deliverHeaders(reqID uint64, headers []*types.Header) {
+func (f *lightFetcher) request(p *peer, block *newBlockHashData) {
+	amount := block.Number-block.haveHeaders
+	if amount == 0 {
+		return
+	}
+	reqID := f.odr.getNextReqID()
 	f.reqMu.Lock()
-	chn := f.requested[reqID]
-	if len(headers) == 1 {
-		chn <- headers[0]
-	} else {
-		chn <- nil
-	}
-	close(chn)
-	delete(f.requested, reqID)
+	f.requested[reqID] = fetchRequest{hash: block.Hash, amount: amount, peer: p}
 	f.reqMu.Unlock()
+	cost := p.GetRequestCost(GetBlockHeadersMsg, amount)
+	p.fcServer.SendRequest(reqID, cost)
+	go p.RequestHeadersByHash(reqID, cost, block.Hash, amount, 0, true)
+	go func() {
+		time.Sleep(hardRequestTimeout)
+		f.timeoutChn <- reqID
+	}()
 }
 
-func (f *lightFetcher) notify(p *peer, block blockInfo, forceCheck bool) {
-	if !forceCheck {
-		p.lock.Lock()
-		if block.Td.Cmp(p.headInfo.Td) <= 0 {
-			p.lock.Unlock()
-			return
+func (f *lightFetcher) processResponse(req fetchRequest, resp fetchResponse) bool {
+	if len(resp.headers) != req.amount || req.headers[0].Hash() != req.hash {
+		return false
+	}
+	headers := make([]*types.Header, req.amount)
+	for i, header := range resp.headers {
+		headers[req.amount-1-i] = header
+	}
+	if _, err := f.chain.InsertHeaderChain(headers, 1); err != nil {
+		return false
+	}
+	for _, header := range headers {
+		td := core.GetTd(f.pm.chainDb, header.Hash(), header.GetNumberU64())
+		if td == nil {
+			return false
 		}
-		p.headInfo = block
-		p.lock.Unlock()
+		f.gotHeader(header)
 	}
-
-	head := f.pm.blockchain.CurrentHeader()
-	currentTd := core.GetTd(f.pm.chainDb, head.Hash(), head.Number.Uint64())
-	if block.Td.Cmp(currentTd) > 0 {
-		f.syncPoolMu.Lock()
-		f.syncPool[p] = struct{}{}
-		f.syncPoolMu.Unlock()
-		if atomic.SwapUint32(&f.syncPoolNotified, 1) == 0 {
-			f.syncPoolNotify <- struct{}{}
-		}
-	}
-}
-
-func (f *lightFetcher) fetchBestFromPool() *peer {
-	head := f.pm.blockchain.CurrentHeader()
-	currentTd := core.GetTd(f.pm.chainDb, head.Hash(), head.Number.Uint64())
-
-	f.syncPoolMu.Lock()
-	var best *peer
-	for p, _ := range f.syncPool {
-		td := p.Td()
-		if td.Cmp(currentTd) <= 0 {
-			delete(f.syncPool, p)
-		} else {
-			if best == nil || td.Cmp(best.Td()) > 0 {
-				best = p
-			}
-		}
-	}
-	if best != nil {
-		delete(f.syncPool, best)
-	}
-	f.syncPoolMu.Unlock()
-	return best
+	return true
 }
 
 func (f *lightFetcher) syncLoop() {
 	f.pm.wg.Add(1)
 	defer f.pm.wg.Done()
 
+	srtoNotify := false
 	for {
 		select {
 		case <-f.pm.quitSync:
 			return
-		case <-f.syncPoolNotify:
-			atomic.StoreUint32(&f.syncPoolNotified, 0)
-			chn := f.pm.getSyncLock(false)
-			if chn != nil {
-				if atomic.SwapUint32(&f.syncPoolNotified, 1) == 0 {
+		case ext := <-f.notifyChn:
+			if !(ext && srtoNotify) {
+				if p, r := f.nextRequest(); r != nil {
+					srtoNotify = true
 					go func() {
-						<-chn
-						f.syncPoolNotify <- struct{}{}
+						time.Sleep(softRequestTimeout)
+						f.notifyChn <- false
 					}()
+					f.request(p, r)
+				} else {
+					srtoNotify = false
 				}
-			} else {
-				if p := f.fetchBestFromPool(); p != nil {
-					go f.syncWithPeer(p)
-					if atomic.SwapUint32(&f.syncPoolNotified, 1) == 0 {
-						go func() {
-							time.Sleep(softRequestTimeout)
-							f.syncPoolNotify <- struct{}{}
-						}()
-					}
-				}
+			}
+		case reqID := <-f.timeoutChn:
+			f.reqMu.Lock()
+			req, ok := f.requested[reqID]
+			if ok {
+				delete(f.requested, reqID)
+			}
+			f.reqMu.Unlock()
+			if ok {
+				f.pm.removePeer(req.peer.id)
+			}
+		case resp := <-f.deliverChn:
+			f.reqMu.Lock()
+			req, ok := f.requested[resp.reqID]
+			delete(f.requested, resp.reqID)
+			f.reqMu.Unlock()
+			if !ok || !f.processResponse(req, resp) {
+				f.pm.removePeer(req.peer.id)
 			}
 		}
 	}
-}
-
-func (f *lightFetcher) syncWithPeer(p *peer) bool {
-	f.pm.wg.Add(1)
-	defer f.pm.wg.Done()
-
-	headNum := f.chain.CurrentHeader().Number.Uint64()
-	peerHead := p.headBlockInfo()
-
-	if !f.pm.needToSync(peerHead) {
-		return true
-	}
-
-	if peerHead.Number <= headNum+10 {
-		var headerChain []*types.Header
-		ptr := peerHead
-		reqCnt := 20
-
-		for core.GetCanonicalHash(f.pm.chainDb, ptr.Number) != ptr.Hash {
-			//fmt.Println("reqCnt", reqCnt, "number", ptr.Number)
-			if reqCnt == 0 {
-				headerChain = nil
-				break
-			}
-			reqCnt--
-			header := core.GetHeader(f.pm.chainDb, ptr.Hash, ptr.Number)
-			if header == nil {
-				reqID, chn := f.request(p, ptr)
-				select {
-				case header = <-chn:
-					if header == nil || header.Hash() != ptr.Hash ||
-						header.Number.Uint64() != ptr.Number {
-						// missing or wrong header returned
-						fmt.Println("removePeer 1")
-						f.pm.removePeer(p.id)
-						return false
-					}
-				case <-time.After(hardRequestTimeout):
-					if !disableClientRemovePeer {
-						fmt.Println("removePeer 2")
-						f.pm.removePeer(p.id)
-					}
-					f.reqMu.Lock()
-					close(f.requested[reqID])
-					delete(f.requested, reqID)
-					f.reqMu.Unlock()
-					return false
-				}
-			}
-			headerChain = append([]*types.Header{header}, headerChain...)
-			ptr.Number--
-			ptr.Hash = header.ParentHash
-		}
-		//fmt.Println("len(headerChain)", len(headerChain))
-		if len(headerChain) > 0 {
-			// got the header, try to insert
-			f.chain.InsertHeaderChain(headerChain, 1)
-
-			defer func() {
-				// check header td at the end of syncing, drop peer if it was fake
-				header := headerChain[len(headerChain)-1]
-				headerTd := core.GetTd(f.pm.chainDb, header.Hash(), header.Number.Uint64())
-				if headerTd != nil && headerTd.Cmp(peerHead.Td) != 0 {
-					fmt.Println("removePeer 3")
-					f.pm.removePeer(p.id)
-				}
-			}()
-		}
-		if !f.pm.needToSync(peerHead) {
-			return true
-		}
-	}
-
-	f.pm.waitSyncLock()
-	if !f.pm.needToSync(peerHead) {
-		// synced up by the one we've been waiting to end
-		f.pm.releaseSyncLock()
-		return true
-	}
-	f.pm.syncWithLockAcquired(p)
-	return !f.pm.needToSync(peerHead)
-}
-
-func (f *lightFetcher) request(p *peer, block blockInfo) (uint64, chan *types.Header) {
-	reqID := f.odr.getNextReqID()
-	f.reqMu.Lock()
-	chn := make(chan *types.Header, 1)
-	f.requested[reqID] = chn
-	f.reqMu.Unlock()
-	cost := p.GetRequestCost(GetBlockHeadersMsg, 1)
-	p.fcServer.SendRequest(reqID, cost)
-	p.RequestHeadersByHash(reqID, cost, block.Hash, 1, 0, false)
-	return reqID, chn
 }

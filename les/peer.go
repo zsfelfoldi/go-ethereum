@@ -40,6 +40,8 @@ var (
 	errNotRegistered     = errors.New("peer is not registered")
 )
 
+const maxHeadInfoLen = 20
+
 type peer struct {
 	*p2p.Peer
 
@@ -50,8 +52,9 @@ type peer struct {
 
 	id string
 
-	headInfo blockInfo
-	number   uint64
+	
+	firstHeadInfo, headInfo *newBlockHashData
+	headInfoLen int
 	lock     sync.RWMutex
 
 	newBlockHashChn chan newBlockHashData
@@ -97,7 +100,55 @@ func (p *peer) headBlockInfo() blockInfo {
 	p.lock.RLock()
 	defer p.lock.RUnlock()
 
-	return p.headInfo
+	return p.headInfo.blockInfo
+}
+
+func (p *peer) addNotify(announce *newBlockHashData) bool {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	if p.headInfoLen >= maxHeadInfoLen {
+		return false
+	}
+	if announce.Td.Cmp(p.headInfo.Td) < 1 {
+		return false
+	}
+	p.headInfo.next = announce
+	p.headInfo = announce
+	return true
+}
+
+func (p *peer) gotHeader(hash common.Hash, number uint64, td *big.Int) bool {
+	h := p.firstHeadInfo
+	for h != nil {
+		if h.Hash == hash {
+			if h.Number != number || h.Td.Cmp(td) != 0 {
+				return false
+			}
+			h.headKnown = true
+			h.haveHeaders = h.Number
+			p.firstHeadInfo = h
+			last := h
+			h = h.next
+			// propagate haveHeaders through the chain
+			for h != nil {
+				hh := last.Number-h.ReorgDepth
+				if last.haveHeaders < hh {
+					hh = last.haveHeaders
+				}
+				if hh > h.haveHeaders {
+					h.haveHeaders = hh
+				} else {
+					return true
+				}
+				last = h
+				h = h.next
+			}
+			return true
+		}
+		h = h.next
+	}
+	return true
 }
 
 // Td retrieves the current total difficulty of a peer.

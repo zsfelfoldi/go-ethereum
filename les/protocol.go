@@ -127,6 +127,11 @@ type statusData struct {
 type newBlockHashData struct{
 	blockInfo
 	ReorgDepth uint64
+
+	haveHeaders uint64 // we have the headers of the remote peer's chain up to this number
+	headKnown bool
+	requested bool
+	next *newBlockHashData
 }
 type blockInfo struct {
 	Hash   common.Hash // Hash of one particular block being announced
