@@ -270,27 +270,31 @@ func (pm *ProtocolManager) blockLoop() {
 	go func() {
 		var mu sync.Mutex
 		var lastHead *types.Header
+		lastBroadcastTd := common.Big0
 		for {
 			select {
 			case ev := <-sub.Chan():
 				peers := pm.peers.AllPeers()
 				if len(peers) > 0 {
 					header := ev.Data.(core.ChainHeadEvent).Block.Header()
-					var reorg uint64
-					if lastHead != nil {
-						reorg = lastHead.GetNumberU64() - core.FindCommonAncestor(pm.chainDb, header, lastHead).GetNumberU64()
-					}
-					lastHead = header
 					hash := header.Hash()
 					number := header.GetNumberU64()
 					td := core.GetTd(pm.chainDb, hash, number)
-					//fmt.Println("BROADCAST", number, hash, td)
-					announce := newBlockHashData{blockInfo: blockInfo{Hash: hash, Number: number, Td: td}, ReorgDepth: reorg}
-					for _, p := range peers {
-						select {
-						case p.newBlockHashChn <- announce:
-						default:
-							pm.removePeer(p.id)
+					if td != nil && td.Cmp(lastBroadcastTd) > 0 {
+						var reorg uint64
+						if lastHead != nil {
+							reorg = lastHead.GetNumberU64() - core.FindCommonAncestor(pm.chainDb, header, lastHead).GetNumberU64()
+						}
+						lastHead = header
+						lastBroadcastTd = td
+						fmt.Println("BROADCAST", number, hash, td, reorg)
+						announce := newBlockHashData{Hash: hash, Number: number, Td: td, ReorgDepth: reorg}
+						for _, p := range peers {
+							select {
+							case p.newBlockHashChn <- announce:
+							default:
+								pm.removePeer(p.id)
+							}
 						}
 					}
 				}

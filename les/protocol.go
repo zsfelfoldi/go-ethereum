@@ -125,7 +125,9 @@ type statusData struct {
 
 // newBlockHashData is the network packet for the block announcements.
 type newBlockHashData struct{
-	blockInfo
+	Hash   common.Hash // Hash of one particular block being announced
+	Number uint64      // Number of one particular block being announced
+	Td     *big.Int    // Total difficulty of one particular block being announced
 	ReorgDepth uint64
 
 	haveHeaders uint64 // we have the headers of the remote peer's chain up to this number

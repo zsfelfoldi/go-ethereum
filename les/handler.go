@@ -332,6 +332,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 			select {
 			case announce := <- p.newBlockHashChn:
 				p.SendNewBlockHash(announce)
+				//fmt.Println("  BROADCAST sent")
 			case <-stop:
 				return
 			}			
@@ -342,7 +343,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	for {
 		if err := pm.handleMsg(p); err != nil {
 			glog.V(logger.Debug).Infof("%v: message handling failed: %v", p, err)
-			fmt.Println("handleMsg err:", err)
+			//fmt.Println("handleMsg err:", err)
 			return err
 		}
 	}
@@ -402,7 +403,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&req); err != nil {
 			return errResp(ErrDecode, "%v: %v", msg, err)
 		}
-		//fmt.Println("RECEIVED", req[0].Number, req[0].Hash, req[0].Td)
+		//fmt.Println("RECEIVED", req.Number, req.Hash, req.Td, req.ReorgDepth)
 		pm.fetcher.notify(p, &req)
 
 	case GetBlockHeadersMsg:

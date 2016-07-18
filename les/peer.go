@@ -99,7 +99,7 @@ func (p *peer) headBlockInfo() blockInfo {
 	p.lock.RLock()
 	defer p.lock.RUnlock()
 
-	return p.headInfo.blockInfo
+	return blockInfo{Hash: p.headInfo.Hash, Number: p.headInfo.Number, Td: p.headInfo.Td}
 }
 
 func (p *peer) addNotify(announce *newBlockHashData) bool {
@@ -114,6 +114,11 @@ func (p *peer) addNotify(announce *newBlockHashData) bool {
 		p.firstHeadInfo = p.firstHeadInfo.next
 		p.headInfoLen--
 	}
+	hh := p.headInfo.Number - announce.ReorgDepth
+	if p.headInfo.haveHeaders < hh {
+		hh = p.headInfo.haveHeaders
+	}
+	announce.haveHeaders = hh
 	p.headInfo.next = announce
 	p.headInfo = announce
 	p.headInfoLen++
@@ -440,7 +445,7 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		p.fcCosts = MRC.decode()
 	}
 
-	p.firstHeadInfo = &newBlockHashData{blockInfo: blockInfo{Td: rTd, Hash: rHash, Number: rNum}}
+	p.firstHeadInfo = &newBlockHashData{Td: rTd, Hash: rHash, Number: rNum}
 	p.headInfo = p.firstHeadInfo
 	p.headInfoLen = 1
 	return nil

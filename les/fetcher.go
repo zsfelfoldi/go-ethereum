@@ -18,6 +18,7 @@
 package les
 
 import (
+//"fmt"
 	"math/big"
 	"sync"
 	"time"
@@ -79,6 +80,7 @@ func (f *lightFetcher) notify(p *peer, head *newBlockHashData) {
 		headHash = p.Head()
 	} else {	
 		if !p.addNotify(head) {
+//fmt.Println("addNotify fail")
 			f.pm.removePeer(p.id)
 		}
 		headHash = head.Hash
@@ -105,6 +107,7 @@ func (f *lightFetcher) gotHeader(header *types.Header) {
 		ok := peer.gotHeader(hash, number, td)
 		peer.lock.Unlock()
 		if !ok {
+//fmt.Println("gotHeader fail")
 			f.pm.removePeer(peer.id)
 		}
 	}	
@@ -145,6 +148,7 @@ func (f *lightFetcher) requestedID(reqID uint64) bool {
 }
 
 func (f *lightFetcher) request(p *peer, block *newBlockHashData) {
+//fmt.Println("request", block.Number, block.haveHeaders)
 	amount := block.Number-block.haveHeaders
 	if amount == 0 {
 		return
@@ -152,7 +156,9 @@ func (f *lightFetcher) request(p *peer, block *newBlockHashData) {
 	if amount > 100 {
 		f.syncing = true
 		go func() {
+//fmt.Println("f.pm.synchronise(p)")
 			f.pm.synchronise(p)
+//fmt.Println("sync done")
 			f.syncDone <- struct{}{}
 		}()
 		return
@@ -196,6 +202,7 @@ func (f *lightFetcher) processResponse(req fetchRequest, resp fetchResponse) boo
 }
 
 func (f *lightFetcher) checkSyncedHeaders() {
+//fmt.Println("checkSyncedHeaders()")
 	for _, peer := range f.pm.peers.AllPeers() {
 		peer.lock.Lock()
 		h := peer.firstHeadInfo
@@ -203,6 +210,7 @@ func (f *lightFetcher) checkSyncedHeaders() {
 loop:
 		for h != nil {
 			if td := core.GetTd(f.pm.chainDb, h.Hash, h.Number); td != nil {
+//fmt.Println(" found", h.Number)
 				ok := peer.gotHeader(h.Hash, h.Number, td)
 				if !ok {
 					remove = true
@@ -216,6 +224,7 @@ loop:
 		}
 		peer.lock.Unlock()
 		if remove {
+//fmt.Println("checkSync fail")
 			f.pm.removePeer(peer.id)
 		}
 	}
@@ -231,7 +240,10 @@ func (f *lightFetcher) syncLoop() {
 		case <-f.pm.quitSync:
 			return
 		case ext := <-f.notifyChn:
-			if !f.syncing && !(ext && srtoNotify) {
+//fmt.Println("<-f.notifyChn", f.syncing, ext, srtoNotify)
+			s := srtoNotify
+			srtoNotify = false
+			if !f.syncing && !(ext && s) {
 				if p, r := f.nextRequest(); r != nil {
 					srtoNotify = true
 					go func() {
@@ -239,8 +251,6 @@ func (f *lightFetcher) syncLoop() {
 						f.notifyChn <- false
 					}()
 					f.request(p, r)
-				} else {
-					srtoNotify = false
 				}
 			}
 		case reqID := <-f.timeoutChn:
@@ -251,17 +261,21 @@ func (f *lightFetcher) syncLoop() {
 			}
 			f.reqMu.Unlock()
 			if ok {
+//fmt.Println("hard timeout")
 				f.pm.removePeer(req.peer.id)
 			}
 		case resp := <-f.deliverChn:
+//fmt.Println("<-f.deliverChn", f.syncing)
 			f.reqMu.Lock()
 			req, ok := f.requested[resp.reqID]
 			delete(f.requested, resp.reqID)
 			f.reqMu.Unlock()
 			if !ok || !(f.syncing || f.processResponse(req, resp)) {
+//fmt.Println("processResponse fail")
 				f.pm.removePeer(req.peer.id)
 			}
 		case <-f.syncDone:
+//fmt.Println("<-f.syncDone", f.syncing)
 			f.checkSyncedHeaders()
 			f.syncing = false
 		}

@@ -42,8 +42,8 @@ func (pm *ProtocolManager) syncer() {
 	//forceSync := time.Tick(forceSyncCycle)
 	for {
 		select {
-/*		case <-pm.newPeerCh:
-			// Make sure we have peers to select from, then sync
+		case <-pm.newPeerCh:
+/*			// Make sure we have peers to select from, then sync
 			if pm.peers.Len() < minDesiredPeerCount {
 				break
 			}
