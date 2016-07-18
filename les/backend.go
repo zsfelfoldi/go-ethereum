@@ -42,7 +42,7 @@ import (
 	rpc "github.com/ethereum/go-ethereum/rpc"
 )
 
-type LightNodeService struct {
+type LightEthereum struct {
 	odr         *LesOdr
 	relay       *LesTxRelay
 	chainConfig *core.ChainConfig
@@ -71,7 +71,7 @@ type LightNodeService struct {
 	netRPCService *ethapi.PublicNetAPI
 }
 
-func New(ctx *node.ServiceContext, config *eth.Config) (*LightNodeService, error) {
+func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 	chainDb, dappDb, err := eth.CreateDBs(ctx, config, "lightchaindata")
 	if err != nil {
 		return nil, err
@@ -86,7 +86,7 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightNodeService, error
 
 	odr := NewLesOdr(chainDb)
 	relay := NewLesTxRelay()
-	eth := &LightNodeService{
+	eth := &LightEthereum{
 		odr:            odr,
 		relay:          relay,
 		chainDb:        chainDb,
@@ -130,7 +130,7 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightNodeService, error
 
 // APIs returns the collection of RPC services the ethereum package offers.
 // NOTE, some of these services probably need to be moved to somewhere else.
-func (s *LightNodeService) APIs() []rpc.API {
+func (s *LightEthereum) APIs() []rpc.API {
 	return append(ethapi.GetAPIs(s.ApiBackend, &s.solcPath, &s.solc), []rpc.API{
 		{
 			Namespace: "eth",
@@ -151,24 +151,24 @@ func (s *LightNodeService) APIs() []rpc.API {
 	}...)
 }
 
-func (s *LightNodeService) ResetWithGenesisBlock(gb *types.Block) {
+func (s *LightEthereum) ResetWithGenesisBlock(gb *types.Block) {
 	s.blockchain.ResetWithGenesisBlock(gb)
 }
 
-func (s *LightNodeService) BlockChain() *light.LightChain      { return s.blockchain }
-func (s *LightNodeService) TxPool() *light.TxPool              { return s.txPool }
-func (s *LightNodeService) LesVersion() int                    { return int(s.protocolManager.SubProtocols[0].Version) }
-func (s *LightNodeService) Downloader() *downloader.Downloader { return s.protocolManager.downloader }
+func (s *LightEthereum) BlockChain() *light.LightChain      { return s.blockchain }
+func (s *LightEthereum) TxPool() *light.TxPool              { return s.txPool }
+func (s *LightEthereum) LesVersion() int                    { return int(s.protocolManager.SubProtocols[0].Version) }
+func (s *LightEthereum) Downloader() *downloader.Downloader { return s.protocolManager.downloader }
 
 // Protocols implements node.Service, returning all the currently configured
 // network protocols to start.
-func (s *LightNodeService) Protocols() []p2p.Protocol {
+func (s *LightEthereum) Protocols() []p2p.Protocol {
 	return s.protocolManager.SubProtocols
 }
 
 // Start implements node.Service, starting all internal goroutines needed by the
 // Ethereum protocol implementation.
-func (s *LightNodeService) Start(srvr *p2p.Server) error {
+func (s *LightEthereum) Start(srvr *p2p.Server) error {
 	s.netRPCService = ethapi.NewPublicNetAPI(srvr, s.netVersionId)
 	s.protocolManager.Start()
 	return nil
@@ -176,7 +176,7 @@ func (s *LightNodeService) Start(srvr *p2p.Server) error {
 
 // Stop implements node.Service, terminating all internal goroutines used by the
 // Ethereum protocol.
-func (s *LightNodeService) Stop() error {
+func (s *LightEthereum) Stop() error {
 	s.odr.Stop()
 	s.blockchain.Stop()
 	s.protocolManager.Stop()
