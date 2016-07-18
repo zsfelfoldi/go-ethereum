@@ -18,10 +18,8 @@
 package les
 
 import (
-	"fmt"
 	"math/big"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -35,7 +33,7 @@ type lightFetcher struct {
 	chain            BlockChain
 
 	headAnnouncedMu  sync.Mutex
-	headAnnouncedBy  map[common.Hash{}][]*peer	
+	headAnnouncedBy  map[common.Hash][]*peer	
 	currentTd		*big.Int
 	deliverChn		chan fetchResponse
 	reqMu            sync.RWMutex
@@ -62,24 +60,31 @@ func newLightFetcher(pm *ProtocolManager) *lightFetcher {
 		pm:             pm,
 		chain:          pm.blockchain,
 		odr:            pm.odr,
-		requested:      make(map[uint64]chan *types.Header),
-		headAnnouncedBy: make(map[common.Hash{}][]*peer),
+		headAnnouncedBy: make(map[common.Hash][]*peer),
 		deliverChn:		make(chan fetchResponse, 100),
-		requested:       make(map[uint64]*newBlockHashData),
+		requested:       make(map[uint64]fetchRequest),
 		timeoutChn:		make(chan uint64),
 		notifyChn:		make(chan bool, 100),
 		syncDone:		make(chan struct{}),
+		currentTd:		big.NewInt(0),
 	}
 	go f.syncLoop()
 	return f
 }
 
 func (f *lightFetcher) notify(p *peer, head *newBlockHashData) {
-	if !p.addNotify(head) {
-		f.pm.removePeer(p.id)
+	var headHash common.Hash
+	if head == nil {
+		// initial notify
+		headHash = p.Head()
+	} else {	
+		if !p.addNotify(head) {
+			f.pm.removePeer(p.id)
+		}
+		headHash = head.Hash
 	}
 	f.headAnnouncedMu.Lock()
-	f.headAnnouncedBy[head.Hash] = append(f.headAnnouncedBy[head.Hash], p)
+	f.headAnnouncedBy[headHash] = append(f.headAnnouncedBy[headHash], p)
 	f.headAnnouncedMu.Unlock()
 	f.notifyChn <- true
 }
@@ -100,7 +105,7 @@ func (f *lightFetcher) gotHeader(header *types.Header) {
 		ok := peer.gotHeader(hash, number, td)
 		peer.lock.Unlock()
 		if !ok {
-			f.pm.removePeer(p.id)
+			f.pm.removePeer(peer.id)
 		}
 	}	
 	delete(f.headAnnouncedBy, hash)
@@ -111,7 +116,7 @@ func (f *lightFetcher) nextRequest() (*peer, *newBlockHashData) {
 	bestTd := f.currentTd
 	for _, peer := range f.pm.peers.AllPeers() {
 		peer.lock.RLock()
-		if !peer.headInfo.requested && (td == nil || peer.headInfo.Td.Cmp(bestTd) > 0 ||
+		if !peer.headInfo.requested && (peer.headInfo.Td.Cmp(bestTd) > 0 ||
 		(bestPeer != nil && peer.headInfo.Td.Cmp(bestTd) == 0 && peer.headInfo.haveHeaders > bestPeer.headInfo.haveHeaders)) {
 			bestPeer = peer
 			bestTd = peer.headInfo.Td
@@ -157,9 +162,9 @@ func (f *lightFetcher) request(p *peer, block *newBlockHashData) {
 	f.reqMu.Lock()
 	f.requested[reqID] = fetchRequest{hash: block.Hash, amount: amount, peer: p}
 	f.reqMu.Unlock()
-	cost := p.GetRequestCost(GetBlockHeadersMsg, amount)
+	cost := p.GetRequestCost(GetBlockHeadersMsg, int(amount))
 	p.fcServer.SendRequest(reqID, cost)
-	go p.RequestHeadersByHash(reqID, cost, block.Hash, amount, 0, true)
+	go p.RequestHeadersByHash(reqID, cost, block.Hash, int(amount), 0, true)
 	go func() {
 		time.Sleep(hardRequestTimeout)
 		f.timeoutChn <- reqID
@@ -167,12 +172,12 @@ func (f *lightFetcher) request(p *peer, block *newBlockHashData) {
 }
 
 func (f *lightFetcher) processResponse(req fetchRequest, resp fetchResponse) bool {
-	if len(resp.headers) != req.amount || req.headers[0].Hash() != req.hash {
+	if uint64(len(resp.headers)) != req.amount || resp.headers[0].Hash() != req.hash {
 		return false
 	}
 	headers := make([]*types.Header, req.amount)
 	for i, header := range resp.headers {
-		headers[req.amount-1-i] = header
+		headers[int(req.amount)-1-i] = header
 	}
 	if _, err := f.chain.InsertHeaderChain(headers, 1); err != nil {
 		return false
@@ -181,6 +186,9 @@ func (f *lightFetcher) processResponse(req fetchRequest, resp fetchResponse) boo
 		td := core.GetTd(f.pm.chainDb, header.Hash(), header.GetNumberU64())
 		if td == nil {
 			return false
+		}
+		if td.Cmp(f.currentTd) > 0 {
+			f.currentTd = td
 		}
 		f.gotHeader(header)
 	}
@@ -194,18 +202,21 @@ func (f *lightFetcher) checkSyncedHeaders() {
 		remove := false
 loop:
 		for h != nil {
-			if core.GetHeaderRLP(f.pm.chainDb, h.Hash, h.Number) != nil {
-				ok := peer.gotHeader(hash, number, td)
+			if td := core.GetTd(f.pm.chainDb, h.Hash, h.Number); td != nil {
+				ok := peer.gotHeader(h.Hash, h.Number, td)
 				if !ok {
 					remove = true
 					break loop
-				}			
+				}
+				if td.Cmp(f.currentTd) > 0 {
+					f.currentTd = td
+				}
 			}
 			h = h.next
 		}
 		peer.lock.Unlock()
 		if remove {
-			f.pm.removePeer(p.id)
+			f.pm.removePeer(peer.id)
 		}
 	}
 }

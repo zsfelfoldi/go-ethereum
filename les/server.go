@@ -26,6 +26,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
@@ -284,7 +285,7 @@ func (pm *ProtocolManager) blockLoop() {
 					number := header.GetNumberU64()
 					td := core.GetTd(pm.chainDb, hash, number)
 					//fmt.Println("BROADCAST", number, hash, td)
-					announce := newBlockHashData{Hash: hash, Number: number, Td: td, ReorgDepth: reorg}
+					announce := newBlockHashData{blockInfo: blockInfo{Hash: hash, Number: number, Td: td}, ReorgDepth: reorg}
 					for _, p := range peers {
 						select {
 						case p.newBlockHashChn <- announce:

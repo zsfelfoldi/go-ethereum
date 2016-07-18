@@ -31,7 +31,6 @@ import (
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
-	"gopkg.in/fatih/set.v0"
 )
 
 var (
@@ -440,8 +439,10 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		p.fcServerParams = params
 		p.fcCosts = MRC.decode()
 	}
-	// Configure the remote peer, and sanity check out handshake too
-	p.headInfo.Td, p.headInfo.Hash, p.headInfo.Number = rTd, rHash, rNum
+
+	p.firstHeadInfo = &newBlockHashData{blockInfo: blockInfo{Td: rTd, Hash: rHash, Number: rNum}}
+	p.headInfo = p.firstHeadInfo
+	p.headInfoLen = 1
 	return nil
 }
 

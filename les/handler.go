@@ -321,7 +321,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 			pm.txrelay.addPeer(p)
 		}
 
-		pm.fetcher.notify(p, p.headInfo, true)
+		pm.fetcher.notify(p, nil)
 	}
 
 	stop := make(chan struct{})
@@ -330,7 +330,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		// new block announce loop
 		for {
 			select {
-			case announce <- p.newBlockHashChn:
+			case announce := <- p.newBlockHashChn:
 				p.SendNewBlockHash(announce)
 			case <-stop:
 				return
@@ -403,7 +403,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "%v: %v", msg, err)
 		}
 		//fmt.Println("RECEIVED", req[0].Number, req[0].Hash, req[0].Td)
-		pm.fetcher.notify(p, req, false)
+		pm.fetcher.notify(p, &req)
 
 	case GetBlockHeadersMsg:
 		glog.V(logger.Debug).Infof("LES: received GetBlockHeadersMsg from peer %v", p.id)

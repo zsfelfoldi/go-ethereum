@@ -42,13 +42,13 @@ func (pm *ProtocolManager) syncer() {
 	//forceSync := time.Tick(forceSyncCycle)
 	for {
 		select {
-		case <-pm.newPeerCh:
+/*		case <-pm.newPeerCh:
 			// Make sure we have peers to select from, then sync
 			if pm.peers.Len() < minDesiredPeerCount {
 				break
 			}
 			go pm.synchronise(pm.peers.BestPeer())
-
+*/
 		/*case <-forceSync:
 		// Force a sync even if not enough peers are present
 		go pm.synchronise(pm.peers.BestPeer())
@@ -77,51 +77,8 @@ func (pm *ProtocolManager) synchronise(peer *peer) {
 		return
 	}
 
-	pm.waitSyncLock()
-	pm.syncWithLockAcquired(peer)
-}
-
-func (pm *ProtocolManager) waitSyncLock() {
-	for {
-		chn := pm.getSyncLock(true)
-		if chn == nil {
-			break
-		}
-		<-chn
-	}
-}
-
-// getSyncLock either acquires the sync lock and returns nil or returns a channel
-// which is closed when the lock is free again
-func (pm *ProtocolManager) getSyncLock(acquire bool) chan struct{} {
-	pm.syncMu.Lock()
-	defer pm.syncMu.Unlock()
-
-	if pm.syncing {
-		if pm.syncDone == nil {
-			pm.syncDone = make(chan struct{})
-		}
-		return pm.syncDone
-	} else {
-		pm.syncing = acquire
-		return nil
-	}
-}
-
-func (pm *ProtocolManager) releaseSyncLock() {
-	pm.syncMu.Lock()
-	pm.syncing = false
-	if pm.syncDone != nil {
-		close(pm.syncDone)
-		pm.syncDone = nil
-	}
-	pm.syncMu.Unlock()
-}
-
-func (pm *ProtocolManager) syncWithLockAcquired(peer *peer) {
 	ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
 	pm.blockchain.(*light.LightChain).SyncCht(ctx)
 
 	pm.downloader.Synchronise(peer.id, peer.Head(), peer.Td(), downloader.LightSync)
-	pm.releaseSyncLock()
 }
