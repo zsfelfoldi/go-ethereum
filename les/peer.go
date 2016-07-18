@@ -107,19 +107,23 @@ func (p *peer) addNotify(announce *newBlockHashData) bool {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
-	if p.headInfoLen >= maxHeadInfoLen {
-		return false
-	}
 	if announce.Td.Cmp(p.headInfo.Td) < 1 {
 		return false
 	}
+	if p.headInfoLen >= maxHeadInfoLen {
+		//return false
+		p.firstHeadInfo = p.firstHeadInfo.next
+		p.headInfoLen--
+	}
 	p.headInfo.next = announce
 	p.headInfo = announce
+	p.headInfoLen++
 	return true
 }
 
 func (p *peer) gotHeader(hash common.Hash, number uint64, td *big.Int) bool {
 	h := p.firstHeadInfo
+	ptr := 0
 	for h != nil {
 		if h.Hash == hash {
 			if h.Number != number || h.Td.Cmp(td) != 0 {
@@ -128,6 +132,7 @@ func (p *peer) gotHeader(hash common.Hash, number uint64, td *big.Int) bool {
 			h.headKnown = true
 			h.haveHeaders = h.Number
 			p.firstHeadInfo = h
+			p.headInfoLen -= ptr
 			last := h
 			h = h.next
 			// propagate haveHeaders through the chain
@@ -147,6 +152,7 @@ func (p *peer) gotHeader(hash common.Hash, number uint64, td *big.Int) bool {
 			return true
 		}
 		h = h.next
+		ptr++
 	}
 	return true
 }
