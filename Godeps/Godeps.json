@@ -11,6 +11,10 @@
 			"Rev": "593e01cfc4f3353585015321e01951d4a907d3ef"
 		},
 		{
+			"ImportPath": "github.com/aristanetworks/goarista/atime",
+			"Rev": "7e340ac46b1acbf3a66af653210bc4567197daee"
+		},
+		{
 			"ImportPath": "github.com/btcsuite/btcd/btcec",
 			"Comment": "BTCD_0_12_0_BETA-101-gff4ada0",
 			"Rev": "ff4ada0b0e1ebffa3f9c15cadc96ab0d08a11034"
