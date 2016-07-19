@@ -1,6 +1,7 @@
 {
 	"ImportPath": "github.com/ethereum/go-ethereum",
 	"GoVersion": "go1.5.2",
+	"GodepVersion": "v74",
 	"Packages": [
 		"./..."
 	],
@@ -14,18 +15,13 @@
 			"Rev": "165db2f241fd235aec29ba6d9b1ccd5f1c14637c"
 		},
 		{
-			"ImportPath": "github.com/codegangsta/cli",
-			"Comment": "1.2.0-215-g0ab42fd",
-			"Rev": "0ab42fd482c27cf2c95e7794ad3bb2082c2ab2d7"
-		},
-		{
 			"ImportPath": "github.com/davecgh/go-spew/spew",
 			"Rev": "5215b55f46b2b919f50a1df0eaa5886afe4e3b3d"
 		},
 		{
 			"ImportPath": "github.com/ethereum/ethash",
-			"Comment": "v23.1-245-g25b32de",
-			"Rev": "25b32de0c0271065c28c3719c2bfe86959d72f0c"
+			"Comment": "v23.1-247-g2e80de5",
+			"Rev": "2e80de5022370cfe632195b1720db52d07ff8a77"
 		},
 		{
 			"ImportPath": "github.com/fatih/color",
@@ -98,11 +94,6 @@
 			"Rev": "e882a96ec18dd43fa283187b66af74497c9101c0"
 		},
 		{
-			"ImportPath": "github.com/microsoft/go-winio",
-			"Comment": "v0.2.0",
-			"Rev": "9e2895e5f6c3f16473b91d37fae6e89990a4520c"
-		},
-		{
 			"ImportPath": "github.com/nsf/termbox-go",
 			"Rev": "362329b0aa6447eadd52edd8d660ec1dff470295"
 		},
@@ -154,6 +145,10 @@
 		{
 			"ImportPath": "github.com/rs/cors",
 			"Rev": "5950cf11d77f8a61b432a25dd4d444b4ced01379"
+		},
+		{
+			"ImportPath": "github.com/rs/xhandler",
+			"Rev": "d9d9599b6aaf6a058cb7b1f48291ded2cbd13390"
 		},
 		{
 			"ImportPath": "github.com/syndtr/goleveldb/leveldb",
@@ -217,23 +212,23 @@
 		},
 		{
 			"ImportPath": "golang.org/x/net/context",
-			"Rev": "8968c61983e8f51a91b8c0ef25bf739278c89634"
+			"Rev": "a728288923b47049b2ce791836767ffbe964a5bd"
 		},
 		{
 			"ImportPath": "golang.org/x/net/html",
-			"Rev": "8968c61983e8f51a91b8c0ef25bf739278c89634"
+			"Rev": "a728288923b47049b2ce791836767ffbe964a5bd"
 		},
 		{
 			"ImportPath": "golang.org/x/net/html/atom",
-			"Rev": "8968c61983e8f51a91b8c0ef25bf739278c89634"
+			"Rev": "a728288923b47049b2ce791836767ffbe964a5bd"
 		},
 		{
 			"ImportPath": "golang.org/x/net/html/charset",
-			"Rev": "8968c61983e8f51a91b8c0ef25bf739278c89634"
+			"Rev": "a728288923b47049b2ce791836767ffbe964a5bd"
 		},
 		{
 			"ImportPath": "golang.org/x/net/websocket",
-			"Rev": "8968c61983e8f51a91b8c0ef25bf739278c89634"
+			"Rev": "a728288923b47049b2ce791836767ffbe964a5bd"
 		},
 		{
 			"ImportPath": "golang.org/x/sys/unix",
@@ -319,6 +314,15 @@
 		{
 			"ImportPath": "gopkg.in/karalabe/cookiejar.v2/collections/prque",
 			"Rev": "8dcd6a7f4951f6ff3ee9cbb919a06d8925822e57"
+		},
+		{
+			"ImportPath": "gopkg.in/natefinch/npipe.v2",
+			"Rev": "c1b8fa8bdccecb0b8db834ee0b92fdbcfa606dd6"
+		},
+		{
+			"ImportPath": "gopkg.in/urfave/cli.v1",
+			"Comment": "v1.17.0",
+			"Rev": "01857ac33766ce0c93856370626f9799281c14f4"
 		}
 	]
 }

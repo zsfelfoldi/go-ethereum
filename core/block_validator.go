@@ -64,7 +64,7 @@ func NewBlockValidator(config *ChainConfig, blockchain *BlockChain, pow pow.PoW)
 //
 // ValidateBlock also validates and makes sure that any previous state (or present)
 // state that might or might not be present is checked to make sure that fast
-// sync has done it's job proper. This prevents the block validator form accepting
+// sync has done it's job proper. This prevents the block validator from accepting
 // false positives where a header is present but the state is not.
 func (v *BlockValidator) ValidateBlock(block *types.Block) error {
 	if v.bc.HasBlock(block.Hash()) {
@@ -72,7 +72,7 @@ func (v *BlockValidator) ValidateBlock(block *types.Block) error {
 			return &KnownBlockError{block.Number(), block.Hash()}
 		}
 	}
-	parent := v.bc.GetBlock(block.ParentHash())
+	parent := v.bc.GetBlock(block.ParentHash(), block.NumberU64()-1)
 	if parent == nil {
 		return ParentError(block.ParentHash())
 	}
@@ -139,7 +139,7 @@ func (v *BlockValidator) ValidateState(block, parent *types.Block, statedb *stat
 // error if any of the included uncle headers were invalid. It returns an error
 // if the validation failed.
 func (v *BlockValidator) VerifyUncles(block, parent *types.Block) error {
-	// validate that there at most 2 uncles included in this block
+	// validate that there are at most 2 uncles included in this block
 	if len(block.Uncles()) > 2 {
 		return ValidationError("Block can only contain maximum 2 uncles (contained %v)", len(block.Uncles()))
 	}
@@ -193,7 +193,7 @@ func (v *BlockValidator) ValidateHeader(header, parent *types.Header, checkPow b
 	if parent == nil {
 		return ParentError(header.ParentHash)
 	}
-	// Short circuit if the header's already known or its parent missing
+	// Short circuit if the header's already known or its parent is missing
 	if v.bc.HasHeader(header.Hash()) {
 		return nil
 	}
@@ -247,7 +247,8 @@ func ValidateHeader(config *ChainConfig, pow pow.PoW, header *types.Header, pare
 			return &BlockNonceErr{header.Number, header.Hash(), header.Nonce.Uint64()}
 		}
 	}
-	return nil
+	// If all checks passed, validate the extra-data field for hard forks
+	return ValidateDAOHeaderExtraData(config, header)
 }
 
 // CalcDifficulty is the difficulty adjustment algorithm. It returns
@@ -292,7 +293,7 @@ func calcDifficultyHomestead(time, parentTime uint64, parentNumber, parentDiff *
 
 	// minimum difficulty can ever be (before exponential factor)
 	if x.Cmp(params.MinimumDifficulty) < 0 {
-		x = params.MinimumDifficulty
+		x.Set(params.MinimumDifficulty)
 	}
 
 	// for the exponential factor
@@ -325,7 +326,7 @@ func calcDifficultyFrontier(time, parentTime uint64, parentNumber, parentDiff *b
 		diff.Sub(parentDiff, adjust)
 	}
 	if diff.Cmp(params.MinimumDifficulty) < 0 {
-		diff = params.MinimumDifficulty
+		diff.Set(params.MinimumDifficulty)
 	}
 
 	periodCount := new(big.Int).Add(parentNumber, common.Big1)

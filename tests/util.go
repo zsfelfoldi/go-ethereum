@@ -141,6 +141,8 @@ type VmTest struct {
 
 type RuleSet struct {
 	HomesteadBlock *big.Int
+	DAOForkBlock   *big.Int
+	DAOForkSupport bool
 }
 
 func (r RuleSet) IsHomestead(n *big.Int) bool {
@@ -312,4 +314,5 @@ func (self Message) GasPrice() *big.Int                    { return self.price }
 func (self Message) Gas() *big.Int                         { return self.gas }
 func (self Message) Value() *big.Int                       { return self.value }
 func (self Message) Nonce() uint64                         { return self.nonce }
+func (self Message) CheckNonce() bool                      { return true }
 func (self Message) Data() []byte                          { return self.data }

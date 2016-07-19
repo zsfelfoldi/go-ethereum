@@ -103,7 +103,7 @@ type btTransaction struct {
 	Value    string
 }
 
-func RunBlockTestWithReader(homesteadBlock *big.Int, r io.Reader, skipTests []string) error {
+func RunBlockTestWithReader(homesteadBlock, daoForkBlock *big.Int, r io.Reader, skipTests []string) error {
 	btjs := make(map[string]*btJSON)
 	if err := readJson(r, &btjs); err != nil {
 		return err
@@ -114,13 +114,13 @@ func RunBlockTestWithReader(homesteadBlock *big.Int, r io.Reader, skipTests []st
 		return err
 	}
 
-	if err := runBlockTests(homesteadBlock, bt, skipTests); err != nil {
+	if err := runBlockTests(homesteadBlock, daoForkBlock, bt, skipTests); err != nil {
 		return err
 	}
 	return nil
 }
 
-func RunBlockTest(homesteadBlock *big.Int, file string, skipTests []string) error {
+func RunBlockTest(homesteadBlock, daoForkBlock *big.Int, file string, skipTests []string) error {
 	btjs := make(map[string]*btJSON)
 	if err := readJsonFile(file, &btjs); err != nil {
 		return err
@@ -130,13 +130,13 @@ func RunBlockTest(homesteadBlock *big.Int, file string, skipTests []string) erro
 	if err != nil {
 		return err
 	}
-	if err := runBlockTests(homesteadBlock, bt, skipTests); err != nil {
+	if err := runBlockTests(homesteadBlock, daoForkBlock, bt, skipTests); err != nil {
 		return err
 	}
 	return nil
 }
 
-func runBlockTests(homesteadBlock *big.Int, bt map[string]*BlockTest, skipTests []string) error {
+func runBlockTests(homesteadBlock, daoForkBlock *big.Int, bt map[string]*BlockTest, skipTests []string) error {
 	skipTest := make(map[string]bool, len(skipTests))
 	for _, name := range skipTests {
 		skipTest[name] = true
@@ -148,7 +148,7 @@ func runBlockTests(homesteadBlock *big.Int, bt map[string]*BlockTest, skipTests 
 			continue
 		}
 		// test the block
-		if err := runBlockTest(homesteadBlock, test); err != nil {
+		if err := runBlockTest(homesteadBlock, daoForkBlock, test); err != nil {
 			return fmt.Errorf("%s: %v", name, err)
 		}
 		glog.Infoln("Block test passed: ", name)
@@ -157,19 +157,19 @@ func runBlockTests(homesteadBlock *big.Int, bt map[string]*BlockTest, skipTests 
 	return nil
 }
 
-func runBlockTest(homesteadBlock *big.Int, test *BlockTest) error {
+func runBlockTest(homesteadBlock, daoForkBlock *big.Int, test *BlockTest) error {
 	// import pre accounts & construct test genesis block & state root
 	db, _ := ethdb.NewMemDatabase()
 	if _, err := test.InsertPreState(db); err != nil {
 		return fmt.Errorf("InsertPreState: %v", err)
 	}
 
-	core.WriteTd(db, test.Genesis.Hash(), test.Genesis.Difficulty())
+	core.WriteTd(db, test.Genesis.Hash(), 0, test.Genesis.Difficulty())
 	core.WriteBlock(db, test.Genesis)
 	core.WriteCanonicalHash(db, test.Genesis.Hash(), test.Genesis.NumberU64())
 	core.WriteHeadBlockHash(db, test.Genesis.Hash())
 	evmux := new(event.TypeMux)
-	config := &core.ChainConfig{HomesteadBlock: homesteadBlock}
+	config := &core.ChainConfig{HomesteadBlock: homesteadBlock, DAOForkBlock: daoForkBlock, DAOForkSupport: true}
 	chain, err := core.NewBlockChain(db, config, ethash.NewShared(), evmux)
 	if err != nil {
 		return err
@@ -412,7 +412,7 @@ func (test *BlockTest) ValidateImportedHeaders(cm *core.BlockChain, validBlocks 
 	// block-by-block, so we can only validate imported headers after
 	// all blocks have been processed by ChainManager, as they may not
 	// be part of the longest chain until last block is imported.
-	for b := cm.CurrentBlock(); b != nil && b.NumberU64() != 0; b = cm.GetBlock(b.Header().ParentHash) {
+	for b := cm.CurrentBlock(); b != nil && b.NumberU64() != 0; b = cm.GetBlockByHash(b.Header().ParentHash) {
 		bHash := common.Bytes2Hex(b.Hash().Bytes()) // hex without 0x prefix
 		if err := validateHeader(bmap[bHash].BlockHeader, b.Header()); err != nil {
 			return fmt.Errorf("Imported block header validation failed: %v", err)

@@ -34,6 +34,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/p2p"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 var (
@@ -147,9 +149,21 @@ func (am *Manager) Sign(addr common.Address, hash []byte) (signature []byte, err
 	return crypto.Sign(hash, unlockedKey.PrivateKey)
 }
 
+// SignWithPassphrase signs hash if the private key matching the given address can be
+// decrypted with the given passphrase.
+func (am *Manager) SignWithPassphrase(addr common.Address, passphrase string, hash []byte) (signature []byte, err error) {
+	_, key, err := am.getDecryptedKey(Account{Address: addr}, passphrase)
+	if err != nil {
+		return nil, err
+	}
+
+	defer zeroKey(key.PrivateKey)
+	return crypto.Sign(hash, key.PrivateKey)
+}
+
 // Unlock unlocks the given account indefinitely.
-func (am *Manager) Unlock(a Account, keyAuth string) error {
-	return am.TimedUnlock(a, keyAuth, 0)
+func (am *Manager) Unlock(a Account, passphrase string) error {
+	return am.TimedUnlock(a, passphrase, 0)
 }
 
 // Lock removes the private key with the given address from memory.
@@ -327,4 +341,24 @@ func zeroKey(k *ecdsa.PrivateKey) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+// APIs implements node.Service
+func (am *Manager) APIs() []rpc.API {
+	return nil
+}
+
+// Protocols implements node.Service
+func (am *Manager) Protocols() []p2p.Protocol {
+	return nil
+}
+
+// Start implements node.Service
+func (am *Manager) Start(srvr *p2p.Server) error {
+	return nil
+}
+
+// Stop implements node.Service
+func (am *Manager) Stop() error {
+	return nil
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"golang.org/x/net/context"
 )
 
 // Default chain configuration which sets homestead phase at block 0 (i.e. no frontier)
@@ -72,15 +73,25 @@ func (b *SimulatedBackend) Commit() {
 
 // Rollback aborts all pending transactions, reverting to the last committed state.
 func (b *SimulatedBackend) Rollback() {
-	blocks, _ := core.GenerateChain(b.blockchain.CurrentBlock(), b.database, 1, func(int, *core.BlockGen) {})
+	blocks, _ := core.GenerateChain(nil, b.blockchain.CurrentBlock(), b.database, 1, func(int, *core.BlockGen) {})
 
 	b.pendingBlock = blocks[0]
 	b.pendingState, _ = state.New(b.pendingBlock.Root(), b.database)
 }
 
+// HasCode implements ContractVerifier.HasCode, checking whether there is any
+// code associated with a certain account in the blockchain.
+func (b *SimulatedBackend) HasCode(ctx context.Context, contract common.Address, pending bool) (bool, error) {
+	if pending {
+		return len(b.pendingState.GetCode(contract)) > 0, nil
+	}
+	statedb, _ := b.blockchain.State()
+	return len(statedb.GetCode(contract)) > 0, nil
+}
+
 // ContractCall implements ContractCaller.ContractCall, executing the specified
 // contract with the given input data.
-func (b *SimulatedBackend) ContractCall(contract common.Address, data []byte, pending bool) ([]byte, error) {
+func (b *SimulatedBackend) ContractCall(ctx context.Context, contract common.Address, data []byte, pending bool) ([]byte, error) {
 	// Create a copy of the current state db to screw around with
 	var (
 		block   *types.Block
@@ -119,20 +130,20 @@ func (b *SimulatedBackend) ContractCall(contract common.Address, data []byte, pe
 
 // PendingAccountNonce implements ContractTransactor.PendingAccountNonce, retrieving
 // the nonce currently pending for the account.
-func (b *SimulatedBackend) PendingAccountNonce(account common.Address) (uint64, error) {
+func (b *SimulatedBackend) PendingAccountNonce(ctx context.Context, account common.Address) (uint64, error) {
 	return b.pendingState.GetOrNewStateObject(account).Nonce(), nil
 }
 
 // SuggestGasPrice implements ContractTransactor.SuggestGasPrice. Since the simulated
 // chain doens't have miners, we just return a gas price of 1 for any call.
-func (b *SimulatedBackend) SuggestGasPrice() (*big.Int, error) {
+func (b *SimulatedBackend) SuggestGasPrice(ctx context.Context) (*big.Int, error) {
 	return big.NewInt(1), nil
 }
 
 // EstimateGasLimit implements ContractTransactor.EstimateGasLimit, executing the
 // requested code against the currently pending block/state and returning the used
 // gas.
-func (b *SimulatedBackend) EstimateGasLimit(sender common.Address, contract *common.Address, value *big.Int, data []byte) (*big.Int, error) {
+func (b *SimulatedBackend) EstimateGasLimit(ctx context.Context, sender common.Address, contract *common.Address, value *big.Int, data []byte) (*big.Int, error) {
 	// Create a copy of the currently pending state db to screw around with
 	var (
 		block   = b.pendingBlock
@@ -167,8 +178,8 @@ func (b *SimulatedBackend) EstimateGasLimit(sender common.Address, contract *com
 
 // SendTransaction implements ContractTransactor.SendTransaction, delegating the raw
 // transaction injection to the remote node.
-func (b *SimulatedBackend) SendTransaction(tx *types.Transaction) error {
-	blocks, _ := core.GenerateChain(b.blockchain.CurrentBlock(), b.database, 1, func(number int, block *core.BlockGen) {
+func (b *SimulatedBackend) SendTransaction(ctx context.Context, tx *types.Transaction) error {
+	blocks, _ := core.GenerateChain(nil, b.blockchain.CurrentBlock(), b.database, 1, func(number int, block *core.BlockGen) {
 		for _, tx := range b.pendingBlock.Transactions() {
 			block.AddTx(tx)
 		}
@@ -192,7 +203,8 @@ type callmsg struct {
 
 func (m callmsg) From() (common.Address, error)         { return m.from.Address(), nil }
 func (m callmsg) FromFrontier() (common.Address, error) { return m.from.Address(), nil }
-func (m callmsg) Nonce() uint64                         { return m.from.Nonce() }
+func (m callmsg) Nonce() uint64                         { return 0 }
+func (m callmsg) CheckNonce() bool                      { return false }
 func (m callmsg) To() *common.Address                   { return m.to }
 func (m callmsg) GasPrice() *big.Int                    { return m.gasPrice }
 func (m callmsg) Gas() *big.Int                         { return m.gasLimit }
