@@ -232,10 +232,10 @@ func (s *requestCostStats) getCurrentList() RequestCostList {
 	defer s.lock.Unlock()
 
 	list := make(RequestCostList, len(reqList))
-	fmt.Println("RequestCostList")
+	//fmt.Println("RequestCostList")
 	for idx, code := range reqList {
 		b, m := s.stats[code].calc()
-		fmt.Println(code, s.stats[code].cnt, b/1000000, m/1000000)
+		//fmt.Println(code, s.stats[code].cnt, b/1000000, m/1000000)
 		if m < 0 {
 			b += m
 			m = 0
@@ -287,7 +287,7 @@ func (pm *ProtocolManager) blockLoop() {
 						}
 						lastHead = header
 						lastBroadcastTd = td
-						fmt.Println("BROADCAST", number, hash, td, reorg)
+						//fmt.Println("BROADCAST", number, hash, td, reorg)
 						announce := newBlockHashData{Hash: hash, Number: number, Td: td, ReorgDepth: reorg}
 						for _, p := range peers {
 							select {
@@ -390,7 +390,7 @@ func makeCht(db ethdb.Database) bool {
 		lastChtNum = 0
 	} else {
 		lastChtNum++
-		//fmt.Printf("CHT %d %064x\n", lastChtNum, root)
+		fmt.Printf("CHT %d %064x\n", lastChtNum, root)
 		storeChtRoot(db, lastChtNum, root)
 		var data [8]byte
 		binary.BigEndian.PutUint64(data[:], lastChtNum)

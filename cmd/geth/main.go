@@ -329,8 +329,8 @@ func startNode(ctx *cli.Context, stack *node.Node) {
 		// add default light server; test phase only
 		url := "enode://201aa667e0b75462c8837708dbc3c91b43f84d233efda2f4e2c5ae0ea237d646db656375b394fb35d841cf8ea2814e3629af4821d3b0204508f7eb8cea8e7f31@40.118.3.223:30303"
 		if ctx.GlobalBool(utils.TestNetFlag.Name) {
-			//url = "enode://2737bebb1e70cf682553c974d9551b74a917cb4f61292150abc10d2c122c8d369c82cb2b71ff107120ea2547419d2d9e998c637d45a6ff57bb01e83cfc1d5115@40.118.3.223:30304"
-			url = "enode://2737bebb1e70cf682553c974d9551b74a917cb4f61292150abc10d2c122c8d369c82cb2b71ff107120ea2547419d2d9e998c637d45a6ff57bb01e83cfc1d5115@[::]:30303"
+			url = "enode://2737bebb1e70cf682553c974d9551b74a917cb4f61292150abc10d2c122c8d369c82cb2b71ff107120ea2547419d2d9e998c637d45a6ff57bb01e83cfc1d5115@40.118.3.223:30304"
+			//url = "enode://2737bebb1e70cf682553c974d9551b74a917cb4f61292150abc10d2c122c8d369c82cb2b71ff107120ea2547419d2d9e998c637d45a6ff57bb01e83cfc1d5115@[::]:30303"
 		}
 		node, err := discover.ParseNode(url)
 		if err == nil {

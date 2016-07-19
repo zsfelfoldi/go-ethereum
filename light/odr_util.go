@@ -19,7 +19,7 @@ import (
 	"bytes"
 	"errors"
 	"math/big"
-	
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -35,20 +35,20 @@ var sha3_nil = crypto.Keccak256Hash(nil)
 
 var (
 	ErrNoTrustedCht = errors.New("No trusted canonical hash trie")
-	ErrNoHeader = errors.New("Header not found")
+	ErrNoHeader     = errors.New("Header not found")
 
-	ChtFrequency = uint64(4096)
+	ChtFrequency  = uint64(4096)
 	trustedChtKey = []byte("TrustedCHT")
 )
 
 type ChtNode struct {
 	Hash common.Hash
-	Td *big.Int
+	Td   *big.Int
 }
 
 type TrustedCht struct {
 	Number uint64
-	Root common.Hash
+	Root   common.Hash
 }
 
 func GetTrustedCht(db ethdb.Database) TrustedCht {
@@ -57,12 +57,16 @@ func GetTrustedCht(db ethdb.Database) TrustedCht {
 	if err := rlp.DecodeBytes(data, &res); err != nil {
 		return TrustedCht{0, common.Hash{}}
 	}
-	return res	
+	return res
 }
 
 func WriteTrustedCht(db ethdb.Database, cht TrustedCht) {
 	data, _ := rlp.EncodeToBytes(cht)
 	db.Put(trustedChtKey, data)
+}
+
+func DeleteTrustedCht(db ethdb.Database) {
+	db.Delete(trustedChtKey)
 }
 
 func GetHeaderByNumber(ctx context.Context, odr OdrBackend, number uint64) (*types.Header, error) {
@@ -76,9 +80,9 @@ func GetHeaderByNumber(ctx context.Context, odr OdrBackend, number uint64) (*typ
 		}
 		return header, nil
 	}
-	
+
 	cht := GetTrustedCht(db)
-	if number >= cht.Number * ChtFrequency {
+	if number >= cht.Number*ChtFrequency {
 		return nil, ErrNoTrustedCht
 	}
 
