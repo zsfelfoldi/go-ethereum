@@ -20,7 +20,7 @@ package light
 
 import (
 	"math/big"
-	
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -99,7 +99,7 @@ func storeProof(db ethdb.Database, proof []rlp.RawValue) {
 // CodeRequest is the ODR request type for retrieving contract code
 type CodeRequest struct {
 	OdrRequest
-	Id    *TrieID
+	Id   *TrieID
 	Hash common.Hash
 	Data []byte
 }
@@ -112,9 +112,9 @@ func (req *CodeRequest) StoreResult(db ethdb.Database) {
 // BlockRequest is the ODR request type for retrieving block bodies
 type BlockRequest struct {
 	OdrRequest
-	Hash common.Hash
+	Hash   common.Hash
 	Number uint64
-	Rlp  []byte
+	Rlp    []byte
 }
 
 // StoreResult stores the retrieved data in local database
@@ -126,7 +126,7 @@ func (req *BlockRequest) StoreResult(db ethdb.Database) {
 type ReceiptsRequest struct {
 	OdrRequest
 	Hash     common.Hash
-	Number uint64
+	Number   uint64
 	Receipts types.Receipts
 }
 
@@ -139,10 +139,10 @@ func (req *ReceiptsRequest) StoreResult(db ethdb.Database) {
 type ChtRequest struct {
 	OdrRequest
 	ChtNum, BlockNum uint64
-	ChtRoot common.Hash
-	Header *types.Header
-	Td *big.Int
-	Proof []rlp.RawValue
+	ChtRoot          common.Hash
+	Header           *types.Header
+	Td               *big.Int
+	Proof            []rlp.RawValue
 }
 
 // StoreResult stores the retrieved data in local database

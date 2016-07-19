@@ -101,23 +101,25 @@ func NewLightChain(odr OdrBackend, config *core.ChainConfig, pow pow.PoW, mux *e
 		}
 		glog.V(logger.Info).Infoln("WARNING: Wrote default ethereum genesis block")
 	}
-	
+
 	if bc.genesisBlock.Hash() == (common.Hash{212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69, 161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163}) {
 		// add trusted CHT
 		WriteTrustedCht(bc.chainDb, TrustedCht{
-			Number: 450,
-			Root: common.HexToHash("994600aa16c5af30f2830f37231bebfa46981a45ad0f16eff89702718ef56229"),
+			Number: 459,
+			Root:   common.HexToHash("9f14334360d1e48ed49a3d6b0b9e38a1706732cebc6a9c47bdde8d9824cd6d6b"),
 		})
 		glog.V(logger.Info).Infoln("Added trusted CHT for mainnet")
-	}
-	
-	if bc.genesisBlock.Hash() == (common.Hash{12, 215, 134, 162, 66, 93, 22, 241, 82, 198, 88, 49, 108, 66, 62, 108, 225, 24, 30, 21, 195, 41, 88, 38, 215, 201, 144, 76, 186, 156, 227, 3}) {
-		// add trusted CHT
-		WriteTrustedCht(bc.chainDb, TrustedCht{
-			Number: 310,
-			Root: common.HexToHash("1f6c79e8d5326dc5cf208f0bc8e4a62d5e8ab769b0d14ad7c26819a1e8cf3d6d"),
-		})
-		glog.V(logger.Info).Infoln("Added trusted CHT for testnet")
+	} else {
+		if bc.genesisBlock.Hash() == (common.Hash{12, 215, 134, 162, 66, 93, 22, 241, 82, 198, 88, 49, 108, 66, 62, 108, 225, 24, 30, 21, 195, 41, 88, 38, 215, 201, 144, 76, 186, 156, 227, 3}) {
+			// add trusted CHT for testnet
+			WriteTrustedCht(bc.chainDb, TrustedCht{
+				Number: 319,
+				Root:   common.HexToHash("43b679ff9b4918b0b19e6256f20e35877365ec3e20b38e3b2a02cef5606176dc"),
+			})
+			glog.V(logger.Info).Infoln("Added trusted CHT for testnet")
+		} else {
+			DeleteTrustedCht(bc.chainDb)
+		}
 	}
 
 	if err := bc.loadLastState(); err != nil {
@@ -481,7 +483,7 @@ func (self *LightChain) SyncCht(ctx context.Context) bool {
 	headNum := self.CurrentHeader().Number.Uint64()
 	cht := GetTrustedCht(self.chainDb)
 	if headNum+1 < cht.Number*ChtFrequency {
-		num := cht.Number*ChtFrequency-1
+		num := cht.Number*ChtFrequency - 1
 		header, err := GetHeaderByNumber(ctx, self.odr, num)
 		if header != nil && err == nil {
 			self.mu.Lock()
@@ -491,6 +493,6 @@ func (self *LightChain) SyncCht(ctx context.Context) bool {
 			self.mu.Unlock()
 			return true
 		}
-	}	
+	}
 	return false
 }
