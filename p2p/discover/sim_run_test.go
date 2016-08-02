@@ -77,7 +77,7 @@ func runWithPlaygroundTime(t *testing.T) (isHost bool) {
 
 	// Compile and run the calling test using NaCl.
 	// The extra tag ensures that the TestMain function in sim_main_test.go is used.
-	cmd := exec.Command("go", "test", "-v", "-tags", "faketime_simulation", "-run", testPattern, ".")
+	cmd := exec.Command("go", "test", "-v", "-tags", "faketime_simulation", "-timeout", "100h", "-run", testPattern, ".")
 	cmd.Env = append([]string{"GOOS=nacl", "GOARCH=" + arch}, os.Environ()...)
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()

@@ -76,6 +76,8 @@ type Network struct {
 
 	// Buffers for state transition.
 	sendBuf []*ingressPacket
+
+	log *logChn
 }
 
 // transport is implemented by the UDP transport.
@@ -356,6 +358,7 @@ loop:
 
 		// Ingress packet handling.
 		case pkt := <-net.read:
+			//net.log.log("<-net.read")
 			n := net.internNode(&pkt)
 			prestate := n.state
 			status := "ok"
@@ -374,6 +377,7 @@ loop:
 				// Stale timer (was aborted).
 				continue
 			}
+			net.log.log("<-net.timeout")
 			delete(net.timeoutTimers, timeout)
 			prestate := timeout.node.state
 			status := "ok"
@@ -387,6 +391,7 @@ loop:
 
 		// Querying.
 		case q := <-net.queryReq:
+			//net.log.log("<-net.queryReq")
 			if !q.start(net) {
 				q.remote.deferQuery(q)
 			}
@@ -398,6 +403,7 @@ loop:
 
 		// Topic registration stuff.
 		case req := <-net.topicRegisterReq:
+			net.log.log("<-net.topicRegisterReq")
 			if !req.add {
 				net.ticketStore.removeRegisterTopic(req.topic)
 				continue
@@ -407,6 +413,7 @@ loop:
 			// chance to start it sooner. This should speed up convergence of the radius
 			// determination for new topics.
 			if topicRegisterLookupDone == nil {
+				net.log.log("topicRegisterLookupDone == nil")
 				if topicRegisterLookupTick.Stop() {
 					<-topicRegisterLookupTick.C
 				}
@@ -415,33 +422,39 @@ loop:
 				topicRegisterLookupTick.Reset(delay)
 			}
 
-		case <-topicRegisterLookupDone:
+		case nodes := <-topicRegisterLookupDone:
+			net.log.log("<-topicRegisterLookupDone")
+			net.ticketStore.registerLookupDone(topicRegisterLookupTarget, nodes, func(n *Node) { net.ping(n, n.addr()) })
 			target, delay := net.ticketStore.nextRegisterLookup()
 			topicRegisterLookupTarget = target
 			topicRegisterLookupTick.Reset(delay)
 			topicRegisterLookupDone = nil
 
 		case <-topicRegisterLookupTick.C:
+			net.log.log("<-topicRegisterLookupTick")
 			topicRegisterLookupDone = make(chan []*Node)
 			target := topicRegisterLookupTarget
 			go func() { topicRegisterLookupDone <- net.lookup(target, false) }()
 
 		case <-nextRegisterTime:
+			net.log.log("<-nextRegisterTime")
 			net.ticketStore.ticketRegistered(*nextTicket)
 			net.conn.sendTopicRegister(nextTicket.t.node, nextTicket.t.topics, nextTicket.t.pong)
 
 		case <-statsDump.C:
-			r, ok := net.ticketStore.radius["foo"]
+			/*r, ok := net.ticketStore.radius["foo"]
 			if !ok {
 				fmt.Printf("(%x) no radius @ %v\n", net.tab.self.ID[:8], time.Now())
 			} else {
 				topics := len(net.ticketStore.tickets)
 				tickets := len(net.ticketStore.nodes)
-				fmt.Printf("(%x) topics:%d radius:%d tickets:%d @ %v\n", net.tab.self.ID[:8], topics, r.radius, tickets, time.Now())
-			}
+				rad := r.radius / (maxRadius/10000+1)
+				fmt.Printf("(%x) topics:%d radius:%d tickets:%d @ %v\n", net.tab.self.ID[:8], topics, rad, tickets, time.Now())
+			}*/
 
 		// Periodic / lookup-initiated bucket refresh.
 		case <-refreshTimer.C:
+			net.log.log("<-refreshTimer.C")
 			// TODO: ideally we would start the refresh timer after
 			// fallback nodes have been set for the first time.
 			if refreshDone == nil {
@@ -449,6 +462,7 @@ loop:
 				net.refresh(refreshDone)
 			}
 		case newNursery := <-net.refreshReq:
+			net.log.log("<-net.refreshReq")
 			if newNursery != nil {
 				net.nursery = newNursery
 			}
@@ -458,6 +472,7 @@ loop:
 			}
 			net.refreshResp <- refreshDone
 		case <-refreshDone:
+			net.log.log("<-net.refreshDone")
 			refreshDone = nil
 		}
 	}
@@ -837,6 +852,9 @@ func (net *Network) handle(n *Node, ev nodeEvent, pkt *ingressPacket) error {
 			net.db.ensureExpirer()
 		}
 	}
+	if n.state == nil {
+		n.state = unknown //???
+	}
 	next, err := n.state.handle(net, n, ev, pkt)
 	net.transition(n, next)
 	return err
@@ -894,6 +912,7 @@ func (net *Network) abortTimedEvent(n *Node, ev nodeEvent) {
 }
 
 func (net *Network) ping(n *Node, addr *net.UDPAddr) {
+	net.log.log(fmt.Sprintf("ping(node = %x)", n.ID[:8]))
 	n.pingTopics = net.ticketStore.regTopicSet()
 	n.pingEcho = net.conn.sendPing(n, addr, n.pingTopics)
 	net.timedEvent(respTimeout, n, pongTimeout)
@@ -914,12 +933,15 @@ func (net *Network) handlePing(n *Node, pkt *ingressPacket) {
 }
 
 func (net *Network) handleKnownPong(n *Node, pkt *ingressPacket) error {
+	net.log.log(fmt.Sprintf("handleKnownPong(node = %x)", n.ID[:8]))
 	net.abortTimedEvent(n, pongTimeout)
 	now := monotonicTime()
 	ticket, err := pongToTicket(now, n.pingTopics, n, pkt)
 	if err == nil {
 		// fmt.Printf("(%x) ticket: %+v\n", net.tab.self.ID[:8], pkt.data)
 		net.ticketStore.add(now, ticket)
+	} else {
+		net.log.log(fmt.Sprintf(" error: %v", err))
 	}
 
 	n.pingEcho = nil

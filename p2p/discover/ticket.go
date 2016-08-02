@@ -125,6 +125,8 @@ type ticketStore struct {
 	minRadCnt, minRadius uint64
 	nextTicketCached     *ticketRef
 	nextTicketReg        absTime
+
+	log *logChn
 }
 
 type topicTickets map[timeBucket][]ticketRef
@@ -141,6 +143,7 @@ func newTicketStore() *ticketStore {
 // the local node will register the topic and tickets will be collected.
 // It can be called even
 func (s *ticketStore) addTopic(t Topic, register bool) {
+	s.log.log(fmt.Sprintf(" addTopic(%v, %v)", t, register))
 	if s.radius[t] == nil {
 		s.radius[t] = newTopicRadius(t)
 	}
@@ -151,6 +154,7 @@ func (s *ticketStore) addTopic(t Topic, register bool) {
 
 // removeRegisterTopic deletes all tickets for the given topic.
 func (s *ticketStore) removeRegisterTopic(topic Topic) {
+	s.log.log(fmt.Sprintf(" removeRegisterTopic(%v)", topic))
 	for _, list := range s.tickets[topic] {
 		for _, ref := range list {
 			ref.t.refCnt--
@@ -172,24 +176,31 @@ func (s *ticketStore) regTopicSet() []Topic {
 
 // nextRegisterLookup returns the target of the next lookup for ticket collection.
 func (s *ticketStore) nextRegisterLookup() (target common.Hash, delay time.Duration) {
+	s.log.log("nextRegisterLookup()")
 	firstTopic, ok := s.iterRegTopics()
 	for topic := firstTopic; ok; {
-		if len(s.tickets[topic]) > 0 && s.ticketsInWindow(topic) < 10 {
-			return s.radius[topic].nextTarget(), 1 * time.Second
+		s.log.log(fmt.Sprintf(" checking topic %v, len(s.tickets[topic]) = %d", topic, len(s.tickets[topic])))
+		if s.tickets[topic] != nil && s.ticketsInWindow(topic) < 10 {
+			next := s.radius[topic].nextTarget()
+			s.log.log(fmt.Sprintf(" %x 1s", next[:8]))
+			return next, 1 * time.Second
 		}
 		topic, ok = s.iterRegTopics()
 		if topic == firstTopic {
 			break // We have checked all topics.
 		}
 	}
+	s.log.log(" null, 40s")
 	return common.Hash{}, 40 * time.Second
 }
 
 // iterRegTopics returns topics to register in arbitrary order.
 // The second return value is false if there are no topics.
 func (s *ticketStore) iterRegTopics() (Topic, bool) {
+	s.log.log("iterRegTopics()")
 	if len(s.regtopics) == 0 {
 		if len(s.tickets) == 0 {
+			s.log.log(" false")
 			return "", false
 		}
 		// Refill register list.
@@ -199,6 +210,7 @@ func (s *ticketStore) iterRegTopics() (Topic, bool) {
 	}
 	topic := s.regtopics[len(s.regtopics)-1]
 	s.regtopics = s.regtopics[:len(s.regtopics)-1]
+	s.log.log(" " + string(topic) + " true")
 	return topic, true
 }
 
@@ -211,6 +223,7 @@ func (s *ticketStore) ticketsInWindow(t Topic) int {
 	for g := ltBucket; g < ltBucket+timeWindow; g++ {
 		sum += len(tickets[g])
 	}
+	s.log.log(fmt.Sprintf("ticketsInWindow(%v) = %v", t, sum))
 	return sum
 }
 
@@ -223,6 +236,15 @@ func (s *ticketStore) ticketsInWindow(t Topic) int {
 // A ticket can be returned more than once with <= zero wait time in case
 // the ticket contains multiple topics.
 func (s *ticketStore) nextRegisterableTicket() (t *ticketRef, wait time.Duration) {
+	defer func() {
+		if t == nil {
+			s.log.log(" nil")
+		} else {
+			s.log.log(fmt.Sprintf(" node = %x sn = %v wait = %v", t.t.node.ID[:8], t.t.serial, wait))
+		}
+	}()
+
+	s.log.log("nextRegisterableTicket()")
 	now := monotonicTime()
 	if s.nextTicketCached != nil {
 		return s.nextTicketCached, time.Duration(s.nextTicketCached.topicRegTime() - now)
@@ -230,16 +252,17 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticketRef, wait time.Duration
 
 	for bucket := s.lastBucketFetched; ; bucket++ {
 		var (
-			empty      = true     // true if there are no tickets
-			nextTicket *ticketRef // nil if this bucket is empty
+			empty      = true    // true if there are no tickets
+			nextTicket ticketRef // uninitialized if this bucket is empty
 		)
 		for _, tickets := range s.tickets {
 			if len(tickets) != 0 {
 				empty = false
 				if list := tickets[bucket]; list != nil {
 					for _, ref := range list {
-						if nextTicket == nil || ref.topicRegTime() < nextTicket.topicRegTime() {
-							nextTicket = &ref
+						//s.log.log(fmt.Sprintf(" nrt bucket = %d node = %x sn = %v wait = %v", bucket, ref.t.node.ID[:8], ref.t.serial, time.Duration(ref.topicRegTime()-now)))
+						if nextTicket.t == nil || ref.topicRegTime() < nextTicket.topicRegTime() {
+							nextTicket = ref
 						}
 					}
 				}
@@ -248,10 +271,10 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticketRef, wait time.Duration
 		if empty {
 			return nil, 0
 		}
-		if nextTicket != nil {
+		if nextTicket.t != nil {
 			wait = time.Duration(nextTicket.topicRegTime() - now)
-			s.nextTicketCached = nextTicket
-			return nextTicket, wait
+			s.nextTicketCached = &nextTicket
+			return &nextTicket, wait
 		}
 		s.lastBucketFetched = bucket
 	}
@@ -259,6 +282,7 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticketRef, wait time.Duration
 
 // ticketRegistered is called when t has been used to register for a topic.
 func (s *ticketStore) ticketRegistered(ref ticketRef) {
+	s.log.log(fmt.Sprintf("ticketRegistered(node = %x sn = %v)", ref.t.node.ID[:8], ref.t.serial))
 	bucket := timeBucket(ref.t.issueTime / absTime(ticketTimeBucketLen))
 	tickets := s.tickets[ref.topic()]
 	list := tickets[bucket]
@@ -282,30 +306,51 @@ func (s *ticketStore) ticketRegistered(ref ticketRef) {
 	s.nextTicketCached = nil
 }
 
+func (s *ticketStore) registerLookupDone(target common.Hash, nodes []*Node, ping func(n *Node)) {
+	now := monotonicTime()
+	for _, n := range nodes {
+		s.adjustMinRadius(target, n.sha)
+		if t := s.nodes[n]; t != nil && now < t.issueTime+absTime(targetWaitTime) {
+			// adjust radius with already stored ticket
+			s.add(now, t)
+		} else {
+			// request a new pong packet
+			ping(n)
+		}
+	}
+}
+
 func (s *ticketStore) add(localTime absTime, t *ticket) {
-	if s.nodes[t.node] != nil {
-		return
+	s.log.log(fmt.Sprintf("add(node = %x sn = %v)", t.node.ID[:8], t.serial))
+	store := s.nodes[t.node] == nil
+	if !store {
+		// adjust radius but do not store ticket
+		s.log.log(" s.nodes[t.node] != nil")
 	}
 
-	if s.lastBucketFetched == 0 {
-		s.lastBucketFetched = timeBucket(localTime / absTime(ticketTimeBucketLen))
+	bucket := timeBucket(localTime / absTime(ticketTimeBucketLen))
+	if s.lastBucketFetched == 0 || bucket < s.lastBucketFetched {
+		s.lastBucketFetched = bucket
 	}
 
 	for i, topic := range t.topics {
 		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t) {
 			tt.adjust(localTime, ticketRef{t, i}, s.minRadius)
+			s.log.log(fmt.Sprintf("adjust topic: %v, rad: %v, frad: %v, converged: %v", topic, float64(tt.radius)/maxRadius, tt.filteredRadius/maxRadius, tt.converged))
 
-			if tickets, ok := s.tickets[topic]; ok && tt.converged {
-				wait := t.regTime[i] - localTime
-				rnd := rand.ExpFloat64()
-				if rnd > 10 {
-					rnd = 10
-				}
-				if float64(wait) < float64(keepTicketConst)+float64(keepTicketExp)*rnd {
-					// use the ticket to register this topic
-					bucket := timeBucket(t.regTime[i] / absTime(ticketTimeBucketLen))
-					tickets[bucket] = append(tickets[bucket], ticketRef{t, i})
-					t.refCnt++
+			if store {
+				if tickets, ok := s.tickets[topic]; ok && tt.converged {
+					wait := t.regTime[i] - localTime
+					rnd := rand.ExpFloat64()
+					if rnd > 10 {
+						rnd = 10
+					}
+					if float64(wait) < float64(keepTicketConst)+float64(keepTicketExp)*rnd {
+						// use the ticket to register this topic
+						bucket := timeBucket(t.regTime[i] / absTime(ticketTimeBucketLen))
+						tickets[bucket] = append(tickets[bucket], ticketRef{t, i})
+						t.refCnt++
+					}
 				}
 			}
 		}
@@ -318,6 +363,11 @@ func (s *ticketStore) add(localTime absTime, t *ticket) {
 }
 
 func (s *ticketStore) getNodeTicket(node *Node) *ticket {
+	if s.nodes[node] == nil {
+		s.log.log(fmt.Sprintf("getNodeTicket(%x) sn = nil", node.ID[:8]))
+	} else {
+		s.log.log(fmt.Sprintf("getNodeTicket(%x) sn = %v", node.ID[:8], s.nodes[node].serial))
+	}
 	return s.nodes[node]
 }
 
@@ -337,6 +387,7 @@ func (s *ticketStore) adjustMinRadius(target, found common.Hash) {
 	}
 	s.minRadSum += mrAdjust
 	s.minRadius = uint64(s.minRadSum / float64(s.minRadCnt))
+	s.log.log(fmt.Sprintf("adjustMinRadius() %v", float64(s.minRadius)/maxRadius))
 }
 
 type topicRadius struct {
@@ -403,10 +454,33 @@ func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64) {
 	}
 
 	if !r.converged {
-		if radius >= r.filteredRadius {
+		if float64(r.radius) >= r.filteredRadius*0.95 {
 			r.converged = true
 		} else {
-			r.filteredRadius += (radius - r.filteredRadius) * 0.05
+			r.filteredRadius += (float64(r.radius) - r.filteredRadius) * 0.05
 		}
 	}
+}
+
+type logChn struct {
+	list []string
+}
+
+func (c *logChn) log(s string) {
+	if c != nil {
+		fmt.Println(time.Now().String() + " : " + s)
+		//c.list = append(c.list, time.Now().String()+" : "+s)
+	}
+}
+
+func (c *logChn) printLogs() {
+	if c != nil {
+		for _, s := range c.list {
+			fmt.Println(s)
+		}
+	}
+}
+
+func newlogChn() *logChn {
+	return &logChn{}
 }

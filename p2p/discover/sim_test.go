@@ -37,13 +37,13 @@ func TestSimRandomResolve(t *testing.T) {
 	}
 
 	sim := newSimulation()
-	bootnode := sim.launchNode()
+	bootnode := sim.launchNode(false)
 
 	// A new node joins every 10s.
 	launcher := time.NewTicker(10 * time.Second)
 	go func() {
 		for range launcher.C {
-			net := sim.launchNode()
+			net := sim.launchNode(false)
 			go randomResolves(t, sim, net)
 			if err := net.SetFallbackNodes([]*Node{bootnode.Self()}); err != nil {
 				panic(err)
@@ -67,25 +67,35 @@ func TestSimTopics(t *testing.T) {
 	// glog.SetToStderr(true)
 
 	sim := newSimulation()
-	bootnode := sim.launchNode()
+	bootnode := sim.launchNode(false)
 
 	// A new node joins every 10s.
 	launcher := time.NewTicker(10 * time.Second)
+	cnt := 0
+	var printNet *Network
 	go func() {
 		for range launcher.C {
-			net := sim.launchNode()
-			go net.RegisterTopic("foo", nil)
-			if err := net.SetFallbackNodes([]*Node{bootnode.Self()}); err != nil {
-				panic(err)
+			cnt++
+			if cnt <= 20 {
+				log := (cnt == 10)
+				net := sim.launchNode(log)
+				if log {
+					printNet = net
+				}
+				go net.RegisterTopic("foo", nil)
+				if err := net.SetFallbackNodes([]*Node{bootnode.Self()}); err != nil {
+					panic(err)
+				}
 			}
-			fmt.Printf("launched @ %v: %x\n", time.Now(), net.Self().ID[:16])
+			//fmt.Printf("launched @ %v: %x\n", time.Now(), net.Self().ID[:16])
 		}
 	}()
 
-	time.Sleep(3 * time.Hour)
+	time.Sleep(1000 * time.Second)
 	launcher.Stop()
 	sim.shutdown()
-	sim.printStats()
+	//sim.printStats()
+	printNet.log.printLogs()
 }
 
 func randomResolves(t *testing.T, s *simulation, net *Network) {
@@ -148,6 +158,13 @@ func (s *simulation) printStats() {
 	// 	fmt.Println("   sends:", transport.hashctr)
 	// 	fmt.Println("   table size:", n.tab.count)
 	// }
+
+	/*for _, n := range s.nodes {
+		fmt.Println()
+		fmt.Printf("*** Node %x\n", n.tab.self.ID[:8])
+		n.log.printLogs()
+	}*/
+
 }
 
 func (s *simulation) randomNode() *Network {
@@ -164,7 +181,7 @@ func (s *simulation) randomNode() *Network {
 	return nil
 }
 
-func (s *simulation) launchNode() *Network {
+func (s *simulation) launchNode(log bool) *Network {
 	var (
 		num = s.nodectr
 		key = newkey()
@@ -181,6 +198,11 @@ func (s *simulation) launchNode() *Network {
 	if err != nil {
 		panic("cannot launch new node: " + err.Error())
 	}
+	if log {
+		net.log = newlogChn()
+		net.ticketStore.log = net.log
+	}
+
 	s.mu.Lock()
 	s.nodes[id] = net
 	s.mu.Unlock()
