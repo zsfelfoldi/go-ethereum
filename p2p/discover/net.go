@@ -124,11 +124,12 @@ func newNetwork(conn transport, ourPubkey ecdsa.PublicKey, natm nat.Interface, d
 		}
 	}
 
+	tab := newTable(ourID, conn.localAddr())
 	net := &Network{
 		db:               db,
 		conn:             conn,
-		tab:              newTable(ourID, conn.localAddr()),
-		topictab:         NewTopicTable(db),
+		tab:              tab,
+		topictab:         NewTopicTable(db, tab.self),
 		ticketStore:      newTicketStore(),
 		refreshReq:       make(chan []*Node),
 		refreshResp:      make(chan (<-chan struct{})),
@@ -350,15 +351,18 @@ func (net *Network) loop() {
 
 loop:
 	for {
+		net.log.log("1")
 		resetNextTicket()
+		net.log.log("2")
 
 		select {
 		case <-net.closeReq:
+			net.log.log("<-net.closeReq")
 			break loop
 
 		// Ingress packet handling.
 		case pkt := <-net.read:
-			//net.log.log("<-net.read")
+			net.log.log("<-net.read")
 			n := net.internNode(&pkt)
 			prestate := n.state
 			status := "ok"
@@ -373,11 +377,11 @@ loop:
 
 		// State transition timeouts.
 		case timeout := <-net.timeout:
+			net.log.log("<-net.timeout")
 			if net.timeoutTimers[timeout] == nil {
 				// Stale timer (was aborted).
 				continue
 			}
-			net.log.log("<-net.timeout")
 			delete(net.timeoutTimers, timeout)
 			prestate := timeout.node.state
 			status := "ok"
@@ -391,13 +395,14 @@ loop:
 
 		// Querying.
 		case q := <-net.queryReq:
-			//net.log.log("<-net.queryReq")
+			net.log.log("<-net.queryReq")
 			if !q.start(net) {
 				q.remote.deferQuery(q)
 			}
 
 		// Interacting with the table.
 		case f := <-net.tableOpReq:
+			net.log.log("<-net.tableOpReq")
 			f()
 			net.tableOpResp <- struct{}{}
 
@@ -442,6 +447,7 @@ loop:
 			net.conn.sendTopicRegister(nextTicket.t.node, nextTicket.t.topics, nextTicket.t.pong)
 
 		case <-statsDump.C:
+			net.log.log("<-statsDump.C")
 			/*r, ok := net.ticketStore.radius["foo"]
 			if !ok {
 				fmt.Printf("(%x) no radius @ %v\n", net.tab.self.ID[:8], time.Now())
@@ -475,7 +481,9 @@ loop:
 			net.log.log("<-net.refreshDone")
 			refreshDone = nil
 		}
+		net.log.log("3")
 	}
+	net.log.log("loop stopped")
 
 	glog.V(logger.Debug).Infof("shutting down")
 	if net.conn != nil {

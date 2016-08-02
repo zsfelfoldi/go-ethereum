@@ -76,8 +76,8 @@ func TestSimTopics(t *testing.T) {
 	go func() {
 		for range launcher.C {
 			cnt++
-			if cnt <= 20 {
-				log := (cnt == 10)
+			if cnt <= 100 {
+				log := false //(cnt == 500)
 				net := sim.launchNode(log)
 				if log {
 					printNet = net
@@ -95,7 +95,7 @@ func TestSimTopics(t *testing.T) {
 	launcher.Stop()
 	sim.shutdown()
 	//sim.printStats()
-	printNet.log.printLogs()
+	//printNet.log.printLogs()
 }
 
 func randomResolves(t *testing.T, s *simulation, net *Network) {

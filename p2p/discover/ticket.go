@@ -283,15 +283,21 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticketRef, wait time.Duration
 // ticketRegistered is called when t has been used to register for a topic.
 func (s *ticketStore) ticketRegistered(ref ticketRef) {
 	s.log.log(fmt.Sprintf("ticketRegistered(node = %x sn = %v)", ref.t.node.ID[:8], ref.t.serial))
-	bucket := timeBucket(ref.t.issueTime / absTime(ticketTimeBucketLen))
-	tickets := s.tickets[ref.topic()]
+	topic := ref.topic()
+	tickets := s.tickets[topic]
+	bucket := timeBucket(ref.t.regTime[ref.idx] / absTime(ticketTimeBucketLen))
 	list := tickets[bucket]
+	idx := -1
 	for i, bt := range list {
 		if bt.t == ref.t {
-			list = append(list[:i], list[i+1:]...)
+			idx = i
 			break
 		}
 	}
+	if idx == -1 {
+		panic(nil)
+	}
+	list = append(list[:idx], list[idx+1:]...)
 	if len(list) != 0 {
 		tickets[bucket] = list
 	} else {
