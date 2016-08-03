@@ -224,8 +224,8 @@ func (t *TopicTable) deleteEntry(e *topicEntry) {
 }
 
 // It is assumed that topics and waitPeriods have the same length.
-func (t *TopicTable) useTicket(node *Node, serialNo uint32, topics []Topic, waitPeriods []uint32) (registered bool) {
-fmt.Println("useTicket")
+func (t *TopicTable) useTicket(node *Node, serialNo uint32, topics []Topic, issueTime uint64, waitPeriods []uint32) (registered bool) {
+//fmt.Println("useTicket", serialNo, topics, waitPeriods)
 	t.collectGarbage()
 
 	n := t.getOrNewNode(node)
@@ -243,10 +243,11 @@ fmt.Println("useTicket")
 		t.storeTicketCounters(node)
 	}
 
-	currTime := uint32(tm / absTime(time.Second))
+	currTime := uint64(tm / absTime(time.Second))
 	var regTopics []Topic
 	for i, w := range waitPeriods {
-		relTime := int32(currTime - w)                    // make it safe even if time turns around
+		regTime := issueTime + uint64(w)
+		relTime := int64(currTime - regTime)
 		if relTime >= -1 && relTime <= regTimeWindow+1 && // give clients a little security margin on both ends
 			n.entries[topics[i]] == nil { // don't register again if there is an active entry
 			regTopics = append(regTopics, topics[i])

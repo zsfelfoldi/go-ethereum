@@ -77,7 +77,7 @@ func TestSimTopics(t *testing.T) {
 	go func() {
 		for range launcher.C {
 			cnt++
-			if cnt <= 100 {
+			if cnt <= 1000 {
 				log := false //(cnt == 500)
 				net := sim.launchNode(log)
 				if log {
@@ -92,7 +92,7 @@ func TestSimTopics(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(1000 * time.Second)
+	time.Sleep(10000 * time.Second)
 	launcher.Stop()
 	sim.shutdown()
 	//sim.printStats()

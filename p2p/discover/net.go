@@ -347,7 +347,7 @@ func (net *Network) loop() {
 	)
 	<-topicRegisterLookupTick.C
 
-	statsDump := time.NewTicker(10 * time.Minute)
+	statsDump := time.NewTicker(10 * time.Second)
 
 loop:
 	for {
@@ -458,6 +458,11 @@ loop:
 				rad := r.radius / (maxRadius/10000+1)
 				fmt.Printf("(%x) topics:%d radius:%d tickets:%d @ %v\n", net.tab.self.ID[:8], topics, rad, tickets, time.Now())
 			}*/
+			r, ok := net.ticketStore.radius["foo"]
+			if ok {
+				rad := r.radius / (maxRadius/1000000+1)
+				fmt.Printf("*R %d %016x %v\n", monotonicTime()/1000000000, net.tab.self.sha[:8], rad)
+			}
 
 		// Periodic / lookup-initiated bucket refresh.
 		case <-refreshTimer.C:
@@ -993,7 +998,7 @@ func (net *Network) handleQueryEvent(n *Node, ev nodeEvent, pkt *ingressPacket) 
 //fmt.Println(err)
 			return n.state, fmt.Errorf("bad waiting ticket: %v", err)
 		}
-		net.topictab.useTicket(n, pong.TicketSerial, regdata.Topics, pong.WaitPeriods)
+		net.topictab.useTicket(n, pong.TicketSerial, regdata.Topics, pong.Expiration, pong.WaitPeriods)
 		return n.state, nil
 	case topicQueryPacket:
 		results := net.topictab.GetEntries(pkt.data.(*topicQuery).Topic)
