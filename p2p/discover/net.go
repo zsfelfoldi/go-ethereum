@@ -444,6 +444,7 @@ loop:
 		case <-nextRegisterTime:
 			net.log.log("<-nextRegisterTime")
 			net.ticketStore.ticketRegistered(*nextTicket)
+//fmt.Println("sendTopicRegister")
 			net.conn.sendTopicRegister(nextTicket.t.node, nextTicket.t.topics, nextTicket.t.pong)
 
 		case <-statsDump.C:
@@ -985,9 +986,11 @@ func (net *Network) handleQueryEvent(n *Node, ev nodeEvent, pkt *ingressPacket) 
 		net.conn.sendNeighbours(n, results)
 		return n.state, nil
 	case topicRegisterPacket:
+//fmt.Println("got topicRegisterPacket")
 		regdata := pkt.data.(*topicRegister)
 		pong, err := net.checkTopicRegister(regdata)
 		if err != nil {
+//fmt.Println(err)
 			return n.state, fmt.Errorf("bad waiting ticket: %v", err)
 		}
 		net.topictab.useTicket(n, pong.TicketSerial, regdata.Topics, pong.WaitPeriods)
@@ -1023,10 +1026,11 @@ func (net *Network) handleQueryEvent(n *Node, ev nodeEvent, pkt *ingressPacket) 
 
 func (net *Network) checkTopicRegister(data *topicRegister) (*pong, error) {
 	var pongpkt ingressPacket
+//fmt.Println("got", data.Topics, data.Pong)
 	if err := decodePacket(data.Pong, &pongpkt); err != nil {
 		return nil, err
 	}
-	if pongpkt.ev == pongPacket {
+	if pongpkt.ev != pongPacket {
 		return nil, errors.New("is not pong packet")
 	}
 	if pongpkt.remoteID != net.tab.self.ID {

@@ -17,6 +17,7 @@
 package discover
 
 import (
+	"crypto/ecdsa"
 	"encoding/binary"
 	"fmt"
 	"math/rand"
@@ -193,7 +194,7 @@ func (s *simulation) launchNode(log bool) *Network {
 	ip[0] = 10
 	addr := &net.UDPAddr{IP: ip, Port: 30303}
 
-	transport := &simTransport{joinTime: time.Now(), sender: id, senderAddr: addr, sim: s}
+	transport := &simTransport{joinTime: time.Now(), sender: id, senderAddr: addr, sim: s, priv: key}
 	net, err := newNetwork(transport, key.PublicKey, nil, "<no database>")
 	if err != nil {
 		panic("cannot launch new node: " + err.Error())
@@ -225,6 +226,7 @@ type simTransport struct {
 	senderAddr *net.UDPAddr
 	sim        *simulation
 	hashctr    uint64
+	priv		  *ecdsa.PrivateKey
 }
 
 func (st *simTransport) localAddr() *net.UDPAddr {
@@ -235,12 +237,22 @@ func (st *simTransport) Close() {}
 
 func (st *simTransport) send(remote *Node, ptype nodeEvent, data interface{}) {
 	hash := st.nextHash()
+	var raw []byte
+	if ptype == pongPacket {
+		var err error
+		raw, _, err = encodePacket(st.priv, byte(ptype), data)
+		if err != nil {
+			panic(err)
+		}
+	}
+
 	st.sendPacket(remote.ID, ingressPacket{
 		remoteID:   st.sender,
 		remoteAddr: st.senderAddr,
 		hash:       hash,
 		ev:         ptype,
 		data:       data,
+		rawData:		raw,
 	})
 }
 
@@ -264,6 +276,7 @@ func (st *simTransport) sendPing(remote *Node, remoteAddr *net.UDPAddr, topics [
 
 func (st *simTransport) sendPong(remote *Node, pingHash []byte) {
 	raddr := remote.addr()
+	
 	st.sendPacket(remote.ID, ingressPacket{
 		remoteID:   st.sender,
 		remoteAddr: st.senderAddr,
@@ -291,6 +304,7 @@ func (st *simTransport) sendFindnodeHash(remote *Node, target common.Hash) {
 }
 
 func (st *simTransport) sendTopicRegister(remote *Node, topics []Topic, pong []byte) {
+//fmt.Println("send", topics, pong)
 	st.sendPacket(remote.ID, ingressPacket{
 		remoteID:   st.sender,
 		remoteAddr: st.senderAddr,
