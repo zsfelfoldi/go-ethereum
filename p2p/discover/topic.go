@@ -127,10 +127,8 @@ func (t *TopicTable) getOrNewNode(node *Node) *nodeInfo {
 	return n
 }
 
-// This function assumes that node is in the nodes table.
 func (t *TopicTable) checkDeleteNode(node *Node) {
-	n := t.nodes[node]
-	if len(n.entries) == 0 && n.noRegUntil < monotonicTime() {
+	if n, ok := t.nodes[node]; ok && len(n.entries) == 0 && n.noRegUntil < monotonicTime() {
 		delete(t.nodes, node)
 	}
 }

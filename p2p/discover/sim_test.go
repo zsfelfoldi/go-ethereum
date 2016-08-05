@@ -71,7 +71,7 @@ func TestSimTopics(t *testing.T) {
 	bootnode := sim.launchNode(false)
 
 	// A new node joins every 10s.
-	launcher := time.NewTicker(10 * time.Second)
+	launcher := time.NewTicker(5 * time.Second)
 	cnt := 0
 	var printNet *Network
 	go func() {
@@ -83,7 +83,9 @@ func TestSimTopics(t *testing.T) {
 				if log {
 					printNet = net
 				}
-				go net.RegisterTopic("foo", nil)
+				if cnt > 950 {
+					go net.RegisterTopic("foo", nil)
+				}
 				if err := net.SetFallbackNodes([]*Node{bootnode.Self()}); err != nil {
 					panic(err)
 				}
