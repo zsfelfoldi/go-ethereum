@@ -314,8 +314,12 @@ func (s *ticketStore) ticketRegistered(ref ticketRef) {
 
 func (s *ticketStore) registerLookupDone(target common.Hash, nodes []*Node, ping func(n *Node)) {
 	now := monotonicTime()
+	//fmt.Printf("registerLookupDone  target = %016x\n", target[:8])
+	if len(nodes) > 0 {
+		s.adjustMinRadius(target, nodes[0].sha)
+	}
 	for _, n := range nodes {
-		s.adjustMinRadius(target, n.sha)
+		//fmt.Printf(" %016x\n", n.sha[:8])
 		if t := s.nodes[n]; t != nil && now < t.issueTime+absTime(targetWaitTime) {
 			// adjust radius with already stored ticket
 			s.add(now, t)
@@ -451,7 +455,6 @@ func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64) {
 	radius := float64(r.radius) * (1 + adjust)
 	if radius > float64(maxRadius) {
 		r.radius = maxRadius
-		radius = float64(r.radius)
 	} else {
 		r.radius = uint64(radius)
 		if r.radius < minRadius {

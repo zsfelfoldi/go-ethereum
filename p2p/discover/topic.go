@@ -280,13 +280,6 @@ func (topictab *TopicTable) getTicket(node *Node, topics []Topic) *ticket {
 		} else {
 			waitPeriod = minWaitPeriod
 		}
-		// If the node is within the no registration timeout,
-		// we lengthen the wait periods in the ticket accordingly.
-		if now+absTime(waitPeriod) < n.noRegUntil {
-			waitPeriod = time.Duration(n.noRegUntil - now)
-		}
-		// Round up so the registrant doesn't come in to early.
-		waitPeriod += time.Second
 
 		t.regTime[i] = now + absTime(waitPeriod)
 	}

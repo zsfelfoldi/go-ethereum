@@ -78,6 +78,19 @@ func main() {
 			})
 			set(x, y, 2, 255)
 		}
+		/*if w == "*MR" {
+			scanner.Scan()
+			time, _ := strconv.ParseInt(scanner.Text(), 10, 64)
+			scanner.Scan()
+			scanner.Scan()
+			rad, _ := strconv.ParseInt(scanner.Text(), 10, 64)
+			radUint := uint64(rad) * ((^uint64(0)) / 1000000)
+			x := int(time * int64(xs) / int64(maxTime))
+			y := sort.Search(ys, func(i int) bool {
+				return nodes[i] > radUint
+			})
+			set(x, y, 0, 255)
+		}*/
 		if w == "*W" {
 			scanner.Scan()
 			time, _ := strconv.ParseInt(scanner.Text(), 10, 64)

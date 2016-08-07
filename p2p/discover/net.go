@@ -444,7 +444,7 @@ loop:
 		case <-nextRegisterTime:
 			net.log.log("<-nextRegisterTime")
 			net.ticketStore.ticketRegistered(*nextTicket)
-//fmt.Println("sendTopicRegister")
+			//fmt.Println("sendTopicRegister")
 			net.conn.sendTopicRegister(nextTicket.t.node, nextTicket.t.topics, nextTicket.t.pong)
 
 		case <-statsDump.C:
@@ -458,13 +458,14 @@ loop:
 				rad := r.radius / (maxRadius/10000+1)
 				fmt.Printf("(%x) topics:%d radius:%d tickets:%d @ %v\n", net.tab.self.ID[:8], topics, rad, tickets, time.Now())
 			}*/
-			
+
 			tm := monotonicTime()
 			if r, ok := net.ticketStore.radius["foo"]; ok {
-				rad := r.radius / (maxRadius/1000000+1)
+				rad := r.radius / (maxRadius/1000000 + 1)
 				fmt.Printf("*R %d %016x %v\n", tm/1000000, net.tab.self.sha[:8], rad)
+				fmt.Printf("*MR %d %016x %v\n", tm/1000000, net.tab.self.sha[:8], net.ticketStore.minRadius/(maxRadius/1000000+1))
 			}
-			if t, ok := net.	topictab.topics["foo"]; ok {
+			if t, ok := net.topictab.topics["foo"]; ok {
 				wp := t.wcl.nextWaitPeriod(tm)
 				fmt.Printf("*W %d %016x %d\n", tm/1000000, net.tab.self.sha[:8], wp/1000000)
 			}
@@ -996,11 +997,11 @@ func (net *Network) handleQueryEvent(n *Node, ev nodeEvent, pkt *ingressPacket) 
 		net.conn.sendNeighbours(n, results)
 		return n.state, nil
 	case topicRegisterPacket:
-//fmt.Println("got topicRegisterPacket")
+		//fmt.Println("got topicRegisterPacket")
 		regdata := pkt.data.(*topicRegister)
 		pong, err := net.checkTopicRegister(regdata)
 		if err != nil {
-//fmt.Println(err)
+			//fmt.Println(err)
 			return n.state, fmt.Errorf("bad waiting ticket: %v", err)
 		}
 		net.topictab.useTicket(n, pong.TicketSerial, regdata.Topics, pong.Expiration, pong.WaitPeriods)
@@ -1036,7 +1037,7 @@ func (net *Network) handleQueryEvent(n *Node, ev nodeEvent, pkt *ingressPacket) 
 
 func (net *Network) checkTopicRegister(data *topicRegister) (*pong, error) {
 	var pongpkt ingressPacket
-//fmt.Println("got", data.Topics, data.Pong)
+	//fmt.Println("got", data.Topics, data.Pong)
 	if err := decodePacket(data.Pong, &pongpkt); err != nil {
 		return nil, err
 	}
