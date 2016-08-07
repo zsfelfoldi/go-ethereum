@@ -185,7 +185,7 @@ func (t *TopicTable) AddEntries(node *Node, topics []Topic) {
 			node:    node,
 			expire:  tm + absTime(fallbackRegistrationExpiry),
 		}
-		fmt.Printf("*+ %d %016x %016x\n", tm/1000000000, t.self.sha[:8], node.sha[:8])
+		fmt.Printf("*+ %d %016x %016x\n", tm/1000000, t.self.sha[:8], node.sha[:8])
 		te.entries[fifoIdx] = entry
 		n.entries[topic] = entry
 		t.globalEntries++
@@ -218,12 +218,12 @@ func (t *TopicTable) deleteEntry(e *topicEntry) {
 		heap.Remove(&t.requested, te.rqItem.index)
 	}
 	t.globalEntries--
-	fmt.Printf("*- %d %016x %016x\n", monotonicTime()/1000000000, t.self.sha[:8], e.node.sha[:8])
+	fmt.Printf("*- %d %016x %016x\n", monotonicTime()/1000000, t.self.sha[:8], e.node.sha[:8])
 }
 
 // It is assumed that topics and waitPeriods have the same length.
 func (t *TopicTable) useTicket(node *Node, serialNo uint32, topics []Topic, issueTime uint64, waitPeriods []uint32) (registered bool) {
-//fmt.Println("useTicket", serialNo, topics, waitPeriods)
+	//fmt.Println("useTicket", serialNo, topics, waitPeriods)
 	t.collectGarbage()
 
 	n := t.getOrNewNode(node)

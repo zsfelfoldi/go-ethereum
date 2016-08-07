@@ -94,7 +94,7 @@ func TestSimTopics(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(10000 * time.Second)
+	time.Sleep(20000 * time.Second)
 	launcher.Stop()
 	sim.shutdown()
 	//sim.printStats()
@@ -228,7 +228,7 @@ type simTransport struct {
 	senderAddr *net.UDPAddr
 	sim        *simulation
 	hashctr    uint64
-	priv		  *ecdsa.PrivateKey
+	priv       *ecdsa.PrivateKey
 }
 
 func (st *simTransport) localAddr() *net.UDPAddr {
@@ -254,7 +254,7 @@ func (st *simTransport) send(remote *Node, ptype nodeEvent, data interface{}) {
 		hash:       hash,
 		ev:         ptype,
 		data:       data,
-		rawData:		raw,
+		rawData:    raw,
 	})
 }
 
@@ -278,7 +278,7 @@ func (st *simTransport) sendPing(remote *Node, remoteAddr *net.UDPAddr, topics [
 
 func (st *simTransport) sendPong(remote *Node, pingHash []byte) {
 	raddr := remote.addr()
-	
+
 	st.sendPacket(remote.ID, ingressPacket{
 		remoteID:   st.sender,
 		remoteAddr: st.senderAddr,
@@ -306,7 +306,7 @@ func (st *simTransport) sendFindnodeHash(remote *Node, target common.Hash) {
 }
 
 func (st *simTransport) sendTopicRegister(remote *Node, topics []Topic, pong []byte) {
-//fmt.Println("send", topics, pong)
+	//fmt.Println("send", topics, pong)
 	st.sendPacket(remote.ID, ingressPacket{
 		remoteID:   st.sender,
 		remoteAddr: st.senderAddr,
