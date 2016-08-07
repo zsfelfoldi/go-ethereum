@@ -458,10 +458,15 @@ loop:
 				rad := r.radius / (maxRadius/10000+1)
 				fmt.Printf("(%x) topics:%d radius:%d tickets:%d @ %v\n", net.tab.self.ID[:8], topics, rad, tickets, time.Now())
 			}*/
-			r, ok := net.ticketStore.radius["foo"]
-			if ok {
+			
+			tm := monotonicTime()
+			if r, ok := net.ticketStore.radius["foo"]; ok {
 				rad := r.radius / (maxRadius/1000000+1)
-				fmt.Printf("*R %d %016x %v\n", monotonicTime()/1000000000, net.tab.self.sha[:8], rad)
+				fmt.Printf("*R %d %016x %v\n", tm/1000000, net.tab.self.sha[:8], rad)
+			}
+			if t, ok := net.	topictab.topics["foo"]; ok {
+				wp := t.wcl.nextWaitPeriod(tm)
+				fmt.Printf("*W %d %016x %d\n", tm/1000000, net.tab.self.sha[:8], wp/1000000)
 			}
 
 		// Periodic / lookup-initiated bucket refresh.
