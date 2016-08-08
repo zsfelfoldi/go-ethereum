@@ -206,6 +206,7 @@ func (t *TopicTable) leastRequested() *topicEntry {
 
 // entry should exist
 func (t *TopicTable) deleteEntry(e *topicEntry) {
+	fmt.Printf("*- %d %016x %016x\n", monotonicTime()/1000000, t.self.sha[:8], e.node.sha[:8])
 	ne := t.nodes[e.node].entries
 	delete(ne, e.topic)
 	if len(ne) == 0 {
@@ -218,7 +219,6 @@ func (t *TopicTable) deleteEntry(e *topicEntry) {
 		heap.Remove(&t.requested, te.rqItem.index)
 	}
 	t.globalEntries--
-	fmt.Printf("*- %d %016x %016x\n", monotonicTime()/1000000, t.self.sha[:8], e.node.sha[:8])
 }
 
 // It is assumed that topics and waitPeriods have the same length.

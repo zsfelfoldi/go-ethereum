@@ -70,32 +70,54 @@ func TestSimTopics(t *testing.T) {
 	sim := newSimulation()
 	bootnode := sim.launchNode(false)
 
-	// A new node joins every 10s.
-	launcher := time.NewTicker(5 * time.Second)
-	cnt := 0
-	var printNet *Network
 	go func() {
-		for range launcher.C {
-			cnt++
-			if cnt <= 1000 {
-				log := false //(cnt == 500)
-				net := sim.launchNode(log)
-				if log {
-					printNet = net
-				}
-				if cnt > 950 {
-					go net.RegisterTopic("foo", nil)
-				}
-				if err := net.SetFallbackNodes([]*Node{bootnode.Self()}); err != nil {
-					panic(err)
-				}
+		nets := make([]*Network, 1000)
+		for i, _ := range nets {
+			net := sim.launchNode(false)
+			nets[i] = net
+			if err := net.SetFallbackNodes([]*Node{bootnode.Self()}); err != nil {
+				panic(err)
 			}
-			//fmt.Printf("launched @ %v: %x\n", time.Now(), net.Self().ID[:16])
+			time.Sleep(time.Second * 5)
+		}
+
+		for _, net := range nets {
+			stop := make(chan struct{})
+			go net.RegisterTopic(testTopic, stop)
+			go func() {
+				time.Sleep(time.Second * 15000)
+				close(stop)
+			}()
+			time.Sleep(time.Second * 5)
 		}
 	}()
 
-	time.Sleep(20000 * time.Second)
-	launcher.Stop()
+	// A new node joins every 10s.
+	/*	launcher := time.NewTicker(5 * time.Second)
+		cnt := 0
+		var printNet *Network
+		go func() {
+			for range launcher.C {
+				cnt++
+				if cnt <= 1000 {
+					log := false //(cnt == 500)
+					net := sim.launchNode(log)
+					if log {
+						printNet = net
+					}
+					if cnt > 500 {
+						go net.RegisterTopic(testTopic, nil)
+					}
+					if err := net.SetFallbackNodes([]*Node{bootnode.Self()}); err != nil {
+						panic(err)
+					}
+				}
+				//fmt.Printf("launched @ %v: %x\n", time.Now(), net.Self().ID[:16])
+			}
+		}()
+	*/
+	time.Sleep(30000 * time.Second)
+	//launcher.Stop()
 	sim.shutdown()
 	//sim.printStats()
 	//printNet.log.printLogs()

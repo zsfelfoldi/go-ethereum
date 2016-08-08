@@ -45,6 +45,8 @@ const (
 	seedMaxAge          = 5 * 24 * time.Hour
 )
 
+const testTopic = "foo"
+
 // Network manages the table and all protocol interaction.
 type Network struct {
 	db   *nodeDB // database of known nodes
@@ -437,9 +439,16 @@ loop:
 
 		case <-topicRegisterLookupTick.C:
 			net.log.log("<-topicRegisterLookupTick")
-			topicRegisterLookupDone = make(chan []*Node)
-			target := topicRegisterLookupTarget
-			go func() { topicRegisterLookupDone <- net.lookup(target, false) }()
+			if (topicRegisterLookupTarget == common.Hash{}) {
+				target, delay := net.ticketStore.nextRegisterLookup()
+				topicRegisterLookupTarget = target
+				topicRegisterLookupTick.Reset(delay)
+				topicRegisterLookupDone = nil
+			} else {
+				topicRegisterLookupDone = make(chan []*Node)
+				target := topicRegisterLookupTarget
+				go func() { topicRegisterLookupDone <- net.lookup(target, false) }()
+			}
 
 		case <-nextRegisterTime:
 			net.log.log("<-nextRegisterTime")
@@ -449,7 +458,7 @@ loop:
 
 		case <-statsDump.C:
 			net.log.log("<-statsDump.C")
-			/*r, ok := net.ticketStore.radius["foo"]
+			/*r, ok := net.ticketStore.radius[testTopic]
 			if !ok {
 				fmt.Printf("(%x) no radius @ %v\n", net.tab.self.ID[:8], time.Now())
 			} else {
@@ -460,12 +469,12 @@ loop:
 			}*/
 
 			tm := monotonicTime()
-			if r, ok := net.ticketStore.radius["foo"]; ok {
+			if r, ok := net.ticketStore.radius[testTopic]; ok {
 				rad := r.radius / (maxRadius/1000000 + 1)
 				fmt.Printf("*R %d %016x %v\n", tm/1000000, net.tab.self.sha[:8], rad)
 				fmt.Printf("*MR %d %016x %v\n", tm/1000000, net.tab.self.sha[:8], net.ticketStore.minRadius/(maxRadius/1000000+1))
 			}
-			if t, ok := net.topictab.topics["foo"]; ok {
+			if t, ok := net.topictab.topics[testTopic]; ok {
 				wp := t.wcl.nextWaitPeriod(tm)
 				fmt.Printf("*W %d %016x %d\n", tm/1000000, net.tab.self.sha[:8], wp/1000000)
 			}
