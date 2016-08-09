@@ -33,7 +33,11 @@ const (
 	keepTicketConst     = time.Minute * 20
 	keepTicketExp       = time.Minute * 20
 	maxRadius           = 0xffffffffffffffff
-	minRadAverage       = 1024
+	minRadAverage       = 200
+	targetWaitTime      = time.Minute * 10
+	adjustRatio         = 0.001
+	adjustCooldownStart = 0.1
+	adjustCooldownStep  = 0.01
 )
 
 // absTime represents absolute monotonic time in nanoseconds.
@@ -343,7 +347,7 @@ func (s *ticketStore) adjustWithTicket(localTime absTime, t *ticket, onlyConverg
 	for i, topic := range t.topics {
 		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t) && !(onlyConverging && tt.converged) {
 			tt.adjust(localTime, ticketRef{t, i}, s.minRadius)
-			s.log.log(fmt.Sprintf("adjust topic: %v, rad: %v, frad: %v, converged: %v", topic, float64(tt.radius)/maxRadius, tt.filteredRadius/maxRadius, tt.converged))
+			s.log.log(fmt.Sprintf("adjust topic: %v, rad: %v, cd: %v, converged: %v", topic, float64(tt.radius)/maxRadius, tt.adjustCooldown, tt.converged))
 		}
 	}
 }
@@ -356,7 +360,7 @@ func (s *ticketStore) add(localTime absTime, t *ticket) {
 	}
 
 	if rtm, ok := s.nodeLastReq[t.node]; !ok || time.Duration(localTime-rtm) > time.Second*10 {
-		s.adjustWithTicket(localTime, t, true)
+		s.adjustWithTicket(localTime, t, false) //true)
 		return
 	}
 	s.adjustWithTicket(localTime, t, false)
@@ -421,11 +425,9 @@ type topicRadius struct {
 	topic           Topic
 	topicHashPrefix uint64
 	radius          uint64
-	filteredRadius  float64 // only for convergence detection
+	adjustCooldown  float64 // only for convergence detection
 	converged       bool
 }
-
-const targetWaitTime = time.Minute * 10
 
 func newTopicRadius(t Topic) *topicRadius {
 	topicHash := crypto.Keccak256Hash([]byte(t))
@@ -435,7 +437,7 @@ func newTopicRadius(t Topic) *topicRadius {
 		topic:           t,
 		topicHashPrefix: topicHashPrefix,
 		radius:          maxRadius,
-		filteredRadius:  float64(maxRadius),
+		adjustCooldown:  adjustCooldownStart,
 		converged:       false,
 	}
 }
@@ -446,9 +448,15 @@ func (r *topicRadius) isInRadius(t *ticket) bool {
 	return dist < r.radius
 }
 
+func randUint64n(n uint64) uint64 { // don't care about lowest bit, 63 bit randomness is more than enough
+	if n < 4 {
+		return 0
+	}
+	return uint64(rand.Int63n(int64(n/2))) * 2
+}
+
 func (r *topicRadius) nextTarget() common.Hash {
-	rnd := uint64(rand.Int63n(int64(r.radius/2))) * 2
-	prefix := r.topicHashPrefix ^ rnd
+	prefix := r.topicHashPrefix ^ randUint64n(r.radius)
 	var target common.Hash
 	binary.BigEndian.PutUint64(target[0:8], prefix)
 	return target
@@ -464,9 +472,9 @@ func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64) {
 		adjust = -1
 	}
 	if r.converged {
-		adjust *= 0.01
+		adjust *= adjustRatio
 	} else {
-		adjust *= 0.1
+		adjust *= r.adjustCooldown
 	}
 
 	radius := float64(r.radius) * (1 + adjust)
@@ -479,13 +487,13 @@ func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64) {
 		}
 	}
 
-	if !r.converged {
-		if float64(r.radius) >= r.filteredRadius*0.95 {
+	if !r.converged && (adjust > 0 || r.radius == minRadius) {
+		r.adjustCooldown *= (1 - adjustCooldownStep)
+		if r.adjustCooldown <= adjustRatio {
 			r.converged = true
-		} else {
-			r.filteredRadius += (float64(r.radius) - r.filteredRadius) * 0.05
 		}
 	}
+
 }
 
 type logChn struct {

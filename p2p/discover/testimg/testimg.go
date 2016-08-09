@@ -30,7 +30,12 @@ func main() {
 	topicPrefix := binary.BigEndian.Uint64(topicHash[:8])
 	var nodes uint64Slice
 
-	f, _ := os.Open("test.out")
+	inputFile := "test.out"
+	if len(os.Args) > 1 {
+		inputFile = os.Args[1]
+	}
+
+	f, _ := os.Open(inputFile)
 	scanner := bufio.NewScanner(f)
 	scanner.Split(bufio.ScanWords)
 	for scanner.Scan() {
@@ -72,9 +77,11 @@ func main() {
 		}
 	}
 
-	f, _ = os.Open("test.out")
+	f, _ = os.Open(inputFile)
 	scanner = bufio.NewScanner(f)
 	scanner.Split(bufio.ScanWords)
+
+	nodeRad := make(map[uint64]int)
 
 	for scanner.Scan() {
 		w := scanner.Text()
@@ -82,14 +89,18 @@ func main() {
 			scanner.Scan()
 			time, _ := strconv.ParseInt(scanner.Text(), 10, 64)
 			scanner.Scan()
+			prefix, _ := strconv.ParseUint(scanner.Text(), 16, 64)
 			scanner.Scan()
 			rad, _ := strconv.ParseInt(scanner.Text(), 10, 64)
-			radUint := uint64(rad) * ((^uint64(0)) / 1000000)
-			x := int(time * int64(xs) / int64(maxTime))
-			y := sort.Search(ys, func(i int) bool {
-				return nodes[i] > radUint
-			})
-			set(pic, x, y, 2, 255)
+			if int(rad) != nodeRad[prefix] {
+				nodeRad[prefix] = int(rad)
+				radUint := uint64(rad) * ((^uint64(0)) / 1000000)
+				x := int(time * int64(xs) / int64(maxTime))
+				y := sort.Search(ys, func(i int) bool {
+					return nodes[i] > radUint
+				})
+				set(pic, x, y, 1, 255)
+			}
 		}
 		if w == "*MR" {
 			scanner.Scan()
@@ -124,7 +135,7 @@ func main() {
 			prefix, _ := strconv.ParseUint(scanner.Text(), 16, 64)
 			x := int(time * int64(xs) / int64(maxTime))
 			y := nodeIdx[prefix]
-			set(pic, x, y, 1, 255)
+			set(pic, x, y, 2, 255)
 			scanner.Scan()
 		}
 	}

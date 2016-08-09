@@ -469,7 +469,7 @@ loop:
 			}*/
 
 			tm := monotonicTime()
-			if r, ok := net.ticketStore.radius[testTopic]; ok {
+			if r, ok := net.ticketStore.radius[testTopic]; ok && r.converged {
 				rad := r.radius / (maxRadius/1000000 + 1)
 				fmt.Printf("*R %d %016x %v\n", tm/1000000, net.tab.self.sha[:8], rad)
 				fmt.Printf("*MR %d %016x %v\n", tm/1000000, net.tab.self.sha[:8], net.ticketStore.minRadius/(maxRadius/1000000+1))

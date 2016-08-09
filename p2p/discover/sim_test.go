@@ -71,7 +71,7 @@ func TestSimTopics(t *testing.T) {
 	bootnode := sim.launchNode(false)
 
 	go func() {
-		nets := make([]*Network, 1000)
+		nets := make([]*Network, 2000)
 		for i, _ := range nets {
 			net := sim.launchNode(false)
 			nets[i] = net
@@ -81,14 +81,21 @@ func TestSimTopics(t *testing.T) {
 			time.Sleep(time.Second * 5)
 		}
 
-		for _, net := range nets {
+		for _ /*i*/, net := range nets {
 			stop := make(chan struct{})
 			go net.RegisterTopic(testTopic, stop)
 			go func() {
-				time.Sleep(time.Second * 15000)
+				//time.Sleep(time.Second * 36000)
+				time.Sleep(time.Second * 40000)
 				close(stop)
 			}()
-			time.Sleep(time.Second * 5)
+			time.Sleep(time.Second * 10)
+			//time.Sleep(time.Second)
+			/*if i%500 == 499 {
+				time.Sleep(time.Second * 9501)
+			} else {
+				time.Sleep(time.Second)
+			}*/
 		}
 	}()
 
@@ -116,7 +123,7 @@ func TestSimTopics(t *testing.T) {
 			}
 		}()
 	*/
-	time.Sleep(30000 * time.Second)
+	time.Sleep(75000 * time.Second)
 	//launcher.Stop()
 	sim.shutdown()
 	//sim.printStats()
