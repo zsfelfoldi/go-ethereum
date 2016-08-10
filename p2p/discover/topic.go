@@ -102,11 +102,14 @@ func (t *TopicTable) getOrNewTopic(topic Topic) *topicInfo {
 	return ti
 }
 
-// This function assumes that topic is in the topics table.
 func (t *TopicTable) checkDeleteTopic(topic Topic) {
 	ti := t.topics[topic]
+	if ti == nil {
+		return
+	}
 	if len(ti.entries) == 0 && ti.wcl.hasMinimumWaitPeriod() {
 		delete(t.topics, topic)
+		heap.Remove(&t.requested, ti.rqItem.index)
 	}
 }
 
@@ -216,7 +219,6 @@ func (t *TopicTable) deleteEntry(e *topicEntry) {
 	delete(te.entries, e.fifoIdx)
 	if len(te.entries) == 0 {
 		t.checkDeleteTopic(e.topic)
-		heap.Remove(&t.requested, te.rqItem.index)
 	}
 	t.globalEntries--
 }
