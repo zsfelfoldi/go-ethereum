@@ -89,7 +89,8 @@ func TestSimTopics(t *testing.T) {
 				time.Sleep(time.Second * 40000)
 				close(stop)
 			}()
-			time.Sleep(time.Second * 10)
+			time.Sleep(time.Millisecond * 100)
+			//			time.Sleep(time.Second * 10)
 			//time.Sleep(time.Second)
 			/*if i%500 == 499 {
 				time.Sleep(time.Second * 9501)
@@ -123,7 +124,7 @@ func TestSimTopics(t *testing.T) {
 			}
 		}()
 	*/
-	time.Sleep(75000 * time.Second)
+	time.Sleep(55000 * time.Second)
 	//launcher.Stop()
 	sim.shutdown()
 	//sim.printStats()
@@ -387,13 +388,16 @@ func (st *simTransport) nextHash() []byte {
 	return hash[:]
 }
 
-func (st *simTransport) sendPacket(remote NodeID, p ingressPacket) {
-	st.sim.mu.RLock()
-	recipient := st.sim.nodes[remote]
-	st.sim.mu.RUnlock()
+const packetLoss = 10 // 1/1000
 
-	// TODO: apply packet loss
-	time.AfterFunc(200*time.Millisecond, func() {
-		recipient.reqReadPacket(p)
-	})
+func (st *simTransport) sendPacket(remote NodeID, p ingressPacket) {
+	if rand.Int31n(1000) >= packetLoss {
+		st.sim.mu.RLock()
+		recipient := st.sim.nodes[remote]
+		st.sim.mu.RUnlock()
+
+		time.AfterFunc(200*time.Millisecond, func() {
+			recipient.reqReadPacket(p)
+		})
+	}
 }

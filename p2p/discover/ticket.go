@@ -38,6 +38,7 @@ const (
 	adjustRatio         = 0.001
 	adjustCooldownStart = 0.1
 	adjustCooldownStep  = 0.01
+	radiusExtendRatio   = 1.5
 )
 
 // absTime represents absolute monotonic time in nanoseconds.
@@ -345,7 +346,7 @@ func (s *ticketStore) registerLookupDone(target common.Hash, nodes []*Node, ping
 
 func (s *ticketStore) adjustWithTicket(localTime absTime, t *ticket, onlyConverging bool) {
 	for i, topic := range t.topics {
-		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t) && !(onlyConverging && tt.converged) {
+		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t, true) && !(onlyConverging && tt.converged) {
 			tt.adjust(localTime, ticketRef{t, i}, s.minRadius)
 			s.log.log(fmt.Sprintf("adjust topic: %v, rad: %v, cd: %v, converged: %v", topic, float64(tt.radius)/maxRadius, tt.adjustCooldown, tt.converged))
 		}
@@ -370,7 +371,7 @@ func (s *ticketStore) add(localTime absTime, t *ticket) {
 	}
 
 	for i, topic := range t.topics {
-		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t) {
+		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t, false) {
 			if tickets, ok := s.tickets[topic]; ok && tt.converged {
 				wait := t.regTime[i] - localTime
 				rnd := rand.ExpFloat64()
@@ -442,9 +443,12 @@ func newTopicRadius(t Topic) *topicRadius {
 	}
 }
 
-func (r *topicRadius) isInRadius(t *ticket) bool {
+func (r *topicRadius) isInRadius(t *ticket, extRadius bool) bool {
 	nodePrefix := binary.BigEndian.Uint64(t.node.sha[0:8])
 	dist := nodePrefix ^ r.topicHashPrefix
+	if extRadius {
+		return float64(dist) < float64(r.radius)*radiusExtendRatio
+	}
 	return dist < r.radius
 }
 
@@ -456,7 +460,12 @@ func randUint64n(n uint64) uint64 { // don't care about lowest bit, 63 bit rando
 }
 
 func (r *topicRadius) nextTarget() common.Hash {
-	prefix := r.topicHashPrefix ^ randUint64n(r.radius)
+	e := float64(r.radius) * radiusExtendRatio
+	extRadius := uint64(maxRadius)
+	if e < maxRadius {
+		extRadius = uint64(e)
+	}
+	prefix := r.topicHashPrefix ^ randUint64n(extRadius)
 	var target common.Hash
 	binary.BigEndian.PutUint64(target[0:8], prefix)
 	return target
