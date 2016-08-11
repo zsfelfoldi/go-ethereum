@@ -193,10 +193,13 @@ func (tab *Table) delete(node *Node) {
 
 func (tab *Table) deleteReplace(node *Node) {
 	b := tab.buckets[logdist(tab.self.sha, node.sha)]
-	for i := range b.entries {
+	i := 0
+	for i < len(b.entries) {
 		if b.entries[i].ID == node.ID {
 			b.entries = append(b.entries[:i], b.entries[i+1:]...)
 			tab.count--
+		} else {
+			i++
 		}
 	}
 	// refill from replacement cache
