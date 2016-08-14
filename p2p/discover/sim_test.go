@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -129,6 +130,53 @@ func TestSimTopics(t *testing.T) {
 	sim.shutdown()
 	//sim.printStats()
 	//printNet.log.printLogs()
+}
+
+func testHierarchicalTopics(i int) []Topic {
+	digits := strconv.FormatInt(int64(256+i/4), 4)
+	res := make([]Topic, 5)
+	for i, _ := range res {
+		res[i] = Topic("foo" + digits[1:i+1])
+	}
+	return res
+}
+
+func TestSimTopicHierarchy(t *testing.T) {
+	if runWithPlaygroundTime(t) {
+		return
+	}
+
+	// glog.SetV(6)
+	// glog.SetToStderr(true)
+
+	sim := newSimulation()
+	bootnode := sim.launchNode(false)
+
+	go func() {
+		nets := make([]*Network, 1024)
+		for i, _ := range nets {
+			net := sim.launchNode(false)
+			nets[i] = net
+			if err := net.SetFallbackNodes([]*Node{bootnode.Self()}); err != nil {
+				panic(err)
+			}
+			time.Sleep(time.Second * 5)
+		}
+
+		stop := make(chan struct{})
+		for i, net := range nets {
+			for _, topic := range testHierarchicalTopics(i) {
+				//fmt.Println("reg", topic)
+				go net.RegisterTopic(topic, stop)
+			}
+			time.Sleep(time.Millisecond * 100)
+		}
+		time.Sleep(time.Second * 40000)
+		close(stop)
+	}()
+
+	time.Sleep(50000 * time.Second)
+	sim.shutdown()
 }
 
 func randomResolves(t *testing.T, s *simulation, net *Network) {
@@ -388,7 +436,7 @@ func (st *simTransport) nextHash() []byte {
 	return hash[:]
 }
 
-const packetLoss = 30 // 1/1000
+const packetLoss = 0 // 1/1000
 
 func (st *simTransport) sendPacket(remote NodeID, p ingressPacket) {
 	if rand.Int31n(1000) >= packetLoss {

@@ -416,11 +416,12 @@ loop:
 				continue
 			}
 			net.ticketStore.addTopic(req.topic, true)
-			// If we're currently waiting to do the next lookup, give the ticket store a
+			// If we're currently waiting idle (nothing to look up), give the ticket store a
 			// chance to start it sooner. This should speed up convergence of the radius
 			// determination for new topics.
-			if topicRegisterLookupDone == nil {
-				net.log.log("topicRegisterLookupDone == nil")
+			// if topicRegisterLookupDone == nil {
+			if topicRegisterLookupTarget == (common.Hash{}) {
+				net.log.log("topicRegisterLookupTarget == null")
 				if topicRegisterLookupTick.Stop() {
 					<-topicRegisterLookupTick.C
 				}
@@ -469,14 +470,16 @@ loop:
 			}*/
 
 			tm := monotonicTime()
-			if r, ok := net.ticketStore.radius[testTopic]; ok && r.converged {
-				rad := r.radius / (maxRadius/1000000 + 1)
-				fmt.Printf("*R %d %016x %v\n", tm/1000000, net.tab.self.sha[:8], rad)
-				fmt.Printf("*MR %d %016x %v\n", tm/1000000, net.tab.self.sha[:8], net.ticketStore.minRadius/(maxRadius/1000000+1))
+			for topic, r := range net.ticketStore.radius {
+				if r.converged {
+					rad := r.radius / (maxRadius/1000000 + 1)
+					fmt.Printf("*R %d %v %016x %v\n", tm/1000000, topic, net.tab.self.sha[:8], rad)
+					fmt.Printf("*MR %d %v %016x %v\n", tm/1000000, topic, net.tab.self.sha[:8], net.ticketStore.minRadius/(maxRadius/1000000+1))
+				}
 			}
-			if t, ok := net.topictab.topics[testTopic]; ok {
+			for topic, t := range net.topictab.topics {
 				wp := t.wcl.nextWaitPeriod(tm)
-				fmt.Printf("*W %d %016x %d\n", tm/1000000, net.tab.self.sha[:8], wp/1000000)
+				fmt.Printf("*W %d %v %016x %d\n", tm/1000000, topic, net.tab.self.sha[:8], wp/1000000)
 			}
 
 		// Periodic / lookup-initiated bucket refresh.

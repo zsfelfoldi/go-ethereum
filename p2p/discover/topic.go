@@ -188,7 +188,7 @@ func (t *TopicTable) AddEntries(node *Node, topics []Topic) {
 			node:    node,
 			expire:  tm + absTime(fallbackRegistrationExpiry),
 		}
-		fmt.Printf("*+ %d %016x %016x\n", tm/1000000, t.self.sha[:8], node.sha[:8])
+		fmt.Printf("*+ %d %v %016x %016x\n", tm/1000000, topic, t.self.sha[:8], node.sha[:8])
 		te.entries[fifoIdx] = entry
 		n.entries[topic] = entry
 		t.globalEntries++
@@ -209,7 +209,7 @@ func (t *TopicTable) leastRequested() *topicEntry {
 
 // entry should exist
 func (t *TopicTable) deleteEntry(e *topicEntry) {
-	fmt.Printf("*- %d %016x %016x\n", monotonicTime()/1000000, t.self.sha[:8], e.node.sha[:8])
+	fmt.Printf("*- %d %v %016x %016x\n", monotonicTime()/1000000, e.topic, t.self.sha[:8], e.node.sha[:8])
 	ne := t.nodes[e.node].entries
 	delete(ne, e.topic)
 	if len(ne) == 0 {
