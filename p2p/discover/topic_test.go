@@ -51,7 +51,7 @@ func TestTopicRadius(t *testing.T) {
 			topics:  []Topic{topic},
 			regTime: []absTime{absTime(wait)},
 		}
-		rad.adjust(absTime(0), ticketRef{ticket, 0}, minRad)
+		rad.adjust(absTime(0), ticketRef{ticket, 0}, minRad, true)
 		if rad.converged {
 			cnt++
 			sum += float64(rad.radius)

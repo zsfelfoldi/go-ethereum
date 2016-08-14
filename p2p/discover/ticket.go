@@ -33,7 +33,8 @@ const (
 	keepTicketConst     = time.Minute * 20
 	keepTicketExp       = time.Minute * 20
 	maxRadius           = 0xffffffffffffffff
-	minRadAverage       = 200
+	minRadAverage       = 100
+	minRadStableAfter   = 50
 	targetWaitTime      = time.Minute * 10
 	adjustRatio         = 0.001
 	adjustCooldownStart = 0.1
@@ -126,11 +127,13 @@ type ticketStore struct {
 	nodes       map[*Node]*ticket
 	nodeLastReq map[*Node]absTime
 
-	lastBucketFetched    timeBucket
-	minRadSum            float64
-	minRadCnt, minRadius uint64
-	nextTicketCached     *ticketRef
-	nextTicketReg        absTime
+	lastBucketFetched timeBucket
+	nextTicketCached  *ticketRef
+	nextTicketReg     absTime
+
+	minRadCnt, minRadPtr uint64
+	minRadius, minRadSum uint64
+	lastMinRads          [minRadAverage]uint64
 
 	log *logChn
 }
@@ -347,7 +350,7 @@ func (s *ticketStore) registerLookupDone(target common.Hash, nodes []*Node, ping
 func (s *ticketStore) adjustWithTicket(localTime absTime, t *ticket, onlyConverging bool) {
 	for i, topic := range t.topics {
 		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t, true) && !(onlyConverging && tt.converged) {
-			tt.adjust(localTime, ticketRef{t, i}, s.minRadius)
+			tt.adjust(localTime, ticketRef{t, i}, s.minRadius, s.minRadCnt >= minRadStableAfter)
 			s.log.log(fmt.Sprintf("adjust topic: %v, rad: %v, cd: %v, converged: %v", topic, float64(tt.radius)/maxRadius, tt.adjustCooldown, tt.converged))
 		}
 	}
@@ -407,18 +410,29 @@ func (s *ticketStore) adjustMinRadius(target, found common.Hash) {
 	tp := binary.BigEndian.Uint64(target[0:8])
 	fp := binary.BigEndian.Uint64(found[0:8])
 	dist := tp ^ fp
-	mrAdjust := float64(dist) * 16
-	if mrAdjust > maxRadius/2 {
-		mrAdjust = maxRadius / 2
+
+	var mr uint64
+	if dist < maxRadius/16 {
+		mr = dist * 16
+	} else {
+		mr = maxRadius
 	}
+	mr /= minRadAverage
+
+	s.minRadSum -= s.lastMinRads[s.minRadPtr]
+	s.lastMinRads[s.minRadPtr] = mr
+	s.minRadSum += mr
+	s.minRadPtr++
+	if s.minRadPtr == minRadAverage {
+		s.minRadPtr = 0
+	}
+	s.minRadCnt++
 
 	if s.minRadCnt < minRadAverage {
-		s.minRadCnt++
+		s.minRadius = (s.minRadSum / s.minRadCnt) * minRadAverage
 	} else {
-		s.minRadSum -= s.minRadSum / minRadAverage
+		s.minRadius = s.minRadSum
 	}
-	s.minRadSum += mrAdjust
-	s.minRadius = uint64(s.minRadSum / float64(s.minRadCnt))
 	s.log.log(fmt.Sprintf("adjustMinRadius() %v", float64(s.minRadius)/maxRadius))
 }
 
@@ -471,7 +485,7 @@ func (r *topicRadius) nextTarget() common.Hash {
 	return target
 }
 
-func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64) {
+func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64, minRadStable bool) {
 	wait := t.t.regTime[t.idx] - localTime
 	adjust := (float64(wait)/float64(targetWaitTime) - 1) * 2
 	if adjust > 1 {
@@ -496,7 +510,7 @@ func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64) {
 		}
 	}
 
-	if !r.converged && (adjust > 0 || r.radius == minRadius) {
+	if !r.converged && (adjust > 0 || (r.radius == minRadius && minRadStable)) {
 		r.adjustCooldown *= (1 - adjustCooldownStep)
 		if r.adjustCooldown <= adjustRatio {
 			r.converged = true

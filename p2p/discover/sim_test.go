@@ -388,7 +388,7 @@ func (st *simTransport) nextHash() []byte {
 	return hash[:]
 }
 
-const packetLoss = 10 // 1/1000
+const packetLoss = 30 // 1/1000
 
 func (st *simTransport) sendPacket(remote NodeID, p ingressPacket) {
 	if rand.Int31n(1000) >= packetLoss {
