@@ -153,7 +153,7 @@ func TestSimTopicHierarchy(t *testing.T) {
 	bootnode := sim.launchNode(false)
 
 	go func() {
-		nets := make([]*Network, 102)
+		nets := make([]*Network, 1024)
 		for i, _ := range nets {
 			net := sim.launchNode(false)
 			nets[i] = net

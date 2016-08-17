@@ -116,6 +116,7 @@ func (t *TopicTable) checkDeleteTopic(topic Topic) {
 func (t *TopicTable) getOrNewNode(node *Node) *nodeInfo {
 	n := t.nodes[node]
 	if n == nil {
+		//fmt.Printf("newNode %016x %016x\n", t.self.sha[:8], node.sha[:8])
 		var issued, used uint32
 		if t.db != nil {
 			issued, used = t.db.fetchTopicRegTickets(node.ID)
@@ -132,6 +133,7 @@ func (t *TopicTable) getOrNewNode(node *Node) *nodeInfo {
 
 func (t *TopicTable) checkDeleteNode(node *Node) {
 	if n, ok := t.nodes[node]; ok && len(n.entries) == 0 && n.noRegUntil < monotonicTime() {
+		//fmt.Printf("deleteNode %016x %016x\n", t.self.sha[:8], node.sha[:8])
 		delete(t.nodes, node)
 	}
 }
@@ -167,6 +169,8 @@ func (t *TopicTable) AddEntries(node *Node, topics []Topic) {
 	for _, e := range n.entries {
 		t.deleteEntry(e)
 	}
+	// ***
+	n = t.getOrNewNode(node)
 
 	tm := monotonicTime()
 	for _, topic := range topics {
