@@ -54,7 +54,6 @@ type LightEthereum struct {
 	protocolManager *ProtocolManager
 	// DB interfaces
 	chainDb ethdb.Database // Block chain database
-	dappDb  ethdb.Database // Dapp database
 
 	ApiBackend *LesApiBackend
 
@@ -72,7 +71,7 @@ type LightEthereum struct {
 }
 
 func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
-	chainDb, dappDb, err := eth.CreateDBs(ctx, config, "lightchaindata")
+	chainDb, err := eth.CreateDB(ctx, config, "lightchaindata")
 	if err != nil {
 		return nil, err
 	}
@@ -90,9 +89,8 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 		odr:            odr,
 		relay:          relay,
 		chainDb:        chainDb,
-		dappDb:         dappDb,
 		eventMux:       ctx.EventMux,
-		accountManager: config.AccountManager,
+		accountManager: ctx.AccountManager,
 		pow:            pow,
 		shutdownChan:   make(chan bool),
 		httpclient:     httpclient.New(config.DocRoot),
@@ -131,7 +129,7 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 // APIs returns the collection of RPC services the ethereum package offers.
 // NOTE, some of these services probably need to be moved to somewhere else.
 func (s *LightEthereum) APIs() []rpc.API {
-	return append(ethapi.GetAPIs(s.ApiBackend, &s.solcPath, &s.solc), []rpc.API{
+	return append(ethapi.GetAPIs(s.ApiBackend, s.solcPath), []rpc.API{
 		{
 			Namespace: "eth",
 			Version:   "1.0",
@@ -186,7 +184,6 @@ func (s *LightEthereum) Stop() error {
 
 	time.Sleep(time.Millisecond * 200)
 	s.chainDb.Close()
-	s.dappDb.Close()
 	close(s.shutdownChan)
 
 	return nil

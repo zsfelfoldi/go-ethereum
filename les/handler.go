@@ -311,9 +311,8 @@ func (pm *ProtocolManager) handle(p *peer) error {
 			p.fcServer.SendRequest(reqID, cost)
 			return p.RequestHeadersByNumber(reqID, cost, origin, amount, skip, reverse)
 		}
-		if err := pm.downloader.RegisterPeer(p.id, ethVersion, p.Head(),
-			nil, nil, nil, requestHeadersByHash, requestHeadersByNumber,
-			nil, nil, nil); err != nil {
+		if err := pm.downloader.RegisterPeer(p.id, ethVersion, p.HeadAndTd,
+			requestHeadersByHash, requestHeadersByNumber, nil, nil, nil); err != nil {
 			return err
 		}
 		pm.odr.RegisterPeer(p)
@@ -330,13 +329,13 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		// new block announce loop
 		for {
 			select {
-			case announce := <- p.newBlockHashChn:
+			case announce := <-p.newBlockHashChn:
 				p.SendNewBlockHash(announce)
 				//fmt.Println("  BROADCAST sent")
 			case <-stop:
 				return
-			}			
-		}		
+			}
+		}
 	}()
 
 	// main loop. handle incoming messages.

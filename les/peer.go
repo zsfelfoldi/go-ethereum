@@ -51,10 +51,9 @@ type peer struct {
 
 	id string
 
-	
 	firstHeadInfo, headInfo *newBlockHashData
-	headInfoLen int
-	lock     sync.RWMutex
+	headInfoLen             int
+	lock                    sync.RWMutex
 
 	newBlockHashChn chan newBlockHashData
 
@@ -68,11 +67,11 @@ func newPeer(version, network int, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
 	id := p.ID()
 
 	return &peer{
-		Peer:        p,
-		rw:          rw,
-		version:     version,
-		network:     network,
-		id:          fmt.Sprintf("%x", id[:8]),
+		Peer:            p,
+		rw:              rw,
+		version:         version,
+		network:         network,
+		id:              fmt.Sprintf("%x", id[:8]),
 		newBlockHashChn: make(chan newBlockHashData, 20),
 	}
 }
@@ -93,6 +92,14 @@ func (p *peer) Head() (hash common.Hash) {
 
 	copy(hash[:], p.headInfo.Hash[:])
 	return hash
+}
+
+func (p *peer) HeadAndTd() (hash common.Hash, td *big.Int) {
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+
+	copy(hash[:], p.headInfo.Hash[:])
+	return hash, p.headInfo.Td
 }
 
 func (p *peer) headBlockInfo() blockInfo {
@@ -141,7 +148,7 @@ func (p *peer) gotHeader(hash common.Hash, number uint64, td *big.Int) bool {
 			h = h.next
 			// propagate haveHeaders through the chain
 			for h != nil {
-				hh := last.Number-h.ReorgDepth
+				hh := last.Number - h.ReorgDepth
 				if last.haveHeaders < hh {
 					hh = last.haveHeaders
 				}
