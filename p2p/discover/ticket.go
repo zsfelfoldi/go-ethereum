@@ -327,7 +327,7 @@ func (s *ticketStore) ticketRegistered(ref ticketRef) {
 	s.nextTicketCached = nil
 }
 
-func (s *ticketStore) registerLookupDone(target common.Hash, nodes []*Node, ping func(n *Node)) {
+func (s *ticketStore) registerLookupDone(target common.Hash, nodes []*Node, ping func(n *Node) []byte) {
 	now := monotonicTime()
 	//fmt.Printf("registerLookupDone  target = %016x\n", target[:8])
 	if len(nodes) > 0 {

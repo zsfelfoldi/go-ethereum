@@ -432,7 +432,10 @@ loop:
 
 		case nodes := <-topicRegisterLookupDone:
 			net.log.log("<-topicRegisterLookupDone")
-			net.ticketStore.registerLookupDone(topicRegisterLookupTarget, nodes, func(n *Node) { net.ping(n, n.addr()) })
+			net.ticketStore.registerLookupDone(topicRegisterLookupTarget, nodes, func(n *Node) []byte {
+				net.ping(n, n.addr())
+				return n.pingEcho
+			})
 			target, delay := net.ticketStore.nextRegisterLookup()
 			topicRegisterLookupTarget = target
 			topicRegisterLookupTick.Reset(delay)
