@@ -70,7 +70,7 @@ func localConsole(ctx *cli.Context) error {
 	defer node.Stop()
 
 	// Attach to the newly started node and start the JavaScript console
-	client := rpc.NewClientRestartWrapper(func() rpc.Client {
+	client := rpc.NewClientRestartWrapper(func() *rpc.Client {
 		client, err := node.Attach()
 		if err != nil {
 			utils.Fatalf("Failed to attach to the inproc geth: %v", err)
@@ -105,7 +105,7 @@ func localConsole(ctx *cli.Context) error {
 // console to it.
 func remoteConsole(ctx *cli.Context) error {
 	// Attach to a remotely running geth instance and start the JavaScript console
-	client := rpc.NewClientRestartWrapper(func() rpc.Client {
+	client := rpc.NewClientRestartWrapper(func() *rpc.Client {
 		client, err := dialRPC(ctx.Args().First())
 		if err != nil {
 			utils.Fatalf("Unable to attach to remote geth: %v", err)
@@ -161,7 +161,7 @@ func ephemeralConsole(ctx *cli.Context) error {
 	defer node.Stop()
 
 	// Attach to the newly started node and start the JavaScript console
-	client := rpc.NewClientRestartWrapper(func() rpc.Client {
+	client := rpc.NewClientRestartWrapper(func() *rpc.Client {
 		client, err := node.Attach()
 		if err != nil {
 			utils.Fatalf("Failed to attach to the inproc geth: %v", err)
