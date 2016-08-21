@@ -327,7 +327,7 @@ func (s *ticketStore) ticketRegistered(ref ticketRef) {
 	s.nextTicketCached = nil
 }
 
-func (s *ticketStore) registerLookupDone(target common.Hash, nodes []*Node, ping func(n *Node) []byte) {
+func (s *ticketStore) registerLookupDone(target common.Hash, nodes []*Node, ping func(n *Node)) {
 	now := monotonicTime()
 	//fmt.Printf("registerLookupDone  target = %016x\n", target[:8])
 	if len(nodes) > 0 {
@@ -442,6 +442,7 @@ type topicRadius struct {
 	radius          uint64
 	adjustCooldown  float64 // only for convergence detection
 	converged       bool
+	intExtBalance   float64
 }
 
 func newTopicRadius(t Topic) *topicRadius {
@@ -486,6 +487,20 @@ func (r *topicRadius) nextTarget() common.Hash {
 }
 
 func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64, minRadStable bool) {
+	var balanceStep, stepSign float64
+	if r.isInRadius(t.t, false) {
+		balanceStep = radiusExtendRatio - 1
+		stepSign = 1
+	} else {
+		balanceStep = -1
+		stepSign = -1
+	}
+
+	if r.intExtBalance*stepSign > 3 {
+		return
+	}
+	r.intExtBalance += balanceStep
+
 	wait := t.t.regTime[t.idx] - localTime
 	adjust := (float64(wait)/float64(targetWaitTime) - 1) * 2
 	if adjust > 1 {
@@ -494,6 +509,7 @@ func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64, m
 	if adjust < -1 {
 		adjust = -1
 	}
+
 	if r.converged {
 		adjust *= adjustRatio
 	} else {
