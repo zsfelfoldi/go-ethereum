@@ -475,12 +475,20 @@ func randUint64n(n uint64) uint64 { // don't care about lowest bit, 63 bit rando
 }
 
 func (r *topicRadius) nextTarget() common.Hash {
-	e := float64(r.radius) * radiusExtendRatio
-	extRadius := uint64(maxRadius)
-	if e < maxRadius {
-		extRadius = uint64(e)
+	var rnd uint64
+	if r.intExtBalance < 0 {
+		// select target from inner region
+		rnd = randUint64n(r.radius)
+	} else {
+		// select target from outer region
+		e := float64(r.radius) * radiusExtendRatio
+		extRadius := uint64(maxRadius)
+		if e < maxRadius {
+			extRadius = uint64(e)
+		}
+		rnd = r.radius + randUint64n(extRadius-r.radius)
 	}
-	prefix := r.topicHashPrefix ^ randUint64n(extRadius)
+	prefix := r.topicHashPrefix ^ rnd
 	var target common.Hash
 	binary.BigEndian.PutUint64(target[0:8], prefix)
 	return target
