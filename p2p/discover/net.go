@@ -89,7 +89,7 @@ type transport interface {
 	sendPing(remote *Node, remoteAddr *net.UDPAddr, topics []Topic) (hash []byte)
 	sendNeighbours(remote *Node, nodes []*Node)
 	sendFindnodeHash(remote *Node, target common.Hash)
-	sendTopicRegister(remote *Node, topic []Topic, pong []byte)
+	sendTopicRegister(remote *Node, topics []Topic, topicIdx int, pong []byte)
 	sendTopicNodes(remote *Node, queryHash common.Hash, nodes []*Node)
 
 	send(remote *Node, ptype nodeEvent, p interface{})
@@ -457,7 +457,7 @@ loop:
 			net.log.log("<-nextRegisterTime")
 			net.ticketStore.ticketRegistered(*nextTicket)
 			//fmt.Println("sendTopicRegister")
-			net.conn.sendTopicRegister(nextTicket.t.node, nextTicket.t.topics, nextTicket.t.pong)
+			net.conn.sendTopicRegister(nextTicket.t.node, nextTicket.t.topics, nextTicket.idx, nextTicket.t.pong)
 
 		case <-statsDump.C:
 			net.log.log("<-statsDump.C")
@@ -1018,7 +1018,7 @@ func (net *Network) handleQueryEvent(n *Node, ev nodeEvent, pkt *ingressPacket) 
 			//fmt.Println(err)
 			return n.state, fmt.Errorf("bad waiting ticket: %v", err)
 		}
-		net.topictab.useTicket(n, pong.TicketSerial, regdata.Topics, pong.Expiration, pong.WaitPeriods)
+		net.topictab.useTicket(n, pong.TicketSerial, regdata.Topics, regdata.Idx, pong.Expiration, pong.WaitPeriods)
 		return n.state, nil
 	case topicQueryPacket:
 		results := net.topictab.GetEntries(pkt.data.(*topicQuery).Topic)
@@ -1065,6 +1065,9 @@ func (net *Network) checkTopicRegister(data *topicRegister) (*pong, error) {
 	// that the other side is trying to register.
 	if rlpHash(data.Topics) != pongpkt.data.(*pong).TopicHash {
 		return nil, errors.New("topic hash mismatch")
+	}
+	if data.Idx < 0 || data.Idx >= len(data.Topics) {
+		return nil, errors.New("topic index out of range")
 	}
 	return pongpkt.data.(*pong), nil
 }

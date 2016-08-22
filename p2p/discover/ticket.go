@@ -36,7 +36,7 @@ const (
 	minRadAverage       = 100
 	minRadStableAfter   = 50
 	targetWaitTime      = time.Minute * 10
-	adjustRatio         = 0.001
+	adjustRatio         = 0.002
 	adjustCooldownStart = 0.1
 	adjustCooldownStep  = 0.01
 	radiusExtendRatio   = 1.5

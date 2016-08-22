@@ -116,6 +116,7 @@ type (
 
 	topicRegister struct {
 		Topics []Topic
+		Idx    int
 		Pong   []byte
 	}
 
@@ -310,9 +311,10 @@ func (t *udp) sendFindnodeHash(remote *Node, target common.Hash) {
 	})
 }
 
-func (t *udp) sendTopicRegister(remote *Node, topics []Topic, pong []byte) {
+func (t *udp) sendTopicRegister(remote *Node, topics []Topic, idx int, pong []byte) {
 	t.sendPacket(remote.ID, remote.addr(), byte(topicRegisterPacket), topicRegister{
 		Topics: topics,
+		Idx:    idx,
 		Pong:   pong,
 	})
 }

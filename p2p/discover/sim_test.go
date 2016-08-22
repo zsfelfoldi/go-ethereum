@@ -171,11 +171,11 @@ func TestSimTopicHierarchy(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond * 100)
 		}
-		time.Sleep(time.Second * 40000)
+		time.Sleep(time.Second * 90000)
 		close(stop)
 	}()
 
-	time.Sleep(50000 * time.Second)
+	time.Sleep(100000 * time.Second)
 	sim.shutdown()
 }
 
@@ -383,7 +383,7 @@ func (st *simTransport) sendFindnodeHash(remote *Node, target common.Hash) {
 	})
 }
 
-func (st *simTransport) sendTopicRegister(remote *Node, topics []Topic, pong []byte) {
+func (st *simTransport) sendTopicRegister(remote *Node, topics []Topic, idx int, pong []byte) {
 	//fmt.Println("send", topics, pong)
 	st.sendPacket(remote.ID, ingressPacket{
 		remoteID:   st.sender,
@@ -392,6 +392,7 @@ func (st *simTransport) sendTopicRegister(remote *Node, topics []Topic, pong []b
 		ev:         topicRegisterPacket,
 		data: &topicRegister{
 			Topics: topics,
+			Idx:    idx,
 			Pong:   pong,
 		},
 	})

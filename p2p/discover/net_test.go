@@ -323,7 +323,7 @@ func (tn *preminedTestnet) sendTopicNodes(to *Node, queryHash common.Hash, nodes
 	panic("sendTopicNodes called")
 }
 
-func (tn *preminedTestnet) sendTopicRegister(to *Node, topics []Topic, pong []byte) {
+func (tn *preminedTestnet) sendTopicRegister(to *Node, topics []Topic, idx int, pong []byte) {
 	panic("sendTopicRegister called")
 }
 

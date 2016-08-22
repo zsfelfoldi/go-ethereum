@@ -163,7 +163,7 @@ func (t *TopicTable) GetEntries(topic Topic) []*Node {
 	return nodes
 }
 
-func (t *TopicTable) AddEntries(node *Node, topics []Topic) {
+func (t *TopicTable) addEntry(node *Node, topic Topic) {
 	n := t.getOrNewNode(node)
 	// clear previous entries by the same node
 	for _, e := range n.entries {
@@ -173,31 +173,29 @@ func (t *TopicTable) AddEntries(node *Node, topics []Topic) {
 	n = t.getOrNewNode(node)
 
 	tm := monotonicTime()
-	for _, topic := range topics {
-		te := t.getOrNewTopic(topic)
+	te := t.getOrNewTopic(topic)
 
-		if len(te.entries) == MaxEntriesPerTopic {
-			t.deleteEntry(te.getFifoTail())
-		}
-
-		if t.globalEntries == MaxEntries {
-			t.deleteEntry(t.leastRequested()) // not empty, no need to check for nil
-		}
-
-		fifoIdx := te.fifoHead
-		te.fifoHead++
-		entry := &topicEntry{
-			topic:   topic,
-			fifoIdx: fifoIdx,
-			node:    node,
-			expire:  tm + absTime(fallbackRegistrationExpiry),
-		}
-		fmt.Printf("*+ %d %v %016x %016x\n", tm/1000000, topic, t.self.sha[:8], node.sha[:8])
-		te.entries[fifoIdx] = entry
-		n.entries[topic] = entry
-		t.globalEntries++
-		te.wcl.registered(tm)
+	if len(te.entries) == MaxEntriesPerTopic {
+		t.deleteEntry(te.getFifoTail())
 	}
+
+	if t.globalEntries == MaxEntries {
+		t.deleteEntry(t.leastRequested()) // not empty, no need to check for nil
+	}
+
+	fifoIdx := te.fifoHead
+	te.fifoHead++
+	entry := &topicEntry{
+		topic:   topic,
+		fifoIdx: fifoIdx,
+		node:    node,
+		expire:  tm + absTime(fallbackRegistrationExpiry),
+	}
+	fmt.Printf("*+ %d %v %016x %016x\n", tm/1000000, topic, t.self.sha[:8], node.sha[:8])
+	te.entries[fifoIdx] = entry
+	n.entries[topic] = entry
+	t.globalEntries++
+	te.wcl.registered(tm)
 }
 
 // removes least requested element from the fifo
@@ -228,7 +226,7 @@ func (t *TopicTable) deleteEntry(e *topicEntry) {
 }
 
 // It is assumed that topics and waitPeriods have the same length.
-func (t *TopicTable) useTicket(node *Node, serialNo uint32, topics []Topic, issueTime uint64, waitPeriods []uint32) (registered bool) {
+func (t *TopicTable) useTicket(node *Node, serialNo uint32, topics []Topic, idx int, issueTime uint64, waitPeriods []uint32) (registered bool) {
 	//fmt.Println("useTicket", serialNo, topics, waitPeriods)
 	t.collectGarbage()
 
@@ -248,21 +246,15 @@ func (t *TopicTable) useTicket(node *Node, serialNo uint32, topics []Topic, issu
 	}
 
 	currTime := uint64(tm / absTime(time.Second))
-	var regTopics []Topic
-	for i, w := range waitPeriods {
-		regTime := issueTime + uint64(w)
-		relTime := int64(currTime - regTime)
-		if relTime >= -1 && relTime <= regTimeWindow+1 && // give clients a little security margin on both ends
-			n.entries[topics[i]] == nil { // don't register again if there is an active entry
-			regTopics = append(regTopics, topics[i])
-		}
-	}
-	if regTopics != nil {
-		t.AddEntries(node, regTopics)
+	regTime := issueTime + uint64(waitPeriods[idx])
+	relTime := int64(currTime - regTime)
+	if relTime >= -1 && relTime <= regTimeWindow+1 && // give clients a little security margin on both ends
+		n.entries[topics[idx]] == nil { // don't register again if there is an active entry
+		t.addEntry(node, topics[idx])
 		return true
-	} else {
-		return false
 	}
+
+	return false
 }
 
 func (topictab *TopicTable) getTicket(node *Node, topics []Topic) *ticket {
