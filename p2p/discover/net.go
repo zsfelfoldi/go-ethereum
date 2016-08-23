@@ -343,7 +343,7 @@ func (net *Network) loop() {
 
 	// Tracking registration lookups.
 	var (
-		topicRegisterLookupTarget common.Hash
+		topicRegisterLookupTarget lookupInfo
 		topicRegisterLookupDone   chan []*Node
 		topicRegisterLookupTick   = time.NewTimer(0)
 	)
@@ -420,7 +420,7 @@ loop:
 			// chance to start it sooner. This should speed up convergence of the radius
 			// determination for new topics.
 			// if topicRegisterLookupDone == nil {
-			if topicRegisterLookupTarget == (common.Hash{}) {
+			if topicRegisterLookupTarget.target == (common.Hash{}) {
 				net.log.log("topicRegisterLookupTarget == null")
 				if topicRegisterLookupTick.Stop() {
 					<-topicRegisterLookupTick.C
@@ -432,8 +432,9 @@ loop:
 
 		case nodes := <-topicRegisterLookupDone:
 			net.log.log("<-topicRegisterLookupDone")
-			net.ticketStore.registerLookupDone(topicRegisterLookupTarget, nodes, func(n *Node) {
+			net.ticketStore.registerLookupDone(topicRegisterLookupTarget, nodes, func(n *Node) []byte {
 				net.ping(n, n.addr())
+				return n.pingEcho
 			})
 			target, delay := net.ticketStore.nextRegisterLookup()
 			topicRegisterLookupTarget = target
@@ -442,14 +443,14 @@ loop:
 
 		case <-topicRegisterLookupTick.C:
 			net.log.log("<-topicRegisterLookupTick")
-			if (topicRegisterLookupTarget == common.Hash{}) {
+			if (topicRegisterLookupTarget.target == common.Hash{}) {
 				target, delay := net.ticketStore.nextRegisterLookup()
 				topicRegisterLookupTarget = target
 				topicRegisterLookupTick.Reset(delay)
 				topicRegisterLookupDone = nil
 			} else {
 				topicRegisterLookupDone = make(chan []*Node)
-				target := topicRegisterLookupTarget
+				target := topicRegisterLookupTarget.target
 				go func() { topicRegisterLookupDone <- net.lookup(target, false) }()
 			}
 
@@ -973,7 +974,7 @@ func (net *Network) handleKnownPong(n *Node, pkt *ingressPacket) error {
 	ticket, err := pongToTicket(now, n.pingTopics, n, pkt)
 	if err == nil {
 		// fmt.Printf("(%x) ticket: %+v\n", net.tab.self.ID[:8], pkt.data)
-		net.ticketStore.add(now, ticket)
+		net.ticketStore.addTicket(now, n.pingEcho, ticket)
 	} else {
 		net.log.log(fmt.Sprintf(" error: %v", err))
 	}
