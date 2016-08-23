@@ -974,7 +974,7 @@ func (net *Network) handleKnownPong(n *Node, pkt *ingressPacket) error {
 	ticket, err := pongToTicket(now, n.pingTopics, n, pkt)
 	if err == nil {
 		// fmt.Printf("(%x) ticket: %+v\n", net.tab.self.ID[:8], pkt.data)
-		net.ticketStore.addTicket(now, n.pingEcho, ticket)
+		net.ticketStore.addTicket(now, pkt.data.(*pong).ReplyTok, ticket)
 	} else {
 		net.log.log(fmt.Sprintf(" error: %v", err))
 	}
