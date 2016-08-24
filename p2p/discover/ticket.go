@@ -410,18 +410,20 @@ func (s *ticketStore) addTicket(localTime absTime, pingHash []byte, t *ticket) {
 		s.lastBucketFetched = bucket
 	}
 
-	if tt, ok := s.radius[topic]; ok && tt.isInRadius(t, false) {
-		if tickets, ok := s.tickets[topic]; ok && tt.converged {
-			wait := t.regTime[topicIdx] - localTime
-			rnd := rand.ExpFloat64()
-			if rnd > 10 {
-				rnd = 10
-			}
-			if float64(wait) < float64(keepTicketConst)+float64(keepTicketExp)*rnd {
-				// use the ticket to register this topic
-				bucket := timeBucket(t.regTime[topicIdx] / absTime(ticketTimeBucketLen))
-				tickets[bucket] = append(tickets[bucket], ticketRef{t, topicIdx})
-				t.refCnt++
+	for topicIdx, topic := range t.topics {
+		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t, false) {
+			if tickets, ok := s.tickets[topic]; ok && tt.converged {
+				wait := t.regTime[topicIdx] - localTime
+				rnd := rand.ExpFloat64()
+				if rnd > 10 {
+					rnd = 10
+				}
+				if float64(wait) < float64(keepTicketConst)+float64(keepTicketExp)*rnd {
+					// use the ticket to register this topic
+					bucket := timeBucket(t.regTime[topicIdx] / absTime(ticketTimeBucketLen))
+					tickets[bucket] = append(tickets[bucket], ticketRef{t, topicIdx})
+					t.refCnt++
+				}
 			}
 		}
 	}

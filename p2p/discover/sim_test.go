@@ -141,6 +141,15 @@ func testHierarchicalTopics(i int) []Topic {
 	return res
 }
 
+/*func testHierarchicalTopics(i int) []Topic {
+	digits := strconv.FormatInt(int64(128+i/8), 2)
+	res := make([]Topic, 8)
+	for i, _ := range res {
+		res[i] = Topic("foo" + digits[1:i+1])
+	}
+	return res
+}*/
+
 func TestSimTopicHierarchy(t *testing.T) {
 	if runWithPlaygroundTime(t) {
 		return
