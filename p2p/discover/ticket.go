@@ -31,8 +31,8 @@ import (
 const (
 	ticketTimeBucketLen = time.Minute
 	timeWindow          = 30 // * ticketTimeBucketLen
-	keepTicketConst     = time.Minute * 20
-	keepTicketExp       = time.Minute * 20
+	keepTicketConst     = time.Minute * 10
+	keepTicketExp       = time.Minute * 5
 	maxRadius           = 0xffffffffffffffff
 	minRadAverage       = 100
 	minRadStableAfter   = 50
@@ -227,13 +227,22 @@ func (s *ticketStore) iterRegTopics() (Topic, bool) {
 }
 
 // ticketsInWindow returns the number of tickets in the registration window.
-func (s *ticketStore) ticketsInWindow(t Topic) int {
+func (s *ticketStore) ticketsInWindow(t Topic) float64 {
 	now := monotonicTime()
 	ltBucket := timeBucket(now / absTime(ticketTimeBucketLen))
-	sum := 0
+	var sum float64
 	tickets := s.tickets[t]
 	for g := ltBucket; g < ltBucket+timeWindow; g++ {
-		sum += len(tickets[g])
+		for _, t := range tickets[g] {
+			l := t.t.regTime[t.idx] - t.t.issueTime
+			if l > absTime(ticketTimeBucketLen)*timeWindow {
+				l = absTime(ticketTimeBucketLen) * timeWindow
+			}
+			if l < absTime(time.Minute) {
+				l = absTime(time.Minute)
+			}
+			sum += float64(targetWaitTime) / float64(l)
+		}
 	}
 	s.log.log(fmt.Sprintf("ticketsInWindow(%v) = %v", t, sum))
 	return sum
@@ -546,12 +555,18 @@ func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64, m
 	}
 	r.intExtBalance += balanceStep
 
-	wait := t.t.regTime[t.idx] - localTime
-	adjust := (float64(wait)/float64(targetWaitTime) - 1) * 2
-	if adjust > 1 {
+	wait := t.t.regTime[t.idx] - t.t.issueTime // localTime
+	/*	adjust := (float64(wait)/float64(targetWaitTime) - 1) * 2
+		if adjust > 1 {
+			adjust = 1
+		}
+		if adjust < -1 {
+			adjust = -1
+		}*/
+	var adjust float64
+	if wait > absTime(targetWaitTime) {
 		adjust = 1
-	}
-	if adjust < -1 {
+	} else {
 		adjust = -1
 	}
 
@@ -560,6 +575,10 @@ func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64, m
 	} else {
 		adjust *= r.adjustCooldown
 	}
+
+	/*if adjust > 0 {
+		adjust *= radiusExtendRatio*2 - 1
+	}*/
 
 	radius := float64(r.radius) * (1 + adjust)
 	if radius > float64(maxRadius) {

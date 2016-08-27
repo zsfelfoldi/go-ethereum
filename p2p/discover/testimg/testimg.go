@@ -24,9 +24,12 @@ func set(pic *image.NRGBA, x, y, c, v int) {
 	}
 }
 
+type nodeStats []struct{ wpSum, wpCnt, wpXcnt, regCnt, regXcnt uint64 }
+
 type topicInfo struct {
 	prefix    uint64
 	nodes     uint64Slice
+	nodeStats nodeStats
 	nodeIdx   map[uint64]int
 	pic, pic2 *image.NRGBA
 	nodeRad   map[uint64]int
@@ -73,6 +76,7 @@ func main() {
 
 	for _, t := range topics {
 		t.nodes = make(uint64Slice, len(nodes))
+		t.nodeStats = make(nodeStats, len(nodes))
 		for i, v := range nodes {
 			t.nodes[i] = v ^ t.prefix
 		}
@@ -101,6 +105,8 @@ func main() {
 	f, _ = os.Open(inputFile)
 	scanner = bufio.NewScanner(f)
 	scanner.Split(bufio.ScanWords)
+	statBegin := int64(40000000)
+	statEnd := int64(maxTime - 10000000)
 
 	for scanner.Scan() {
 		w := scanner.Text()
@@ -149,9 +155,25 @@ func main() {
 			wp, _ := strconv.ParseInt(scanner.Text(), 10, 64)
 			x := int(time * int64(xs) / int64(maxTime))
 			y := t.nodeIdx[prefix]
-			set(t.pic2, x, y, 0, int(wp/100000))
+			if time >= statBegin && time < statEnd {
+				t.nodeStats[y].wpSum += uint64(wp)
+				if wp >= 600000 {
+					t.nodeStats[y].wpXcnt++
+				}
+				t.nodeStats[y].wpCnt++
+			}
+			/*set(t.pic2, x, y, 0, int(wp/100000))
 			set(t.pic2, x, y, 1, int(wp/10000))
-			set(t.pic2, x, y, 2, int(wp/1000))
+			set(t.pic2, x, y, 2, int(wp/1000))*/
+			if wp >= 1800000 {
+				set(t.pic2, x, y, 0, 255)
+			}
+			if wp >= 600000 {
+				set(t.pic2, x, y, 1, 255)
+			}
+			if wp >= 60000 {
+				set(t.pic2, x, y, 2, 255)
+			}
 		}
 		if w == "*+" {
 			scanner.Scan()
@@ -164,6 +186,12 @@ func main() {
 			y := t.nodeIdx[prefix]
 			set(t.pic, x, y, 2, 255)
 			scanner.Scan()
+			prefix2, _ := strconv.ParseUint(scanner.Text(), 16, 64)
+			y2 := t.nodeIdx[prefix2]
+			if time >= statBegin && time < statEnd {
+				t.nodeStats[y].regCnt++
+				t.nodeStats[y2].regXcnt++
+			}
 		}
 	}
 	f.Close()
@@ -180,6 +208,51 @@ func main() {
 		png.Encode(w, t.pic2)
 		w.Flush()
 		f.Close()
+
+		if statEnd > statBegin {
+			xxs := len(t.nodeStats)
+			yys := 1000
+			yyh := yys / 2
+			pic3 := image.NewNRGBA(image.Rect(0, 0, xxs, yys))
+			for y := 0; y < yys; y++ {
+				for x := 0; x < xxs; x++ {
+					set(pic3, x, y, 3, 255)
+				}
+			}
+			for x := 0; x < xxs; x++ {
+				wpy := 0
+				if t.nodeStats[x].wpCnt > 0 {
+					//					wpy = int(t.nodeStats[x].wpSum / t.nodeStats[x].wpCnt / 10000)
+					wpy = int(uint64(yyh) * t.nodeStats[x].wpXcnt / t.nodeStats[x].wpCnt)
+				}
+				if wpy > yyh {
+					wpy = yyh
+				}
+				for y := 0; y < wpy; y++ {
+					set(pic3, x, yys-1-y, 1, 255)
+				}
+				regy := int(t.nodeStats[x].regCnt * 2400000 / uint64(statEnd-statBegin))
+				if regy > yyh {
+					regy = yyh
+				}
+				for y := 0; y < regy; y++ {
+					set(pic3, x, yyh-1-y, 2, 255)
+				}
+				regy2 := int(t.nodeStats[x].regXcnt * 2400000 / uint64(statEnd-statBegin))
+				if regy2 > yyh {
+					regy2 = yyh
+				}
+				for y := 0; y < regy2; y++ {
+					set(pic3, x, yyh-1-y, 0, 255)
+				}
+			}
+
+			f, _ = os.Create("test3_" + tt + ".png")
+			w = bufio.NewWriter(f)
+			png.Encode(w, pic3)
+			w.Flush()
+			f.Close()
+		}
 	}
 }
 

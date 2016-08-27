@@ -132,23 +132,23 @@ func TestSimTopics(t *testing.T) {
 	//printNet.log.printLogs()
 }
 
-func testHierarchicalTopics(i int) []Topic {
+/*func testHierarchicalTopics(i int) []Topic {
 	digits := strconv.FormatInt(int64(256+i/4), 4)
 	res := make([]Topic, 5)
 	for i, _ := range res {
 		res[i] = Topic("foo" + digits[1:i+1])
 	}
 	return res
-}
+}*/
 
-/*func testHierarchicalTopics(i int) []Topic {
+func testHierarchicalTopics(i int) []Topic {
 	digits := strconv.FormatInt(int64(128+i/8), 2)
 	res := make([]Topic, 8)
 	for i, _ := range res {
 		res[i] = Topic("foo" + digits[1:i+1])
 	}
 	return res
-}*/
+}
 
 func TestSimTopicHierarchy(t *testing.T) {
 	if runWithPlaygroundTime(t) {
@@ -174,11 +174,13 @@ func TestSimTopicHierarchy(t *testing.T) {
 
 		stop := make(chan struct{})
 		for i, net := range nets {
-			for _, topic := range testHierarchicalTopics(i) {
+			//if i < 256 {
+			for _, topic := range testHierarchicalTopics(i)[:5] {
 				//fmt.Println("reg", topic)
 				go net.RegisterTopic(topic, stop)
 			}
 			time.Sleep(time.Millisecond * 100)
+			//}
 		}
 		time.Sleep(time.Second * 90000)
 		close(stop)
