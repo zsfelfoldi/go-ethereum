@@ -192,7 +192,7 @@ func (s *ticketStore) nextRegisterLookup() (lookup lookupInfo, delay time.Durati
 	firstTopic, ok := s.iterRegTopics()
 	for topic := firstTopic; ok; {
 		s.log.log(fmt.Sprintf(" checking topic %v, len(s.tickets[topic]) = %d", topic, len(s.tickets[topic])))
-		if s.tickets[topic] != nil && s.ticketsInWindow(topic) < 10 {
+		if s.tickets[topic] != nil && s.needMoreTickets(topic) {
 			next := s.radius[topic].nextTarget()
 			s.log.log(fmt.Sprintf(" %x 1s", next[:8]))
 			return lookupInfo{target: next, topic: topic}, 1 * time.Second
@@ -227,7 +227,7 @@ func (s *ticketStore) iterRegTopics() (Topic, bool) {
 }
 
 // ticketsInWindow returns the number of tickets in the registration window.
-func (s *ticketStore) ticketsInWindow(t Topic) float64 {
+func (s *ticketStore) needMoreTickets(t Topic) bool {
 	now := monotonicTime()
 	ltBucket := timeBucket(now / absTime(ticketTimeBucketLen))
 	var sum float64
@@ -245,7 +245,7 @@ func (s *ticketStore) ticketsInWindow(t Topic) float64 {
 		}
 	}
 	s.log.log(fmt.Sprintf("ticketsInWindow(%v) = %v", t, sum))
-	return sum
+	return sum < 10
 }
 
 // nextRegisterableTicket returns the next ticket that can be used
@@ -420,7 +420,7 @@ func (s *ticketStore) addTicket(localTime absTime, pingHash []byte, t *ticket) {
 	}
 
 	for topicIdx, topic := range t.topics {
-		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t, false) {
+		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t, false) && s.needMoreTickets(topic) {
 			if tickets, ok := s.tickets[topic]; ok && tt.converged {
 				wait := t.regTime[topicIdx] - localTime
 				rnd := rand.ExpFloat64()
