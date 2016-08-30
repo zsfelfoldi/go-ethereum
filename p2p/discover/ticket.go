@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/rand"
+	"sort"
 	"time"
 
 	"github.com/aristanetworks/goarista/atime"
@@ -30,7 +31,10 @@ import (
 
 const (
 	ticketTimeBucketLen = time.Minute
-	timeWindow          = 30 // * ticketTimeBucketLen
+	timeWindow          = 10 // * ticketTimeBucketLen
+	wantTicketsInWindow = 10
+	collectFrequency    = time.Second * 30
+	maxCollectDebt      = 10
 	keepTicketConst     = time.Minute * 10
 	keepTicketExp       = time.Minute * 5
 	maxRadius           = 0xffffffffffffffff
@@ -139,7 +143,10 @@ type ticketStore struct {
 	log *logChn
 }
 
-type topicTickets map[timeBucket][]ticketRef
+type topicTickets struct {
+	buckets    map[timeBucket][]ticketRef
+	nextLookup absTime
+}
 
 func newTicketStore() *ticketStore {
 	return &ticketStore{
@@ -158,15 +165,15 @@ func (s *ticketStore) addTopic(t Topic, register bool) {
 	if s.radius[t] == nil {
 		s.radius[t] = newTopicRadius(t)
 	}
-	if register && s.tickets[t] == nil {
-		s.tickets[t] = make(topicTickets)
+	if register && s.tickets[t].buckets == nil {
+		s.tickets[t] = topicTickets{buckets: make(map[timeBucket][]ticketRef)}
 	}
 }
 
 // removeRegisterTopic deletes all tickets for the given topic.
 func (s *ticketStore) removeRegisterTopic(topic Topic) {
 	s.log.log(fmt.Sprintf(" removeRegisterTopic(%v)", topic))
-	for _, list := range s.tickets[topic] {
+	for _, list := range s.tickets[topic].buckets {
 		for _, ref := range list {
 			ref.t.refCnt--
 			if ref.t.refCnt == 0 {
@@ -191,8 +198,8 @@ func (s *ticketStore) nextRegisterLookup() (lookup lookupInfo, delay time.Durati
 	s.log.log("nextRegisterLookup()")
 	firstTopic, ok := s.iterRegTopics()
 	for topic := firstTopic; ok; {
-		s.log.log(fmt.Sprintf(" checking topic %v, len(s.tickets[topic]) = %d", topic, len(s.tickets[topic])))
-		if s.tickets[topic] != nil && s.needMoreTickets(topic) {
+		s.log.log(fmt.Sprintf(" checking topic %v, len(s.tickets[topic]) = %d", topic, len(s.tickets[topic].buckets)))
+		if s.tickets[topic].buckets != nil && s.needMoreTickets(topic) {
 			next := s.radius[topic].nextTarget()
 			s.log.log(fmt.Sprintf(" %x 1s", next[:8]))
 			return lookupInfo{target: next, topic: topic}, 1 * time.Second
@@ -226,26 +233,70 @@ func (s *ticketStore) iterRegTopics() (Topic, bool) {
 	return topic, true
 }
 
-// ticketsInWindow returns the number of tickets in the registration window.
 func (s *ticketStore) needMoreTickets(t Topic) bool {
-	now := monotonicTime()
-	ltBucket := timeBucket(now / absTime(ticketTimeBucketLen))
-	var sum float64
-	tickets := s.tickets[t]
+	return s.tickets[t].nextLookup < monotonicTime()
+}
+
+// ticketsInWindow returns the tickets of a given topic in the registration window.
+func (s *ticketStore) ticketsInWindow(t Topic) []ticketRef {
+	ltBucket := s.lastBucketFetched
+	var res []ticketRef
+	tickets := s.tickets[t].buckets
 	for g := ltBucket; g < ltBucket+timeWindow; g++ {
-		for _, t := range tickets[g] {
-			l := t.t.regTime[t.idx] - t.t.issueTime
-			if l > absTime(ticketTimeBucketLen)*timeWindow {
-				l = absTime(ticketTimeBucketLen) * timeWindow
-			}
-			if l < absTime(time.Minute) {
-				l = absTime(time.Minute)
-			}
-			sum += float64(targetWaitTime) / float64(l)
-		}
+		res = append(res, tickets[g]...)
 	}
-	s.log.log(fmt.Sprintf("ticketsInWindow(%v) = %v", t, sum))
-	return sum < 10
+	s.log.log(fmt.Sprintf("ticketsInWindow(%v) = %v", t, len(res)))
+	return res
+}
+
+func (s *ticketStore) removeExcessTickets(t Topic) {
+	tickets := s.ticketsInWindow(t)
+	if len(tickets) <= wantTicketsInWindow {
+		return
+	}
+	sort.Sort(ticketRefByWaitTime(tickets))
+	for _, r := range tickets[wantTicketsInWindow:] {
+		s.removeTicketRef(r)
+	}
+}
+
+type ticketRefByWaitTime []ticketRef
+
+// Len is the number of elements in the collection.
+func (s ticketRefByWaitTime) Len() int {
+	return len(s)
+}
+
+func (r ticketRef) waitTime() absTime {
+	return r.t.regTime[r.idx] - r.t.issueTime
+}
+
+// Less reports whether the element with
+// index i should sort before the element with index j.
+func (s ticketRefByWaitTime) Less(i, j int) bool {
+	return s[i].waitTime() < s[j].waitTime()
+}
+
+// Swap swaps the elements with indexes i and j.
+func (s ticketRefByWaitTime) Swap(i, j int) {
+	s[i], s[j] = s[j], s[i]
+}
+
+func (s *ticketStore) addTicketRef(r ticketRef) {
+	bucket := timeBucket(r.t.regTime[r.idx] / absTime(ticketTimeBucketLen))
+	topic := r.t.topics[r.idx]
+	s.tickets[topic].buckets[bucket] = append(s.tickets[topic].buckets[bucket], r)
+	r.t.refCnt++
+
+	min := monotonicTime() - absTime(collectFrequency)*maxCollectDebt
+	t := s.tickets[topic]
+	if t.nextLookup < min {
+		t.nextLookup = min
+	}
+	t.nextLookup += absTime(collectFrequency)
+	s.tickets[topic] = t
+
+	s.removeExcessTickets(topic)
 }
 
 // nextRegisterableTicket returns the next ticket that can be used
@@ -276,10 +327,11 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticketRef, wait time.Duration
 			empty      = true    // true if there are no tickets
 			nextTicket ticketRef // uninitialized if this bucket is empty
 		)
-		for _, tickets := range s.tickets {
-			if len(tickets) != 0 {
+		for topic, tickets := range s.tickets {
+			s.removeExcessTickets(topic)
+			if len(tickets.buckets) != 0 {
 				empty = false
-				if list := tickets[bucket]; list != nil {
+				if list := tickets.buckets[bucket]; list != nil {
 					for _, ref := range list {
 						//s.log.log(fmt.Sprintf(" nrt bucket = %d node = %x sn = %v wait = %v", bucket, ref.t.node.ID[:8], ref.t.serial, time.Duration(ref.topicRegTime()-now)))
 						if nextTicket.t == nil || ref.topicRegTime() < nextTicket.topicRegTime() {
@@ -301,11 +353,11 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticketRef, wait time.Duration
 	}
 }
 
-// ticketRegistered is called when t has been used to register for a topic.
-func (s *ticketStore) ticketRegistered(ref ticketRef) {
-	s.log.log(fmt.Sprintf("ticketRegistered(node = %x sn = %v)", ref.t.node.ID[:8], ref.t.serial))
+// removeTicket removes a ticket from the ticket store
+func (s *ticketStore) removeTicketRef(ref ticketRef) {
+	s.log.log(fmt.Sprintf("removeTicketRef(node = %x sn = %v)", ref.t.node.ID[:8], ref.t.serial))
 	topic := ref.topic()
-	tickets := s.tickets[topic]
+	tickets := s.tickets[topic].buckets
 	if tickets == nil {
 		return
 	}
@@ -420,8 +472,8 @@ func (s *ticketStore) addTicket(localTime absTime, pingHash []byte, t *ticket) {
 	}
 
 	for topicIdx, topic := range t.topics {
-		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t, false) && s.needMoreTickets(topic) {
-			if tickets, ok := s.tickets[topic]; ok && tt.converged {
+		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t, false) {
+			if _, ok := s.tickets[topic]; ok && tt.converged {
 				wait := t.regTime[topicIdx] - localTime
 				rnd := rand.ExpFloat64()
 				if rnd > 10 {
@@ -429,9 +481,7 @@ func (s *ticketStore) addTicket(localTime absTime, pingHash []byte, t *ticket) {
 				}
 				if float64(wait) < float64(keepTicketConst)+float64(keepTicketExp)*rnd {
 					// use the ticket to register this topic
-					bucket := timeBucket(t.regTime[topicIdx] / absTime(ticketTimeBucketLen))
-					tickets[bucket] = append(tickets[bucket], ticketRef{t, topicIdx})
-					t.refCnt++
+					s.addTicketRef(ticketRef{t, topicIdx})
 				}
 			}
 		}
@@ -556,19 +606,19 @@ func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64, m
 	r.intExtBalance += balanceStep
 
 	wait := t.t.regTime[t.idx] - t.t.issueTime // localTime
-	/*	adjust := (float64(wait)/float64(targetWaitTime) - 1) * 2
-		if adjust > 1 {
-			adjust = 1
-		}
-		if adjust < -1 {
-			adjust = -1
-		}*/
-	var adjust float64
+	adjust := (float64(wait)/float64(targetWaitTime) - 1) * 2
+	if adjust > 1 {
+		adjust = 1
+	}
+	if adjust < -1 {
+		adjust = -1
+	}
+	/*var adjust float64
 	if wait > absTime(targetWaitTime) {
 		adjust = 1
 	} else {
 		adjust = -1
-	}
+	}*/
 
 	if r.converged {
 		adjust *= adjustRatio

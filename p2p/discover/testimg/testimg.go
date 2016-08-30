@@ -26,6 +26,11 @@ func set(pic *image.NRGBA, x, y, c, v int) {
 
 type nodeStats []struct{ wpSum, wpCnt, wpXcnt, regCnt, regXcnt uint64 }
 
+const (
+	regStatDiv  = 60
+	regStatYdiv = 30
+)
+
 type topicInfo struct {
 	prefix    uint64
 	nodes     uint64Slice
@@ -33,6 +38,7 @@ type topicInfo struct {
 	nodeIdx   map[uint64]int
 	pic, pic2 *image.NRGBA
 	nodeRad   map[uint64]int
+	regStats  []int
 }
 
 func main() {
@@ -100,6 +106,7 @@ func main() {
 			}
 		}
 		t.nodeRad = make(map[uint64]int)
+		t.regStats = make([]int, xs/regStatDiv+1)
 	}
 
 	f, _ = os.Open(inputFile)
@@ -183,6 +190,9 @@ func main() {
 			scanner.Scan()
 			prefix, _ := strconv.ParseUint(scanner.Text(), 16, 64)
 			x := int(time * int64(xs) / int64(maxTime))
+			if x < xs {
+				t.regStats[x/regStatDiv]++
+			}
 			y := t.nodeIdx[prefix]
 			set(t.pic, x, y, 2, 255)
 			scanner.Scan()
@@ -202,6 +212,16 @@ func main() {
 		png.Encode(w, t.pic)
 		w.Flush()
 		f.Close()
+
+		for x := 0; x < xs; x++ {
+			yy := t.regStats[x/regStatDiv] / regStatYdiv
+			if yy > ys {
+				yy = ys
+			}
+			for y := 0; y < yy; y++ {
+				set(t.pic2, x, ys-1-y, 1, 255)
+			}
+		}
 
 		f, _ = os.Create("test2_" + tt + ".png")
 		w = bufio.NewWriter(f)

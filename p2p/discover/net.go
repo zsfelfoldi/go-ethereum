@@ -456,7 +456,7 @@ loop:
 
 		case <-nextRegisterTime:
 			net.log.log("<-nextRegisterTime")
-			net.ticketStore.ticketRegistered(*nextTicket)
+			net.ticketStore.removeTicketRef(*nextTicket)
 			//fmt.Println("sendTopicRegister")
 			net.conn.sendTopicRegister(nextTicket.t.node, nextTicket.t.topics, nextTicket.idx, nextTicket.t.pong)
 

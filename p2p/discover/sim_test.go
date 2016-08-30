@@ -82,15 +82,17 @@ func TestSimTopics(t *testing.T) {
 			time.Sleep(time.Second * 5)
 		}
 
-		for _ /*i*/, net := range nets {
-			stop := make(chan struct{})
-			go net.RegisterTopic(testTopic, stop)
-			go func() {
-				//time.Sleep(time.Second * 36000)
-				time.Sleep(time.Second * 40000)
-				close(stop)
-			}()
-			time.Sleep(time.Millisecond * 100)
+		for i, net := range nets {
+			if i < 256 {
+				stop := make(chan struct{})
+				go net.RegisterTopic(testTopic, stop)
+				go func() {
+					//time.Sleep(time.Second * 36000)
+					time.Sleep(time.Second * 40000)
+					close(stop)
+				}()
+				time.Sleep(time.Millisecond * 100)
+			}
 			//			time.Sleep(time.Second * 10)
 			//time.Sleep(time.Second)
 			/*if i%500 == 499 {
