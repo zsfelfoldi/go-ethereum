@@ -327,7 +327,7 @@ func (net *Network) loop() {
 		}
 	}()
 	resetNextTicket := func() {
-		t, timeout := net.ticketStore.nextRegisterableTicket()
+		t, timeout := net.ticketStore.nextFilteredTicket()
 		if t != nextTicket {
 			nextTicket = t
 			if nextRegisterTimer != nil {
@@ -456,7 +456,7 @@ loop:
 
 		case <-nextRegisterTime:
 			net.log.log("<-nextRegisterTime")
-			net.ticketStore.removeTicketRef(*nextTicket)
+			net.ticketStore.ticketRegistered(*nextTicket)
 			//fmt.Println("sendTopicRegister")
 			net.conn.sendTopicRegister(nextTicket.t.node, nextTicket.t.topics, nextTicket.idx, nextTicket.t.pong)
 

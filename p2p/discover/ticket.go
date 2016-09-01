@@ -34,14 +34,16 @@ const (
 	timeWindow          = 10 // * ticketTimeBucketLen
 	wantTicketsInWindow = 10
 	collectFrequency    = time.Second * 30
+	registerFrequency   = time.Second * 60
 	maxCollectDebt      = 10
+	maxRegisterDebt     = 5
 	keepTicketConst     = time.Minute * 10
 	keepTicketExp       = time.Minute * 5
 	maxRadius           = 0xffffffffffffffff
 	minRadAverage       = 100
 	minRadStableAfter   = 50
 	targetWaitTime      = time.Minute * 10
-	adjustRatio         = 0.002
+	adjustRatio         = 0.001
 	adjustCooldownStart = 0.1
 	adjustCooldownStep  = 0.01
 	radiusExtendRatio   = 1.5
@@ -144,8 +146,8 @@ type ticketStore struct {
 }
 
 type topicTickets struct {
-	buckets    map[timeBucket][]ticketRef
-	nextLookup absTime
+	buckets             map[timeBucket][]ticketRef
+	nextLookup, nextReg absTime
 }
 
 func newTicketStore() *ticketStore {
@@ -296,7 +298,38 @@ func (s *ticketStore) addTicketRef(r ticketRef) {
 	t.nextLookup += absTime(collectFrequency)
 	s.tickets[topic] = t
 
-	s.removeExcessTickets(topic)
+	//s.removeExcessTickets(topic)
+}
+
+func (s *ticketStore) nextFilteredTicket() (t *ticketRef, wait time.Duration) {
+	now := monotonicTime()
+	for {
+		t, wait = s.nextRegisterableTicket()
+		if t == nil {
+			return
+		}
+		regTime := now + absTime(wait)
+		topic := t.t.topics[t.idx]
+		if regTime >= s.tickets[topic].nextReg {
+			return
+		}
+		s.removeTicketRef(*t)
+	}
+}
+
+func (s *ticketStore) ticketRegistered(t ticketRef) {
+	now := monotonicTime()
+
+	topic := t.t.topics[t.idx]
+	tt := s.tickets[topic]
+	min := now - absTime(registerFrequency)*maxRegisterDebt
+	if min > tt.nextReg {
+		tt.nextReg = min
+	}
+	tt.nextReg += absTime(registerFrequency)
+	s.tickets[topic] = tt
+
+	s.removeTicketRef(t)
 }
 
 // nextRegisterableTicket returns the next ticket that can be used
@@ -327,8 +360,8 @@ func (s *ticketStore) nextRegisterableTicket() (t *ticketRef, wait time.Duration
 			empty      = true    // true if there are no tickets
 			nextTicket ticketRef // uninitialized if this bucket is empty
 		)
-		for topic, tickets := range s.tickets {
-			s.removeExcessTickets(topic)
+		for _, tickets := range s.tickets {
+			//s.removeExcessTickets(topic)
 			if len(tickets.buckets) != 0 {
 				empty = false
 				if list := tickets.buckets[bucket]; list != nil {
