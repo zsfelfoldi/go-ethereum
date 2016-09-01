@@ -285,13 +285,16 @@ func (s ticketRefByWaitTime) Swap(i, j int) {
 }
 
 func (s *ticketStore) addTicketRef(r ticketRef) {
-	bucket := timeBucket(r.t.regTime[r.idx] / absTime(ticketTimeBucketLen))
 	topic := r.t.topics[r.idx]
-	s.tickets[topic].buckets[bucket] = append(s.tickets[topic].buckets[bucket], r)
+	t := s.tickets[topic]
+	if t.buckets == nil {
+		return
+	}
+	bucket := timeBucket(r.t.regTime[r.idx] / absTime(ticketTimeBucketLen))
+	t.buckets[bucket] = append(t.buckets[bucket], r)
 	r.t.refCnt++
 
 	min := monotonicTime() - absTime(collectFrequency)*maxCollectDebt
-	t := s.tickets[topic]
 	if t.nextLookup < min {
 		t.nextLookup = min
 	}
