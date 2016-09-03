@@ -26,6 +26,11 @@ func set(pic *image.NRGBA, x, y, c, v int) {
 
 type nodeStats []struct{ wpSum, wpCnt, wpXcnt, regCnt, regXcnt uint64 }
 
+type nodeInfo struct {
+	maxMR  int
+	topics map[string]struct{}
+}
+
 const (
 	regStatDiv  = 60
 	regStatYdiv = 30
@@ -79,6 +84,11 @@ func main() {
 
 	xs = maxTime / 10000
 	ys = len(nodes)
+	nodeIdx := make(map[uint64]int)
+	for i, v := range nodes {
+		nodeIdx[v] = i
+	}
+	nodeInfo := make([]nodeInfo, len(nodes))
 
 	for _, t := range topics {
 		t.nodes = make(uint64Slice, len(nodes))
@@ -140,8 +150,10 @@ func main() {
 			scanner.Scan()
 			time, _ := strconv.ParseInt(scanner.Text(), 10, 64)
 			scanner.Scan()
-			t := topics[scanner.Text()]
+			topic := scanner.Text()
+			t := topics[topic]
 			scanner.Scan()
+			prefix, _ := strconv.ParseUint(scanner.Text(), 16, 64)
 			scanner.Scan()
 			rad, _ := strconv.ParseInt(scanner.Text(), 10, 64)
 			radUint := uint64(rad) * ((^uint64(0)) / 1000000)
@@ -150,6 +162,15 @@ func main() {
 				return t.nodes[i] > radUint
 			})
 			set(t.pic, x, y, 0, 255)
+			ni := nodeInfo[nodeIdx[prefix]]
+			if int(rad) > ni.maxMR {
+				ni.maxMR = int(rad)
+				if ni.topics == nil {
+					ni.topics = make(map[string]struct{})
+				}
+				ni.topics[topic] = struct{}{}
+			}
+			nodeInfo[nodeIdx[prefix]] = ni
 		}
 		if w == "*W" {
 			scanner.Scan()
@@ -273,6 +294,14 @@ func main() {
 			w.Flush()
 			f.Close()
 		}
+	}
+
+	for i, ni := range nodeInfo {
+		fmt.Printf("%d %016x  maxMR = %d  ", i, nodes[i], ni.maxMR)
+		for t, _ := range ni.topics {
+			fmt.Printf(" %s", t)
+		}
+		fmt.Println()
 	}
 }
 
