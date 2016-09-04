@@ -104,10 +104,17 @@ func NewLightChain(odr OdrBackend, config *core.ChainConfig, pow pow.PoW, mux *e
 
 	if bc.genesisBlock.Hash() == (common.Hash{212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69, 161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163}) {
 		// add trusted CHT
-		WriteTrustedCht(bc.chainDb, TrustedCht{
-			Number: 459,
-			Root:   common.HexToHash("9f14334360d1e48ed49a3d6b0b9e38a1706732cebc6a9c47bdde8d9824cd6d6b"),
-		})
+		if config.DAOForkSupport {
+			WriteTrustedCht(bc.chainDb, TrustedCht{
+				Number: 523,
+				Root:   common.HexToHash("c9c3203ca7e58bf0ceaae50ed00c7ae234e7b3cc054aee086a1d0873f843df4e"),
+			})
+		} else {
+			WriteTrustedCht(bc.chainDb, TrustedCht{
+				Number: 523,
+				Root:   common.HexToHash("c035076523faf514038f619715de404a65398c51899b5dccca9c05b00bc79315"),
+			})
+		}
 		glog.V(logger.Info).Infoln("Added trusted CHT for mainnet")
 	} else {
 		if bc.genesisBlock.Hash() == (common.Hash{12, 215, 134, 162, 66, 93, 22, 241, 82, 198, 88, 49, 108, 66, 62, 108, 225, 24, 30, 21, 195, 41, 88, 38, 215, 201, 144, 76, 186, 156, 227, 3}) {
