@@ -306,19 +306,25 @@ func startNode(ctx *cli.Context, stack *node.Node) {
 
 	if ctx.GlobalBool(utils.LightModeFlag.Name) && !ctx.GlobalBool(utils.NoDefSrvFlag.Name) {
 		// add default light server; test phase only
-		var url string
+		addPeer := func(url string) {
+			node, err := discover.ParseNode(url)
+			if err == nil {
+				stack.Server().AddPeer(node)
+			}
+		}
+
 		if ctx.GlobalBool(utils.OpposeDAOFork.Name) {
-			url = "enode://7d048e6680c0bf95d6a008ec6a87a30ea7b4c103b4ac1db9b893c64c124651ea3830b84b0802f3d24cf65a93b49fd7994bf831606b5f8fbb62af0b135473abff@40.118.3.223:30305"
+			// Classic (Azure)
+			addPeer("enode://fc3d7b57e5d317946bf421411632ec98d5ffcbf94548cd7bc10088e4fef176670f8ec70280d301a9d0b22fe498203f62b323da15b3acc18b02a1fee2a06b7d3f@40.118.3.223:30305")
 		} else {
-			url = "enode://201aa667e0b75462c8837708dbc3c91b43f84d233efda2f4e2c5ae0ea237d646db656375b394fb35d841cf8ea2814e3629af4821d3b0204508f7eb8cea8e7f31@40.118.3.223:30303"
+			// MainNet (Azure)
+			addPeer("enode://feaf206a308a669a789be45f4dadcb351246051727f12415ad69e44f8080daf0569c10fe1d9944d245dd1f3e1c89cedda8ce03d7e3d5ed8975a35cad4b4f7ec1@40.118.3.223:30303")
+			// MainNet (John Gerryts @phonikg)
+			addPeer("enode://3cbd26f73513af0e789c55ea9efa6d259be2d5f6882bdb52740e21e01379287b652642a87207f1bc07c64aae3ab51ab566dede7588d6064022d40577fe59d5de@50.112.52.169:30300")
 		}
 		if ctx.GlobalBool(utils.TestNetFlag.Name) {
-			url = "enode://2737bebb1e70cf682553c974d9551b74a917cb4f61292150abc10d2c122c8d369c82cb2b71ff107120ea2547419d2d9e998c637d45a6ff57bb01e83cfc1d5115@40.118.3.223:30304"
-			//url = "enode://2737bebb1e70cf682553c974d9551b74a917cb4f61292150abc10d2c122c8d369c82cb2b71ff107120ea2547419d2d9e998c637d45a6ff57bb01e83cfc1d5115@[::]:30303"
-		}
-		node, err := discover.ParseNode(url)
-		if err == nil {
-			stack.Server().AddPeer(node)
+			// TestNet (John Gerryts @phonikg)
+			addPeer("enode://7d00e8c27b2328e2008a9fc86e81afba22681fdac675b99805fa62cc29ee8a2a9d83f916f7661da6a6bd78155a430bb2bd7cec733ca9e700e236ec9c71d97e24@50.112.52.169:30301")
 		}
 	}
 
