@@ -352,7 +352,7 @@ func (c *Console) Interactive() {
 					}
 				}
 				done := make(chan struct{})
-				ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
+				ctx, _ := context.WithTimeout(context.Background(), time.Second*40)
 				c.setContext(ctx)
 				c.Evaluate(input)
 				c.setContext(nil)
