@@ -157,7 +157,7 @@ var (
 		Usage: "Enable light client mode",
 	}
 	NoDefSrvFlag = cli.BoolFlag{
-		Name: "nodefsrv",
+		Name:  "nodefsrv",
 		Usage: "Don't add default LES server (only for test version)",
 	}
 	LightServFlag = cli.IntFlag{
@@ -703,7 +703,6 @@ func RegisterEthService(ctx *cli.Context, stack *node.Node, extra []byte) {
 		NoDefSrv:                ctx.GlobalBool(NoDefSrvFlag.Name),
 		LightServ:               ctx.GlobalInt(LightServFlag.Name),
 		LightPeers:              ctx.GlobalInt(LightPeersFlag.Name),
-		BlockChainVersion:       ctx.GlobalInt(BlockchainVersionFlag.Name),
 		DatabaseCache:           ctx.GlobalInt(CacheFlag.Name),
 		DatabaseHandles:         MakeDatabaseHandles(),
 		NetworkId:               ctx.GlobalInt(NetworkIdFlag.Name),

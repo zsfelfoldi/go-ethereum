@@ -179,7 +179,7 @@ type testTxPool struct {
 
 // AddTransactions appends a batch of transactions to the pool, and notifies any
 // listeners if the addition channel is non nil
-func (p *testTxPool) AddTransactions(txs []*types.Transaction) {
+func (p *testTxPool) AddBatch(txs []*types.Transaction) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
