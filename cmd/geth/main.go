@@ -312,7 +312,7 @@ func startNode(ctx *cli.Context, stack *node.Node) {
 
 		if ctx.GlobalBool(utils.TestNetFlag.Name) {
 			// TestNet (John Gerryts @phonikg)
-			addPeer("enode://7d00e8c27b2328e2008a9fc86e81afba22681fdac675b99805fa62cc29ee8a2a9d83f916f7661da6a6bd78155a430bb2bd7cec733ca9e700e236ec9c71d97e24@50.112.52.169:30301")
+			addPeer("enode://d72af45ba9b60851a8077a4eb07700484b585e5f2e55024e0c93b7ec7d114f2e3fa3c8f3a3358f89da00a609f5a062415deb857ada863b8cdad02b0b0bc90da3@50.112.52.169:30301")
 		} else {
 			if ctx.GlobalBool(utils.OpposeDAOFork.Name) {
 				// Classic (Azure)
@@ -321,7 +321,7 @@ func startNode(ctx *cli.Context, stack *node.Node) {
 				// MainNet (Azure)
 				addPeer("enode://feaf206a308a669a789be45f4dadcb351246051727f12415ad69e44f8080daf0569c10fe1d9944d245dd1f3e1c89cedda8ce03d7e3d5ed8975a35cad4b4f7ec1@40.118.3.223:30303")
 				// MainNet (John Gerryts @phonikg)
-				addPeer("enode://3cbd26f73513af0e789c55ea9efa6d259be2d5f6882bdb52740e21e01379287b652642a87207f1bc07c64aae3ab51ab566dede7588d6064022d40577fe59d5de@50.112.52.169:30300")
+				addPeer("enode://02b80f0d47c7c157c069d0584067a284cdf188b9267666234b872e70d936a803ad20ea27f78ef1fd6425ae4b7108907e1875adbca96b038004114ac4d1e529a3@50.112.52.169:30300")
 			}
 		}
 	}
