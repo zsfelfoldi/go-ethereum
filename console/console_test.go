@@ -32,6 +32,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/internal/jsre"
 	"github.com/ethereum/go-ethereum/node"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 const (
@@ -111,10 +112,14 @@ func newTester(t *testing.T, confOverride func(*eth.Config)) *tester {
 	if err = stack.Start(); err != nil {
 		t.Fatalf("failed to start test stack: %v", err)
 	}
-	client, err := stack.Attach()
-	if err != nil {
-		t.Fatalf("failed to attach to node: %v", err)
-	}
+	client := rpc.NewClientRestartWrapper(func() *rpc.Client {
+		client, err := stack.Attach()
+		if err != nil {
+			t.Fatalf("failed to attach to node: %v", err)
+		}
+		return client
+	})
+
 	prompter := &hookedPrompter{scheduler: make(chan string)}
 	printer := new(bytes.Buffer)
 
