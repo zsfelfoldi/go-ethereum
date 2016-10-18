@@ -49,7 +49,7 @@ const testTopic = "foo"
 
 const (
 	printDebugLogs   = false
-	printTestImgLogs = true
+	printTestImgLogs = false
 )
 
 func debugLog(s string) {
