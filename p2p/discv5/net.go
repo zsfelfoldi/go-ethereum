@@ -58,6 +58,16 @@ func debugLog(s string) {
 	}
 }
 
+// BootNodes are the enode URLs of the P2P bootstrap nodes for the experimental RLPx v5 "Topic Discovery" network
+// warning: local bootnodes for testing!!!
+var BootNodes = []*Node{
+	MustParseNode("enode://fcb7ff7a1437465711900bebc8831b6814d9f3176f3745e8549808af897ede4b51f8e32b52caf1a1c4aee90dc14f2aaeebf8b099f5d19245fd00ab160f59b9c8@127.0.0.1:30001"),
+	MustParseNode("enode://9ec7e836e3eff84c5f51b169d8bd26a90e9c0a1c5a5b01125722fbcc7808803451fdde5c31e0fbf32fa730e11bef3a4ec35c751bd896a3db601155c1313d48a2@127.0.0.1:30002"),
+	MustParseNode("enode://1949788c417a52653b438a33a2b08a70dc495b24c83d0ae533be13b1c7da0af0159bd0b50823fee4a1bc8f24f81e23435fe167df972256968d881f98f1eeb5de@127.0.0.1:30003"),
+	MustParseNode("enode://2a09e932145093688ce0fe885256dfac432402a5546c5b467afe988e205bbaf1a5793f4b625638ba5ba214549965aaacf4881201a82f92bfbaf37e40e7fe7132@127.0.0.1:30004"),
+	MustParseNode("enode://fc3d5a1696c48e02a45a78a6e94554f4292265de3c7461dd2b27ec664b09a23613c6f6be9fe7ab18f4788390abd592c272d549c583af6e92b5b8254f335d71bc@127.0.0.1:30005"),
+}
+
 // Network manages the table and all protocol interaction.
 type Network struct {
 	db   *nodeDB // database of known nodes
