@@ -288,7 +288,7 @@ func (tn *preminedTestnet) sendPing(to *Node, addr *net.UDPAddr, topics []Topic)
 	return []byte{1}
 }
 
-func (tn *preminedTestnet) send(to *Node, ptype nodeEvent, data interface{}) {
+func (tn *preminedTestnet) send(to *Node, ptype nodeEvent, data interface{}) (hash []byte) {
 	switch ptype {
 	case pingPacket:
 		injectResponse(tn.net, to, pongPacket, &pong{ReplyTok: []byte{1}})
@@ -309,6 +309,7 @@ func (tn *preminedTestnet) send(to *Node, ptype nodeEvent, data interface{}) {
 	default:
 		panic("send(" + ptype.String() + ")")
 	}
+	return []byte{2}
 }
 
 func (tn *preminedTestnet) sendNeighbours(to *Node, nodes []*Node) {

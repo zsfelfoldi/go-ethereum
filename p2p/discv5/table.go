@@ -64,6 +64,44 @@ func newTable(ourID NodeID, ourAddr *net.UDPAddr) *Table {
 	return tab
 }
 
+func (tab *Table) chooseBucketFillTarget() common.Hash {
+	bucketCount := nBuckets
+	for bucketCount > 0 && len(tab.buckets[nBuckets-bucketCount].entries) == 0 {
+		bucketCount--
+	}
+	var bucket int
+	for {
+		// select a target hash that could go into a certain randomly selected bucket
+		// buckets are chosen with an even chance out of the existing ones that contain
+		// less that bucketSize entries, plus a potential new one beyond these
+		bucket = nBuckets - 1 - int(randUint(uint32(bucketCount+1)))
+		if bucket == bucketCount || len(tab.buckets[bucket].entries) < bucketSize {
+			break
+		}
+	}
+
+	// calculate target that has the desired log distance from our own address hash
+	target := tab.self.sha.Bytes()
+	prefix := binary.BigEndian.Uint64(target[0:8])
+	shift := uint(nBuckets - 1 - bucket)
+	if bucket != bucketCount {
+		shift++
+	}
+	var b [8]byte
+	rand.Read(b[:])
+	rnd := binary.BigEndian.Uint64(b[:])
+	rndMask := (^uint64(0)) >> shift
+	addrMask := ^rndMask
+	xorMask := uint64(0)
+	if bucket != bucketCount {
+		xorMask = rndMask + 1
+	}
+	prefix = (prefix&addrMask ^ xorMask) | (rnd & rndMask)
+	binary.BigEndian.PutUint64(target[0:8], prefix)
+	rand.Read(target[8:])
+	return common.BytesToHash(target)
+}
+
 // readRandomNodes fills the given slice with random nodes from the
 // table. It will not write the same node more than once. The nodes in
 // the slice are copies and can be modified by the caller.
@@ -107,6 +145,15 @@ func randUint(max uint32) uint32 {
 	var b [4]byte
 	rand.Read(b[:])
 	return binary.BigEndian.Uint32(b[:]) % max
+}
+
+func randUint64n(max uint64) uint64 {
+	if max == 0 {
+		return 0
+	}
+	var b [8]byte
+	rand.Read(b[:])
+	return binary.BigEndian.Uint64(b[:]) % max
 }
 
 // closest returns the n nodes in the table that are closest to the

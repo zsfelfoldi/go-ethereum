@@ -47,6 +47,7 @@ const (
 	adjustCooldownStart = 0.1
 	adjustCooldownStep  = 0.01
 	radiusExtendRatio   = 1.5
+	topicQueryTimeout   = time.Second * 5
 )
 
 // absTime represents absolute monotonic time in nanoseconds.
@@ -141,6 +142,23 @@ type ticketStore struct {
 	minRadCnt, minRadPtr uint64
 	minRadius, minRadSum uint64
 	lastMinRads          [minRadAverage]uint64
+
+	searchTopicMap        map[Topic]searchTopic
+	searchTopicList       []Topic
+	searchTopicPtr        int
+	nextTopicQueryCleanup absTime
+	queriesSent           map[common.Hash]sentQuery
+}
+
+type searchTopic struct {
+	foundChn chan<- string
+	listIdx  int
+}
+
+type sentQuery struct {
+	sent  absTime
+	node  *Node
+	topic Topic
 }
 
 type topicTickets struct {
@@ -150,16 +168,17 @@ type topicTickets struct {
 
 func newTicketStore() *ticketStore {
 	return &ticketStore{
-		radius:      make(map[Topic]*topicRadius),
-		tickets:     make(map[Topic]topicTickets),
-		nodes:       make(map[*Node]*ticket),
-		nodeLastReq: make(map[*Node]reqInfo),
+		radius:         make(map[Topic]*topicRadius),
+		tickets:        make(map[Topic]topicTickets),
+		nodes:          make(map[*Node]*ticket),
+		nodeLastReq:    make(map[*Node]reqInfo),
+		searchTopicMap: make(map[Topic]searchTopic),
+		queriesSent:    make(map[common.Hash]sentQuery),
 	}
 }
 
 // addTopic starts tracking a topic. If register is true,
 // the local node will register the topic and tickets will be collected.
-// It can be called even
 func (s *ticketStore) addTopic(t Topic, register bool) {
 	debugLog(fmt.Sprintf(" addTopic(%v, %v)", t, register))
 	if s.radius[t] == nil {
@@ -167,6 +186,27 @@ func (s *ticketStore) addTopic(t Topic, register bool) {
 	}
 	if register && s.tickets[t].buckets == nil {
 		s.tickets[t] = topicTickets{buckets: make(map[timeBucket][]ticketRef)}
+	}
+}
+
+func (s *ticketStore) addSearchTopic(t Topic, foundChn chan<- string) {
+	s.addTopic(t, false)
+	if s.searchTopicMap[t].foundChn == nil {
+		s.searchTopicList = append(s.searchTopicList, t)
+		s.searchTopicMap[t] = searchTopic{foundChn: foundChn, listIdx: len(s.searchTopicList) - 1}
+	}
+}
+
+func (s *ticketStore) removeSearchTopic(t Topic) {
+	if st := s.searchTopicMap[t]; st.foundChn != nil {
+		lastIdx := len(s.searchTopicList) - 1
+		lastTopic := s.searchTopicList[lastIdx]
+		s.searchTopicList[st.listIdx] = lastTopic
+		sl := s.searchTopicMap[lastTopic]
+		sl.listIdx = st.listIdx
+		s.searchTopicMap[lastTopic] = sl
+		s.searchTopicList = s.searchTopicList[:lastIdx]
+		delete(s.searchTopicMap, t)
 	}
 }
 
@@ -211,6 +251,20 @@ func (s *ticketStore) nextRegisterLookup() (lookup lookupInfo, delay time.Durati
 	}
 	debugLog(" null, 40s")
 	return lookupInfo{}, 40 * time.Second
+}
+
+func (s *ticketStore) nextSearchLookup() lookupInfo {
+	if len(s.searchTopicList) == 0 {
+		return lookupInfo{}
+	}
+	if s.searchTopicPtr >= len(s.searchTopicList) {
+		s.searchTopicPtr = 0
+	}
+	topic := s.searchTopicList[s.searchTopicPtr]
+	s.searchTopicPtr++
+	fmt.Println("nsl", topic, s.radius[topic].radius/(maxRadius/10000+1))
+	target := s.radius[topic].nextTarget()
+	return lookupInfo{target: target, topic: topic}
 }
 
 // iterRegTopics returns topics to register in arbitrary order.
@@ -464,18 +518,30 @@ func (s *ticketStore) registerLookupDone(lookup lookupInfo, nodes []*Node, ping 
 	}
 }
 
+func (s *ticketStore) searchLookupDone(lookup lookupInfo, nodes []*Node, query func(n *Node, topic Topic) []byte) {
+	if len(nodes) > 0 {
+		s.adjustMinRadius(lookup.target, nodes[0].sha)
+	}
+	for i, n := range nodes {
+		if i == 0 || (binary.BigEndian.Uint64(n.sha[:8])^binary.BigEndian.Uint64(lookup.target[:8])) < s.minRadius {
+			hash := query(n, lookup.topic)
+			s.addTopicQuery(common.BytesToHash(hash), n, lookup.topic)
+		}
+	}
+}
+
 func (s *ticketStore) adjustWithTicket(localTime absTime, t *ticket, idx int, onlyConverging bool) {
 	if onlyConverging {
 		for i, topic := range t.topics {
-			if tt, ok := s.radius[topic]; ok && !tt.converged && tt.isInRadius(t, true) {
-				tt.adjust(localTime, ticketRef{t, i}, s.minRadius, s.minRadCnt >= minRadStableAfter)
+			if tt, ok := s.radius[topic]; ok && !tt.converged && tt.isInRadius(t.node.sha, true) {
+				tt.adjustWithTicket(localTime, ticketRef{t, i}, s.minRadius, s.minRadCnt >= minRadStableAfter)
 				debugLog(fmt.Sprintf("adjust converging topic: %v, rad: %v, cd: %v, converged: %v", topic, float64(tt.radius)/maxRadius, tt.adjustCooldown, tt.converged))
 			}
 		}
 	} else {
 		topic := t.topics[idx]
-		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t, true) {
-			tt.adjust(localTime, ticketRef{t, idx}, s.minRadius, s.minRadCnt >= minRadStableAfter)
+		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t.node.sha, true) {
+			tt.adjustWithTicket(localTime, ticketRef{t, idx}, s.minRadius, s.minRadCnt >= minRadStableAfter)
 			debugLog(fmt.Sprintf("adjust topic: %v, rad: %v, cd: %v, converged: %v", topic, float64(tt.radius)/maxRadius, tt.adjustCooldown, tt.converged))
 		}
 	}
@@ -506,7 +572,7 @@ func (s *ticketStore) addTicket(localTime absTime, pingHash []byte, t *ticket) {
 	}
 
 	for topicIdx, topic := range t.topics {
-		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t, false) {
+		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t.node.sha, false) {
 			if _, ok := s.tickets[topic]; ok && tt.converged {
 				wait := t.regTime[topicIdx] - localTime
 				rnd := rand.ExpFloat64()
@@ -515,6 +581,7 @@ func (s *ticketStore) addTicket(localTime absTime, pingHash []byte, t *ticket) {
 				}
 				if float64(wait) < float64(keepTicketConst)+float64(keepTicketExp)*rnd {
 					// use the ticket to register this topic
+					//fmt.Println("addTicket", t.node.ID[:8], t.node.addr().String(), t.serial, t.pong)
 					s.addTicketRef(ticketRef{t, topicIdx})
 				}
 			}
@@ -534,6 +601,55 @@ func (s *ticketStore) getNodeTicket(node *Node) *ticket {
 		debugLog(fmt.Sprintf("getNodeTicket(%x) sn = %v", node.ID[:8], s.nodes[node].serial))
 	}
 	return s.nodes[node]
+}
+
+func (s *ticketStore) addTopicQuery(hash common.Hash, node *Node, topic Topic) {
+	now := monotonicTime()
+	s.queriesSent[hash] = sentQuery{sent: now, node: node, topic: topic}
+	s.cleanupTopicQueries(now)
+}
+
+func (s *ticketStore) cleanupTopicQueries(now absTime) {
+	if s.nextTopicQueryCleanup > now {
+		return
+	}
+	exp := now - absTime(topicQueryTimeout)
+	for h, q := range s.queriesSent {
+		if q.sent < exp {
+			delete(s.queriesSent, h)
+		}
+	}
+	s.nextTopicQueryCleanup = now + absTime(topicQueryTimeout)
+}
+
+func (s *ticketStore) gotTopicNodes(from *Node, hash common.Hash, nodes []rpcNode) (timeout bool) {
+	now := monotonicTime()
+	//fmt.Println("got", from.addr().String(), hash, len(nodes))
+	q := s.queriesSent[hash]
+	if now > q.sent+absTime(topicQueryTimeout) || q.node != from {
+		//fmt.Println("timeout")
+		return true
+	}
+	adjust := float64(-1)
+	if len(nodes) > 0 {
+		adjust = 1
+	}
+	s.radius[q.topic].adjust(now, from.sha, adjust, s.minRadius, s.minRadCnt >= minRadStableAfter)
+	chn := s.searchTopicMap[q.topic].foundChn
+	if chn == nil {
+		//fmt.Println("no channel")
+		return false
+	}
+	for _, node := range nodes {
+		enode := NewNode(node.ID, node.IP, node.UDP, node.TCP).String()
+		fmt.Println("return result", enode)
+		select {
+		case chn <- enode:
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func (s *ticketStore) adjustMinRadius(target, found common.Hash) {
@@ -582,14 +698,14 @@ func newTopicRadius(t Topic) *topicRadius {
 	return &topicRadius{
 		topic:           t,
 		topicHashPrefix: topicHashPrefix,
-		radius:          maxRadius,
 		adjustCooldown:  adjustCooldownStart,
+		radius:          maxRadius,
 		converged:       false,
 	}
 }
 
-func (r *topicRadius) isInRadius(t *ticket, extRadius bool) bool {
-	nodePrefix := binary.BigEndian.Uint64(t.node.sha[0:8])
+func (r *topicRadius) isInRadius(addrHash common.Hash, extRadius bool) bool {
+	nodePrefix := binary.BigEndian.Uint64(addrHash[0:8])
 	dist := nodePrefix ^ r.topicHashPrefix
 	if extRadius {
 		return float64(dist) < float64(r.radius)*radiusExtendRatio
@@ -597,12 +713,12 @@ func (r *topicRadius) isInRadius(t *ticket, extRadius bool) bool {
 	return dist < r.radius
 }
 
-func randUint64n(n uint64) uint64 { // don't care about lowest bit, 63 bit randomness is more than enough
+/*func randUint64n(n uint64) uint64 { // don't care about lowest bit, 63 bit randomness is more than enough
 	if n < 4 {
 		return 0
 	}
 	return uint64(rand.Int63n(int64(n/2))) * 2
-}
+}*/
 
 func (r *topicRadius) nextTarget() common.Hash {
 	var rnd uint64
@@ -617,6 +733,7 @@ func (r *topicRadius) nextTarget() common.Hash {
 			extRadius = uint64(e)
 		}
 		rnd = r.radius + randUint64n(extRadius-r.radius)
+		fmt.Println("rnd", rnd)
 	}
 	prefix := r.topicHashPrefix ^ rnd
 	var target common.Hash
@@ -624,21 +741,7 @@ func (r *topicRadius) nextTarget() common.Hash {
 	return target
 }
 
-func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64, minRadStable bool) {
-	var balanceStep, stepSign float64
-	if r.isInRadius(t.t, false) {
-		balanceStep = radiusExtendRatio - 1
-		stepSign = 1
-	} else {
-		balanceStep = -1
-		stepSign = -1
-	}
-
-	if r.intExtBalance*stepSign > 3 {
-		return
-	}
-	r.intExtBalance += balanceStep
-
+func (r *topicRadius) adjustWithTicket(localTime absTime, t ticketRef, minRadius uint64, minRadStable bool) {
 	wait := t.t.regTime[t.idx] - t.t.issueTime // localTime
 	adjust := (float64(wait)/float64(targetWaitTime) - 1) * 2
 	if adjust > 1 {
@@ -653,6 +756,23 @@ func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64, m
 	} else {
 		adjust = -1
 	}*/
+	r.adjust(localTime, t.t.node.sha, adjust, minRadius, minRadStable)
+}
+
+func (r *topicRadius) adjust(localTime absTime, addrHash common.Hash, adjust float64, minRadius uint64, minRadStable bool) {
+	var balanceStep, stepSign float64
+	if r.isInRadius(addrHash, false) {
+		balanceStep = radiusExtendRatio - 1
+		stepSign = 1
+	} else {
+		balanceStep = -1
+		stepSign = -1
+	}
+
+	if r.intExtBalance*stepSign > 3 {
+		return
+	}
+	r.intExtBalance += balanceStep
 
 	if r.converged {
 		adjust *= adjustRatio
@@ -678,7 +798,7 @@ func (r *topicRadius) adjust(localTime absTime, t ticketRef, minRadius uint64, m
 		r.adjustCooldown *= (1 - adjustCooldownStep)
 		if r.adjustCooldown <= adjustRatio {
 			r.converged = true
+			//fmt.Println("converged")
 		}
 	}
-
 }

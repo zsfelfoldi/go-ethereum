@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 )
 
 var xs, ys, maxTime int
+var minAbsTime, maxAbsTime int64
 
 func set(pic *image.NRGBA, x, y, c, v int) {
 	if v > 255 {
@@ -58,6 +60,7 @@ func main() {
 	f, _ := os.Open(inputFile)
 	scanner := bufio.NewScanner(f)
 	scanner.Split(bufio.ScanWords)
+	minAbsTime = math.MaxInt64
 	for scanner.Scan() {
 		w := scanner.Text()
 		if w == "*N" {
@@ -68,8 +71,11 @@ func main() {
 		if w == "*R" {
 			scanner.Scan()
 			time, _ := strconv.ParseInt(scanner.Text(), 10, 64)
-			if int(time) > maxTime {
-				maxTime = int(time)
+			if time > maxAbsTime {
+				maxAbsTime = time
+			}
+			if time < minAbsTime {
+				minAbsTime = time
 			}
 			scanner.Scan()
 			topic := scanner.Text()
@@ -82,6 +88,7 @@ func main() {
 	}
 	f.Close()
 
+	maxTime = int(maxAbsTime - minAbsTime)
 	xs = maxTime / 10000
 	ys = len(nodes)
 	nodeIdx := make(map[uint64]int)
@@ -130,6 +137,7 @@ func main() {
 		if w == "*R" {
 			scanner.Scan()
 			time, _ := strconv.ParseInt(scanner.Text(), 10, 64)
+			time -= minAbsTime
 			scanner.Scan()
 			t := topics[scanner.Text()]
 			scanner.Scan()
@@ -149,6 +157,7 @@ func main() {
 		if w == "*MR" {
 			scanner.Scan()
 			time, _ := strconv.ParseInt(scanner.Text(), 10, 64)
+			time -= minAbsTime
 			scanner.Scan()
 			topic := scanner.Text()
 			t := topics[topic]
@@ -175,6 +184,7 @@ func main() {
 		if w == "*W" {
 			scanner.Scan()
 			time, _ := strconv.ParseInt(scanner.Text(), 10, 64)
+			time -= minAbsTime
 			scanner.Scan()
 			t := topics[scanner.Text()]
 			scanner.Scan()
@@ -206,6 +216,7 @@ func main() {
 		if w == "*+" {
 			scanner.Scan()
 			time, _ := strconv.ParseInt(scanner.Text(), 10, 64)
+			time -= minAbsTime
 			scanner.Scan()
 			t := topics[scanner.Text()]
 			scanner.Scan()

@@ -49,7 +49,7 @@ const testTopic = "foo"
 
 const (
 	printDebugLogs   = false
-	printTestImgLogs = false
+	printTestImgLogs = true
 )
 
 func debugLog(s string) {
@@ -83,6 +83,8 @@ type Network struct {
 	tableOpReq       chan func()
 	tableOpResp      chan struct{}
 	topicRegisterReq chan topicRegisterReq
+	topicSearchReq   chan topicSearchReq
+	bucketFillChn    chan chan struct{}
 
 	// State of the main loop.
 	tab           *Table
@@ -111,7 +113,7 @@ type transport interface {
 	sendTopicRegister(remote *Node, topics []Topic, topicIdx int, pong []byte)
 	sendTopicNodes(remote *Node, queryHash common.Hash, nodes []*Node)
 
-	send(remote *Node, ptype nodeEvent, p interface{})
+	send(remote *Node, ptype nodeEvent, p interface{}) (hash []byte)
 
 	localAddr() *net.UDPAddr
 	Close()
@@ -127,6 +129,11 @@ type findnodeQuery struct {
 type topicRegisterReq struct {
 	add   bool
 	topic Topic
+}
+
+type topicSearchReq struct {
+	topic Topic
+	found chan<- string
 }
 
 type timeoutEvent struct {
@@ -163,6 +170,8 @@ func newNetwork(conn transport, ourPubkey ecdsa.PublicKey, natm nat.Interface, d
 		tableOpResp:      make(chan struct{}),
 		queryReq:         make(chan *findnodeQuery),
 		topicRegisterReq: make(chan topicRegisterReq),
+		topicSearchReq:   make(chan topicSearchReq),
+		bucketFillChn:    make(chan chan struct{}, 1),
 		nodes:            make(map[NodeID]*Node),
 	}
 	go net.loop()
@@ -290,6 +299,23 @@ func (net *Network) RegisterTopic(topic Topic, stop <-chan struct{}) {
 	}
 }
 
+func (net *Network) SearchTopic(topic Topic, stop <-chan struct{}, found chan<- string) {
+	select {
+	case net.topicSearchReq <- topicSearchReq{topic, found}:
+		fmt.Println("sss")
+	case <-net.closed:
+		return
+	}
+	select {
+	case <-net.closed:
+	case <-stop:
+		select {
+		case net.topicSearchReq <- topicSearchReq{topic, nil}:
+		case <-net.closed:
+		}
+	}
+}
+
 func (net *Network) reqRefresh(nursery []*Node) <-chan struct{} {
 	select {
 	case net.refreshReq <- nursery:
@@ -360,12 +386,14 @@ func (net *Network) loop() {
 		}
 	}
 
-	// Tracking registration lookups.
+	// Tracking registration and search lookups.
 	var (
 		topicRegisterLookupTarget lookupInfo
 		topicRegisterLookupDone   chan []*Node
 		topicRegisterLookupTick   = time.NewTimer(0)
+		topicSearchLookupTarget   lookupInfo
 	)
+	topicSearchLookupDone := make(chan []*Node, 1)
 	<-topicRegisterLookupTick.C
 
 	statsDump := time.NewTicker(10 * time.Second)
@@ -474,7 +502,33 @@ loop:
 		case <-nextRegisterTime:
 			debugLog("<-nextRegisterTime")
 			net.ticketStore.ticketRegistered(*nextTicket)
+			//fmt.Println("sendTopicRegister", nextTicket.t.node.addr().String(), nextTicket.t.topics, nextTicket.idx, nextTicket.t.pong)
 			net.conn.sendTopicRegister(nextTicket.t.node, nextTicket.t.topics, nextTicket.idx, nextTicket.t.pong)
+
+		case req := <-net.topicSearchReq:
+			debugLog("<-net.topicSearchReq")
+			fmt.Println("tsr")
+			if req.found == nil {
+				net.ticketStore.removeSearchTopic(req.topic)
+				continue
+			}
+			net.ticketStore.addSearchTopic(req.topic, req.found)
+			if (topicSearchLookupTarget.target == common.Hash{}) {
+				fmt.Println("start lookups")
+				topicSearchLookupDone <- nil
+			}
+
+		case nodes := <-topicSearchLookupDone:
+			debugLog("<-topicSearchLookupDone")
+			fmt.Printf("lookup done %016x\n", topicSearchLookupTarget.target[:8])
+			net.ticketStore.searchLookupDone(topicSearchLookupTarget, nodes, func(n *Node, topic Topic) []byte {
+				return net.conn.send(n, topicQueryPacket, topicQuery{Topic: topic}) // TODO: set expiration
+			})
+			topicSearchLookupTarget = net.ticketStore.nextSearchLookup()
+			target := topicSearchLookupTarget.target
+			if (target != common.Hash{}) {
+				go func() { topicSearchLookupDone <- net.lookup(target, false) }()
+			}
 
 		case <-statsDump.C:
 			debugLog("<-statsDump.C")
@@ -514,6 +568,9 @@ loop:
 				refreshDone = make(chan struct{})
 				net.refresh(refreshDone)
 			}
+		case doneChn := <-net.bucketFillChn:
+			debugLog("bucketFill")
+			net.bucketFill(doneChn)
 		case newNursery := <-net.refreshReq:
 			debugLog("<-net.refreshReq")
 			if newNursery != nil {
@@ -528,7 +585,6 @@ loop:
 			debugLog("<-net.refreshDone")
 			refreshDone = nil
 		}
-		debugLog("3")
 	}
 	debugLog("loop stopped")
 
@@ -589,6 +645,24 @@ func (net *Network) refresh(done chan<- struct{}) {
 		net.Lookup(net.tab.self.ID)
 		close(done)
 	}()
+}
+
+func (net *Network) bucketFill(done chan<- struct{}) {
+	target := net.tab.chooseBucketFillTarget()
+	go func() {
+		net.lookup(target, false)
+		close(done)
+	}()
+}
+
+func (net *Network) BucketFill() {
+	done := make(chan struct{})
+	select {
+	case net.bucketFillChn <- done:
+		<-done
+	case <-net.closed:
+		close(done)
+	}
 }
 
 // Node Interning.
@@ -918,7 +992,7 @@ func (net *Network) handle(n *Node, ev nodeEvent, pkt *ingressPacket) error {
 func (net *Network) checkPacket(n *Node, ev nodeEvent, pkt *ingressPacket) error {
 	// Replay prevention checks.
 	switch ev {
-	case pingPacket, findnodePacket, neighborsPacket:
+	case pingPacket, findnodeHashPacket, neighborsPacket:
 		// TODO: check date is > last date seen
 		// TODO: check ping version
 	case pongPacket:
@@ -974,12 +1048,13 @@ func (net *Network) ping(n *Node, addr *net.UDPAddr) {
 }
 
 func (net *Network) handlePing(n *Node, pkt *ingressPacket) {
+	debugLog(fmt.Sprintf("handlePing(node = %x)", n.ID[:8]))
 	ping := pkt.data.(*ping)
 	n.TCP = ping.From.TCP
 	t := net.topictab.getTicket(n, ping.Topics)
 
 	pong := &pong{
-		To:         makeEndpoint(n.addr(), 0), // TODO: maybe use known TCP port from DB
+		To:         makeEndpoint(n.addr(), n.TCP), // TODO: maybe use known TCP port from DB
 		ReplyTok:   pkt.hash,
 		Expiration: uint64(time.Now().Add(expiration).Unix()),
 	}
@@ -1039,30 +1114,27 @@ func (net *Network) handleQueryEvent(n *Node, ev nodeEvent, pkt *ingressPacket) 
 			//fmt.Println(err)
 			return n.state, fmt.Errorf("bad waiting ticket: %v", err)
 		}
-		net.topictab.useTicket(n, pong.TicketSerial, regdata.Topics, regdata.Idx, pong.Expiration, pong.WaitPeriods)
+		net.topictab.useTicket(n, pong.TicketSerial, regdata.Topics, int(regdata.Idx), pong.Expiration, pong.WaitPeriods)
 		return n.state, nil
 	case topicQueryPacket:
+		// TODO: handle expiration
 		results := net.topictab.getEntries(pkt.data.(*topicQuery).Topic)
 		if len(results) > 10 {
 			results = results[:10]
 		}
 		var hash common.Hash
 		copy(hash[:], pkt.hash)
+		fmt.Println("tqp", len(results))
 		net.conn.sendTopicNodes(n, hash, results)
 		return n.state, nil
 	case topicNodesPacket:
-		// if n.pendingTopicNodes != nil {
-		// 	n.pendingNeighbours.reply <- nil
-		// 	n.pendingNeighbours = nil
-		// }
-		// n.queryTimeouts++
-		// if n.queryTimeouts > maxFindnodeFailures && n.state == known {
-		// 	return contested, errors.New("too many timeouts")
-		// }
-		//
-		// if n.pendingTopicNodes != nil {
-		//
-		// }
+		p := pkt.data.(*topicNodes)
+		if net.ticketStore.gotTopicNodes(n, p.Echo, p.Nodes) {
+			n.queryTimeouts++
+			if n.queryTimeouts > maxFindnodeFailures && n.state == known {
+				return contested, errors.New("too many timeouts")
+			}
+		}
 		return n.state, nil
 
 	default:
@@ -1074,22 +1146,28 @@ func (net *Network) checkTopicRegister(data *topicRegister) (*pong, error) {
 	var pongpkt ingressPacket
 	//fmt.Println("got", data.Topics, data.Pong)
 	if err := decodePacket(data.Pong, &pongpkt); err != nil {
+		//fmt.Println(err)
 		return nil, err
 	}
 	if pongpkt.ev != pongPacket {
+		//fmt.Println("is not pong packet")
 		return nil, errors.New("is not pong packet")
 	}
 	if pongpkt.remoteID != net.tab.self.ID {
+		//fmt.Println("not signed by us")
 		return nil, errors.New("not signed by us")
 	}
 	// check that we previously authorised all topics
 	// that the other side is trying to register.
 	if rlpHash(data.Topics) != pongpkt.data.(*pong).TopicHash {
+		//fmt.Println("topic hash mismatch", rlpHash(data.Topics), pongpkt.data.(*pong).TopicHash)
 		return nil, errors.New("topic hash mismatch")
 	}
-	if data.Idx < 0 || data.Idx >= len(data.Topics) {
+	if data.Idx < 0 || int(data.Idx) >= len(data.Topics) {
+		//fmt.Println("topic index out of range")
 		return nil, errors.New("topic index out of range")
 	}
+	//fmt.Println("check OK")
 	return pongpkt.data.(*pong), nil
 }
 

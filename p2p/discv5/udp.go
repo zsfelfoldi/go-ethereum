@@ -116,7 +116,7 @@ type (
 
 	topicRegister struct {
 		Topics []Topic
-		Idx    int
+		Idx    uint
 		Pong   []byte
 	}
 
@@ -258,7 +258,7 @@ func listenUDP(priv *ecdsa.PrivateKey, laddr string) (*udp, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &udp{conn: conn, priv: priv}, nil
+	return &udp{conn: conn, priv: priv, ourEndpoint: makeEndpoint(addr, uint16(addr.Port))}, nil
 }
 
 func (t *udp) localAddr() *net.UDPAddr {
@@ -269,15 +269,16 @@ func (t *udp) Close() {
 	t.conn.Close()
 }
 
-func (t *udp) send(remote *Node, ptype nodeEvent, data interface{}) {
-	t.sendPacket(remote.ID, remote.addr(), byte(ptype), data)
+func (t *udp) send(remote *Node, ptype nodeEvent, data interface{}) (hash []byte) {
+	hash, _ = t.sendPacket(remote.ID, remote.addr(), byte(ptype), data)
+	return hash
 }
 
 func (t *udp) sendPing(remote *Node, toaddr *net.UDPAddr, topics []Topic) (hash []byte) {
 	hash, _ = t.sendPacket(remote.ID, toaddr, byte(pingPacket), ping{
 		Version:    Version,
 		From:       t.ourEndpoint,
-		To:         makeEndpoint(toaddr, 0), // TODO: maybe use known TCP port from DB
+		To:         makeEndpoint(toaddr, uint16(toaddr.Port)), // TODO: maybe use known TCP port from DB
 		Expiration: uint64(time.Now().Add(expiration).Unix()),
 		Topics:     topics,
 	})
@@ -314,17 +315,21 @@ func (t *udp) sendFindnodeHash(remote *Node, target common.Hash) {
 func (t *udp) sendTopicRegister(remote *Node, topics []Topic, idx int, pong []byte) {
 	t.sendPacket(remote.ID, remote.addr(), byte(topicRegisterPacket), topicRegister{
 		Topics: topics,
-		Idx:    idx,
+		Idx:    uint(idx),
 		Pong:   pong,
 	})
 }
 
 func (t *udp) sendTopicNodes(remote *Node, queryHash common.Hash, nodes []*Node) {
 	p := topicNodes{Echo: queryHash}
+	if len(nodes) == 0 {
+		t.sendPacket(remote.ID, remote.addr(), byte(topicNodesPacket), p)
+		return
+	}
 	for i, result := range nodes {
 		p.Nodes = append(p.Nodes, nodeToRPC(result))
 		if len(p.Nodes) == maxTopicNodes || i == len(nodes)-1 {
-			t.sendPacket(remote.ID, remote.addr(), byte(neighborsPacket), p)
+			t.sendPacket(remote.ID, remote.addr(), byte(topicNodesPacket), p)
 			p.Nodes = p.Nodes[:0]
 		}
 	}
@@ -407,10 +412,12 @@ func (t *udp) handlePacket(from *net.UDPAddr, buf []byte) error {
 	return nil
 }
 
-func decodePacket(buf []byte, pkt *ingressPacket) error {
-	if len(buf) < headSize+1 {
+func decodePacket(buffer []byte, pkt *ingressPacket) error {
+	if len(buffer) < headSize+1 {
 		return errPacketTooSmall
 	}
+	buf := make([]byte, len(buffer))
+	copy(buf, buffer)
 	hash, sig, sigdata := buf[:macSize], buf[macSize:headSize], buf[headSize:]
 	shouldhash := crypto.Keccak256(buf[macSize:])
 	if !bytes.Equal(hash, shouldhash) {
