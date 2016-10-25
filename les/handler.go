@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/discover"
+	"github.com/ethereum/go-ethereum/p2p/discv5"
 	"github.com/ethereum/go-ethereum/pow"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -98,6 +99,9 @@ type ProtocolManager struct {
 	chainDb     ethdb.Database
 	odr         *LesOdr
 	server      *LesServer
+
+	topicDisc *discv5.Network
+	lesTopic  discv5.Topic
 
 	downloader *downloader.Downloader
 	fetcher    *lightFetcher
@@ -229,11 +233,21 @@ func (pm *ProtocolManager) removePeer(id string) {
 	}
 }
 
-func (pm *ProtocolManager) Start() {
+func (pm *ProtocolManager) Start(srvr *p2p.Server) {
+	pm.topicDisc = srvr.DiscV5
+	//	pm.lesTopic = discv5.Topic("LES@" + string(pm.blockchain.Genesis().Hash().Bytes()))
+	pm.lesTopic = discv5.Topic("LES") // + string(pm.blockchain.Genesis().Hash().Bytes()))
 	if pm.lightSync {
 		// start sync handler
 		go pm.syncer()
 	} else {
+		if pm.topicDisc != nil {
+			go func() {
+				fmt.Println("Starting topic register")
+				pm.topicDisc.RegisterTopic(pm.lesTopic, pm.quitSync)
+				fmt.Println("Stopped topic register")
+			}()
+		}
 		go func() {
 			for range pm.newPeerCh {
 			}

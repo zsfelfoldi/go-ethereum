@@ -151,10 +151,6 @@ var (
 		Name:  "light",
 		Usage: "Enable light client mode",
 	}
-	NoDefSrvFlag = cli.BoolFlag{
-		Name:  "nodefsrv",
-		Usage: "Don't add default LES server (only for test version)",
-	}
 	LightServFlag = cli.IntFlag{
 		Name:  "lightserv",
 		Usage: "Maximum percentage of time allowed for serving LES requests (0-90)",
@@ -659,8 +655,8 @@ func MakeNode(ctx *cli.Context, name, gitCommit string) *node.Node {
 		Name:              name,
 		Version:           vsn,
 		UserIdent:         makeNodeUserIdent(ctx),
-		NoDiscovery:       ctx.GlobalBool(NoDiscoverFlag.Name),
-		DiscoveryV5:       ctx.GlobalBool(DiscoveryV5Flag.Name),
+		NoDiscovery:       ctx.GlobalBool(NoDiscoverFlag.Name) || ctx.GlobalBool(LightModeFlag.Name),
+		DiscoveryV5:       ctx.GlobalBool(DiscoveryV5Flag.Name) || ctx.GlobalBool(LightModeFlag.Name) || ctx.GlobalBool(LightServFlag.Name),
 		BootstrapNodes:    MakeBootstrapNodes(ctx),
 		ListenAddr:        MakeListenAddress(ctx),
 		ListenAddrV5:      MakeListenAddressV5(ctx),
@@ -721,7 +717,6 @@ func RegisterEthService(ctx *cli.Context, stack *node.Node, extra []byte) {
 		ChainConfig:             MakeChainConfig(ctx, stack),
 		FastSync:                ctx.GlobalBool(FastSyncFlag.Name),
 		LightMode:               ctx.GlobalBool(LightModeFlag.Name),
-		NoDefSrv:                ctx.GlobalBool(NoDefSrvFlag.Name),
 		LightServ:               ctx.GlobalInt(LightServFlag.Name),
 		LightPeers:              ctx.GlobalInt(LightPeersFlag.Name),
 		MaxPeers:                ctx.GlobalInt(MaxPeersFlag.Name),
