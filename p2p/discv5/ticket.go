@@ -262,7 +262,6 @@ func (s *ticketStore) nextSearchLookup() lookupInfo {
 	}
 	topic := s.searchTopicList[s.searchTopicPtr]
 	s.searchTopicPtr++
-	fmt.Println("nsl", topic, s.radius[topic].radius/(maxRadius/10000+1))
 	target := s.radius[topic].nextTarget()
 	return lookupInfo{target: target, topic: topic}
 }
@@ -642,7 +641,6 @@ func (s *ticketStore) gotTopicNodes(from *Node, hash common.Hash, nodes []rpcNod
 	}
 	for _, node := range nodes {
 		enode := NewNode(node.ID, node.IP, node.UDP, node.TCP).String()
-		fmt.Println("return result", enode)
 		select {
 		case chn <- enode:
 		default:
@@ -733,7 +731,6 @@ func (r *topicRadius) nextTarget() common.Hash {
 			extRadius = uint64(e)
 		}
 		rnd = r.radius + randUint64n(extRadius-r.radius)
-		fmt.Println("rnd", rnd)
 	}
 	prefix := r.topicHashPrefix ^ rnd
 	var target common.Hash

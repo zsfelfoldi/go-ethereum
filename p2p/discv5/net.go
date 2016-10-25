@@ -302,7 +302,6 @@ func (net *Network) RegisterTopic(topic Topic, stop <-chan struct{}) {
 func (net *Network) SearchTopic(topic Topic, stop <-chan struct{}, found chan<- string) {
 	select {
 	case net.topicSearchReq <- topicSearchReq{topic, found}:
-		fmt.Println("sss")
 	case <-net.closed:
 		return
 	}
@@ -507,20 +506,17 @@ loop:
 
 		case req := <-net.topicSearchReq:
 			debugLog("<-net.topicSearchReq")
-			fmt.Println("tsr")
 			if req.found == nil {
 				net.ticketStore.removeSearchTopic(req.topic)
 				continue
 			}
 			net.ticketStore.addSearchTopic(req.topic, req.found)
 			if (topicSearchLookupTarget.target == common.Hash{}) {
-				fmt.Println("start lookups")
 				topicSearchLookupDone <- nil
 			}
 
 		case nodes := <-topicSearchLookupDone:
 			debugLog("<-topicSearchLookupDone")
-			fmt.Printf("lookup done %016x\n", topicSearchLookupTarget.target[:8])
 			net.ticketStore.searchLookupDone(topicSearchLookupTarget, nodes, func(n *Node, topic Topic) []byte {
 				return net.conn.send(n, topicQueryPacket, topicQuery{Topic: topic}) // TODO: set expiration
 			})
@@ -1124,7 +1120,6 @@ func (net *Network) handleQueryEvent(n *Node, ev nodeEvent, pkt *ingressPacket) 
 		}
 		var hash common.Hash
 		copy(hash[:], pkt.hash)
-		fmt.Println("tqp", len(results))
 		net.conn.sendTopicNodes(n, hash, results)
 		return n.state, nil
 	case topicNodesPacket:
@@ -1144,30 +1139,23 @@ func (net *Network) handleQueryEvent(n *Node, ev nodeEvent, pkt *ingressPacket) 
 
 func (net *Network) checkTopicRegister(data *topicRegister) (*pong, error) {
 	var pongpkt ingressPacket
-	//fmt.Println("got", data.Topics, data.Pong)
 	if err := decodePacket(data.Pong, &pongpkt); err != nil {
-		//fmt.Println(err)
 		return nil, err
 	}
 	if pongpkt.ev != pongPacket {
-		//fmt.Println("is not pong packet")
 		return nil, errors.New("is not pong packet")
 	}
 	if pongpkt.remoteID != net.tab.self.ID {
-		//fmt.Println("not signed by us")
 		return nil, errors.New("not signed by us")
 	}
 	// check that we previously authorised all topics
 	// that the other side is trying to register.
 	if rlpHash(data.Topics) != pongpkt.data.(*pong).TopicHash {
-		//fmt.Println("topic hash mismatch", rlpHash(data.Topics), pongpkt.data.(*pong).TopicHash)
 		return nil, errors.New("topic hash mismatch")
 	}
 	if data.Idx < 0 || int(data.Idx) >= len(data.Topics) {
-		//fmt.Println("topic index out of range")
 		return nil, errors.New("topic index out of range")
 	}
-	//fmt.Println("check OK")
 	return pongpkt.data.(*pong), nil
 }
 
