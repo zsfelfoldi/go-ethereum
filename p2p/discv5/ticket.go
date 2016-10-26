@@ -723,6 +723,7 @@ func (r *topicRadius) nextTarget() common.Hash {
 	if r.intExtBalance < 0 {
 		// select target from inner region
 		rnd = randUint64n(r.radius)
+		r.intExtBalance += radiusExtendRatio - 1
 	} else {
 		// select target from outer region
 		e := float64(r.radius) * radiusExtendRatio
@@ -731,6 +732,7 @@ func (r *topicRadius) nextTarget() common.Hash {
 			extRadius = uint64(e)
 		}
 		rnd = r.radius + randUint64n(extRadius-r.radius)
+		r.intExtBalance -= 1
 	}
 	prefix := r.topicHashPrefix ^ rnd
 	var target common.Hash
@@ -757,29 +759,11 @@ func (r *topicRadius) adjustWithTicket(localTime absTime, t ticketRef, minRadius
 }
 
 func (r *topicRadius) adjust(localTime absTime, addrHash common.Hash, adjust float64, minRadius uint64, minRadStable bool) {
-	var balanceStep, stepSign float64
-	if r.isInRadius(addrHash, false) {
-		balanceStep = radiusExtendRatio - 1
-		stepSign = 1
-	} else {
-		balanceStep = -1
-		stepSign = -1
-	}
-
-	if r.intExtBalance*stepSign > 3 {
-		return
-	}
-	r.intExtBalance += balanceStep
-
 	if r.converged {
 		adjust *= adjustRatio
 	} else {
 		adjust *= r.adjustCooldown
 	}
-
-	/*if adjust > 0 {
-		adjust *= radiusExtendRatio*2 - 1
-	}*/
 
 	radius := float64(r.radius) * (1 + adjust)
 	if radius > float64(maxRadius) {
