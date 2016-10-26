@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -233,12 +234,32 @@ func (pm *ProtocolManager) removePeer(id string) {
 	}
 }
 
+func (pm *ProtocolManager) findServers() {
+	enodes := make(chan string, 100)
+	stop := make(chan struct{})
+	go pm.topicDisc.SearchTopic(pm.lesTopic, stop, enodes)
+	go func() {
+		added := make(map[string]bool)
+		select {
+		case enode := <-enodes:
+			if !added[enode] {
+				fmt.Println("Found LES server:", enode)
+				added[enode] = true
+			}
+		case <-stop:
+		}
+	}()
+	time.Sleep(time.Minute)
+	close(stop)
+}
+
 func (pm *ProtocolManager) Start(srvr *p2p.Server) {
 	pm.topicDisc = srvr.DiscV5
 	//	pm.lesTopic = discv5.Topic("LES@" + string(pm.blockchain.Genesis().Hash().Bytes()))
 	pm.lesTopic = discv5.Topic("LES") // + string(pm.blockchain.Genesis().Hash().Bytes()))
 	if pm.lightSync {
 		// start sync handler
+		go pm.findServers()
 		go pm.syncer()
 	} else {
 		if pm.topicDisc != nil {

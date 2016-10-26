@@ -139,7 +139,6 @@ participating.
 		utils.LightPeersFlag,
 		utils.CacheFlag,
 		utils.LightKDFFlag,
-		utils.CacheFlag,
 		utils.TrieCacheGenFlag,
 		utils.JSpathFlag,
 		utils.ListenPortFlag,

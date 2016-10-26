@@ -656,7 +656,7 @@ func MakeNode(ctx *cli.Context, name, gitCommit string) *node.Node {
 		Version:           vsn,
 		UserIdent:         makeNodeUserIdent(ctx),
 		NoDiscovery:       ctx.GlobalBool(NoDiscoverFlag.Name) || ctx.GlobalBool(LightModeFlag.Name),
-		DiscoveryV5:       ctx.GlobalBool(DiscoveryV5Flag.Name) || ctx.GlobalBool(LightModeFlag.Name) || ctx.GlobalBool(LightServFlag.Name),
+		DiscoveryV5:       ctx.GlobalBool(DiscoveryV5Flag.Name) || ctx.GlobalBool(LightModeFlag.Name) || ctx.GlobalInt(LightServFlag.Name) > 0,
 		BootstrapNodes:    MakeBootstrapNodes(ctx),
 		ListenAddr:        MakeListenAddress(ctx),
 		ListenAddrV5:      MakeListenAddressV5(ctx),

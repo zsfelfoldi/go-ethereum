@@ -640,7 +640,9 @@ func (s *ticketStore) gotTopicNodes(from *Node, hash common.Hash, nodes []rpcNod
 		return false
 	}
 	for _, node := range nodes {
+		fmt.Println("found", node.UDP, node.TCP)
 		enode := NewNode(node.ID, node.IP, node.UDP, node.TCP).String()
+		//enode := NewNode(node.ID, node.IP, node.TCP, 0).String()
 		select {
 		case chn <- enode:
 		default:
