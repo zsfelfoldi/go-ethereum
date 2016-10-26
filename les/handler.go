@@ -103,6 +103,7 @@ type ProtocolManager struct {
 
 	topicDisc *discv5.Network
 	lesTopic  discv5.Topic
+	p2pServer *p2p.Server
 
 	downloader *downloader.Downloader
 	fetcher    *lightFetcher
@@ -245,6 +246,9 @@ func (pm *ProtocolManager) findServers() {
 			if !added[enode] {
 				fmt.Println("Found LES server:", enode)
 				added[enode] = true
+				if node, err := discover.ParseNode(enode); err == nil {
+					pm.p2pServer.AddPeer(node)
+				}
 			}
 		case <-stop:
 		}
@@ -254,9 +258,11 @@ func (pm *ProtocolManager) findServers() {
 }
 
 func (pm *ProtocolManager) Start(srvr *p2p.Server) {
+	pm.p2pServer = srvr
 	pm.topicDisc = srvr.DiscV5
 	//	pm.lesTopic = discv5.Topic("LES@" + string(pm.blockchain.Genesis().Hash().Bytes()))
-	pm.lesTopic = discv5.Topic("LES") // + string(pm.blockchain.Genesis().Hash().Bytes()))
+	pm.lesTopic = discv5.Topic("LES@" + common.Bytes2Hex(pm.blockchain.Genesis().Hash().Bytes()[0:8]))
+	// pm.lesTopic = discv5.Topic("LES") // + string(pm.blockchain.Genesis().Hash().Bytes()))
 	if pm.lightSync {
 		// start sync handler
 		go pm.findServers()
