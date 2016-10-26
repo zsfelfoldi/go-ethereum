@@ -118,7 +118,6 @@ var AppHelpFlagGroups = []flagGroup{
 		Flags: []cli.Flag{
 			utils.BootnodesFlag,
 			utils.ListenPortFlag,
-			utils.ListenPortV5Flag,
 			utils.MaxPeersFlag,
 			utils.MaxPendingPeersFlag,
 			utils.NATFlag,

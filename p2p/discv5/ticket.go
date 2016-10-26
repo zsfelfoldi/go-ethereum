@@ -640,9 +640,7 @@ func (s *ticketStore) gotTopicNodes(from *Node, hash common.Hash, nodes []rpcNod
 		return false
 	}
 	for _, node := range nodes {
-		fmt.Println("found", node.UDP, node.TCP)
-		enode := NewNode(node.ID, node.IP, node.UDP, node.TCP).String()
-		//enode := NewNode(node.ID, node.IP, node.TCP, 0).String()
+		enode := NewNode(node.ID, node.IP, node.UDP-1, node.TCP-1).String() // subtract one from port while discv5 is running in test mode on UDPport+1
 		select {
 		case chn <- enode:
 		default:

@@ -142,7 +142,6 @@ participating.
 		utils.TrieCacheGenFlag,
 		utils.JSpathFlag,
 		utils.ListenPortFlag,
-		utils.ListenPortV5Flag,
 		utils.MaxPeersFlag,
 		utils.MaxPendingPeersFlag,
 		utils.EtherbaseFlag,

@@ -347,11 +347,6 @@ var (
 		Usage: "Network listening port",
 		Value: 30303,
 	}
-	ListenPortV5Flag = cli.IntFlag{
-		Name:  "v5port",
-		Usage: "Experimental RLPx V5 (Topic Discovery) listening port",
-		Value: 30304,
-	}
 	BootnodesFlag = cli.StringFlag{
 		Name:  "bootnodes",
 		Usage: "Comma separated enode URLs for P2P discovery bootstrap",
@@ -522,7 +517,7 @@ func MakeListenAddress(ctx *cli.Context) string {
 }
 
 func MakeListenAddressV5(ctx *cli.Context) string {
-	return fmt.Sprintf(":%d", ctx.GlobalInt(ListenPortV5Flag.Name))
+	return fmt.Sprintf(":%d", ctx.GlobalInt(ListenPortFlag.Name)+1)
 }
 
 // MakeNAT creates a port mapper from set command line flags.
