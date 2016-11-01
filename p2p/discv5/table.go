@@ -139,7 +139,7 @@ func (tab *Table) readRandomNodes(buf []*Node) (n int) {
 }
 
 func randUint(max uint32) uint32 {
-	if max == 0 {
+	if max < 2 {
 		return 0
 	}
 	var b [4]byte
@@ -148,7 +148,7 @@ func randUint(max uint32) uint32 {
 }
 
 func randUint64n(max uint64) uint64 {
-	if max == 0 {
+	if max < 2 {
 		return 0
 	}
 	var b [8]byte
