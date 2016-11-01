@@ -142,7 +142,7 @@ type ticketStore struct {
 	searchTopicList       []Topic
 	searchTopicPtr        int
 	nextTopicQueryCleanup absTime
-	queriesSent           map[common.Hash]sentQuery
+	queriesSent           map[*Node]map[common.Hash]sentQuery
 }
 
 type searchTopic struct {
@@ -151,9 +151,8 @@ type searchTopic struct {
 }
 
 type sentQuery struct {
-	sent  absTime
-	node  *Node
-	topic Topic
+	sent   absTime
+	lookup lookupInfo
 }
 
 type topicTickets struct {
@@ -168,7 +167,7 @@ func newTicketStore() *ticketStore {
 		nodes:          make(map[*Node]*ticket),
 		nodeLastReq:    make(map[*Node]reqInfo),
 		searchTopicMap: make(map[Topic]searchTopic),
-		queriesSent:    make(map[common.Hash]sentQuery),
+		queriesSent:    make(map[*Node]map[common.Hash]sentQuery),
 	}
 }
 
@@ -511,9 +510,9 @@ func (s *ticketStore) registerLookupDone(lookup lookupInfo, nodes []*Node, ping 
 
 func (s *ticketStore) searchLookupDone(lookup lookupInfo, nodes []*Node, query func(n *Node, topic Topic) []byte) {
 	for i, n := range nodes {
-		if i == 0 || (binary.BigEndian.Uint64(n.sha[:8])^binary.BigEndian.Uint64(lookup.target[:8])) < s.minRadius {
+		if (i == 0 || (binary.BigEndian.Uint64(n.sha[:8])^binary.BigEndian.Uint64(lookup.target[:8])) < s.minRadius) && s.canQueryTopic(n, lookup.topic) {
 			hash := query(n, lookup.topic)
-			s.addTopicQuery(common.BytesToHash(hash), n, lookup.topic)
+			s.addTopicQuery(common.BytesToHash(hash), n, lookup)
 		}
 	}
 }
@@ -591,9 +590,27 @@ func (s *ticketStore) getNodeTicket(node *Node) *ticket {
 	return s.nodes[node]
 }
 
-func (s *ticketStore) addTopicQuery(hash common.Hash, node *Node, topic Topic) {
+func (s *ticketStore) canQueryTopic(node *Node, topic Topic) bool {
+	qq := s.queriesSent[node]
+	if qq != nil {
+		now := monotonicTime()
+		for _, sq := range qq {
+			if sq.lookup.topic == lookup.topic && sq.send > now-absTime(topicQueryResend) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (s *ticketStore) addTopicQuery(hash common.Hash, node *Node, lookup lookupInfo) {
 	now := monotonicTime()
-	s.queriesSent[hash] = sentQuery{sent: now, node: node, topic: topic}
+	qq := s.queriesSent[node]
+	if qq == nil {
+		qq = make(map[common.Hash]sentQuery)
+		s.queriesSent[node] = qq
+	}
+	qq[hash] = sentQuery{sent: now, lookup: lookup}
 	s.cleanupTopicQueries(now)
 }
 
@@ -601,10 +618,15 @@ func (s *ticketStore) cleanupTopicQueries(now absTime) {
 	if s.nextTopicQueryCleanup > now {
 		return
 	}
-	exp := now - absTime(topicQueryTimeout)
-	for h, q := range s.queriesSent {
-		if q.sent < exp {
-			delete(s.queriesSent, h)
+	exp := now - absTime(topicQueryResend)
+	for n, qq := range s.queriesSent {
+		for h, q := range qq {
+			if q.sent < exp {
+				delete(qq, h)
+			}
+		}
+		if len(qq) == 0 {
+			delete(s.queriesSent, n)
 		}
 	}
 	s.nextTopicQueryCleanup = now + absTime(topicQueryTimeout)
@@ -613,17 +635,20 @@ func (s *ticketStore) cleanupTopicQueries(now absTime) {
 func (s *ticketStore) gotTopicNodes(from *Node, hash common.Hash, nodes []rpcNode) (timeout bool) {
 	now := monotonicTime()
 	//fmt.Println("got", from.addr().String(), hash, len(nodes))
-	q := s.queriesSent[hash]
-	if now > q.sent+absTime(topicQueryTimeout) || q.node != from {
-		//fmt.Println("timeout")
+	qq := s.queriesSent[from]
+	if qq == nil {
 		return true
 	}
-	adjust := float64(-1)
-	if len(nodes) > 0 {
-		adjust = 1
+	q := qq[hash]
+	if q == nil || now > q.sent+absTime(topicQueryTimeout) {
+		return true
 	}
-	s.radius[q.topic].adjust(now, from.sha, adjust, s.minRadius, s.minRadCnt >= minRadStableAfter)
-	chn := s.searchTopicMap[q.topic].foundChn
+	inside := float64(0)
+	if len(nodes) > 0 {
+		inside = 1
+	}
+	s.radius[q.lookup.topic].adjust(now, q.lookup.target, from.sha, inside)
+	chn := s.searchTopicMap[q.lookup.topic].foundChn
 	if chn == nil {
 		//fmt.Println("no channel")
 		return false
@@ -637,36 +662,6 @@ func (s *ticketStore) gotTopicNodes(from *Node, hash common.Hash, nodes []rpcNod
 		}
 	}
 	return false
-}
-
-func (s *ticketStore) adjustMinRadius(target, found common.Hash) {
-	tp := binary.BigEndian.Uint64(target[0:8])
-	fp := binary.BigEndian.Uint64(found[0:8])
-	dist := tp ^ fp
-
-	var mr uint64
-	if dist < maxRadius/16 {
-		mr = dist * 16
-	} else {
-		mr = maxRadius
-	}
-	mr /= minRadAverage
-
-	s.minRadSum -= s.lastMinRads[s.minRadPtr]
-	s.lastMinRads[s.minRadPtr] = mr
-	s.minRadSum += mr
-	s.minRadPtr++
-	if s.minRadPtr == minRadAverage {
-		s.minRadPtr = 0
-	}
-	s.minRadCnt++
-
-	if s.minRadCnt < minRadAverage {
-		s.minRadius = (s.minRadSum / s.minRadCnt) * minRadAverage
-	} else {
-		s.minRadius = s.minRadSum
-	}
-	debugLog(fmt.Sprintf("adjustMinRadius() %v", float64(s.minRadius)/maxRadius))
 }
 
 type topicRadius struct {
@@ -691,33 +686,40 @@ const (
 )
 
 type topicRadiusBucket struct {
-	weights  [trCount]float64
-	lastTime absTime
-	value    float64
+	weights    [trCount]float64
+	lastTime   absTime
+	value      float64
+	lookupSent map[common.Hash]absTime
 }
 
 func (b topicRadiusBucket) update(now absTime) {
+	if now == b.lastTime {
+		return
+	}
 	exp := math.Exp(-float64(now-b.lastTime) / float64(radiusTC))
 	for i, w := range b.weights {
 		b.weights[i] = w * exp
 	}
 	b.lastTime = now
+
+	for target, tm := range b.lookupSent {
+		if now-tm > absTime(pingTimeout) {
+			b.weights[trNoAdjust] += 1
+			delete(b.lookupSent, target)
+		}
+	}
 }
 
-func (b topicRadiusBucket) add(now absTime, inside float64, processed bool) {
+func (b topicRadiusBucket) adjust(now absTime, inside float64) {
 	b.update(now)
-	if processed {
-		b.weights[trNoAdjust] += 1
+	if inside <= 0 {
+		b.weights[trOutside] += 1
 	} else {
-		if inside <= 0 {
-			b.weights[trOutside] += 1
+		if inside >= 1 {
+			b.weights[trInside] += 1
 		} else {
-			if inside >= 1 {
-				b.weights[trInside] += 1
-			} else {
-				b.weights[trInside] += inside
-				b.weights[trOutside] += 1 - inside
-			}
+			b.weights[trInside] += inside
+			b.weights[trOutside] += 1 - inside
 		}
 	}
 }
@@ -855,6 +857,9 @@ func (r *topicRadius) recalcRadius() (radius uint64, radiusLookup int) {
 	}
 	lookupRight := -1
 	if slopeCross != maxBucket && r.needMoreLookups(maxBucket+lookupWidth, len(r.buckets)-1, maxValue) {
+		for len(r.buckets) <= maxBucket+lookupWidth {
+			r.buckets = append(r.buckets, topicRadiusBucket{lookupSent: make(map[common.Hash]absTime)})
+		}
 		lookupRight = r.chooseLookupBucket(maxBucket, maxBucket+lookupWidth-1)
 	}
 	if lookupLeft == -1 {
@@ -897,7 +902,9 @@ func (r *topicRadius) recalcRadius() (radius uint64, radiusLookup int) {
 func (r *topicRadius) nextTarget() common.Hash {
 	radius, radiusLookup := r.recalcRadius()
 	if radiusLookup != -1 {
-		return r.targetForBucket(radiusLookup)
+		target := r.targetForBucket(radiusLookup)
+		r.buckets[radiusLookup].lookupSent[target] = monotonicTime()
+		return target
 	}
 	prefix := r.topicHashPrefix ^ randUint64n(radius)
 	var target common.Hash
@@ -906,46 +913,23 @@ func (r *topicRadius) nextTarget() common.Hash {
 	return target
 }
 
-func (r *topicRadius) adjustWithTicket(localTime absTime, t ticketRef, minRadius uint64, minRadStable bool) {
-	wait := t.t.regTime[t.idx] - t.t.issueTime // localTime
-	adjust := (float64(wait)/float64(targetWaitTime) - 1) * 2
-	if adjust > 1 {
-		adjust = 1
+func (r *topicRadius) adjustWithTicket(now absTime, targetHash common.Hash, t ticketRef) {
+	wait := t.t.regTime[t.idx] - t.t.issueTime
+	inside := float64(wait)/float64(targetWaitTime) - 0.5
+	if inside > 1 {
+		inside = 1
 	}
-	if adjust < -1 {
-		adjust = -1
+	if inside < 0 {
+		inside = 0
 	}
-	/*var adjust float64
-	if wait > absTime(targetWaitTime) {
-		adjust = 1
-	} else {
-		adjust = -1
-	}*/
-	r.adjust(localTime, t.t.node.sha, adjust, minRadius, minRadStable)
+	r.adjust(now, targetHash, t.t.node.sha, inside)
 }
 
-func (r *topicRadius) adjust(localTime absTime, addrHash common.Hash, adjust float64, minRadius uint64, minRadStable bool) {
-	if r.converged {
-		adjust *= adjustRatio
-	} else {
-		adjust *= r.adjustCooldown
+func (r *topicRadius) adjust(now absTime, targetHash, addrHash common.Hash, inside float64) {
+	bucket := r.getBucketIdx(addrHash)
+	if bucket >= len(r.buckets) {
+		return
 	}
-
-	radius := float64(r.radius) * (1 + adjust)
-	if radius > float64(maxRadius) {
-		r.radius = maxRadius
-	} else {
-		r.radius = uint64(radius)
-		if r.radius < minRadius {
-			r.radius = minRadius
-		}
-	}
-
-	if !r.converged && (adjust > 0 || (r.radius == minRadius && minRadStable)) {
-		r.adjustCooldown *= (1 - adjustCooldownStep)
-		if r.adjustCooldown <= adjustRatio {
-			r.converged = true
-			//fmt.Println("converged")
-		}
-	}
+	r.buckets[bucket].adjust(now, inside)
+	delete(r.buckets[bucket].sentLookup, targetHash)
 }
