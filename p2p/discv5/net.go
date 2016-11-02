@@ -541,10 +541,9 @@ loop:
 
 			tm := monotonicTime()
 			for topic, r := range net.ticketStore.radius {
-					if printTestImgLogs {
+				if printTestImgLogs {
 					rad := r.radius / (maxRadius/1000000 + 1)
-						fmt.Printf("*R %d %v %016x %v\n", tm/1000000, topic, net.tab.self.sha[:8], rad)
-					}
+					fmt.Printf("*R %d %v %016x %v\n", tm/1000000, topic, net.tab.self.sha[:8], rad)
 				}
 			}
 			for topic, t := range net.topictab.topics {

@@ -40,13 +40,18 @@ const (
 	maxRegisterDebt     = 5
 	keepTicketConst     = time.Minute * 10
 	keepTicketExp       = time.Minute * 5
-	maxRadius           = 0xffffffffffffffff
 	targetWaitTime      = time.Minute * 10
-	adjustRatio         = 0.001
-	adjustCooldownStart = 0.1
-	adjustCooldownStep  = 0.01
-	radiusExtendRatio   = 1.5
 	topicQueryTimeout   = time.Second * 5
+	topicQueryResend    = time.Minute
+	// topic radius detection
+	maxRadius           = 0xffffffffffffffff
+	radiusTC            = time.Minute * 20
+	radiusBucketsPerBit = 8
+	minSlope            = 1
+	minPeakSize         = 40
+	maxNoAdjust         = 20
+	lookupWidth         = 8
+	minRightSum         = 20
 )
 
 // absTime represents absolute monotonic time in nanoseconds.
@@ -236,7 +241,7 @@ func (s *ticketStore) nextRegisterLookup() (lookup lookupInfo, delay time.Durati
 		if s.tickets[topic].buckets != nil && s.needMoreTickets(topic) {
 			next := s.radius[topic].nextTarget()
 			debugLog(fmt.Sprintf(" %x 1s", next[:8]))
-			return lookupInfo{target: next, topic: topic}, 1 * time.Second
+			return lookupInfo{target: next, topic: topic}, 100 * time.Millisecond
 		}
 		topic, ok = s.iterRegTopics()
 		if topic == firstTopic {
@@ -477,7 +482,7 @@ type lookupInfo struct {
 
 type reqInfo struct {
 	pingHash []byte
-	topic    Topic
+	lookup   lookupInfo
 }
 
 // returns -1 if not found
@@ -491,18 +496,11 @@ func (t *ticket) findIdx(topic Topic) int {
 }
 
 func (s *ticketStore) registerLookupDone(lookup lookupInfo, nodes []*Node, ping func(n *Node) []byte) {
-	now := monotonicTime()
-	//fmt.Printf("registerLookupDone  target = %016x\n", target[:8])
 	for i, n := range nodes {
-		if i == 0 || (binary.BigEndian.Uint64(n.sha[:8])^binary.BigEndian.Uint64(lookup.target[:8])) < s.minRadius {
-			if t := s.nodes[n]; t != nil {
-				// adjust radius with already stored ticket
-				if idx := t.findIdx(lookup.topic); idx != -1 {
-					s.adjustWithTicket(now, t, idx, false)
-				}
-			} else {
+		if i == 0 || (binary.BigEndian.Uint64(n.sha[:8])^binary.BigEndian.Uint64(lookup.target[:8])) < s.radius[lookup.topic].minRadius {
+			if s.nodes[n] == nil {
 				// request a new pong packet
-				s.nodeLastReq[n] = reqInfo{pingHash: ping(n), topic: lookup.topic}
+				s.nodeLastReq[n] = reqInfo{pingHash: ping(n), lookup: lookup}
 			}
 		}
 	}
@@ -510,26 +508,17 @@ func (s *ticketStore) registerLookupDone(lookup lookupInfo, nodes []*Node, ping 
 
 func (s *ticketStore) searchLookupDone(lookup lookupInfo, nodes []*Node, query func(n *Node, topic Topic) []byte) {
 	for i, n := range nodes {
-		if (i == 0 || (binary.BigEndian.Uint64(n.sha[:8])^binary.BigEndian.Uint64(lookup.target[:8])) < s.minRadius) && s.canQueryTopic(n, lookup.topic) {
+		if (i == 0 || (binary.BigEndian.Uint64(n.sha[:8])^binary.BigEndian.Uint64(lookup.target[:8])) < s.radius[lookup.topic].minRadius) && s.canQueryTopic(n, lookup.topic) {
 			hash := query(n, lookup.topic)
 			s.addTopicQuery(common.BytesToHash(hash), n, lookup)
 		}
 	}
 }
 
-func (s *ticketStore) adjustWithTicket(localTime absTime, t *ticket, idx int, onlyConverging bool) {
-	if onlyConverging {
-		for i, topic := range t.topics {
-			if tt, ok := s.radius[topic]; ok && !tt.converged && tt.isInRadius(t.node.sha, true) {
-				tt.adjustWithTicket(localTime, ticketRef{t, i}, s.minRadius, s.minRadCnt >= minRadStableAfter)
-				debugLog(fmt.Sprintf("adjust converging topic: %v, rad: %v, cd: %v, converged: %v", topic, float64(tt.radius)/maxRadius, tt.adjustCooldown, tt.converged))
-			}
-		}
-	} else {
-		topic := t.topics[idx]
-		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t.node.sha, true) {
-			tt.adjustWithTicket(localTime, ticketRef{t, idx}, s.minRadius, s.minRadCnt >= minRadStableAfter)
-			debugLog(fmt.Sprintf("adjust topic: %v, rad: %v, cd: %v, converged: %v", topic, float64(tt.radius)/maxRadius, tt.adjustCooldown, tt.converged))
+func (s *ticketStore) adjustWithTicket(now absTime, targetHash common.Hash, t *ticket) {
+	for i, topic := range t.topics {
+		if tt, ok := s.radius[topic]; ok {
+			tt.adjustWithTicket(now, targetHash, ticketRef{t, i})
 		}
 	}
 }
@@ -543,16 +532,15 @@ func (s *ticketStore) addTicket(localTime absTime, pingHash []byte, t *ticket) {
 
 	lastReq, ok := s.nodeLastReq[t.node]
 	if !(ok && bytes.Equal(pingHash, lastReq.pingHash)) {
-		s.adjustWithTicket(localTime, t, -1, true)
 		return
 	}
-	topic := lastReq.topic
+	topic := lastReq.lookup.topic
 	topicIdx := t.findIdx(topic)
 	if topicIdx == -1 {
 		return
 	}
 
-	s.adjustWithTicket(localTime, t, topicIdx, false)
+	s.adjustWithTicket(localTime, lastReq.lookup.target, t)
 	bucket := timeBucket(localTime / absTime(ticketTimeBucketLen))
 	if s.lastBucketFetched == 0 || bucket < s.lastBucketFetched {
 		s.lastBucketFetched = bucket
@@ -595,7 +583,7 @@ func (s *ticketStore) canQueryTopic(node *Node, topic Topic) bool {
 	if qq != nil {
 		now := monotonicTime()
 		for _, sq := range qq {
-			if sq.lookup.topic == lookup.topic && sq.send > now-absTime(topicQueryResend) {
+			if sq.lookup.topic == topic && sq.sent > now-absTime(topicQueryResend) {
 				return false
 			}
 		}
@@ -639,8 +627,8 @@ func (s *ticketStore) gotTopicNodes(from *Node, hash common.Hash, nodes []rpcNod
 	if qq == nil {
 		return true
 	}
-	q := qq[hash]
-	if q == nil || now > q.sent+absTime(topicQueryTimeout) {
+	q, ok := qq[hash]
+	if !ok || now > q.sent+absTime(topicQueryTimeout) {
 		return true
 	}
 	inside := float64(0)
@@ -665,10 +653,10 @@ func (s *ticketStore) gotTopicNodes(from *Node, hash common.Hash, nodes []rpcNod
 }
 
 type topicRadius struct {
-	topic           Topic
-	topicHashPrefix uint64
-	radius          uint64
-	buckets         []topicRadiusBucket
+	topic             Topic
+	topicHashPrefix   uint64
+	radius, minRadius uint64
+	buckets           []topicRadiusBucket
 }
 
 type topicRadiusEvent int
@@ -678,11 +666,6 @@ const (
 	trInside
 	trNoAdjust
 	trCount
-)
-
-const (
-	radiusTC            = time.Minute * 20
-	radiusBucketsPerBit = 8
 )
 
 type topicRadiusBucket struct {
@@ -732,6 +715,7 @@ func newTopicRadius(t Topic) *topicRadius {
 		topic:           t,
 		topicHashPrefix: topicHashPrefix,
 		radius:          0,
+		minRadius:       maxRadius,
 	}
 }
 
@@ -774,19 +758,6 @@ func (r *topicRadius) isInRadius(addrHash common.Hash) bool {
 	return dist < r.radius
 }
 
-func (r *topicRadius) evalBucket(now absTime, i int) float64 {
-	r.buckets[i].update(now)
-	if i >= len(r.buckets) {
-		return 0
-	}
-	v := r.buckets[i].weights[trOutside] - r.buckets[i].weights[trInside]
-	if i > 0 {
-		v += r.buckets[i-1].value
-	}
-	r.buckets[i].value = v
-	return v
-}
-
 func (r *topicRadius) chooseLookupBucket(a, b int) int {
 	if a > b {
 		return -1
@@ -800,15 +771,16 @@ func (r *topicRadius) chooseLookupBucket(a, b int) int {
 	if c == 0 {
 		return -1
 	}
-	r := randUint(uint32(c))
+	rnd := randUint(uint32(c))
 	for i := a; i <= b; i++ {
 		if i >= len(r.buckets) || r.buckets[i].weights[trNoAdjust] < maxNoAdjust {
-			if r == 0 {
+			if rnd == 0 {
 				return i
 			}
-			r--
+			rnd--
 		}
 	}
+	panic(nil) // should never happen
 }
 
 func (r *topicRadius) needMoreLookups(a, b int, maxValue float64) bool {
@@ -837,7 +809,12 @@ func (r *topicRadius) recalcRadius() (radius uint64, radiusLookup int) {
 	maxValue := float64(0)
 	now := monotonicTime()
 	for i, _ := range r.buckets {
-		v := r.evalBucket(now, i)
+		r.buckets[i].update(now)
+		v := r.buckets[i].weights[trOutside] - r.buckets[i].weights[trInside]
+		if i > 0 {
+			v += r.buckets[i-1].value
+		}
+		r.buckets[i].value = v
 	}
 	slopeCross := -1
 	for i, b := range r.buckets {
@@ -876,18 +853,20 @@ func (r *topicRadius) recalcRadius() (radius uint64, radiusLookup int) {
 		}
 	}
 
+	minRadBucket := len(r.buckets)
+	sum := float64(0)
+	for minRadBucket > 0 && sum < minRightSum {
+		minRadBucket--
+		b := r.buckets[minRadBucket]
+		sum += b.weights[trInside] + b.weights[trOutside]
+	}
+	r.minRadius = uint64(math.Pow(2, 64-float64(minRadBucket)/radiusBucketsPerBit))
+
 	if radiusLookup == -1 {
 		// no more radius lookups needed at the moment, return a radius
-		ptr := len(r.buckets)
-		sum := float64(0)
-		for ptr > 0 && sum < minRightSum {
-			ptr--
-			b := r.buckets[ptr]
-			sum += b.weights[trInside] + b.weights[trOutside]
-		}
 		rad := maxBucket
-		if ptr < rad {
-			rad = ptr
+		if minRadBucket < rad {
+			rad = minRadBucket
 		}
 		radius = ^uint64(0)
 		if rad > 0 {
@@ -931,5 +910,5 @@ func (r *topicRadius) adjust(now absTime, targetHash, addrHash common.Hash, insi
 		return
 	}
 	r.buckets[bucket].adjust(now, inside)
-	delete(r.buckets[bucket].sentLookup, targetHash)
+	delete(r.buckets[bucket].lookupSent, targetHash)
 }
