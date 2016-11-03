@@ -548,7 +548,7 @@ func (s *ticketStore) addTicket(localTime absTime, pingHash []byte, t *ticket) {
 	}
 	s.adjustWithTicket(localTime, lastReq.lookup.target, t)
 
-	if s.nodes[t.node] != nil {
+	if lastReq.lookup.radiusLookup || s.nodes[t.node] != nil {
 		return
 	}
 
@@ -563,20 +563,16 @@ func (s *ticketStore) addTicket(localTime absTime, pingHash []byte, t *ticket) {
 		s.lastBucketFetched = bucket
 	}
 
-	for topicIdx, topic := range t.topics {
-		if tt, ok := s.radius[topic]; ok && tt.isInRadius(t.node.sha) {
-			if _, ok := s.tickets[topic]; ok {
-				wait := t.regTime[topicIdx] - localTime
-				rnd := rand.ExpFloat64()
-				if rnd > 10 {
-					rnd = 10
-				}
-				if float64(wait) < float64(keepTicketConst)+float64(keepTicketExp)*rnd {
-					// use the ticket to register this topic
-					//fmt.Println("addTicket", t.node.ID[:8], t.node.addr().String(), t.serial, t.pong)
-					s.addTicketRef(ticketRef{t, topicIdx})
-				}
-			}
+	if _, ok := s.tickets[topic]; ok {
+		wait := t.regTime[topicIdx] - localTime
+		rnd := rand.ExpFloat64()
+		if rnd > 10 {
+			rnd = 10
+		}
+		if float64(wait) < float64(keepTicketConst)+float64(keepTicketExp)*rnd {
+			// use the ticket to register this topic
+			//fmt.Println("addTicket", t.node.ID[:8], t.node.addr().String(), t.serial, t.pong)
+			s.addTicketRef(ticketRef{t, topicIdx})
 		}
 	}
 
