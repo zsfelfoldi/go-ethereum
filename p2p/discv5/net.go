@@ -514,7 +514,10 @@ loop:
 
 		case nodes := <-topicSearchLookupDone:
 			debugLog("<-topicSearchLookupDone")
-			net.ticketStore.searchLookupDone(topicSearchLookupTarget, nodes, func(n *Node, topic Topic) []byte {
+			net.ticketStore.searchLookupDone(topicSearchLookupTarget, nodes, func(n *Node) []byte {
+				net.ping(n, n.addr())
+				return n.pingEcho
+			}, func(n *Node, topic Topic) []byte {
 				return net.conn.send(n, topicQueryPacket, topicQuery{Topic: topic}) // TODO: set expiration
 			})
 			topicSearchLookupTarget = net.ticketStore.nextSearchLookup()

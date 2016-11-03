@@ -240,8 +240,8 @@ func (s *ticketStore) nextRegisterLookup() (lookup lookupInfo, delay time.Durati
 		debugLog(fmt.Sprintf(" checking topic %v, len(s.tickets[topic]) = %d", topic, len(s.tickets[topic].buckets)))
 		if s.tickets[topic].buckets != nil && s.needMoreTickets(topic) {
 			next := s.radius[topic].nextTarget()
-			debugLog(fmt.Sprintf(" %x 1s", next[:8]))
-			return lookupInfo{target: next, topic: topic}, 100 * time.Millisecond
+			debugLog(fmt.Sprintf(" %x 1s", next.target[:8]))
+			return next, 100 * time.Millisecond
 		}
 		topic, ok = s.iterRegTopics()
 		if topic == firstTopic {
@@ -261,8 +261,7 @@ func (s *ticketStore) nextSearchLookup() lookupInfo {
 	}
 	topic := s.searchTopicList[s.searchTopicPtr]
 	s.searchTopicPtr++
-	target := s.radius[topic].nextTarget()
-	return lookupInfo{target: target, topic: topic}
+	return s.radius[topic].nextTarget()
 }
 
 // iterRegTopics returns topics to register in arbitrary order.
@@ -476,13 +475,15 @@ func (s *ticketStore) removeTicketRef(ref ticketRef) {
 }
 
 type lookupInfo struct {
-	target common.Hash
-	topic  Topic
+	target       common.Hash
+	topic        Topic
+	radiusLookup bool
 }
 
 type reqInfo struct {
 	pingHash []byte
 	lookup   lookupInfo
+	time     absTime
 }
 
 // returns -1 if not found
@@ -496,21 +497,36 @@ func (t *ticket) findIdx(topic Topic) int {
 }
 
 func (s *ticketStore) registerLookupDone(lookup lookupInfo, nodes []*Node, ping func(n *Node) []byte) {
+	now := monotonicTime()
 	for i, n := range nodes {
 		if i == 0 || (binary.BigEndian.Uint64(n.sha[:8])^binary.BigEndian.Uint64(lookup.target[:8])) < s.radius[lookup.topic].minRadius {
-			if s.nodes[n] == nil {
-				// request a new pong packet
-				s.nodeLastReq[n] = reqInfo{pingHash: ping(n), lookup: lookup}
+			if lookup.radiusLookup {
+				if lastReq, ok := s.nodeLastReq[n]; !ok || time.Duration(now-lastReq.time) > radiusTC {
+					s.nodeLastReq[n] = reqInfo{pingHash: ping(n), lookup: lookup, time: now}
+				}
+			} else {
+				if s.nodes[n] == nil {
+					s.nodeLastReq[n] = reqInfo{pingHash: ping(n), lookup: lookup, time: now}
+				}
 			}
 		}
 	}
 }
 
-func (s *ticketStore) searchLookupDone(lookup lookupInfo, nodes []*Node, query func(n *Node, topic Topic) []byte) {
+func (s *ticketStore) searchLookupDone(lookup lookupInfo, nodes []*Node, ping func(n *Node) []byte, query func(n *Node, topic Topic) []byte) {
+	now := monotonicTime()
 	for i, n := range nodes {
-		if (i == 0 || (binary.BigEndian.Uint64(n.sha[:8])^binary.BigEndian.Uint64(lookup.target[:8])) < s.radius[lookup.topic].minRadius) && s.canQueryTopic(n, lookup.topic) {
-			hash := query(n, lookup.topic)
-			s.addTopicQuery(common.BytesToHash(hash), n, lookup)
+		if i == 0 || (binary.BigEndian.Uint64(n.sha[:8])^binary.BigEndian.Uint64(lookup.target[:8])) < s.radius[lookup.topic].minRadius {
+			if lookup.radiusLookup {
+				if lastReq, ok := s.nodeLastReq[n]; !ok || time.Duration(now-lastReq.time) > radiusTC {
+					s.nodeLastReq[n] = reqInfo{pingHash: ping(n), lookup: lookup, time: now}
+				}
+			} else {
+				if s.canQueryTopic(n, lookup.topic) {
+					hash := query(n, lookup.topic)
+					s.addTopicQuery(common.BytesToHash(hash), n, lookup)
+				}
+			}
 		}
 	}
 }
@@ -526,21 +542,22 @@ func (s *ticketStore) adjustWithTicket(now absTime, targetHash common.Hash, t *t
 func (s *ticketStore) addTicket(localTime absTime, pingHash []byte, t *ticket) {
 	debugLog(fmt.Sprintf("add(node = %x sn = %v)", t.node.ID[:8], t.serial))
 
-	if s.nodes[t.node] != nil {
-		return
-	}
-
 	lastReq, ok := s.nodeLastReq[t.node]
 	if !(ok && bytes.Equal(pingHash, lastReq.pingHash)) {
 		return
 	}
+	s.adjustWithTicket(localTime, lastReq.lookup.target, t)
+
+	if s.nodes[t.node] != nil {
+		return
+	}
+
 	topic := lastReq.lookup.topic
 	topicIdx := t.findIdx(topic)
 	if topicIdx == -1 {
 		return
 	}
 
-	s.adjustWithTicket(localTime, lastReq.lookup.target, t)
 	bucket := timeBucket(localTime / absTime(ticketTimeBucketLen))
 	if s.lastBucketFetched == 0 || bucket < s.lastBucketFetched {
 		s.lastBucketFetched = bucket
@@ -884,12 +901,12 @@ func (r *topicRadius) recalcRadius() (radius uint64, radiusLookup int) {
 	return
 }
 
-func (r *topicRadius) nextTarget() common.Hash {
+func (r *topicRadius) nextTarget() lookupInfo {
 	radius, radiusLookup := r.recalcRadius()
 	if radiusLookup != -1 {
 		target := r.targetForBucket(radiusLookup)
 		r.buckets[radiusLookup].lookupSent[target] = monotonicTime()
-		return target
+		return lookupInfo{target: target, topic: r.topic, radiusLookup: true}
 	}
 
 	radExt := radius / 2
@@ -907,7 +924,7 @@ func (r *topicRadius) nextTarget() common.Hash {
 	var target common.Hash
 	binary.BigEndian.PutUint64(target[0:8], prefix)
 	rand.Read(target[8:])
-	return target
+	return lookupInfo{target: target, topic: r.topic, radiusLookup: false}
 }
 
 func (r *topicRadius) adjustWithTicket(now absTime, targetHash common.Hash, t ticketRef) {
