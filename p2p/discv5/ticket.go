@@ -675,7 +675,7 @@ type topicRadiusBucket struct {
 	lookupSent map[common.Hash]absTime
 }
 
-func (b topicRadiusBucket) update(now absTime) {
+func (b *topicRadiusBucket) update(now absTime) {
 	if now == b.lastTime {
 		return
 	}
@@ -693,7 +693,7 @@ func (b topicRadiusBucket) update(now absTime) {
 	}
 }
 
-func (b topicRadiusBucket) adjust(now absTime, inside float64) {
+func (b *topicRadiusBucket) adjust(now absTime, inside float64) {
 	b.update(now)
 	if inside <= 0 {
 		b.weights[trOutside] += 1
@@ -759,6 +759,9 @@ func (r *topicRadius) isInRadius(addrHash common.Hash) bool {
 }
 
 func (r *topicRadius) chooseLookupBucket(a, b int) int {
+	if a < 0 {
+		a = 0
+	}
 	if a > b {
 		return -1
 	}
@@ -801,21 +804,21 @@ func (r *topicRadius) needMoreLookups(a, b int, maxValue float64) bool {
 			}
 		}
 	}
-	return maxValue-max >= minPeakSize
+	return maxValue-max < minPeakSize
 }
 
 func (r *topicRadius) recalcRadius() (radius uint64, radiusLookup int) {
 	maxBucket := 0
 	maxValue := float64(0)
 	now := monotonicTime()
+	v := float64(0)
 	for i, _ := range r.buckets {
 		r.buckets[i].update(now)
-		v := r.buckets[i].weights[trOutside] - r.buckets[i].weights[trInside]
-		if i > 0 {
-			v += r.buckets[i-1].value
-		}
+		v += r.buckets[i].weights[trOutside] - r.buckets[i].weights[trInside]
 		r.buckets[i].value = v
+		//fmt.Printf("%v ", v)
 	}
+	//fmt.Println()
 	slopeCross := -1
 	for i, b := range r.buckets {
 		v := b.value
@@ -828,12 +831,22 @@ func (r *topicRadius) recalcRadius() (radius uint64, radiusLookup int) {
 			maxBucket = i + 1
 		}
 	}
+
+	minRadBucket := len(r.buckets)
+	sum := float64(0)
+	for minRadBucket > 0 && sum < minRightSum {
+		minRadBucket--
+		b := r.buckets[minRadBucket]
+		sum += b.weights[trInside] + b.weights[trOutside]
+	}
+	r.minRadius = uint64(math.Pow(2, 64-float64(minRadBucket)/radiusBucketsPerBit))
+
 	lookupLeft := -1
 	if r.needMoreLookups(0, maxBucket-lookupWidth-1, maxValue) {
 		lookupLeft = r.chooseLookupBucket(maxBucket-lookupWidth, maxBucket-1)
 	}
 	lookupRight := -1
-	if slopeCross != maxBucket && r.needMoreLookups(maxBucket+lookupWidth, len(r.buckets)-1, maxValue) {
+	if slopeCross != maxBucket && (minRadBucket <= maxBucket || r.needMoreLookups(maxBucket+lookupWidth, len(r.buckets)-1, maxValue)) {
 		for len(r.buckets) <= maxBucket+lookupWidth {
 			r.buckets = append(r.buckets, topicRadiusBucket{lookupSent: make(map[common.Hash]absTime)})
 		}
@@ -853,14 +866,7 @@ func (r *topicRadius) recalcRadius() (radius uint64, radiusLookup int) {
 		}
 	}
 
-	minRadBucket := len(r.buckets)
-	sum := float64(0)
-	for minRadBucket > 0 && sum < minRightSum {
-		minRadBucket--
-		b := r.buckets[minRadBucket]
-		sum += b.weights[trInside] + b.weights[trOutside]
-	}
-	r.minRadius = uint64(math.Pow(2, 64-float64(minRadBucket)/radiusBucketsPerBit))
+	//fmt.Println("mb", maxBucket, "sc", slopeCross, "mrb", minRadBucket, "ll", lookupLeft, "lr", lookupRight, "mv", maxValue)
 
 	if radiusLookup == -1 {
 		// no more radius lookups needed at the moment, return a radius
@@ -885,7 +891,19 @@ func (r *topicRadius) nextTarget() common.Hash {
 		r.buckets[radiusLookup].lookupSent[target] = monotonicTime()
 		return target
 	}
-	prefix := r.topicHashPrefix ^ randUint64n(radius)
+
+	radExt := radius / 2
+	if radExt > maxRadius-radius {
+		radExt = maxRadius - radius
+	}
+	rnd := randUint64n(radius) + randUint64n(2*radExt)
+	if rnd > radExt {
+		rnd -= radExt
+	} else {
+		rnd = radExt - rnd
+	}
+
+	prefix := r.topicHashPrefix ^ rnd
 	var target common.Hash
 	binary.BigEndian.PutUint64(target[0:8], prefix)
 	rand.Read(target[8:])
@@ -906,6 +924,7 @@ func (r *topicRadius) adjustWithTicket(now absTime, targetHash common.Hash, t ti
 
 func (r *topicRadius) adjust(now absTime, targetHash, addrHash common.Hash, inside float64) {
 	bucket := r.getBucketIdx(addrHash)
+	//fmt.Println("adjust", bucket, len(r.buckets), inside)
 	if bucket >= len(r.buckets) {
 		return
 	}
