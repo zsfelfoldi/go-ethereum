@@ -253,7 +253,7 @@ func (pm *ProtocolManager) findServers() {
 		case <-stop:
 		}
 	}()
-	time.Sleep(time.Minute)
+	time.Sleep(time.Second * 20)
 	close(stop)
 }
 
