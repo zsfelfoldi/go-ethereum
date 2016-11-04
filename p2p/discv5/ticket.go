@@ -521,12 +521,12 @@ func (s *ticketStore) searchLookupDone(lookup lookupInfo, nodes []*Node, ping fu
 				if lastReq, ok := s.nodeLastReq[n]; !ok || time.Duration(now-lastReq.time) > radiusTC {
 					s.nodeLastReq[n] = reqInfo{pingHash: ping(n), lookup: lookup, time: now}
 				}
-			} else {
-				if s.canQueryTopic(n, lookup.topic) {
-					hash := query(n, lookup.topic)
-					s.addTopicQuery(common.BytesToHash(hash), n, lookup)
-				}
+			} // else {
+			if s.canQueryTopic(n, lookup.topic) {
+				hash := query(n, lookup.topic)
+				s.addTopicQuery(common.BytesToHash(hash), n, lookup)
 			}
+			//}
 		}
 	}
 }
@@ -829,7 +829,7 @@ func (r *topicRadius) recalcRadius() (radius uint64, radiusLookup int) {
 		r.buckets[i].update(now)
 		v += r.buckets[i].weights[trOutside] - r.buckets[i].weights[trInside]
 		r.buckets[i].value = v
-		//fmt.Printf("%v ", v)
+		//fmt.Printf("%v %v | ", v, r.buckets[i].weights[trNoAdjust])
 	}
 	//fmt.Println()
 	slopeCross := -1
