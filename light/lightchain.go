@@ -37,8 +37,9 @@ import (
 )
 
 var (
-	bodyCacheLimit  = 256
-	blockCacheLimit = 256
+	bodyCacheLimit      = 256
+	blockCacheLimit     = 256
+	canonicalCacheLimit = 256
 )
 
 // LightChain represents a canonical chain that by default only handles block
@@ -55,9 +56,10 @@ type LightChain struct {
 	chainmu sync.RWMutex
 	procmu  sync.RWMutex
 
-	bodyCache    *lru.Cache // Cache for the most recent block bodies
-	bodyRLPCache *lru.Cache // Cache for the most recent block bodies in RLP encoded format
-	blockCache   *lru.Cache // Cache for the most recent entire blocks
+	bodyCache      *lru.Cache // Cache for the most recent block bodies
+	bodyRLPCache   *lru.Cache // Cache for the most recent block bodies in RLP encoded format
+	blockCache     *lru.Cache // Cache for the most recent entire blocks
+	canonicalCache *lru.Cache // Cache for the most recent canonical hashes
 
 	quit    chan struct{}
 	running int32 // running must be called automically
@@ -76,16 +78,18 @@ func NewLightChain(odr OdrBackend, config *params.ChainConfig, pow pow.PoW, mux 
 	bodyCache, _ := lru.New(bodyCacheLimit)
 	bodyRLPCache, _ := lru.New(bodyCacheLimit)
 	blockCache, _ := lru.New(blockCacheLimit)
+	canonicalCache, _ := lru.New(canonicalCacheLimit)
 
 	bc := &LightChain{
-		chainDb:      odr.Database(),
-		odr:          odr,
-		eventMux:     mux,
-		quit:         make(chan struct{}),
-		bodyCache:    bodyCache,
-		bodyRLPCache: bodyRLPCache,
-		blockCache:   blockCache,
-		pow:          pow,
+		chainDb:        odr.Database(),
+		odr:            odr,
+		eventMux:       mux,
+		quit:           make(chan struct{}),
+		bodyCache:      bodyCache,
+		bodyRLPCache:   bodyRLPCache,
+		blockCache:     blockCache,
+		canonicalCache: canonicalCache,
+		pow:            pow,
 	}
 
 	var err error
@@ -328,7 +332,7 @@ func (self *LightChain) GetBlockByHash(ctx context.Context, hash common.Hash) (*
 // GetBlockByNumber retrieves a block from the database or ODR service by
 // number, caching it (associated with its hash) if found.
 func (self *LightChain) GetBlockByNumber(ctx context.Context, number uint64) (*types.Block, error) {
-	hash, err := GetCanonicalHash(ctx, self.odr, number)
+	hash, err := self.GetCanonicalHash(ctx, number)
 	if hash == (common.Hash{}) || err != nil {
 		return nil, err
 	}
@@ -504,4 +508,47 @@ func (self *LightChain) SyncCht(ctx context.Context) bool {
 		}
 	}
 	return false
+}
+
+// LockChain locks the chain mutex for reading so that multiple canonical hashes can be
+// retrieved while it is guaranteed that they belong to the same version of the chain
+func (self *LightChain) LockChain() {
+	self.chainmu.RLock()
+}
+
+// UnlockChain unlocks the chain mutex
+func (self *LightChain) UnlockChain() {
+	self.chainmu.RUnlock()
+}
+
+// GetStoredCanonicalHash returns a locally stored canonical hash from the database
+// or the cache.
+func (self *LightChain) GetStoredCanonicalHash(number uint64) common.Hash {
+	// Short circuit if the hash is already in the cache, retrieve otherwise
+	if cached, ok := self.canonicalCache.Get(number); ok {
+		return cached.(common.Hash)
+	}
+	hash := core.GetCanonicalHash(self.chainDb, number)
+	// Cache the found hash for next time and return
+	self.canonicalCache.Add(number, hash)
+	return hash
+}
+
+// GetCanonicalHash returns a canonical hash from the database, the cache or
+// the network (based on a CHT)
+func (self *LightChain) GetCanonicalHash(ctx context.Context, number uint64) (common.Hash, error) {
+	// Short circuit if the hash is already in the cache, retrieve otherwise
+	if cached, ok := self.canonicalCache.Get(number); ok {
+		hash := cached.(common.Hash)
+		if hash != (common.Hash{}) {
+			return hash, nil
+		}
+	}
+	hash, err := GetCanonicalHash(ctx, self.odr, number)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	// Cache the found hash for next time and return
+	self.canonicalCache.Add(number, hash)
+	return hash, nil
 }

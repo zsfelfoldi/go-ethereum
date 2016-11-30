@@ -278,7 +278,7 @@ func (pool *TxPool) setNewHead(ctx context.Context, newHeader *types.Header) (tx
 	if idx := newHeader.Number.Uint64(); idx > pool.clearIdx+txPermanent {
 		idx2 := idx - txPermanent
 		for i := pool.clearIdx; i < idx2; i++ {
-			hash := core.GetCanonicalHash(pool.chainDb, i)
+			hash := pool.chain.GetStoredCanonicalHash(i)
 			if list, ok := pool.mined[hash]; ok {
 				hashes := make([]common.Hash, len(list))
 				for i, tx := range list {

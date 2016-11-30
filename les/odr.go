@@ -44,7 +44,7 @@ type LesOdr struct {
 	removePeer   peerDropFn
 	mlock, clock sync.Mutex
 	sentReqs     map[uint64]*sentReq
-	peers        *odrPeerSet
+	serverPool   *serverPool
 	lastReqID    uint64
 }
 
@@ -52,7 +52,6 @@ func NewLesOdr(db ethdb.Database) *LesOdr {
 	return &LesOdr{
 		db:       db,
 		stop:     make(chan struct{}),
-		peers:    newOdrPeerSet(),
 		sentReqs: make(map[uint64]*sentReq),
 	}
 }
@@ -75,16 +74,6 @@ type sentReq struct {
 	sentTo   map[*peer]chan struct{}
 	lock     sync.RWMutex  // protects acces to sentTo
 	answered chan struct{} // closed and set to nil when any peer answers it
-}
-
-// RegisterPeer registers a new LES peer to the ODR capable peer set
-func (self *LesOdr) RegisterPeer(p *peer) error {
-	return self.peers.register(p)
-}
-
-// UnregisterPeer removes a peer from the ODR capable peer set
-func (self *LesOdr) UnregisterPeer(p *peer) {
-	self.peers.unregister(p)
 }
 
 const (
@@ -142,29 +131,22 @@ func (self *LesOdr) requestPeer(req *sentReq, peer *peer, delivered, timeout cha
 
 	select {
 	case <-delivered:
-		servTime := uint64(mclock.Now() - stime)
-		self.peers.updateTimeout(peer, false)
-		self.peers.updateServTime(peer, servTime)
+		self.serverPool.adjustResponseTime(peer.poolEntry, time.Duration(mclock.Now()-stime), false)
 		return
 	case <-time.After(softRequestTimeout):
 		close(timeout)
-		if self.peers.updateTimeout(peer, true) {
-			self.removePeer(peer.id)
-		}
 	case <-self.stop:
 		return
 	}
 
 	select {
 	case <-delivered:
-		servTime := uint64(mclock.Now() - stime)
-		self.peers.updateServTime(peer, servTime)
-		return
 	case <-time.After(hardRequestTimeout):
-		self.removePeer(peer.id)
+		go self.removePeer(peer.id)
 	case <-self.stop:
 		return
 	}
+	self.serverPool.adjustResponseTime(peer.poolEntry, time.Duration(mclock.Now()-stime), true)
 }
 
 // networkRequest sends a request to known peers until an answer is received
@@ -193,7 +175,9 @@ func (self *LesOdr) networkRequest(ctx context.Context, lreq LesOdrRequest) erro
 
 	exclude := make(map[*peer]struct{})
 	for {
-		if peer := self.peers.bestPeer(lreq, exclude); peer == nil {
+		if peer := self.serverPool.selectPeer(func(p *peer) (bool, uint64) {
+			return true, p.fcServer.CanSend(lreq.GetCost(p))
+		}); peer == nil {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

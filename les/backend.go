@@ -194,6 +194,7 @@ func (s *LightEthereum) Start(srvr *p2p.Server) error {
 	glog.V(logger.Info).Infof("WARNING: light client mode is an experimental feature")
 	s.netRPCService = ethapi.NewPublicNetAPI(srvr, s.netVersionId)
 	s.protocolManager.Start(srvr)
+	s.odr.serverPool = s.protocolManager.serverPool
 	return nil
 }
 
