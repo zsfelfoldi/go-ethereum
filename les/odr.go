@@ -17,6 +17,8 @@
 package les
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"sync"
 	"time"
 
@@ -45,7 +47,6 @@ type LesOdr struct {
 	mlock, clock sync.Mutex
 	sentReqs     map[uint64]*sentReq
 	serverPool   *serverPool
-	lastReqID    uint64
 }
 
 func NewLesOdr(db ethdb.Database) *LesOdr {
@@ -158,7 +159,7 @@ func (self *LesOdr) networkRequest(ctx context.Context, lreq LesOdrRequest) erro
 		sentTo:   make(map[*peer]chan struct{}),
 		answered: answered, // reply delivered by any peer
 	}
-	reqID := self.getNextReqID()
+	reqID := getNextReqID()
 	self.mlock.Lock()
 	self.sentReqs[reqID] = req
 	self.mlock.Unlock()
@@ -223,10 +224,8 @@ func (self *LesOdr) Retrieve(ctx context.Context, req light.OdrRequest) (err err
 	return
 }
 
-func (self *LesOdr) getNextReqID() uint64 {
-	self.clock.Lock()
-	defer self.clock.Unlock()
-
-	self.lastReqID++
-	return self.lastReqID
+func getNextReqID() uint64 {
+	var rnd [8]byte
+	rand.Read(rnd[:])
+	return binary.BigEndian.Uint64(rnd[:])
 }
