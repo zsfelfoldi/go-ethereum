@@ -334,3 +334,11 @@ func (p *testPeer) handshake(t *testing.T, td *big.Int, head common.Hash, headNu
 func (p *testPeer) close() {
 	p.app.Close()
 }
+
+type testServerPool *peer
+
+func (p testServerPool) selectPeer(func(*peer) (bool, uint64)) *peer {
+	return (*peer)p
+}
+
+func (p testServerPool) adjustResponseTime(*poolEntry, time.Duration, bool) {}

@@ -39,6 +39,11 @@ var (
 // peerDropFn is a callback type for dropping a peer detected as malicious.
 type peerDropFn func(id string)
 
+type odrPeerSelector interface {
+	selectPeer(func(*peer) (bool, uint64)) *peer
+	adjustResponseTime(*poolEntry, time.Duration, bool)
+}
+
 type LesOdr struct {
 	light.OdrBackend
 	db           ethdb.Database
@@ -46,7 +51,7 @@ type LesOdr struct {
 	removePeer   peerDropFn
 	mlock, clock sync.Mutex
 	sentReqs     map[uint64]*sentReq
-	serverPool   *serverPool
+	serverPool   odrPeerSelector
 }
 
 func NewLesOdr(db ethdb.Database) *LesOdr {
@@ -176,9 +181,13 @@ func (self *LesOdr) networkRequest(ctx context.Context, lreq LesOdrRequest) erro
 
 	exclude := make(map[*peer]struct{})
 	for {
-		if peer := self.serverPool.selectPeer(func(p *peer) (bool, uint64) {
-			return true, p.fcServer.CanSend(lreq.GetCost(p))
-		}); peer == nil {
+		var peer *peer
+		if self.serverPool != nil {
+			peer = self.serverPool.selectPeer(func(p *peer) (bool, uint64) {
+				return true, p.fcServer.CanSend(lreq.GetCost(p))
+			})
+		}
+		if peer == nil {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

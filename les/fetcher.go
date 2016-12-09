@@ -136,9 +136,9 @@ func (f *lightFetcher) syncLoop() {
 			s := requestStarted
 			requestStarted = false
 			if !f.syncing && !(newAnnounce && s) {
-				if p, r, a := f.nextRequest(); r != nil {
+				if peer, node, amount := f.nextRequest(); node != nil {
 					requestStarted = true
-					reqID, started := f.request(p, r, a)
+					reqID, started := f.request(peer, node, amount)
 					if started {
 						go func() {
 							time.Sleep(softRequestTimeout)
