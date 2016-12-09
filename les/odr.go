@@ -137,7 +137,9 @@ func (self *LesOdr) requestPeer(req *sentReq, peer *peer, delivered, timeout cha
 
 	select {
 	case <-delivered:
-		self.serverPool.adjustResponseTime(peer.poolEntry, time.Duration(mclock.Now()-stime), false)
+		if self.serverPool != nil {
+			self.serverPool.adjustResponseTime(peer.poolEntry, time.Duration(mclock.Now()-stime), false)
+		}
 		return
 	case <-time.After(softRequestTimeout):
 		close(timeout)
@@ -152,7 +154,9 @@ func (self *LesOdr) requestPeer(req *sentReq, peer *peer, delivered, timeout cha
 	case <-self.stop:
 		return
 	}
-	self.serverPool.adjustResponseTime(peer.poolEntry, time.Duration(mclock.Now()-stime), true)
+	if self.serverPool != nil {
+		self.serverPool.adjustResponseTime(peer.poolEntry, time.Duration(mclock.Now()-stime), true)
+	}
 }
 
 // networkRequest sends a request to known peers until an answer is received
@@ -181,13 +185,13 @@ func (self *LesOdr) networkRequest(ctx context.Context, lreq LesOdrRequest) erro
 
 	exclude := make(map[*peer]struct{})
 	for {
-		var peer *peer
+		var p *peer
 		if self.serverPool != nil {
-			peer = self.serverPool.selectPeer(func(p *peer) (bool, uint64) {
+			p = self.serverPool.selectPeer(func(p *peer) (bool, uint64) {
 				return true, p.fcServer.CanSend(lreq.GetCost(p))
 			})
 		}
-		if peer == nil {
+		if p == nil {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -196,17 +200,17 @@ func (self *LesOdr) networkRequest(ctx context.Context, lreq LesOdrRequest) erro
 			case <-time.After(retryPeers):
 			}
 		} else {
-			exclude[peer] = struct{}{}
+			exclude[p] = struct{}{}
 			delivered := make(chan struct{})
 			timeout := make(chan struct{})
 			req.lock.Lock()
-			req.sentTo[peer] = delivered
+			req.sentTo[p] = delivered
 			req.lock.Unlock()
 			reqWg.Add(1)
-			cost := lreq.GetCost(peer)
-			peer.fcServer.SendRequest(reqID, cost)
-			go self.requestPeer(req, peer, delivered, timeout, reqWg)
-			lreq.Request(reqID, peer)
+			cost := lreq.GetCost(p)
+			p.fcServer.SendRequest(reqID, cost)
+			go self.requestPeer(req, p, delivered, timeout, reqWg)
+			lreq.Request(reqID, p)
 
 			select {
 			case <-ctx.Done():

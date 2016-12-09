@@ -25,6 +25,7 @@ import (
 	"math/big"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -335,10 +336,12 @@ func (p *testPeer) close() {
 	p.app.Close()
 }
 
-type testServerPool *peer
+type testServerPool peer
 
-func (p testServerPool) selectPeer(func(*peer) (bool, uint64)) *peer {
-	return (*peer)p
+func (p *testServerPool) selectPeer(func(*peer) (bool, uint64)) *peer {
+	return (*peer)(p)
 }
 
-func (p testServerPool) adjustResponseTime(*poolEntry, time.Duration, bool) {}
+func (p *testServerPool) adjustResponseTime(*poolEntry, time.Duration, bool) {
+
+}

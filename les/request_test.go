@@ -71,7 +71,7 @@ func testAccess(t *testing.T, protocol int, fn accessTestFn) {
 	pm, db, _ := newTestProtocolManagerMust(t, false, 4, testChainGen)
 	lpm, ldb, odr := newTestProtocolManagerMust(t, true, 0, nil)
 	_, err1, lpeer, err2 := newTestPeerPair("peer", protocol, pm, lpm)
-	pool := testServerPool(lpeer)
+	pool := (*testServerPool)(lpeer)
 	odr.serverPool = pool
 	select {
 	case <-time.After(time.Millisecond * 100):

@@ -205,7 +205,6 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 		manager.downloader = downloader.New(downloader.LightSync, chainDb, manager.eventMux, blockchain.HasHeader, nil, blockchain.GetHeaderByHash,
 			nil, blockchain.CurrentHeader, nil, nil, nil, blockchain.GetTdByHash,
 			blockchain.InsertHeaderChain, nil, nil, blockchain.Rollback, removePeer)
-		manager.fetcher = newLightFetcher(manager)
 	}
 
 	if odr != nil {
@@ -238,7 +237,9 @@ func (pm *ProtocolManager) removePeer(id string) {
 		if pm.txrelay != nil {
 			pm.txrelay.removePeer(id)
 		}
-		pm.fetcher.removePeer(peer)
+		if pm.fetcher != nil {
+			pm.fetcher.removePeer(peer)
+		}
 	}
 	if err := pm.peers.Unregister(id); err != nil {
 		glog.V(logger.Error).Infoln("Removal failed:", err)
@@ -257,9 +258,10 @@ func (pm *ProtocolManager) Start(srvr *p2p.Server) {
 	lesTopic := discv5.Topic("LES@" + common.Bytes2Hex(pm.blockchain.Genesis().Hash().Bytes()[0:8]))
 	if pm.lightSync {
 		// start sync handler
-		if srvr != nil {
+		if srvr != nil { // srvr is nil during testing
 			pm.serverPool = newServerPool(pm.chainDb, []byte("serverPool/"), srvr, lesTopic, pm.quitSync, &pm.wg)
 			pm.odr.serverPool = pm.serverPool
+			pm.fetcher = newLightFetcher(pm)
 		}
 		go pm.syncer()
 	} else {
@@ -358,8 +360,10 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		p.lock.Lock()
 		head := p.headInfo
 		p.lock.Unlock()
-		pm.fetcher.addPeer(p)
-		pm.fetcher.announce(p, head)
+		if pm.fetcher != nil {
+			pm.fetcher.addPeer(p)
+			pm.fetcher.announce(p, head)
+		}
 
 		if p.poolEntry != nil {
 			pm.serverPool.registered(p.poolEntry)
@@ -445,7 +449,9 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "%v: %v", msg, err)
 		}
 		glog.V(logger.Detail).Infoln("AnnounceMsg:", req.Number, req.Hash, req.Td, req.ReorgDepth)
-		go pm.fetcher.announce(p, &req)
+		if pm.fetcher != nil {
+			go pm.fetcher.announce(p, &req)
+		}
 
 	case GetBlockHeadersMsg:
 		glog.V(logger.Debug).Infof("<=== GetBlockHeadersMsg from peer %v", p.id)
@@ -543,7 +549,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		p.fcServer.GotReply(resp.ReqID, resp.BV)
-		if pm.fetcher.requestedID(resp.ReqID) {
+		if pm.fetcher != nil && pm.fetcher.requestedID(resp.ReqID) {
 			pm.fetcher.deliverHeaders(p, resp.ReqID, resp.Headers)
 		} else {
 			err := pm.downloader.DeliverHeaders(p.id, resp.Headers)
