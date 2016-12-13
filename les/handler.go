@@ -262,6 +262,7 @@ func (pm *ProtocolManager) Start(srvr *p2p.Server) {
 			pm.serverPool = newServerPool(pm.chainDb, []byte("serverPool/"), srvr, lesTopic, pm.quitSync, &pm.wg)
 			pm.odr.serverPool = pm.serverPool
 			pm.fetcher = newLightFetcher(pm)
+			go pm.serverStats()
 		}
 		go pm.syncer()
 	} else {
