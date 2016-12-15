@@ -228,7 +228,13 @@ func (pm *ProtocolManager) removePeer(id string) {
 	if peer == nil {
 		return
 	}
-	glog.V(logger.Debug).Infoln("Removing peer", id)
+	if err := pm.peers.Unregister(id); err != nil {
+		if err == errNotRegistered {
+			return
+		}
+		glog.V(logger.Error).Infoln("Removal failed:", err)
+	}
+	glog.V(logger.Info).Infoln("Removing peer", id)
 
 	// Unregister the peer from the downloader and Ethereum peer set
 	glog.V(logger.Debug).Infof("LES: unregister peer %v", id)
@@ -240,9 +246,6 @@ func (pm *ProtocolManager) removePeer(id string) {
 		if pm.fetcher != nil {
 			pm.fetcher.removePeer(peer)
 		}
-	}
-	if err := pm.peers.Unregister(id); err != nil {
-		glog.V(logger.Error).Infoln("Removal failed:", err)
 	}
 	// Hard disconnect at the networking layer
 	if peer != nil {
@@ -341,12 +344,14 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		requestHeadersByHash := func(origin common.Hash, amount int, skip int, reverse bool) error {
 			reqID := getNextReqID()
 			cost := p.GetRequestCost(GetBlockHeadersMsg, amount)
+			p.fcServer.MustAssignRequest(reqID)
 			p.fcServer.SendRequest(reqID, cost)
 			return p.RequestHeadersByHash(reqID, cost, origin, amount, skip, reverse)
 		}
 		requestHeadersByNumber := func(origin uint64, amount int, skip int, reverse bool) error {
 			reqID := getNextReqID()
 			cost := p.GetRequestCost(GetBlockHeadersMsg, amount)
+			p.fcServer.MustAssignRequest(reqID)
 			p.fcServer.SendRequest(reqID, cost)
 			return p.RequestHeadersByNumber(reqID, cost, origin, amount, skip, reverse)
 		}
@@ -388,7 +393,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	// main loop. handle incoming messages.
 	for {
 		if err := pm.handleMsg(p); err != nil {
-			glog.V(logger.Debug).Infof("%v: message handling failed: %v", p, err)
+			glog.V(logger.Info).Infof("%v: message handling failed: %v", p, err)
 			return err
 		}
 	}
@@ -451,7 +456,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		glog.V(logger.Detail).Infoln("AnnounceMsg:", req.Number, req.Hash, req.Td, req.ReorgDepth)
 		if pm.fetcher != nil {
-			go pm.fetcher.announce(p, &req)
+			pm.fetcher.announce(p, &req)
 		}
 
 	case GetBlockHeadersMsg:
