@@ -24,6 +24,7 @@ import (
 	"math/big"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -410,8 +411,11 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		return err
 	}
 
-	var costs *requestCosts
-	var reqCnt, maxReqs int
+	var (
+		costs           *requestCosts
+		reqCnt, maxReqs int
+		maxReqCost      uint64
+	)
 
 	glog.V(logger.Debug).Infoln("msg:", msg.Code, msg.Size)
 	if rc, ok := p.fcCosts[msg.Code]; ok { // check if msg is a supported request type
@@ -421,13 +425,14 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		bv, ok := p.fcClient.AcceptRequest()
 		if !ok || bv < costs.baseCost {
+			glog.V(logger.Error).Infof("Request from %v came too early", p.id)
 			return errResp(ErrRequestRejected, "")
 		}
 		maxReqs = 10000
 		if bv < pm.server.defParams.BufLimit {
-			d := bv - costs.baseCost
-			if d/10000 < costs.reqCost {
-				maxReqs = int(d / costs.reqCost)
+			maxReqCost = bv - costs.baseCost
+			if maxReqCost/10000 < costs.reqCost {
+				maxReqs = int(maxReqCost / costs.reqCost)
 			}
 		}
 	}
@@ -759,6 +764,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		)
 		reqCnt = len(req.Reqs)
 		if reqCnt > maxReqs || reqCnt > MaxProofsFetch {
+			glog.V(logger.Error).Infof("GetProofs request from %v came %v too early", p.id, time.Duration((costs.reqCost*uint64(reqCnt)-maxReqCost)*1000000/pm.server.defParams.MinRecharge))
 			return errResp(ErrRequestRejected, "")
 		}
 		for _, req := range req.Reqs {
