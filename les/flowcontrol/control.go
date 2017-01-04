@@ -126,7 +126,7 @@ func (peer *ServerNode) recalcBLE(time mclock.AbsTime) {
 	peer.lastTime = time
 }
 
-const safetyMargin = time.Second // time.Millisecond * 100
+const safetyMargin = time.Millisecond * 200
 
 func (peer *ServerNode) canSend(maxCost uint64) time.Duration {
 	maxCost += uint64(safetyMargin) * peer.params.MinRecharge / uint64(fcTimeConst)

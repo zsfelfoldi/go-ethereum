@@ -411,30 +411,23 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		return err
 	}
 
-	var (
-		costs           *requestCosts
-		reqCnt, maxReqs int
-		maxReqCost      uint64
-	)
-
 	glog.V(logger.Debug).Infoln("msg:", msg.Code, msg.Size)
-	if rc, ok := p.fcCosts[msg.Code]; ok { // check if msg is a supported request type
-		costs = rc
-		if p.fcClient == nil {
-			return errResp(ErrRequestRejected, "")
+
+	costs := p.fcCosts[msg.Code]
+	reject := func(reqCnt, maxCnt uint64) bool {
+		if p.fcClient == nil || reqCnt > maxCnt {
+			return true
 		}
-		bv, ok := p.fcClient.AcceptRequest()
-		if !ok || bv < costs.baseCost {
-			glog.V(logger.Error).Infof("Request from %v came too early", p.id)
-			return errResp(ErrRequestRejected, "")
+		bufValue, _ := p.fcClient.AcceptRequest()
+		cost := costs.baseCost + reqCnt*costs.reqCost
+		if cost > pm.server.defParams.BufLimit {
+			cost = pm.server.defParams.BufLimit
 		}
-		maxReqs = 10000
-		if bv < pm.server.defParams.BufLimit {
-			maxReqCost = bv - costs.baseCost
-			if maxReqCost/10000 < costs.reqCost {
-				maxReqs = int(maxReqCost / costs.reqCost)
-			}
+		if cost > bufValue {
+			glog.V(logger.Error).Infof("Request from %v came %v too early", p.id, time.Duration((cost-bufValue)*1000000/pm.server.defParams.MinRecharge))
+			return true
 		}
+		return false
 	}
 
 	if msg.Size > ProtocolMaxMsgSize {
@@ -476,7 +469,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 
 		query := req.Query
-		if query.Amount > uint64(maxReqs) || query.Amount > MaxHeaderFetch {
+		if reject(query.Amount, MaxHeaderFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 
@@ -584,8 +577,8 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			bytes  int
 			bodies []rlp.RawValue
 		)
-		reqCnt = len(req.Hashes)
-		if reqCnt > maxReqs || reqCnt > MaxBodyFetch {
+		reqCnt := len(req.Hashes)
+		if reject(uint64(reqCnt), MaxBodyFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 		for _, hash := range req.Hashes {
@@ -638,8 +631,8 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			bytes int
 			data  [][]byte
 		)
-		reqCnt = len(req.Reqs)
-		if reqCnt > maxReqs || reqCnt > MaxCodeFetch {
+		reqCnt := len(req.Reqs)
+		if reject(uint64(reqCnt), MaxCodeFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 		for _, req := range req.Reqs {
@@ -699,8 +692,8 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			bytes    int
 			receipts []rlp.RawValue
 		)
-		reqCnt = len(req.Hashes)
-		if reqCnt > maxReqs || reqCnt > MaxReceiptFetch {
+		reqCnt := len(req.Hashes)
+		if reject(uint64(reqCnt), MaxReceiptFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 		for _, hash := range req.Hashes {
@@ -762,9 +755,8 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			bytes  int
 			proofs proofsData
 		)
-		reqCnt = len(req.Reqs)
-		if reqCnt > maxReqs || reqCnt > MaxProofsFetch {
-			glog.V(logger.Error).Infof("GetProofs request from %v came %v too early", p.id, time.Duration((costs.reqCost*uint64(reqCnt)-maxReqCost)*1000000/pm.server.defParams.MinRecharge))
+		reqCnt := len(req.Reqs)
+		if reject(uint64(reqCnt), MaxProofsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 		for _, req := range req.Reqs {
@@ -830,8 +822,8 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			bytes  int
 			proofs []ChtResp
 		)
-		reqCnt = len(req.Reqs)
-		if reqCnt > maxReqs || reqCnt > MaxHeaderProofsFetch {
+		reqCnt := len(req.Reqs)
+		if reject(uint64(reqCnt), MaxHeaderProofsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 		for _, req := range req.Reqs {
@@ -884,8 +876,8 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&txs); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
-		reqCnt = len(txs)
-		if reqCnt > maxReqs || reqCnt > MaxTxSend {
+		reqCnt := len(txs)
+		if reject(uint64(reqCnt), MaxTxSend) {
 			return errResp(ErrRequestRejected, "")
 		}
 
