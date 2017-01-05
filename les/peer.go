@@ -59,6 +59,8 @@ type peer struct {
 	poolEntry *poolEntry
 	hasBlock  func(common.Hash, uint64) bool
 
+	unexpectedCnt int // number of unexpected responses received from this peer
+
 	fcClient       *flowcontrol.ClientNode // nil if the peer is server only
 	fcServer       *flowcontrol.ServerNode // nil if the peer is client only
 	fcServerParams *flowcontrol.ServerParams

@@ -110,7 +110,14 @@ func (self *LesOdr) Deliver(peer *peer, msg *Msg) error {
 	}
 
 	if !ok {
-		return errResp(ErrUnexpectedResponse, "reqID = %v", msg.ReqID)
+		peer.unexpectedCnt++
+		if peer.unexpectedCnt >= 20 {
+			return errResp(ErrUnexpectedResponse, "reqID = %v", msg.ReqID)
+		} else {
+			// we tolerate a few unexpected responses because sometimes p2p layer
+			// delivers stuck messages from a previous connection
+			return nil
+		}
 	}
 
 	if req.valFunc(self.db, msg) {

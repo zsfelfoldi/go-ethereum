@@ -477,7 +477,7 @@ func (f *lightFetcher) deliverHeaders(peer *peer, reqID uint64, headers []*types
 	f.deliverChn <- fetchResponse{reqID: reqID, headers: headers, peer: peer}
 }
 
-// processResponse processes header download request responses
+// processResponse processes header download request responses, returns true if successful
 func (f *lightFetcher) processResponse(req fetchRequest, resp fetchResponse) bool {
 	if uint64(len(resp.headers)) != req.amount || resp.headers[0].Hash() != req.hash {
 		glog.V(logger.Info).Infof("response mismatch %v %016x != %v %016x", len(resp.headers), resp.headers[0].Hash().Bytes()[:8], req.amount, req.hash[:8])
@@ -488,6 +488,9 @@ func (f *lightFetcher) processResponse(req fetchRequest, resp fetchResponse) boo
 		headers[int(req.amount)-1-i] = header
 	}
 	if _, err := f.chain.InsertHeaderChain(headers, 1); err != nil {
+		if err == core.BlockFutureErr {
+			return true
+		}
 		glog.V(logger.Info).Infof("InsertHeaderChain error: %v", err)
 		return false
 	}
