@@ -17,6 +17,7 @@
 package filters
 
 import (
+	"fmt"
 	"math"
 	"time"
 
@@ -169,33 +170,104 @@ func (f *Filter) mipFind(start, end uint64, depth int) (logs []*vm.Log, blockNum
 }
 
 func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*vm.Log, blockNumber uint64, err error) {
-	for i := start; i <= end; i++ {
-		blockNumber := rpc.BlockNumber(i)
-		header, err := f.backend.HeaderByNumber(ctx, blockNumber)
-		if header == nil || err != nil {
-			return logs, end, err
-		}
+	type returnRec struct {
+		logs        []*vm.Log
+		blockNumber uint64
+		err         error
+	}
 
-		// Use bloom filtering to see if this block is interesting given the
-		// current parameters
-		if f.bloomFilter(header.Bloom) {
-			// Get the logs of the block
-			receipts, err := f.backend.GetReceipts(ctx, header.Hash())
-			if err != nil {
-				return nil, end, err
+	startChn := make(chan uint64)
+	stopChn := make(chan struct{})
+	returnChn := make(chan returnRec, 100)
+
+	defer close(stopChn)
+
+	for i := 0; i < 100; i++ {
+		go func() {
+			for i := range startChn {
+				//fmt.Println("worker started", i)
+				blockNumber := rpc.BlockNumber(i)
+				header, err := f.backend.HeaderByNumber(ctx, blockNumber)
+				if header == nil || err != nil {
+					if err == nil {
+						err = fmt.Errorf("Header not found")
+					}
+					returnChn <- returnRec{logs, i, err}
+					return
+				}
+
+				// Use bloom filtering to see if this block is interesting given the
+				// current parameters
+				if f.bloomFilter(header.Bloom) {
+					fmt.Println("bloom filter match", i)
+					// Get the logs of the block
+					receipts, err := f.backend.GetReceipts(ctx, header.Hash())
+					if err != nil {
+						returnChn <- returnRec{nil, i, err}
+						return
+					}
+					var unfiltered []*vm.Log
+					for _, receipt := range receipts {
+						unfiltered = append(unfiltered, ([]*vm.Log)(receipt.Logs)...)
+					}
+					logs = filterLogs(unfiltered, nil, nil, f.addresses, f.topics)
+					returnChn <- returnRec{logs, i, nil}
+				} else {
+					returnChn <- returnRec{nil, i, nil}
+				}
+
 			}
-			var unfiltered []*vm.Log
-			for _, receipt := range receipts {
-				unfiltered = append(unfiltered, ([]*vm.Log)(receipt.Logs)...)
+		}()
+	}
+
+	go func() {
+		defer close(startChn)
+		for i := start; i <= end; i++ {
+			select {
+			case startChn <- i:
+				//fmt.Println("queued", i)
+			case <-ctx.Done():
+				return
+			case <-stopChn:
+				return
 			}
-			logs = filterLogs(unfiltered, nil, nil, f.addresses, f.topics)
-			if len(logs) > 0 {
-				return logs, uint64(blockNumber), nil
+		}
+	}()
+
+	results := make(map[uint64]returnRec)
+
+	for i := start; i <= end; i++ {
+		ret, ok := results[i]
+		if ok {
+			delete(results, i)
+		} else {
+		loop:
+			for {
+				select {
+				case ret = <-returnChn:
+					//fmt.Println("returned", ret.blockNumber)
+					if ret.blockNumber == i {
+						break loop
+					} else {
+						results[ret.blockNumber] = ret
+					}
+				case <-ctx.Done():
+					return
+				}
 			}
+		}
+		fmt.Println("processed", i)
+
+		if ret.err != nil {
+			return ret.logs, end, ret.err
+
+		}
+		if len(ret.logs) > 0 {
+			return ret.logs, ret.blockNumber, nil
 		}
 	}
 
-	return logs, end, nil
+	return nil, end, nil
 }
 
 func includes(addresses []common.Address, a common.Address) bool {
