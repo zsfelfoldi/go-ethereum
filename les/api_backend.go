@@ -153,3 +153,7 @@ func (b *LesApiBackend) EventMux() *event.TypeMux {
 func (b *LesApiBackend) AccountManager() *accounts.Manager {
 	return b.eth.accountManager
 }
+
+func (b *LesApiBackend) GetBloomBits(ctx context.Context, bitIdx, sectionIdx uint64) ([]byte, error) {
+	return light.GetBloomBits(ctx, b.eth.odr, bitIdx, sectionIdx)
+}

@@ -138,7 +138,7 @@ func (req *ReceiptsRequest) StoreResult(db ethdb.Database) {
 	core.WriteBlockReceipts(db, req.Hash, req.Number, req.Receipts)
 }
 
-// TrieRequest is the ODR request type for state/storage trie entries
+// ChtRequest is the ODR request type for retrieving old headers from a CHT structure
 type ChtRequest struct {
 	OdrRequest
 	ChtNum, BlockNum uint64
@@ -155,5 +155,18 @@ func (req *ChtRequest) StoreResult(db ethdb.Database) {
 	hash, num := req.Header.Hash(), req.Header.Number.Uint64()
 	core.WriteTd(db, hash, num, req.Td)
 	core.WriteCanonicalHash(db, hash, num)
-	//storeProof(db, req.Proof)
+}
+
+// BloomRequest is the ODR request type for retrieving bloom filters from a CHT structure
+type BloomRequest struct {
+	OdrRequest
+	ChtNum, BitIdx, SectionIdx uint64
+	ChtRoot                    common.Hash
+	BloomBits                  []byte
+	Proof                      []rlp.RawValue
+}
+
+// StoreResult stores the retrieved data in local database
+func (req *BloomRequest) StoreResult(db ethdb.Database) {
+	StoreBloomBits(db, req.BitIdx, req.SectionIdx, req.BloomBits)
 }

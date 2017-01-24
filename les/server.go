@@ -311,7 +311,7 @@ func (pm *ProtocolManager) blockLoop() {
 					more := makeCht(pm.chainDb)
 					mu.Unlock()
 					if more {
-						time.Sleep(time.Millisecond * 10)
+						time.Sleep(time.Millisecond * 100)
 						newCht <- struct{}{}
 					}
 				}()
@@ -325,8 +325,8 @@ func (pm *ProtocolManager) blockLoop() {
 }
 
 var (
-	lastChtKey = []byte("LastChtNumber") // chtNum (uint64 big endian)
-	chtPrefix  = []byte("cht")           // chtPrefix + chtNum (uint64 big endian) -> trie root hash
+	lastChtKey = []byte("LastChtNumber4") // chtNum (uint64 big endian)
+	chtPrefix  = []byte("cht")            // chtPrefix + chtNum (uint64 big endian) -> trie root hash
 )
 
 func getChtRoot(db ethdb.Database, num uint64) common.Hash {
@@ -341,6 +341,10 @@ func storeChtRoot(db ethdb.Database, num uint64, root common.Hash) {
 	binary.BigEndian.PutUint64(encNumber[:], num)
 	db.Put(append(chtPrefix, encNumber[:]...), root[:])
 }
+
+const bloomBits = 2048
+
+var bloomBitsPrefix = []byte("bloom")
 
 func makeCht(db ethdb.Database) bool {
 	headHash := core.GetHeadBlockHash(db)
@@ -372,31 +376,62 @@ func makeCht(db ethdb.Database) bool {
 		t, _ = trie.New(common.Hash{}, db)
 	}
 
-	for num := lastChtNum * light.ChtFrequency; num < (lastChtNum+1)*light.ChtFrequency; num++ {
-		hash := core.GetCanonicalHash(db, num)
-		if hash == (common.Hash{}) {
-			panic("Canonical hash not found")
+	cnt := 16
+	for cnt > 0 && newChtNum > lastChtNum {
+		var blooms [bloomBits][light.ChtFrequency / 8]byte
+
+		for num := lastChtNum * light.ChtFrequency; num < (lastChtNum+1)*light.ChtFrequency; num++ {
+
+			hash := core.GetCanonicalHash(db, num)
+			if hash == (common.Hash{}) {
+				return false
+			}
+			td := core.GetTd(db, hash, num)
+			if td == nil {
+				return false
+			}
+			var encNumber [8]byte
+			binary.BigEndian.PutUint64(encNumber[:], num)
+			var node light.ChtNode
+			node.Hash = hash
+			node.Td = td
+			data, _ := rlp.EncodeToBytes(node)
+			t.Update(encNumber[:], data)
+
+			header := core.GetHeader(db, hash, num)
+			if header == nil {
+				return false
+			}
+			bitIdx := num - lastChtNum*light.ChtFrequency
+			byteIdx := bitIdx / 8
+			bitMask := byte(1) << byte(bitIdx%8)
+			for bloomBitIdx, _ := range blooms {
+				bloomByteIdx := bloomBits/8 - 1 - bloomBitIdx/8
+				bloomBitMask := byte(1) << byte(bloomBitIdx%8)
+				if (header.Bloom[bloomByteIdx] & bloomBitMask) != 0 {
+					blooms[bloomBitIdx][byteIdx] |= bitMask
+				}
+			}
 		}
-		td := core.GetTd(db, hash, num)
-		if td == nil {
-			panic("TD not found")
+
+		for i, bloomData := range blooms {
+			var encKey [10]byte
+			binary.BigEndian.PutUint16(encKey[0:2], uint16(i))
+			binary.BigEndian.PutUint64(encKey[2:10], lastChtNum)
+			key := append(bloomBitsPrefix, encKey[:]...)
+			data := make([]byte, len(bloomData))
+			copy(data, bloomData[:])
+			t.Update(key, data)
 		}
-		var encNumber [8]byte
-		binary.BigEndian.PutUint64(encNumber[:], num)
-		var node light.ChtNode
-		node.Hash = hash
-		node.Td = td
-		data, _ := rlp.EncodeToBytes(node)
-		t.Update(encNumber[:], data)
+		lastChtNum++
+		cnt--
 	}
 
 	root, err := t.Commit()
 	if err != nil {
 		lastChtNum = 0
 	} else {
-		lastChtNum++
-
-		glog.V(logger.Detail).Infof("cht: %d %064x", lastChtNum, root)
+		glog.V(logger.Info).Infof("cht: %d %064x", lastChtNum, root)
 
 		storeChtRoot(db, lastChtNum, root)
 		var data [8]byte

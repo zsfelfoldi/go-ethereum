@@ -57,6 +57,7 @@ const (
 	MaxCodeFetch         = 64  // Amount of contract codes to allow fetching per request
 	MaxProofsFetch       = 64  // Amount of merkle proofs to be fetched per retrieval request
 	MaxHeaderProofsFetch = 64  // Amount of merkle proofs to be fetched per retrieval request
+	MaxBloomBitsFetch    = 64  // Amount of merkle proofs to be fetched per retrieval request
 	MaxTxSend            = 64  // Amount of transactions to be send per request
 
 	disableClientRemovePeer = false
@@ -396,7 +397,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	}
 }
 
-var reqList = []uint64{GetBlockHeadersMsg, GetBlockBodiesMsg, GetCodeMsg, GetReceiptsMsg, GetProofsMsg, SendTxMsg, GetHeaderProofsMsg}
+var reqList = []uint64{GetBlockHeadersMsg, GetBlockBodiesMsg, GetCodeMsg, GetReceiptsMsg, GetProofsMsg, SendTxMsg, GetHeaderProofsMsg, GetBloomBitsMsg}
 
 // handleMsg is invoked whenever an inbound message is received from a remote
 // peer. The remote connection is torn down upon returning any error.
@@ -859,6 +860,65 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		p.fcServer.GotReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
 			MsgType: MsgHeaderProofs,
+			ReqID:   resp.ReqID,
+			Obj:     resp.Data,
+		}
+
+	case GetBloomBitsMsg:
+		glog.V(logger.Debug).Infof("<=== GetBloomBitsMsg from peer %v", p.id)
+		// Decode the retrieval message
+		var req struct {
+			ReqID uint64
+			Reqs  []BloomReq
+		}
+		if err := msg.Decode(&req); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		// Gather state data until the fetch or network limits is reached
+		var (
+			bytes  int
+			proofs []BloomResp
+		)
+		reqCnt := len(req.Reqs)
+		if reject(uint64(reqCnt), MaxBloomBitsFetch) {
+			return errResp(ErrRequestRejected, "")
+		}
+		for _, req := range req.Reqs {
+			if bytes >= softResponseLimit {
+				break
+			}
+
+			if root := getChtRoot(pm.chainDb, req.ChtNum); root != (common.Hash{}) {
+				if tr, _ := trie.New(root, pm.chainDb); tr != nil {
+					var encNumber [10]byte
+					binary.BigEndian.PutUint16(encNumber[0:2], uint16(req.BitIdx))
+					binary.BigEndian.PutUint64(encNumber[2:10], req.SectionIdx)
+					proof := tr.Prove(append(bloomBitsPrefix, encNumber[:]...))
+					proofs = append(proofs, BloomResp{Proof: proof})
+					bytes += len(proof)
+				}
+			}
+		}
+		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
+		return p.SendBloomBits(req.ReqID, bv, proofs)
+
+	case BloomBitsMsg:
+		if pm.odr == nil {
+			return errResp(ErrUnexpectedResponse, "")
+		}
+
+		glog.V(logger.Debug).Infof("<=== BloomBitsMsg from peer %v", p.id)
+		var resp struct {
+			ReqID, BV uint64
+			Data      []BloomResp
+		}
+		if err := msg.Decode(&resp); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		p.fcServer.GotReply(resp.ReqID, resp.BV)
+		deliverMsg = &Msg{
+			MsgType: MsgBloomBits,
 			ReqID:   resp.ReqID,
 			Obj:     resp.Data,
 		}

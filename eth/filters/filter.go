@@ -17,6 +17,7 @@
 package filters
 
 import (
+	"bytes"
 	"math"
 	"time"
 
@@ -36,19 +37,22 @@ type Backend interface {
 	EventMux() *event.TypeMux
 	HeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*types.Header, error)
 	GetReceipts(ctx context.Context, blockHash common.Hash) (types.Receipts, error)
+	GetBloomBits(ctx context.Context, bitIdx, sectionIdx uint64) ([]byte, error)
 }
 
 // Filter can be used to retrieve and filter logs.
 type Filter struct {
-	backend   Backend
-	useMipMap bool
+	backend                 Backend
+	useMipMap, useBloomBits bool
 
 	created time.Time
 
-	db         ethdb.Database
-	begin, end int64
-	addresses  []common.Address
-	topics     [][]common.Hash
+	db             ethdb.Database
+	begin, end     int64
+	addresses      []common.Address
+	topics         [][]common.Hash
+	addressIndexes []types.BloomIndexList
+	topicIndexes   [][]types.BloomIndexList
 }
 
 // New creates a new filter which uses a bloom filter on blocks to figure out whether
@@ -57,9 +61,10 @@ type Filter struct {
 // to light clients.
 func New(backend Backend, useMipMap bool) *Filter {
 	return &Filter{
-		backend:   backend,
-		useMipMap: useMipMap,
-		db:        backend.ChainDb(),
+		backend:      backend,
+		useMipMap:    useMipMap,
+		useBloomBits: !useMipMap,
+		db:           backend.ChainDb(),
 	}
 }
 
@@ -79,11 +84,26 @@ func (f *Filter) SetEndBlock(end int64) {
 // in the given addresses.
 func (f *Filter) SetAddresses(addr []common.Address) {
 	f.addresses = addr
+	if f.useBloomBits {
+		f.addressIndexes = make([]types.BloomIndexList, len(addr))
+		for i, b := range addr {
+			f.addressIndexes[i] = types.BloomIndexes(b.Bytes())
+		}
+	}
 }
 
 // SetTopics matches only logs that have topics matching the given topics.
 func (f *Filter) SetTopics(topics [][]common.Hash) {
 	f.topics = topics
+	if f.useBloomBits {
+		f.topicIndexes = make([][]types.BloomIndexList, len(topics))
+		for j, topicList := range topics {
+			f.topicIndexes[j] = make([]types.BloomIndexList, len(topicList))
+			for i, b := range topicList {
+				f.topicIndexes[j][i] = types.BloomIndexes(b.Bytes())
+			}
+		}
+	}
 }
 
 // FindOnce searches the blockchain for matching log entries, returning
@@ -167,7 +187,258 @@ func (f *Filter) mipFind(start, end uint64, depth int) (logs []*types.Log, block
 	return nil, end
 }
 
+func binaryAnd(a, b []byte) bool {
+	nonZero := false
+	for i, bb := range b {
+		aa := a[i] & bb
+		if aa != 0 {
+			nonZero = true
+		}
+		a[i] = aa
+	}
+	return nonZero
+}
+
+func binaryOr(a, b []byte) {
+	for i, bb := range b {
+		a[i] |= bb
+	}
+}
+
+const bloomBitSize = 4096
+
+func (f *Filter) bitFilterGroup(ctx context.Context, sectionIdx uint64, indexes []types.BloomIndexList) ([]byte, bool) {
+	bits := make(map[uint][]byte)
+	var bitCnt int
+	type returnRec struct {
+		idx  uint
+		data []byte
+	}
+	returnChn := make(chan returnRec)
+
+	for _, idxs := range indexes {
+		for _, idx := range idxs {
+			if _, ok := bits[idx]; !ok {
+				bits[idx] = nil
+				bitCnt++
+
+				go func(idx uint) {
+					data, _ := f.backend.GetBloomBits(ctx, uint64(idx), sectionIdx)
+					returnChn <- returnRec{idx, data}
+				}(idx)
+			}
+		}
+	}
+
+	fail := false
+	for i := 0; i < bitCnt; i++ {
+		r := <-returnChn
+		bits[r.idx] = r.data
+		if len(r.data) != bloomBitSize/8 {
+			fail = true
+		}
+	}
+	if fail {
+		return nil, false
+	}
+
+	var orVector []byte
+	for _, idxs := range indexes {
+		b := bits[idxs[0]]
+		andVector := make([]byte, len(b))
+		copy(andVector, b)
+		if binaryAnd(andVector, bits[idxs[1]]) && binaryAnd(andVector, bits[idxs[2]]) {
+			if orVector == nil {
+				orVector = andVector
+			} else {
+				binaryOr(orVector, andVector)
+			}
+		}
+	}
+	return orVector, true
+}
+
+func (f *Filter) bitFilter(ctx context.Context, sectionIdx uint64) ([]byte, bool) {
+	var (
+		andVector []byte
+		ok        bool
+	)
+
+	if len(f.addresses) > 0 {
+		andVector, ok = f.bitFilterGroup(ctx, sectionIdx, f.addressIndexes)
+		if !ok {
+			return nil, false
+		}
+		if andVector == nil {
+			return nil, true
+		}
+	}
+
+loop:
+	for j, topics := range f.topics {
+		if len(topics) == 0 {
+			return nil, true
+		}
+		for _, topic := range topics {
+			if (topic == common.Hash{}) {
+				continue loop
+			}
+		}
+		v, ok := f.bitFilterGroup(ctx, sectionIdx, f.topicIndexes[j])
+		if !ok {
+			return nil, false
+		}
+		if andVector == nil {
+			andVector = v
+		} else {
+			if !binaryAnd(andVector, v) {
+				return nil, true
+			}
+		}
+	}
+
+	if andVector == nil {
+		// we did nothing, it was a "match all" filter
+		return bytes.Repeat([]byte{255}, bloomBitSize/8), true
+	}
+
+	return andVector, true
+}
+
+func (f *Filter) getLogsSection(ctx context.Context, sectionIdx, start, end uint64) (logs []*types.Log, blockNumber uint64, err error) {
+	match, ok := f.bitFilter(ctx, sectionIdx)
+	if !ok {
+		return f.getLogsClassic(ctx, start, end)
+	}
+	if match == nil {
+		return nil, end, nil
+	}
+
+	for i := start; i <= end; i++ {
+		bitIdx := uint(i - sectionIdx*bloomBitSize)
+		if match[bitIdx/8]&(1<<(bitIdx%8)) != 0 {
+			// Get the logs of the block
+			blockNumber := rpc.BlockNumber(i)
+			header, err := f.backend.HeaderByNumber(ctx, blockNumber)
+			if header == nil || err != nil {
+				return nil, end, err
+			}
+			receipts, err := f.backend.GetReceipts(ctx, header.Hash())
+			if err != nil {
+				return nil, end, err
+			}
+			var unfiltered []*types.Log
+			for _, receipt := range receipts {
+				unfiltered = append(unfiltered, ([]*types.Log)(receipt.Logs)...)
+			}
+			logs = filterLogs(unfiltered, nil, nil, f.addresses, f.topics)
+			//fmt.Println("bloom match at", i, "   len(unfiltered) =", len(unfiltered), "   len(logs) =", len(logs), "   bloomMatch:", f.bloomFilter(header.Bloom))
+			if len(logs) > 0 {
+				return logs, uint64(blockNumber), nil
+			}
+		}
+	}
+
+	return logs, end, nil
+}
+
 func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.Log, blockNumber uint64, err error) {
+	if !f.useBloomBits {
+		return f.getLogsClassic(ctx, start, end)
+	}
+
+	type returnRec struct {
+		logs                    []*types.Log
+		blockNumber, sectionIdx uint64
+		err                     error
+	}
+
+	startSection := start / bloomBitSize
+	endSection := (end + bloomBitSize - 1) / bloomBitSize
+
+	if startSection == endSection {
+		return f.getLogsSection(ctx, startSection, start, end)
+	}
+
+	workers := endSection - startSection
+	if workers > 100 {
+		workers = 100
+	}
+	startChn := make(chan uint64)
+	stopChn := make(chan struct{})
+	returnChn := make(chan returnRec, workers)
+
+	defer close(stopChn)
+
+	for i := 0; i < int(workers); i++ {
+		go func() {
+			for i := range startChn {
+				s := i * bloomBitSize
+				if start > s {
+					s = start
+				}
+				e := (i+1)*bloomBitSize - 1
+				if end < e {
+					e = end
+				}
+				logs, blockNumber, err := f.getLogsSection(ctx, i, s, e)
+				returnChn <- returnRec{logs, blockNumber, i, err}
+				if len(logs) > 0 || err != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	go func() {
+		defer close(startChn)
+		for i := startSection; i <= endSection; i++ {
+			select {
+			case startChn <- i:
+			case <-ctx.Done():
+				return
+			case <-stopChn:
+				return
+			}
+		}
+	}()
+
+	results := make(map[uint64]returnRec)
+
+	for i := startSection; i <= endSection; i++ {
+		ret, ok := results[i]
+		if ok {
+			delete(results, i)
+		} else {
+		loop:
+			for {
+				select {
+				case ret = <-returnChn:
+					if ret.sectionIdx == i {
+						break loop
+					} else {
+						results[ret.sectionIdx] = ret
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+
+		if ret.err != nil {
+			return ret.logs, end, ret.err
+
+		}
+		if len(ret.logs) > 0 {
+			return ret.logs, ret.blockNumber, nil
+		}
+	}
+
+	return nil, end, nil
+}
+
+func (f *Filter) getLogsClassic(ctx context.Context, start, end uint64) (logs []*types.Log, blockNumber uint64, err error) {
+
 	for i := start; i <= end; i++ {
 		blockNumber := rpc.BlockNumber(i)
 		header, err := f.backend.HeaderByNumber(ctx, blockNumber)

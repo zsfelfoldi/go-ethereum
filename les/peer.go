@@ -193,6 +193,11 @@ func (p *peer) SendHeaderProofs(reqID, bv uint64, proofs []ChtResp) error {
 	return sendResponse(p.rw, HeaderProofsMsg, reqID, bv, proofs)
 }
 
+// SendBloomBits sends a batch of bloom proofs, corresponding to the ones requested.
+func (p *peer) SendBloomBits(reqID, bv uint64, proofs []BloomResp) error {
+	return sendResponse(p.rw, BloomBitsMsg, reqID, bv, proofs)
+}
+
 // RequestHeadersByHash fetches a batch of blocks' headers corresponding to the
 // specified header query, based on the hash of an origin block.
 func (p *peer) RequestHeadersByHash(reqID, cost uint64, origin common.Hash, amount int, skip int, reverse bool) error {
@@ -237,6 +242,12 @@ func (p *peer) RequestProofs(reqID, cost uint64, reqs []*ProofReq) error {
 func (p *peer) RequestHeaderProofs(reqID, cost uint64, reqs []*ChtReq) error {
 	glog.V(logger.Debug).Infof("%v fetching %v header proofs", p, len(reqs))
 	return sendRequest(p.rw, GetHeaderProofsMsg, reqID, cost, reqs)
+}
+
+// RequestBloomBits fetches a batch of bloom merkle proofs from a remote node.
+func (p *peer) RequestBloomBits(reqID, cost uint64, reqs []*BloomReq) error {
+	glog.V(logger.Debug).Infof("%v fetching %v bloom proofs", p, len(reqs))
+	return sendRequest(p.rw, GetBloomBitsMsg, reqID, cost, reqs)
 }
 
 func (p *peer) SendTxs(cost uint64, txs types.Transactions) error {

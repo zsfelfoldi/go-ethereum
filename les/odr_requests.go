@@ -53,6 +53,8 @@ func LesRequest(req light.OdrRequest) LesOdrRequest {
 		return (*CodeRequest)(r)
 	case *light.ChtRequest:
 		return (*ChtRequest)(r)
+	case *light.BloomRequest:
+		return (*BloomRequest)(r)
 	default:
 		return nil
 	}
@@ -348,6 +350,76 @@ func (self *ChtRequest) Valid(db ethdb.Database, msg *Msg) bool {
 	self.Proof = proof.Proof
 	self.Header = proof.Header
 	self.Td = node.Td
+	glog.V(logger.Debug).Infof("ODR: validation successful")
+	return true
+}
+
+type BloomReq struct {
+	ChtNum, BitIdx, SectionIdx, FromLevel uint64
+}
+
+type BloomResp struct {
+	Proof []rlp.RawValue
+}
+
+// ODR request type for requesting headers by Canonical Hash Trie, see LesOdrRequest interface
+type BloomRequest light.BloomRequest
+
+// GetCost returns the cost of the given ODR request according to the serving
+// peer's cost table (implementation of LesOdrRequest)
+func (self *BloomRequest) GetCost(peer *peer) uint64 {
+	return peer.GetRequestCost(GetBloomBitsMsg, 1)
+}
+
+// CanSend tells if a certain peer is suitable for serving the given request
+func (self *BloomRequest) CanSend(peer *peer) bool {
+	peer.lock.RLock()
+	defer peer.lock.RUnlock()
+
+	return self.ChtNum <= (peer.headInfo.Number-light.ChtConfirmations)/light.ChtFrequency
+}
+
+// Request sends an ODR request to the LES network (implementation of LesOdrRequest)
+func (self *BloomRequest) Request(reqID uint64, peer *peer) error {
+	glog.V(logger.Debug).Infof("ODR: requesting CHT #%d bloom bit #%d section #%d from peer %v", self.ChtNum, self.BitIdx, self.SectionIdx, peer.id)
+	req := &BloomReq{
+		ChtNum:     self.ChtNum,
+		BitIdx:     self.BitIdx,
+		SectionIdx: self.SectionIdx,
+	}
+	return peer.RequestBloomBits(reqID, self.GetCost(peer), []*BloomReq{req})
+}
+
+// Valid processes an ODR request reply message from the LES network
+// returns true and stores results in memory if the message was a valid reply
+// to the request (implementation of LesOdrRequest)
+func (self *BloomRequest) Valid(db ethdb.Database, msg *Msg) bool {
+	glog.V(logger.Debug).Infof("ODR: validating CHT #%d bloom bit #%d section #%d", self.ChtNum, self.BitIdx, self.SectionIdx)
+
+	if msg.MsgType != MsgBloomBits {
+		glog.V(logger.Debug).Infof("ODR: invalid message type")
+		return false
+	}
+	proofs := msg.Obj.([]BloomResp)
+	if len(proofs) != 1 {
+		glog.V(logger.Debug).Infof("ODR: invalid number of entries: %d", len(proofs))
+		return false
+	}
+	proof := proofs[0]
+	var encNumber [10]byte
+	binary.BigEndian.PutUint16(encNumber[0:2], uint16(self.BitIdx))
+	binary.BigEndian.PutUint64(encNumber[2:10], self.SectionIdx)
+	value, err := trie.VerifyProof(self.ChtRoot, append(bloomBitsPrefix, encNumber[:]...), proof.Proof)
+	if err != nil {
+		glog.V(logger.Debug).Infof("ODR: CHT merkle proof verification error: %v", err)
+		return false
+	}
+	if len(value) != int(light.ChtFrequency/8) {
+		glog.V(logger.Debug).Infof("ODR: bloom bits size mismatch")
+		return false
+	}
+	self.Proof = proof.Proof
+	self.BloomBits = value
 	glog.V(logger.Debug).Infof("ODR: validation successful")
 	return true
 }

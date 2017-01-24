@@ -18,6 +18,7 @@ package light
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"math/big"
 
@@ -37,10 +38,13 @@ var sha3_nil = crypto.Keccak256Hash(nil)
 var (
 	ErrNoTrustedCht = errors.New("No trusted canonical hash trie")
 	ErrNoHeader     = errors.New("Header not found")
+	trustedChtKey   = []byte("TrustedCHT")
+	bloomBitsPrefix = []byte("bloom")
+)
 
+const (
 	ChtFrequency     = uint64(4096)
 	ChtConfirmations = uint64(2048)
-	trustedChtKey    = []byte("TrustedCHT")
 )
 
 type ChtNode struct {
@@ -184,4 +188,36 @@ func GetBlockReceipts(ctx context.Context, odr OdrBackend, hash common.Hash, num
 	} else {
 		return r.Receipts, nil
 	}
+}
+
+func GetBloomBits(ctx context.Context, odr OdrBackend, bitIdx, sectionIdx uint64) ([]byte, error) {
+	db := odr.Database()
+	var encKey [10]byte
+	binary.BigEndian.PutUint16(encKey[0:2], uint16(bitIdx))
+	binary.BigEndian.PutUint64(encKey[2:10], sectionIdx)
+	key := append(bloomBitsPrefix, encKey[:]...)
+	bloomBits, _ := db.Get(key)
+	if len(bloomBits) == int(ChtFrequency/8) {
+		return bloomBits, nil
+	}
+
+	cht := GetTrustedCht(db)
+	if sectionIdx >= cht.Number {
+		return nil, ErrNoTrustedCht
+	}
+
+	r := &BloomRequest{ChtRoot: cht.Root, ChtNum: cht.Number, BitIdx: bitIdx, SectionIdx: sectionIdx}
+	if err := odr.Retrieve(ctx, r); err != nil {
+		return nil, err
+	} else {
+		return r.BloomBits, nil
+	}
+}
+
+func StoreBloomBits(db ethdb.Database, bitIdx, sectionIdx uint64, bloomBits []byte) {
+	var encKey [10]byte
+	binary.BigEndian.PutUint16(encKey[0:2], uint16(bitIdx))
+	binary.BigEndian.PutUint64(encKey[2:10], sectionIdx)
+	key := append(bloomBitsPrefix, encKey[:]...)
+	db.Put(key, bloomBits)
 }
