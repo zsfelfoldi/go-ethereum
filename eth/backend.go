@@ -106,6 +106,7 @@ type LesServer interface {
 	Start(srvr *p2p.Server)
 	Stop()
 	Protocols() []p2p.Protocol
+	AddBloomBitsProcessor(*core.ChainSectionProcessor)
 }
 
 // Ethereum implements the Ethereum full node service.
@@ -142,6 +143,7 @@ type Ethereum struct {
 }
 
 func (s *Ethereum) AddLesServer(ls LesServer) {
+	ls.AddBloomBitsProcessor(s.protocolManager.bloomBitsProcessor)
 	s.lesServer = ls
 	s.protocolManager.lesServer = ls
 }
@@ -327,7 +329,7 @@ func (s *Ethereum) APIs() []rpc.API {
 		}, {
 			Namespace: "eth",
 			Version:   "1.0",
-			Service:   filters.NewPublicFilterAPI(s.ApiBackend, false),
+			Service:   filters.NewPublicFilterAPI(s.ApiBackend, false, useBloomBits),
 			Public:    true,
 		}, {
 			Namespace: "admin",

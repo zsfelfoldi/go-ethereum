@@ -18,6 +18,7 @@
 package les
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -34,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/discover"
@@ -56,6 +58,7 @@ const (
 	MaxCodeFetch         = 64  // Amount of contract codes to allow fetching per request
 	MaxProofsFetch       = 64  // Amount of merkle proofs to be fetched per retrieval request
 	MaxHeaderProofsFetch = 64  // Amount of merkle proofs to be fetched per retrieval request
+	MaxBloomBitsFetch    = 64  // Amount of merkle proofs to be fetched per retrieval request
 	MaxTxSend            = 64  // Amount of transactions to be send per request
 
 	disableClientRemovePeer = false
@@ -202,6 +205,8 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 		manager.downloader = downloader.New(downloader.LightSync, chainDb, manager.eventMux, blockchain.HasHeader, nil, blockchain.GetHeaderByHash,
 			nil, blockchain.CurrentHeader, nil, nil, nil, blockchain.GetTdByHash,
 			blockchain.InsertHeaderChain, nil, nil, blockchain.Rollback, removePeer)
+
+		blockchain.(*light.LightChain).AddChainProcessor(eth.NewBloomBitsProcessor(manager.chainDb, manager.quitSync))
 	}
 
 	manager.reqDist = newRequestDistributor(func() map[distPeer]struct{} {
@@ -229,6 +234,7 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 }
 
 func (pm *ProtocolManager) removePeer(id string) {
+	fmt.Println("removePeer")
 	// Short circuit if the peer was already removed
 	peer := pm.peers.Peer(id)
 	if peer == nil {
@@ -424,7 +430,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	}
 }
 
-var reqList = []uint64{GetBlockHeadersMsg, GetBlockBodiesMsg, GetCodeMsg, GetReceiptsMsg, GetProofsMsg, SendTxMsg, GetHeaderProofsMsg}
+var reqList = []uint64{GetBlockHeadersMsg, GetBlockBodiesMsg, GetCodeMsg, GetReceiptsMsg, GetProofsMsg, SendTxMsg, GetHeaderProofsMsg, GetBloomBitsMsg}
 
 // handleMsg is invoked whenever an inbound message is received from a remote
 // peer. The remote connection is torn down upon returning any error.
@@ -850,14 +856,17 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if reject(uint64(reqCnt), MaxHeaderProofsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
+
+		cdb := ethdb.NewTable(pm.chainDb, light.ChtTablePrefix)
+
 		for _, req := range req.Reqs {
 			if bytes >= softResponseLimit {
 				break
 			}
 
 			if header := pm.blockchain.GetHeaderByNumber(req.BlockNum); header != nil {
-				if root := getChtRoot(pm.chainDb, req.ChtNum); root != (common.Hash{}) {
-					if tr, _ := trie.New(root, pm.chainDb); tr != nil {
+				if root := light.GetChtRoot(pm.chainDb, req.ChtNum); root != (common.Hash{}) {
+					if tr, _ := trie.New(root, cdb); tr != nil {
 						var encNumber [8]byte
 						binary.BigEndian.PutUint64(encNumber[:], req.BlockNum)
 						proof := tr.Prove(encNumber[:])
@@ -887,6 +896,92 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		p.fcServer.GotReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
 			MsgType: MsgHeaderProofs,
+			ReqID:   resp.ReqID,
+			Obj:     resp.Data,
+		}
+
+	case GetBloomBitsMsg:
+		p.Log().Trace("Received bloom bits request")
+		// Decode the retrieval message
+		var req struct {
+			ReqID uint64
+			Reqs  []BloomReq
+		}
+		if err := msg.Decode(&req); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		// Gather state data until the fetch or network limits is reached
+		var (
+			byteCnt int
+			proofs  []BloomResp
+		)
+		reqCnt := len(req.Reqs)
+		if reject(uint64(reqCnt), MaxBloomBitsFetch) {
+			return errResp(ErrRequestRejected, "")
+		}
+		var (
+			lastRoot  common.Hash
+			tr        *trie.Trie
+			lastProof []rlp.RawValue
+		)
+
+		cdb := ethdb.NewTable(pm.chainDb, light.ChtTablePrefix)
+
+		for _, req := range req.Reqs {
+			if byteCnt >= softResponseLimit {
+				break
+			}
+
+			if root := light.GetChtRoot(pm.chainDb, req.ChtNum); root != (common.Hash{}) {
+				if root != lastRoot {
+					tr, _ = trie.New(root, cdb)
+					lastRoot = root
+				}
+				if tr != nil {
+					var encNumber [10]byte
+					binary.BigEndian.PutUint16(encNumber[0:2], uint16(req.BitIdx))
+					binary.BigEndian.PutUint64(encNumber[2:10], req.SectionIdx)
+					proof := tr.Prove(append(light.BloomBitsTriePrefix, encNumber[:]...))
+					if lastProof != nil {
+						fullProof := make([]rlp.RawValue, len(proof))
+						copy(fullProof, proof)
+					loop:
+						for i, data := range proof {
+							if i < len(lastProof) && bytes.Equal(lastProof[i], data) {
+								proof[i] = []byte{0}
+							} else {
+								break loop
+							}
+						}
+						lastProof = fullProof
+					} else {
+						lastProof = proof
+					}
+					proofs = append(proofs, BloomResp{Proof: proof})
+					byteCnt += len(proof)
+				}
+			}
+		}
+		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
+		return p.SendBloomBits(req.ReqID, bv, proofs)
+
+	case BloomBitsMsg:
+		if pm.odr == nil {
+			return errResp(ErrUnexpectedResponse, "")
+		}
+
+		p.Log().Trace("Received bloom bits response")
+		var resp struct {
+			ReqID, BV uint64
+			Data      []BloomResp
+		}
+		if err := msg.Decode(&resp); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		p.fcServer.GotReply(resp.ReqID, resp.BV)
+		deliverMsg = &Msg{
+			MsgType: MsgBloomBits,
 			ReqID:   resp.ReqID,
 			Obj:     resp.Data,
 		}
