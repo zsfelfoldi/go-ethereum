@@ -43,8 +43,8 @@ var (
 )
 
 const (
-	ChtFrequency     = uint64(4096)
-	ChtConfirmations = uint64(2048)
+	ChtFrequency     = 4096
+	ChtConfirmations = 2048
 )
 
 type ChtNode struct {
@@ -227,11 +227,12 @@ func CompressBloomBits(bits []byte) []byte {
 		panic(nil)
 	}
 	c := compressBits(bits)
-	if len(c) < ChtFrequency/8 {
-		return c
-	} else {
-		return bits
+	if len(c) >= ChtFrequency/8 {
+		// make a copy so that output is always detached from input
+		c = make([]byte, ChtFrequency/8)
+		copy(c, bits)
 	}
+	return c
 }
 
 func compressBits(bits []byte) []byte {
@@ -253,45 +254,4 @@ func compressBits(bits []byte) []byte {
 		b = compressBits(b)
 	}
 	return append(b, c[0:cl]...)
-}
-
-func DecompressBloomBits(bits []byte) []byte {
-	if len(bits) == ChtFrequency/8 {
-		return bits
-	}
-	dc, ofs := decompressBits(bits, ChtFrequency/8)
-	if ofs != len(bits) {
-		panic(nil)
-	}
-	return dc
-}
-
-func decompressBits(bits []byte, targetLen int) ([]byte, int) {
-	lb := len(bits)
-	dc := make([]byte, targetLen)
-	if lb == 0 {
-		return dc, 0
-	}
-
-	l := targetLen / 8
-	var (
-		b   []byte
-		ofs int
-	)
-	if l == 1 {
-		b = bits[0:1]
-		ofs = 1
-	} else {
-		b, ofs = decompressBits(bits, l)
-	}
-	for i, _ := range dc {
-		if b[i/8]&(1<<byte(7-i%8)) != 0 {
-			if ofs == lb {
-				panic(nil)
-			}
-			dc[i] = bits[ofs]
-			ofs++
-		}
-	}
-	return dc, ofs
 }

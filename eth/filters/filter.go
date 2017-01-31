@@ -18,6 +18,7 @@ package filters
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"time"
 
@@ -207,6 +208,47 @@ func binaryOr(a, b []byte) {
 
 const bloomBitSize = 4096
 
+func decompressBloomBits(bits []byte) []byte {
+	if len(bits) == bloomBitSize/8 {
+		return bits
+	}
+	dc, ofs := decompressBits(bits, bloomBitSize/8)
+	if ofs != len(bits) {
+		panic(nil)
+	}
+	return dc
+}
+
+func decompressBits(bits []byte, targetLen int) ([]byte, int) {
+	lb := len(bits)
+	dc := make([]byte, targetLen)
+	if lb == 0 {
+		return dc, 0
+	}
+
+	l := targetLen / 8
+	var (
+		b   []byte
+		ofs int
+	)
+	if l == 1 {
+		b = bits[0:1]
+		ofs = 1
+	} else {
+		b, ofs = decompressBits(bits, l)
+	}
+	for i, _ := range dc {
+		if b[i/8]&(1<<byte(7-i%8)) != 0 {
+			if ofs == lb {
+				panic(nil)
+			}
+			dc[i] = bits[ofs]
+			ofs++
+		}
+	}
+	return dc, ofs
+}
+
 func (f *Filter) bitFilterGroup(ctx context.Context, sectionIdx uint64, indexes []types.BloomIndexList) ([]byte, bool) {
 	bits := make(map[uint][]byte)
 	var bitCnt int
@@ -223,7 +265,14 @@ func (f *Filter) bitFilterGroup(ctx context.Context, sectionIdx uint64, indexes 
 				bitCnt++
 
 				go func(idx uint) {
-					data, _ := f.backend.GetBloomBits(ctx, uint64(idx), sectionIdx)
+					data, err := f.backend.GetBloomBits(ctx, uint64(idx), sectionIdx)
+					if err == nil {
+						fmt.Println("compressed bits", idx, "size", len(data))
+						data = decompressBloomBits(data)
+					} else {
+						fmt.Println("compressed bits", idx, "error", err)
+						data = nil
+					}
 					returnChn <- returnRec{idx, data}
 				}(idx)
 			}
@@ -316,7 +365,7 @@ func (f *Filter) getLogsSection(ctx context.Context, sectionIdx, start, end uint
 
 	for i := start; i <= end; i++ {
 		bitIdx := uint(i - sectionIdx*bloomBitSize)
-		if match[bitIdx/8]&(1<<(bitIdx%8)) != 0 {
+		if match[bitIdx/8]&(1<<(7-bitIdx%8)) != 0 {
 			// Get the logs of the block
 			blockNumber := rpc.BlockNumber(i)
 			header, err := f.backend.HeaderByNumber(ctx, blockNumber)
@@ -332,7 +381,7 @@ func (f *Filter) getLogsSection(ctx context.Context, sectionIdx, start, end uint
 				unfiltered = append(unfiltered, ([]*types.Log)(receipt.Logs)...)
 			}
 			logs = filterLogs(unfiltered, nil, nil, f.addresses, f.topics)
-			//fmt.Println("bloom match at", i, "   len(unfiltered) =", len(unfiltered), "   len(logs) =", len(logs), "   bloomMatch:", f.bloomFilter(header.Bloom))
+			fmt.Println("bloom match at", i, "   len(unfiltered) =", len(unfiltered), "   len(logs) =", len(logs), "   bloomMatch:", f.bloomFilter(header.Bloom))
 			if len(logs) > 0 {
 				return logs, uint64(blockNumber), nil
 			}

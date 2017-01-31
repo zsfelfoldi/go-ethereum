@@ -325,7 +325,7 @@ func (pm *ProtocolManager) blockLoop() {
 }
 
 var (
-	lastChtKey = []byte("LastChtNumber4") // chtNum (uint64 big endian)
+	lastChtKey = []byte("LastChtNumber5") // chtNum (uint64 big endian)
 	chtPrefix  = []byte("cht")            // chtPrefix + chtNum (uint64 big endian) -> trie root hash
 )
 
@@ -376,8 +376,9 @@ func makeCht(db ethdb.Database) bool {
 		t, _ = trie.New(common.Hash{}, db)
 	}
 
-	cnt := 16
-	for cnt > 0 && newChtNum > lastChtNum {
+	var compSize, decompSize uint64
+loop:
+	for newChtNum > lastChtNum {
 		var blooms [bloomBits][light.ChtFrequency / 8]byte
 
 		for num := lastChtNum * light.ChtFrequency; num < (lastChtNum+1)*light.ChtFrequency; num++ {
@@ -404,7 +405,7 @@ func makeCht(db ethdb.Database) bool {
 			}
 			bitIdx := num - lastChtNum*light.ChtFrequency
 			byteIdx := bitIdx / 8
-			bitMask := byte(1) << byte(bitIdx%8)
+			bitMask := byte(1) << byte(7-bitIdx%8)
 			for bloomBitIdx, _ := range blooms {
 				bloomByteIdx := bloomBits/8 - 1 - bloomBitIdx/8
 				bloomBitMask := byte(1) << byte(bloomBitIdx%8)
@@ -419,19 +420,25 @@ func makeCht(db ethdb.Database) bool {
 			binary.BigEndian.PutUint16(encKey[0:2], uint16(i))
 			binary.BigEndian.PutUint64(encKey[2:10], lastChtNum)
 			key := append(bloomBitsPrefix, encKey[:]...)
-			data := make([]byte, len(bloomData))
-			copy(data, bloomData[:])
-			t.Update(key, data)
+			data := light.CompressBloomBits(bloomData[:])
+			decompSize += uint64(len(bloomData))
+			compSize += uint64(len(data))
+			if len(data) > 0 {
+				t.Update(key, data)
+			}
 		}
 		lastChtNum++
-		cnt--
+
+		if lastChtNum%16 == 0 {
+			break loop
+		}
 	}
 
 	root, err := t.Commit()
 	if err != nil {
 		lastChtNum = 0
 	} else {
-		glog.V(logger.Info).Infof("cht: %d %064x", lastChtNum, root)
+		glog.V(logger.Info).Infof("Storing CHT #%d  root hash: %064x  compression ratio: %f", lastChtNum, root, float64(compSize)/float64(decompSize))
 
 		storeChtRoot(db, lastChtNum, root)
 		var data [8]byte
