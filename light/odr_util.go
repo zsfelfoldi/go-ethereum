@@ -196,8 +196,8 @@ func GetBloomBits(ctx context.Context, odr OdrBackend, bitIdx, sectionIdx uint64
 	binary.BigEndian.PutUint16(encKey[0:2], uint16(bitIdx))
 	binary.BigEndian.PutUint64(encKey[2:10], sectionIdx)
 	key := append(bloomBitsPrefix, encKey[:]...)
-	bloomBits, _ := db.Get(key)
-	if len(bloomBits) == int(ChtFrequency/8) {
+	bloomBits, err := db.Get(key)
+	if err == nil {
 		return bloomBits, nil
 	}
 
