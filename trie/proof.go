@@ -37,11 +37,12 @@ import (
 // contains all nodes of the longest existing prefix of the key
 // (at least the root node), ending with the node that proves the
 // absence of the key.
-func (t *Trie) Prove(key []byte) []rlp.RawValue {
+func (t *Trie) Prove(key []byte, fromLevel int) []rlp.RawValue {
 	// Collect all nodes on the path to key.
 	key = compactHexDecode(key)
 	nodes := []node{}
 	tn := t.root
+	level := 0
 	for len(key) > 0 && tn != nil {
 		switch n := tn.(type) {
 		case *shortNode:
@@ -52,11 +53,17 @@ func (t *Trie) Prove(key []byte) []rlp.RawValue {
 				tn = n.Val
 				key = key[len(n.Key):]
 			}
-			nodes = append(nodes, n)
+			if level >= fromLevel {
+				nodes = append(nodes, n)
+			}
+			level += len(n.Key)
 		case *fullNode:
 			tn = n.Children[key[0]]
 			key = key[1:]
-			nodes = append(nodes, n)
+			if level >= fromLevel {
+				nodes = append(nodes, n)
+			}
+			level++
 		case hashNode:
 			var err error
 			tn, err = t.resolveHash(n, nil, nil)
@@ -125,6 +132,62 @@ func VerifyProof(rootHash common.Hash, key []byte, proof []rlp.RawValue) (value 
 		}
 	}
 	return nil, errors.New("unexpected end of proof")
+}
+
+func (t *Trie) Verify(key []byte, proof []rlp.RawValue, fromLevel int) (value []byte, err error) {
+	key = compactHexDecode(key)
+	tn := t.root
+	level := 0
+	for len(key) > 0 && tn != nil && level < fromLevel {
+		switch n := tn.(type) {
+		case *shortNode:
+			if len(key) < len(n.Key) || !bytes.Equal(n.Key, key[:len(n.Key)]) {
+				// The trie doesn't contain the key.
+				tn = nil
+			} else {
+				tn = n.Val
+				key = key[len(n.Key):]
+			}
+			level += len(n.Key)
+		case *fullNode:
+			tn = n.Children[key[0]]
+			key = key[1:]
+			level++
+		case hashNode:
+			var err error
+			tn, err = t.resolveHash(n, nil, nil)
+			if err != nil {
+				if glog.V(logger.Error) {
+					glog.Errorf("Unhandled trie error: %v", err)
+				}
+				return nil, err
+			}
+		default:
+			panic(fmt.Sprintf("%T: invalid node: %v", tn, tn))
+		}
+	}
+
+	if tn == nil {
+		if len(proof) > 0 {
+			return nil, errors.New("additional nodes at end of proof")
+		} else {
+			return nil, nil
+		}
+	}
+
+	hasher := newHasher(0, 0)
+	// Don't bother checking for errors here since hasher panics
+	// if encoding doesn't work and we're not writing to any database.
+	tn, _, _ = hasher.hashChildren(tn, nil)
+	hn, _ := hasher.store(tn, nil, false)
+	ewrwerwer
+
+	if _, ok := hn.(hashNode); ok || i == 0 {
+		// If the node's database encoding is a hash (or is the
+		// root node), it becomes a proof element.
+		enc, _ := rlp.EncodeToBytes(n)
+		proof = append(proof, enc)
+	}
 }
 
 func get(tn node, key []byte) ([]byte, node) {

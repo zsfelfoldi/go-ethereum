@@ -325,7 +325,7 @@ func testGetProofs(t *testing.T, protocol int) {
 			}
 			proofreqs = append(proofreqs, req)
 
-			proof := trie.Prove(crypto.Keccak256(acc[:]))
+			proof := trie.Prove(crypto.Keccak256(acc[:]), 0)
 			proofs = append(proofs, proof)
 		}
 	}

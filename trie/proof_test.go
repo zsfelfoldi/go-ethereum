@@ -35,7 +35,7 @@ func TestProof(t *testing.T) {
 	trie, vals := randomTrie(500)
 	root := trie.Hash()
 	for _, kv := range vals {
-		proof := trie.Prove(kv.k)
+		proof := trie.Prove(kv.k, 0)
 		if proof == nil {
 			t.Fatalf("missing key %x while constructing proof", kv.k)
 		}
@@ -52,7 +52,7 @@ func TestProof(t *testing.T) {
 func TestOneElementProof(t *testing.T) {
 	trie := new(Trie)
 	updateString(trie, "k", "v")
-	proof := trie.Prove([]byte("k"))
+	proof := trie.Prove([]byte("k"), 0)
 	if proof == nil {
 		t.Fatal("nil proof")
 	}
@@ -72,7 +72,7 @@ func TestVerifyBadProof(t *testing.T) {
 	trie, vals := randomTrie(800)
 	root := trie.Hash()
 	for _, kv := range vals {
-		proof := trie.Prove(kv.k)
+		proof := trie.Prove(kv.k, 0)
 		if proof == nil {
 			t.Fatal("nil proof")
 		}
@@ -104,7 +104,7 @@ func BenchmarkProve(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		kv := vals[keys[i%len(keys)]]
-		if trie.Prove(kv.k) == nil {
+		if trie.Prove(kv.k, 0) == nil {
 			b.Fatalf("nil proof for %x", kv.k)
 		}
 	}
@@ -117,7 +117,7 @@ func BenchmarkVerifyProof(b *testing.B) {
 	var proofs [][]rlp.RawValue
 	for k := range vals {
 		keys = append(keys, k)
-		proofs = append(proofs, trie.Prove([]byte(k)))
+		proofs = append(proofs, trie.Prove([]byte(k), 0))
 	}
 
 	b.ResetTimer()

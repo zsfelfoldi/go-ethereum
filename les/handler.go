@@ -772,7 +772,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 						}
 					}
 					if tr != nil {
-						proof := tr.Prove(req.Key)
+						proof := tr.Prove(req.Key, int(req.FromLevel))
 						proofs = append(proofs, proof)
 						bytes += len(proof)
 					}
@@ -833,7 +833,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 					if tr, _ := trie.New(root, pm.chainDb); tr != nil {
 						var encNumber [8]byte
 						binary.BigEndian.PutUint64(encNumber[:], req.BlockNum)
-						proof := tr.Prove(encNumber[:])
+						proof := tr.Prove(encNumber[:], int(req.FromLevel))
 						proofs = append(proofs, ChtResp{Header: header, Proof: proof})
 						bytes += len(proof) + estHeaderRlpSize
 					}
@@ -893,7 +893,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 					var encNumber [10]byte
 					binary.BigEndian.PutUint16(encNumber[0:2], uint16(req.BitIdx))
 					binary.BigEndian.PutUint64(encNumber[2:10], req.SectionIdx)
-					proof := tr.Prove(append(bloomBitsPrefix, encNumber[:]...))
+					proof := tr.Prove(append(bloomBitsPrefix, encNumber[:]...), int(req.FromLevel))
 					proofs = append(proofs, BloomResp{Proof: proof})
 					bytes += len(proof)
 				}
