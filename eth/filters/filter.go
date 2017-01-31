@@ -205,13 +205,19 @@ func binaryOr(a, b []byte) {
 	}
 }
 
-const bloomBitSize = 4096
+const (
+	bloomSectionSize = 4096
+	bloomClusterSize = 64 * bloomSectionSize
+)
 
 func decompressBloomBits(bits []byte) []byte {
-	if len(bits) == bloomBitSize/8 {
-		return bits
+	if len(bits) == bloomSectionSize/8 {
+		// make a copy so that output is always detached from input
+		c := make([]byte, bloomSectionSize/8)
+		copy(c, bits)
+		return c
 	}
-	dc, ofs := decompressBits(bits, bloomBitSize/8)
+	dc, ofs := decompressBits(bits, bloomSectionSize/8)
 	if ofs != len(bits) {
 		panic(nil)
 	}
@@ -248,12 +254,12 @@ func decompressBits(bits []byte, targetLen int) ([]byte, int) {
 	return dc, ofs
 }
 
-func (f *Filter) bitFilterGroup(ctx context.Context, sectionIdx uint64, indexes []types.BloomIndexList) ([]byte, bool) {
-	bits := make(map[uint][]byte)
+func (f *Filter) bitFilterGroup(ctx context.Context, sections []uint64, indexes []types.BloomIndexList) ([][]byte, bool) {
+	bits := make(map[uint][][]byte)
 	var bitCnt int
 	type returnRec struct {
 		idx  uint
-		data []byte
+		data [][]byte
 	}
 	returnChn := make(chan returnRec)
 
@@ -264,10 +270,13 @@ func (f *Filter) bitFilterGroup(ctx context.Context, sectionIdx uint64, indexes 
 				bitCnt++
 
 				go func(idx uint) {
-					data, err := f.backend.GetBloomBits(ctx, uint64(idx), []uint64{sectionIdx, sectionIdx + 1})
-					var bits []byte
+					data, err := f.backend.GetBloomBits(ctx, uint64(idx), sections)
+					var bits [][]byte
 					if err == nil {
-						bits = decompressBloomBits(data[0])
+						bits = make([][]byte, len(data))
+						for i, compBits := range data {
+							bits[i] = decompressBloomBits(compBits)
+						}
 					}
 					returnChn <- returnRec{idx, bits}
 				}(idx)
@@ -279,7 +288,7 @@ func (f *Filter) bitFilterGroup(ctx context.Context, sectionIdx uint64, indexes 
 	for i := 0; i < bitCnt; i++ {
 		r := <-returnChn
 		bits[r.idx] = r.data
-		if len(r.data) != bloomBitSize/8 {
+		if len(r.data) != len(sections) {
 			fail = true
 		}
 	}
@@ -287,30 +296,34 @@ func (f *Filter) bitFilterGroup(ctx context.Context, sectionIdx uint64, indexes 
 		return nil, false
 	}
 
-	var orVector []byte
+	var orVector [][]byte
 	for _, idxs := range indexes {
-		b := bits[idxs[0]]
-		andVector := make([]byte, len(b))
-		copy(andVector, b)
-		if binaryAnd(andVector, bits[idxs[1]]) && binaryAnd(andVector, bits[idxs[2]]) {
-			if orVector == nil {
-				orVector = andVector
-			} else {
-				binaryOr(orVector, andVector)
+		andVector := bits[idxs[0]]
+		nonZero := false
+		for i, _ := range andVector {
+			if binaryAnd(andVector[i], bits[idxs[1]][i]) && binaryAnd(andVector[i], bits[idxs[2]][i]) {
+				nonZero = true
+				if orVector != nil {
+					binaryOr(orVector[i], andVector[i])
+				}
 			}
 		}
+		if orVector == nil && nonZero {
+			orVector = andVector
+		}
+
 	}
 	return orVector, true
 }
 
-func (f *Filter) bitFilter(ctx context.Context, sectionIdx uint64) ([]byte, bool) {
+func (f *Filter) bitFilter(ctx context.Context, sections []uint64) ([][]byte, bool) {
 	var (
-		andVector []byte
 		ok        bool
+		andVector [][]byte
 	)
 
 	if len(f.addresses) > 0 {
-		andVector, ok = f.bitFilterGroup(ctx, sectionIdx, f.addressIndexes)
+		andVector, ok = f.bitFilterGroup(ctx, sections, f.addressIndexes)
 		if !ok {
 			return nil, false
 		}
@@ -329,29 +342,56 @@ loop:
 				continue loop
 			}
 		}
-		v, ok := f.bitFilterGroup(ctx, sectionIdx, f.topicIndexes[j])
+
+		var (
+			sectionList []uint64
+			idxList     []int
+		)
+		for i, v := range andVector {
+			if v != nil {
+				sectionList = append(sectionList, sections[i])
+				idxList = append(idxList, i)
+			}
+		}
+
+		v, ok := f.bitFilterGroup(ctx, sectionList, f.topicIndexes[j])
 		if !ok {
 			return nil, false
 		}
-		if andVector == nil {
-			andVector = v
-		} else {
-			if !binaryAnd(andVector, v) {
-				return nil, true
+		if v == nil {
+			return nil, true
+		}
+		zero := true
+		for i, idx := range idxList {
+			if binaryAnd(andVector[idx], v[i]) {
+				zero = false
 			}
+		}
+		if zero {
+			return nil, true
 		}
 	}
 
 	if andVector == nil {
 		// we did nothing, it was a "match all" filter
-		return bytes.Repeat([]byte{255}, bloomBitSize/8), true
+		all := bytes.Repeat([]byte{255}, bloomSectionSize/8)
+		andVector := make([][]byte, len(sections))
+		for i, _ := range andVector {
+			andVector[i] = all
+		}
 	}
 
 	return andVector, true
 }
 
-func (f *Filter) getLogsSection(ctx context.Context, sectionIdx, start, end uint64) (logs []*types.Log, blockNumber uint64, err error) {
-	match, ok := f.bitFilter(ctx, sectionIdx)
+func (f *Filter) getLogsCluster(ctx context.Context, clusterIdx, start, end uint64) (logs []*types.Log, blockNumber uint64, err error) {
+	startSection := start / bloomSectionSize
+	endSection := (end + bloomSectionSize - 1) / bloomSectionSize
+	sections := make([]uint64, endSection+1-startSection)
+	for i, _ := range sections {
+		sections[i] = startSection + uint64(i)
+	}
+	match, ok := f.bitFilter(ctx, sections)
 	if !ok {
 		return f.getLogsClassic(ctx, start, end)
 	}
@@ -359,9 +399,18 @@ func (f *Filter) getLogsSection(ctx context.Context, sectionIdx, start, end uint
 		return nil, end, nil
 	}
 
-	for i := start; i <= end; i++ {
-		bitIdx := uint(i - sectionIdx*bloomBitSize)
-		if match[bitIdx/8]&(1<<(7-bitIdx%8)) != 0 {
+	i := start
+loop:
+	for i <= end {
+		bitIdx := uint64(i - startSection*bloomSectionSize)
+		byteIdx := bitIdx / 8
+		arr := match[byteIdx/bloomSectionSize]
+		arrIdx := byteIdx & bloomSectionSize
+		if arr == nil {
+			i += bloomSectionSize - arrIdx
+			continue loop
+		}
+		if arr[arrIdx]&(1<<(7-bitIdx%8)) != 0 {
 			// Get the logs of the block
 			blockNumber := rpc.BlockNumber(i)
 			header, err := f.backend.HeaderByNumber(ctx, blockNumber)
@@ -382,6 +431,7 @@ func (f *Filter) getLogsSection(ctx context.Context, sectionIdx, start, end uint
 				return logs, uint64(blockNumber), nil
 			}
 		}
+		i++
 	}
 
 	return logs, end, nil
@@ -394,20 +444,20 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 
 	type returnRec struct {
 		logs                    []*types.Log
-		blockNumber, sectionIdx uint64
+		blockNumber, clusterIdx uint64
 		err                     error
 	}
 
-	startSection := start / bloomBitSize
-	endSection := (end + bloomBitSize - 1) / bloomBitSize
+	startCluster := start / bloomClusterSize
+	endCluster := (end + bloomClusterSize - 1) / bloomClusterSize
 
-	if startSection == endSection {
-		return f.getLogsSection(ctx, startSection, start, end)
+	if startCluster == endCluster {
+		return f.getLogsCluster(ctx, startCluster, start, end)
 	}
 
-	workers := endSection - startSection
-	if workers > 100 {
-		workers = 100
+	workers := endCluster - startCluster
+	if workers > 10 {
+		workers = 10
 	}
 	startChn := make(chan uint64)
 	stopChn := make(chan struct{})
@@ -418,15 +468,15 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 	for i := 0; i < int(workers); i++ {
 		go func() {
 			for i := range startChn {
-				s := i * bloomBitSize
+				s := i * bloomClusterSize
 				if start > s {
 					s = start
 				}
-				e := (i+1)*bloomBitSize - 1
+				e := (i+1)*bloomClusterSize - 1
 				if end < e {
 					e = end
 				}
-				logs, blockNumber, err := f.getLogsSection(ctx, i, s, e)
+				logs, blockNumber, err := f.getLogsCluster(ctx, i, s, e)
 				returnChn <- returnRec{logs, blockNumber, i, err}
 				if len(logs) > 0 || err != nil {
 					return
@@ -437,7 +487,7 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 
 	go func() {
 		defer close(startChn)
-		for i := startSection; i <= endSection; i++ {
+		for i := startCluster; i <= endCluster; i++ {
 			select {
 			case startChn <- i:
 			case <-ctx.Done():
@@ -450,7 +500,7 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 
 	results := make(map[uint64]returnRec)
 
-	for i := startSection; i <= endSection; i++ {
+	for i := startCluster; i <= endCluster; i++ {
 		ret, ok := results[i]
 		if ok {
 			delete(results, i)
@@ -459,10 +509,10 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 			for {
 				select {
 				case ret = <-returnChn:
-					if ret.sectionIdx == i {
+					if ret.clusterIdx == i {
 						break loop
 					} else {
-						results[ret.sectionIdx] = ret
+						results[ret.clusterIdx] = ret
 					}
 				case <-ctx.Done():
 					return
