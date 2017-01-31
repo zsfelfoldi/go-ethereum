@@ -160,13 +160,16 @@ func (req *ChtRequest) StoreResult(db ethdb.Database) {
 // BloomRequest is the ODR request type for retrieving bloom filters from a CHT structure
 type BloomRequest struct {
 	OdrRequest
-	ChtNum, BitIdx, SectionIdx uint64
-	ChtRoot                    common.Hash
-	BloomBits                  []byte
-	Proof                      []rlp.RawValue
+	ChtNum, BitIdx uint64
+	SectionIdxList []uint64
+	ChtRoot        common.Hash
+	BloomBits      [][]byte
+	Proofs         [][]rlp.RawValue
 }
 
 // StoreResult stores the retrieved data in local database
 func (req *BloomRequest) StoreResult(db ethdb.Database) {
-	StoreBloomBits(db, req.BitIdx, req.SectionIdx, req.BloomBits)
+	for i, sectionIdx := range req.SectionIdxList {
+		StoreBloomBits(db, req.BitIdx, sectionIdx, req.BloomBits[i])
+	}
 }

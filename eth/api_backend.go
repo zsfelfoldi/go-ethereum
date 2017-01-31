@@ -199,7 +199,7 @@ func (b *EthApiBackend) AccountManager() *accounts.Manager {
 	return b.eth.AccountManager()
 }
 
-func (b *EthApiBackend) GetBloomBits(ctx context.Context, bitIdx, sectionIdx uint64) ([]byte, error) {
+func (b *EthApiBackend) GetBloomBits(ctx context.Context, bitIdx uint64, sectionIdxList []uint64) ([][]byte, error) {
 	return nil, nil
 }
 

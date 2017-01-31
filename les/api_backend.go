@@ -154,6 +154,6 @@ func (b *LesApiBackend) AccountManager() *accounts.Manager {
 	return b.eth.accountManager
 }
 
-func (b *LesApiBackend) GetBloomBits(ctx context.Context, bitIdx, sectionIdx uint64) ([]byte, error) {
-	return light.GetBloomBits(ctx, b.eth.odr, bitIdx, sectionIdx)
+func (b *LesApiBackend) GetBloomBits(ctx context.Context, bitIdx uint64, sectionIdxList []uint64) ([][]byte, error) {
+	return light.GetBloomBits(ctx, b.eth.odr, bitIdx, sectionIdxList)
 }

@@ -190,27 +190,43 @@ func GetBlockReceipts(ctx context.Context, odr OdrBackend, hash common.Hash, num
 	}
 }
 
-func GetBloomBits(ctx context.Context, odr OdrBackend, bitIdx, sectionIdx uint64) ([]byte, error) {
+func GetBloomBits(ctx context.Context, odr OdrBackend, bitIdx uint64, sectionIdxList []uint64) ([][]byte, error) {
 	db := odr.Database()
 	var encKey [10]byte
 	binary.BigEndian.PutUint16(encKey[0:2], uint16(bitIdx))
-	binary.BigEndian.PutUint64(encKey[2:10], sectionIdx)
-	key := append(bloomBitsPrefix, encKey[:]...)
-	bloomBits, err := db.Get(key)
-	if err == nil {
-		return bloomBits, nil
-	}
-
+	result := make([][]byte, len(sectionIdxList))
+	var (
+		reqList []uint64
+		reqIdx  []int
+	)
 	cht := GetTrustedCht(db)
-	if sectionIdx >= cht.Number {
-		return nil, ErrNoTrustedCht
+
+	for i, sectionIdx := range sectionIdxList {
+		binary.BigEndian.PutUint64(encKey[2:10], sectionIdx)
+		key := append(bloomBitsPrefix, encKey[:]...)
+		bloomBits, err := db.Get(key)
+		if err == nil {
+			result[i] = bloomBits
+		} else {
+			if sectionIdx >= cht.Number {
+				return nil, ErrNoTrustedCht
+			}
+			reqList = append(reqList, sectionIdx)
+			reqIdx = append(reqIdx, i)
+		}
+	}
+	if reqList == nil {
+		return result, nil
 	}
 
-	r := &BloomRequest{ChtRoot: cht.Root, ChtNum: cht.Number, BitIdx: bitIdx, SectionIdx: sectionIdx}
+	r := &BloomRequest{ChtRoot: cht.Root, ChtNum: cht.Number, BitIdx: bitIdx, SectionIdxList: reqList}
 	if err := odr.Retrieve(ctx, r); err != nil {
 		return nil, err
 	} else {
-		return r.BloomBits, nil
+		for i, idx := range reqIdx {
+			result[idx] = r.BloomBits[i]
+		}
+		return result, nil
 	}
 }
 

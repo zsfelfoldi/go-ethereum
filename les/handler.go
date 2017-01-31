@@ -18,6 +18,7 @@
 package les
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -876,26 +877,50 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		// Gather state data until the fetch or network limits is reached
 		var (
-			bytes  int
-			proofs []BloomResp
+			byteCnt int
+			proofs  []BloomResp
 		)
 		reqCnt := len(req.Reqs)
 		if reject(uint64(reqCnt), MaxBloomBitsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
+		var (
+			lastRoot  common.Hash
+			tr        *trie.Trie
+			lastProof []rlp.RawValue
+		)
 		for _, req := range req.Reqs {
-			if bytes >= softResponseLimit {
+			if byteCnt >= softResponseLimit {
 				break
 			}
 
 			if root := getChtRoot(pm.chainDb, req.ChtNum); root != (common.Hash{}) {
-				if tr, _ := trie.New(root, pm.chainDb); tr != nil {
+				if root != lastRoot {
+					tr, _ = trie.New(root, pm.chainDb)
+					lastRoot = root
+				}
+				if tr != nil {
 					var encNumber [10]byte
 					binary.BigEndian.PutUint16(encNumber[0:2], uint16(req.BitIdx))
 					binary.BigEndian.PutUint64(encNumber[2:10], req.SectionIdx)
 					proof := tr.Prove(append(bloomBitsPrefix, encNumber[:]...))
+					if lastProof != nil {
+						fullProof := make([]rlp.RawValue, len(proof))
+						copy(fullProof, proof)
+					loop:
+						for i, data := range proof {
+							if i < len(lastProof) && bytes.Equal(lastProof[i], data) {
+								proof[i] = nil
+							} else {
+								break loop
+							}
+						}
+						lastProof = fullProof
+					} else {
+						lastProof = proof
+					}
 					proofs = append(proofs, BloomResp{Proof: proof})
-					bytes += len(proof)
+					byteCnt += len(proof)
 				}
 			}
 		}

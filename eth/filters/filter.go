@@ -37,7 +37,7 @@ type Backend interface {
 	EventMux() *event.TypeMux
 	HeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*types.Header, error)
 	GetReceipts(ctx context.Context, blockHash common.Hash) (types.Receipts, error)
-	GetBloomBits(ctx context.Context, bitIdx, sectionIdx uint64) ([]byte, error)
+	GetBloomBits(ctx context.Context, bitIdx uint64, sectionIdxList []uint64) ([][]byte, error)
 }
 
 // Filter can be used to retrieve and filter logs.
@@ -264,13 +264,12 @@ func (f *Filter) bitFilterGroup(ctx context.Context, sectionIdx uint64, indexes 
 				bitCnt++
 
 				go func(idx uint) {
-					data, err := f.backend.GetBloomBits(ctx, uint64(idx), sectionIdx)
+					data, err := f.backend.GetBloomBits(ctx, uint64(idx), []uint64{sectionIdx})
+					var bits []byte
 					if err == nil {
-						data = decompressBloomBits(data)
-					} else {
-						data = nil
+						bits = decompressBloomBits(data[0])
 					}
-					returnChn <- returnRec{idx, data}
+					returnChn <- returnRec{idx, bits}
 				}(idx)
 			}
 		}

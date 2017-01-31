@@ -192,12 +192,12 @@ func (self *TrieRequest) CanSend(peer *peer) bool {
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
 func (self *TrieRequest) Request(reqID uint64, peer *peer) error {
 	glog.V(logger.Debug).Infof("ODR: requesting trie root %08x key %08x from peer %v", self.Id.Root[:4], self.Key[:4], peer.id)
-	req := &ProofReq{
+	req := ProofReq{
 		BHash:  self.Id.BlockHash,
 		AccKey: self.Id.AccKey,
 		Key:    self.Key,
 	}
-	return peer.RequestProofs(reqID, self.GetCost(peer), []*ProofReq{req})
+	return peer.RequestProofs(reqID, self.GetCost(peer), []ProofReq{req})
 }
 
 // Valid processes an ODR request reply message from the LES network
@@ -247,11 +247,11 @@ func (self *CodeRequest) CanSend(peer *peer) bool {
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
 func (self *CodeRequest) Request(reqID uint64, peer *peer) error {
 	glog.V(logger.Debug).Infof("ODR: requesting node data for hash %08x from peer %v", self.Hash[:4], peer.id)
-	req := &CodeReq{
+	req := CodeReq{
 		BHash:  self.Id.BlockHash,
 		AccKey: self.Id.AccKey,
 	}
-	return peer.RequestCode(reqID, self.GetCost(peer), []*CodeReq{req})
+	return peer.RequestCode(reqID, self.GetCost(peer), []CodeReq{req})
 }
 
 // Valid processes an ODR request reply message from the LES network
@@ -307,11 +307,11 @@ func (self *ChtRequest) CanSend(peer *peer) bool {
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
 func (self *ChtRequest) Request(reqID uint64, peer *peer) error {
 	glog.V(logger.Debug).Infof("ODR: requesting CHT #%d block #%d from peer %v", self.ChtNum, self.BlockNum, peer.id)
-	req := &ChtReq{
+	req := ChtReq{
 		ChtNum:   self.ChtNum,
 		BlockNum: self.BlockNum,
 	}
-	return peer.RequestHeaderProofs(reqID, self.GetCost(peer), []*ChtReq{req})
+	return peer.RequestHeaderProofs(reqID, self.GetCost(peer), []ChtReq{req})
 }
 
 // Valid processes an ODR request reply message from the LES network
@@ -381,41 +381,59 @@ func (self *BloomRequest) CanSend(peer *peer) bool {
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
 func (self *BloomRequest) Request(reqID uint64, peer *peer) error {
-	glog.V(logger.Debug).Infof("ODR: requesting CHT #%d bloom bit #%d section #%d from peer %v", self.ChtNum, self.BitIdx, self.SectionIdx, peer.id)
-	req := &BloomReq{
-		ChtNum:     self.ChtNum,
-		BitIdx:     self.BitIdx,
-		SectionIdx: self.SectionIdx,
+	glog.V(logger.Debug).Infof("ODR: requesting CHT #%d bloom bit #%d section #%d from peer %v", self.ChtNum, self.BitIdx, self.SectionIdxList[0], peer.id)
+	reqs := make([]BloomReq, len(self.SectionIdxList))
+	for i, sectionIdx := range self.SectionIdxList {
+		reqs[i] = BloomReq{
+			ChtNum:     self.ChtNum,
+			BitIdx:     self.BitIdx,
+			SectionIdx: sectionIdx,
+		}
 	}
-	return peer.RequestBloomBits(reqID, self.GetCost(peer), []*BloomReq{req})
+	return peer.RequestBloomBits(reqID, self.GetCost(peer), reqs)
 }
 
 // Valid processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
 func (self *BloomRequest) Valid(db ethdb.Database, msg *Msg) bool {
-	glog.V(logger.Debug).Infof("ODR: validating CHT #%d bloom bit #%d section #%d", self.ChtNum, self.BitIdx, self.SectionIdx)
+	glog.V(logger.Debug).Infof("ODR: validating CHT #%d bloom bit #%d section #%d", self.ChtNum, self.BitIdx, self.SectionIdxList[0])
 
 	if msg.MsgType != MsgBloomBits {
 		glog.V(logger.Debug).Infof("ODR: invalid message type")
 		return false
 	}
 	proofs := msg.Obj.([]BloomResp)
-	if len(proofs) != 1 {
+	if len(proofs) != len(self.SectionIdxList) {
 		glog.V(logger.Debug).Infof("ODR: invalid number of entries: %d", len(proofs))
 		return false
 	}
-	proof := proofs[0]
+	self.Proofs = make([][]rlp.RawValue, len(self.SectionIdxList))
+	self.BloomBits = make([][]byte, len(self.SectionIdxList))
+
 	var encNumber [10]byte
 	binary.BigEndian.PutUint16(encNumber[0:2], uint16(self.BitIdx))
-	binary.BigEndian.PutUint64(encNumber[2:10], self.SectionIdx)
-	value, err := trie.VerifyProof(self.ChtRoot, append(bloomBitsPrefix, encNumber[:]...), proof.Proof)
-	if err != nil {
-		glog.V(logger.Debug).Infof("ODR: CHT merkle proof verification error: %v", err)
-		return false
+	var lastProof []rlp.RawValue
+	for i, proof := range proofs {
+		for i, data := range proof.Proof {
+			if len(data) == 0 {
+				if i < len(lastProof) {
+					proof.Proof[i] = lastProof[i]
+				} else {
+					return false
+				}
+			}
+		}
+		lastProof = proof.Proof
+		binary.BigEndian.PutUint64(encNumber[2:10], self.SectionIdxList[i])
+		value, err := trie.VerifyProof(self.ChtRoot, append(bloomBitsPrefix, encNumber[:]...), proof.Proof)
+		if err != nil {
+			glog.V(logger.Debug).Infof("ODR: CHT merkle proof verification error: %v", err)
+			return false
+		}
+		self.Proofs[i] = proof.Proof
+		self.BloomBits[i] = value
 	}
-	self.Proof = proof.Proof
-	self.BloomBits = value
 	glog.V(logger.Debug).Infof("ODR: validation successful")
 	return true
 }
