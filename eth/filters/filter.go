@@ -18,7 +18,6 @@ package filters
 
 import (
 	"bytes"
-	"fmt"
 	"math"
 	"time"
 
@@ -267,10 +266,8 @@ func (f *Filter) bitFilterGroup(ctx context.Context, sectionIdx uint64, indexes 
 				go func(idx uint) {
 					data, err := f.backend.GetBloomBits(ctx, uint64(idx), sectionIdx)
 					if err == nil {
-						fmt.Println("compressed bits", idx, "size", len(data))
 						data = decompressBloomBits(data)
 					} else {
-						fmt.Println("compressed bits", idx, "error", err)
 						data = nil
 					}
 					returnChn <- returnRec{idx, data}
@@ -381,7 +378,7 @@ func (f *Filter) getLogsSection(ctx context.Context, sectionIdx, start, end uint
 				unfiltered = append(unfiltered, ([]*types.Log)(receipt.Logs)...)
 			}
 			logs = filterLogs(unfiltered, nil, nil, f.addresses, f.topics)
-			fmt.Println("bloom match at", i, "   len(unfiltered) =", len(unfiltered), "   len(logs) =", len(logs), "   bloomMatch:", f.bloomFilter(header.Bloom))
+			//fmt.Println("bloom match at", i, "   len(unfiltered) =", len(unfiltered), "   len(logs) =", len(logs), "   bloomMatch:", f.bloomFilter(header.Bloom))
 			if len(logs) > 0 {
 				return logs, uint64(blockNumber), nil
 			}

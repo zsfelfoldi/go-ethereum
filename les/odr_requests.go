@@ -414,10 +414,6 @@ func (self *BloomRequest) Valid(db ethdb.Database, msg *Msg) bool {
 		glog.V(logger.Debug).Infof("ODR: CHT merkle proof verification error: %v", err)
 		return false
 	}
-	if len(value) != int(light.ChtFrequency/8) {
-		glog.V(logger.Debug).Infof("ODR: bloom bits size mismatch")
-		return false
-	}
 	self.Proof = proof.Proof
 	self.BloomBits = value
 	glog.V(logger.Debug).Infof("ODR: validation successful")
