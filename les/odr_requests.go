@@ -414,10 +414,13 @@ func (self *BloomRequest) Valid(db ethdb.Database, msg *Msg) bool {
 	var encNumber [10]byte
 	binary.BigEndian.PutUint16(encNumber[0:2], uint16(self.BitIdx))
 	var lastProof []rlp.RawValue
+	//fmt.Println("validating")
 	for i, proof := range proofs {
+		//fmt.Println("section", self.SectionIdxList[i], "proof len", len(proof.Proof))
 		for i, data := range proof.Proof {
-			if len(data) == 0 {
+			if len(data) == 1 && data[0] == 0 {
 				if i < len(lastProof) {
+					//fmt.Println("copying", i)
 					proof.Proof[i] = lastProof[i]
 				} else {
 					return false

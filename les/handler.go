@@ -910,7 +910,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 					loop:
 						for i, data := range proof {
 							if i < len(lastProof) && bytes.Equal(lastProof[i], data) {
-								proof[i] = nil
+								proof[i] = []byte{0}
 							} else {
 								break loop
 							}

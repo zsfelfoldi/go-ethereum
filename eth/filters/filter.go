@@ -264,7 +264,7 @@ func (f *Filter) bitFilterGroup(ctx context.Context, sectionIdx uint64, indexes 
 				bitCnt++
 
 				go func(idx uint) {
-					data, err := f.backend.GetBloomBits(ctx, uint64(idx), []uint64{sectionIdx})
+					data, err := f.backend.GetBloomBits(ctx, uint64(idx), []uint64{sectionIdx, sectionIdx + 1})
 					var bits []byte
 					if err == nil {
 						bits = decompressBloomBits(data[0])
