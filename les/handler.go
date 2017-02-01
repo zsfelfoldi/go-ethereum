@@ -223,6 +223,7 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 }
 
 func (pm *ProtocolManager) removePeer(id string) {
+	fmt.Println("removePeer")
 	// Short circuit if the peer was already removed
 	peer := pm.peers.Peer(id)
 	if peer == nil {

@@ -325,7 +325,7 @@ func (pm *ProtocolManager) blockLoop() {
 }
 
 var (
-	lastChtKey = []byte("LastChtNumber5") // chtNum (uint64 big endian)
+	lastChtKey = []byte("LastChtNumber6") // chtNum (uint64 big endian)
 	chtPrefix  = []byte("cht")            // chtPrefix + chtNum (uint64 big endian) -> trie root hash
 )
 
@@ -425,6 +425,8 @@ loop:
 			compSize += uint64(len(data))
 			if len(data) > 0 {
 				t.Update(key, data)
+			} else {
+				t.Delete(key)
 			}
 		}
 		lastChtNum++
