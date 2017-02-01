@@ -18,6 +18,7 @@ package filters
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"time"
 
@@ -386,7 +387,8 @@ loop:
 
 func (f *Filter) getLogsCluster(ctx context.Context, clusterIdx, start, end uint64) (logs []*types.Log, blockNumber uint64, err error) {
 	startSection := start / bloomSectionSize
-	endSection := (end + bloomSectionSize - 1) / bloomSectionSize
+	endSection := end / bloomSectionSize
+	fmt.Println(start, end, startSection, endSection)
 	sections := make([]uint64, endSection+1-startSection)
 	for i, _ := range sections {
 		sections[i] = startSection + uint64(i)
@@ -404,8 +406,8 @@ loop:
 	for i <= end {
 		bitIdx := uint64(i - startSection*bloomSectionSize)
 		byteIdx := bitIdx / 8
-		arr := match[byteIdx/bloomSectionSize]
-		arrIdx := byteIdx & bloomSectionSize
+		arr := match[byteIdx/(bloomSectionSize/8)]
+		arrIdx := byteIdx % (bloomSectionSize / 8)
 		if arr == nil {
 			i += bloomSectionSize - arrIdx
 			continue loop
@@ -449,13 +451,13 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 	}
 
 	startCluster := start / bloomClusterSize
-	endCluster := (end + bloomClusterSize - 1) / bloomClusterSize
+	endCluster := end / bloomClusterSize
 
 	if startCluster == endCluster {
 		return f.getLogsCluster(ctx, startCluster, start, end)
 	}
 
-	workers := endCluster - startCluster
+	workers := endCluster + 1 - startCluster
 	if workers > 10 {
 		workers = 10
 	}
