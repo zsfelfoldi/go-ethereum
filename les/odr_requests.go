@@ -368,7 +368,7 @@ type BloomRequest light.BloomRequest
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
 func (self *BloomRequest) GetCost(peer *peer) uint64 {
-	return peer.GetRequestCost(GetBloomBitsMsg, 1)
+	return peer.GetRequestCost(GetBloomBitsMsg, len(self.SectionIdxList))
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request

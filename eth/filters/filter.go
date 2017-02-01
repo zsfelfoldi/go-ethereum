@@ -208,7 +208,7 @@ func binaryOr(a, b []byte) {
 
 const (
 	bloomSectionSize = 4096
-	bloomClusterSize = 64 * bloomSectionSize
+	bloomClusterSize = 16 * bloomSectionSize
 )
 
 func decompressBloomBits(bits []byte) []byte {
