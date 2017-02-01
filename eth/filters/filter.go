@@ -271,7 +271,9 @@ func (f *Filter) bitFilterGroup(ctx context.Context, sections []uint64, indexes 
 				bitCnt++
 
 				go func(idx uint) {
+					fmt.Println("get", len(sections))
 					data, err := f.backend.GetBloomBits(ctx, uint64(idx), sections)
+					fmt.Println("received", len(sections), len(data), err)
 					var bits [][]byte
 					if err == nil {
 						bits = make([][]byte, len(data))
@@ -428,7 +430,7 @@ loop:
 				unfiltered = append(unfiltered, ([]*types.Log)(receipt.Logs)...)
 			}
 			logs = filterLogs(unfiltered, nil, nil, f.addresses, f.topics)
-			//fmt.Println("bloom match at", i, "   len(unfiltered) =", len(unfiltered), "   len(logs) =", len(logs), "   bloomMatch:", f.bloomFilter(header.Bloom))
+			fmt.Println("bloom match at", i, "   len(unfiltered) =", len(unfiltered), "   len(logs) =", len(logs), "   bloomMatch:", f.bloomFilter(header.Bloom))
 			if len(logs) > 0 {
 				return logs, uint64(blockNumber), nil
 			}
