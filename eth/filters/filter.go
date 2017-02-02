@@ -17,6 +17,7 @@
 package filters
 
 import (
+	"fmt"
 	"math"
 	"time"
 
@@ -24,8 +25,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/bloombits"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/eth/filters/bloombits"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -199,18 +200,23 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 	}
 
 	if f.useBloomBits {
+		fmt.Println("GetMatches")
 		matches := f.matcher.GetMatches(start, end, ctx.Done())
+		fmt.Println("GetMatches ret")
 		stop := make(chan struct{})
 		defer close(stop)
 
 		errChn := make(chan error)
 		go func() {
 			for {
+				fmt.Println("NextRequest")
 				b, s := f.matcher.NextRequest(stop)
+				fmt.Println("NextRequest ret", b, s)
 				if s == nil {
 					return
 				}
 				data, err := f.backend.GetBloomBits(ctx, uint64(b), s)
+				fmt.Println("GetBloomBits", len(data), err)
 				if err != nil {
 					errChn <- err
 					return
@@ -219,7 +225,9 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 				for i, d := range data {
 					decomp[i] = bloombits.DecompressBloomBits(bloombits.CompVector(d))
 				}
+				fmt.Println("Deliver")
 				f.matcher.Deliver(b, s, decomp)
+				fmt.Println("Deliver ret")
 			}
 		}()
 	loop:
