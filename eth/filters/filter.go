@@ -17,8 +17,6 @@
 package filters
 
 import (
-	"bytes"
-	"fmt"
 	"math"
 	"time"
 
@@ -27,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/eth/filters/bloombits"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -48,12 +47,12 @@ type Filter struct {
 
 	created time.Time
 
-	db             ethdb.Database
-	begin, end     int64
-	addresses      []common.Address
-	topics         [][]common.Hash
-	addressIndexes []types.BloomIndexList
-	topicIndexes   [][]types.BloomIndexList
+	db         ethdb.Database
+	begin, end int64
+	addresses  []common.Address
+	topics     [][]common.Hash
+
+	matcher *bloombits.Matcher
 }
 
 // New creates a new filter which uses a bloom filter on blocks to figure out whether
@@ -66,6 +65,7 @@ func New(backend Backend, useMipMap bool) *Filter {
 		useMipMap:    useMipMap,
 		useBloomBits: !useMipMap,
 		db:           backend.ChainDb(),
+		matcher:      &bloombits.Matcher{},
 	}
 }
 
@@ -86,10 +86,7 @@ func (f *Filter) SetEndBlock(end int64) {
 func (f *Filter) SetAddresses(addr []common.Address) {
 	f.addresses = addr
 	if f.useBloomBits {
-		f.addressIndexes = make([]types.BloomIndexList, len(addr))
-		for i, b := range addr {
-			f.addressIndexes[i] = types.BloomIndexes(b.Bytes())
-		}
+		f.matcher.SetAddresses(addr)
 	}
 }
 
@@ -97,13 +94,7 @@ func (f *Filter) SetAddresses(addr []common.Address) {
 func (f *Filter) SetTopics(topics [][]common.Hash) {
 	f.topics = topics
 	if f.useBloomBits {
-		f.topicIndexes = make([][]types.BloomIndexList, len(topics))
-		for j, topicList := range topics {
-			f.topicIndexes[j] = make([]types.BloomIndexList, len(topicList))
-			for i, b := range topicList {
-				f.topicIndexes[j][i] = types.BloomIndexes(b.Bytes())
-			}
-		}
+		f.matcher.SetTopics(topics)
 	}
 }
 
@@ -188,355 +179,73 @@ func (f *Filter) mipFind(start, end uint64, depth int) (logs []*types.Log, block
 	return nil, end
 }
 
-func binaryAnd(a, b []byte) bool {
-	nonZero := false
-	for i, bb := range b {
-		aa := a[i] & bb
-		if aa != 0 {
-			nonZero = true
-		}
-		a[i] = aa
-	}
-	return nonZero
-}
-
-func binaryOr(a, b []byte) {
-	for i, bb := range b {
-		a[i] |= bb
-	}
-}
-
-const (
-	bloomSectionSize = 4096
-	bloomClusterSize = 16 * bloomSectionSize
-)
-
-func decompressBloomBits(bits []byte) []byte {
-	if len(bits) == bloomSectionSize/8 {
-		// make a copy so that output is always detached from input
-		c := make([]byte, bloomSectionSize/8)
-		copy(c, bits)
-		return c
-	}
-	dc, ofs := decompressBits(bits, bloomSectionSize/8)
-	if ofs != len(bits) {
-		panic(nil)
-	}
-	return dc
-}
-
-func decompressBits(bits []byte, targetLen int) ([]byte, int) {
-	lb := len(bits)
-	dc := make([]byte, targetLen)
-	if lb == 0 {
-		return dc, 0
-	}
-
-	l := targetLen / 8
-	var (
-		b   []byte
-		ofs int
-	)
-	if l == 1 {
-		b = bits[0:1]
-		ofs = 1
-	} else {
-		b, ofs = decompressBits(bits, l)
-	}
-	for i, _ := range dc {
-		if b[i/8]&(1<<byte(7-i%8)) != 0 {
-			if ofs == lb {
-				panic(nil)
-			}
-			dc[i] = bits[ofs]
-			ofs++
-		}
-	}
-	return dc, ofs
-}
-
-func (f *Filter) bitFilterGroup(ctx context.Context, sections []uint64, indexes []types.BloomIndexList) ([][]byte, bool) {
-	bits := make(map[uint][][]byte)
-	var bitCnt int
-	type returnRec struct {
-		idx  uint
-		data [][]byte
-	}
-	returnChn := make(chan returnRec)
-
-	for _, idxs := range indexes {
-		for _, idx := range idxs {
-			if _, ok := bits[idx]; !ok {
-				bits[idx] = nil
-				bitCnt++
-
-				go func(idx uint) {
-					fmt.Println("get", len(sections))
-					data, err := f.backend.GetBloomBits(ctx, uint64(idx), sections)
-					fmt.Println("received", len(sections), len(data), err)
-					var bits [][]byte
-					if err == nil {
-						bits = make([][]byte, len(data))
-						for i, compBits := range data {
-							bits[i] = decompressBloomBits(compBits)
-						}
-					}
-					returnChn <- returnRec{idx, bits}
-				}(idx)
-			}
-		}
-	}
-
-	fail := false
-	for i := 0; i < bitCnt; i++ {
-		r := <-returnChn
-		bits[r.idx] = r.data
-		if len(r.data) != len(sections) {
-			fail = true
-		}
-	}
-	if fail {
-		return nil, false
-	}
-
-	var orVector [][]byte
-	for _, idxs := range indexes {
-		andVector := bits[idxs[0]]
-		nonZero := false
-		for i, _ := range andVector {
-			if binaryAnd(andVector[i], bits[idxs[1]][i]) && binaryAnd(andVector[i], bits[idxs[2]][i]) {
-				nonZero = true
-				if orVector != nil {
-					binaryOr(orVector[i], andVector[i])
-				}
-			}
-		}
-		if orVector == nil && nonZero {
-			orVector = andVector
-		}
-
-	}
-	return orVector, true
-}
-
-func (f *Filter) bitFilter(ctx context.Context, sections []uint64) ([][]byte, bool) {
-	var (
-		ok        bool
-		andVector [][]byte
-	)
-
-	if len(f.addresses) > 0 {
-		andVector, ok = f.bitFilterGroup(ctx, sections, f.addressIndexes)
-		if !ok {
-			return nil, false
-		}
-		if andVector == nil {
-			return nil, true
-		}
-	}
-
-loop:
-	for j, topics := range f.topics {
-		if len(topics) == 0 {
-			return nil, true
-		}
-		for _, topic := range topics {
-			if (topic == common.Hash{}) {
-				continue loop
-			}
-		}
-
-		var (
-			sectionList []uint64
-			idxList     []int
-		)
-		for i, v := range andVector {
-			if v != nil {
-				sectionList = append(sectionList, sections[i])
-				idxList = append(idxList, i)
-			}
-		}
-
-		v, ok := f.bitFilterGroup(ctx, sectionList, f.topicIndexes[j])
-		if !ok {
-			return nil, false
-		}
-		if v == nil {
-			return nil, true
-		}
-		zero := true
-		for i, idx := range idxList {
-			if binaryAnd(andVector[idx], v[i]) {
-				zero = false
-			}
-		}
-		if zero {
-			return nil, true
-		}
-	}
-
-	if andVector == nil {
-		// we did nothing, it was a "match all" filter
-		all := bytes.Repeat([]byte{255}, bloomSectionSize/8)
-		andVector := make([][]byte, len(sections))
-		for i, _ := range andVector {
-			andVector[i] = all
-		}
-	}
-
-	return andVector, true
-}
-
-func (f *Filter) getLogsCluster(ctx context.Context, clusterIdx, start, end uint64) (logs []*types.Log, blockNumber uint64, err error) {
-	startSection := start / bloomSectionSize
-	endSection := end / bloomSectionSize
-	fmt.Println(start, end, startSection, endSection)
-	sections := make([]uint64, endSection+1-startSection)
-	for i, _ := range sections {
-		sections[i] = startSection + uint64(i)
-	}
-	match, ok := f.bitFilter(ctx, sections)
-	if !ok {
-		return f.getLogsClassic(ctx, start, end)
-	}
-	if match == nil {
-		return nil, end, nil
-	}
-
-	i := start
-loop:
-	for i <= end {
-		bitIdx := uint64(i - startSection*bloomSectionSize)
-		byteIdx := bitIdx / 8
-		arr := match[byteIdx/(bloomSectionSize/8)]
-		arrIdx := byteIdx % (bloomSectionSize / 8)
-		if arr == nil {
-			i += bloomSectionSize - arrIdx
-			continue loop
-		}
-		if arr[arrIdx]&(1<<(7-bitIdx%8)) != 0 {
-			// Get the logs of the block
-			blockNumber := rpc.BlockNumber(i)
-			header, err := f.backend.HeaderByNumber(ctx, blockNumber)
-			if header == nil || err != nil {
-				return nil, end, err
-			}
-			receipts, err := f.backend.GetReceipts(ctx, header.Hash())
-			if err != nil {
-				return nil, end, err
-			}
-			var unfiltered []*types.Log
-			for _, receipt := range receipts {
-				unfiltered = append(unfiltered, ([]*types.Log)(receipt.Logs)...)
-			}
-			logs = filterLogs(unfiltered, nil, nil, f.addresses, f.topics)
-			fmt.Println("bloom match at", i, "   len(unfiltered) =", len(unfiltered), "   len(logs) =", len(logs), "   bloomMatch:", f.bloomFilter(header.Bloom))
-			if len(logs) > 0 {
-				return logs, uint64(blockNumber), nil
-			}
-		}
-		i++
-	}
-
-	return logs, end, nil
-}
-
 func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.Log, blockNumber uint64, err error) {
-	if !f.useBloomBits {
-		return f.getLogsClassic(ctx, start, end)
+
+	checkBlock := func(i uint64, header *types.Header) (logs []*types.Log, blockNumber uint64, err error) {
+		// Get the logs of the block
+		receipts, err := f.backend.GetReceipts(ctx, header.Hash())
+		if err != nil {
+			return nil, end, err
+		}
+		var unfiltered []*types.Log
+		for _, receipt := range receipts {
+			unfiltered = append(unfiltered, ([]*types.Log)(receipt.Logs)...)
+		}
+		logs = filterLogs(unfiltered, nil, nil, f.addresses, f.topics)
+		if len(logs) > 0 {
+			return logs, i, nil
+		}
+		return nil, i, nil
 	}
 
-	type returnRec struct {
-		logs                    []*types.Log
-		blockNumber, clusterIdx uint64
-		err                     error
-	}
+	if f.useBloomBits {
+		matches := f.matcher.GetMatches(start, end, ctx.Done())
+		stop := make(chan struct{})
+		defer close(stop)
 
-	startCluster := start / bloomClusterSize
-	endCluster := end / bloomClusterSize
-
-	if startCluster == endCluster {
-		return f.getLogsCluster(ctx, startCluster, start, end)
-	}
-
-	workers := endCluster + 1 - startCluster
-	if workers > 10 {
-		workers = 10
-	}
-	startChn := make(chan uint64)
-	stopChn := make(chan struct{})
-	returnChn := make(chan returnRec, workers)
-
-	defer close(stopChn)
-
-	for i := 0; i < int(workers); i++ {
+		errChn := make(chan error)
 		go func() {
-			for i := range startChn {
-				s := i * bloomClusterSize
-				if start > s {
-					s = start
-				}
-				e := (i+1)*bloomClusterSize - 1
-				if end < e {
-					e = end
-				}
-				logs, blockNumber, err := f.getLogsCluster(ctx, i, s, e)
-				returnChn <- returnRec{logs, blockNumber, i, err}
-				if len(logs) > 0 || err != nil {
+			for {
+				b, s := f.matcher.NextRequest(stop)
+				if s == nil {
 					return
 				}
+				data, err := f.backend.GetBloomBits(ctx, uint64(b), s)
+				if err != nil {
+					errChn <- err
+					return
+				}
+				decomp := make([]bloombits.BitVector, len(data))
+				for i, d := range data {
+					decomp[i] = bloombits.DecompressBloomBits(bloombits.CompVector(d))
+				}
+				f.matcher.Deliver(b, s, decomp)
 			}
 		}()
-	}
-
-	go func() {
-		defer close(startChn)
-		for i := startCluster; i <= endCluster; i++ {
+	loop:
+		for {
 			select {
-			case startChn <- i:
-			case <-ctx.Done():
-				return
-			case <-stopChn:
-				return
-			}
-		}
-	}()
-
-	results := make(map[uint64]returnRec)
-
-	for i := startCluster; i <= endCluster; i++ {
-		ret, ok := results[i]
-		if ok {
-			delete(results, i)
-		} else {
-		loop:
-			for {
-				select {
-				case ret = <-returnChn:
-					if ret.clusterIdx == i {
-						break loop
-					} else {
-						results[ret.clusterIdx] = ret
-					}
-				case <-ctx.Done():
-					return
+			case i, ok := <-matches:
+				if !ok {
+					break loop
 				}
+
+				blockNumber := rpc.BlockNumber(i)
+				header, err := f.backend.HeaderByNumber(ctx, blockNumber)
+				if header == nil || err != nil {
+					return logs, end, err
+				}
+
+				l, b, e := checkBlock(i, header)
+				if l != nil || e != nil {
+					return l, b, e
+				}
+			case err := <-errChn:
+				return logs, end, err
 			}
 		}
-
-		if ret.err != nil {
-			return ret.logs, end, ret.err
-
-		}
-		if len(ret.logs) > 0 {
-			return ret.logs, ret.blockNumber, nil
-		}
+		return logs, end, nil
 	}
-
-	return nil, end, nil
-}
-
-func (f *Filter) getLogsClassic(ctx context.Context, start, end uint64) (logs []*types.Log, blockNumber uint64, err error) {
 
 	for i := start; i <= end; i++ {
 		blockNumber := rpc.BlockNumber(i)
@@ -548,18 +257,9 @@ func (f *Filter) getLogsClassic(ctx context.Context, start, end uint64) (logs []
 		// Use bloom filtering to see if this block is interesting given the
 		// current parameters
 		if f.bloomFilter(header.Bloom) {
-			// Get the logs of the block
-			receipts, err := f.backend.GetReceipts(ctx, header.Hash())
-			if err != nil {
-				return nil, end, err
-			}
-			var unfiltered []*types.Log
-			for _, receipt := range receipts {
-				unfiltered = append(unfiltered, ([]*types.Log)(receipt.Logs)...)
-			}
-			logs = filterLogs(unfiltered, nil, nil, f.addresses, f.topics)
-			if len(logs) > 0 {
-				return logs, uint64(blockNumber), nil
+			l, b, e := checkBlock(i, header)
+			if l != nil || e != nil {
+				return l, b, e
 			}
 		}
 	}

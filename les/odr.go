@@ -19,6 +19,7 @@ package les
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"sync"
 	"time"
 
@@ -190,12 +191,14 @@ func (self *LesOdr) networkRequest(ctx context.Context, lreq LesOdrRequest) erro
 	for {
 		var p *peer
 		if self.serverPool != nil {
+			fmt.Println("waiting for selection")
 			p = self.serverPool.selectPeerWait(reqID, func(p *peer) (bool, time.Duration) {
 				if _, ok := exclude[p]; ok || !lreq.CanSend(p) {
 					return false, 0
 				}
 				return true, p.fcServer.CanSend(lreq.GetCost(p))
 			}, ctx.Done())
+			fmt.Println("selected", p)
 		}
 		if p == nil {
 			select {
@@ -204,6 +207,8 @@ func (self *LesOdr) networkRequest(ctx context.Context, lreq LesOdrRequest) erro
 			case <-req.answered:
 				return nil
 			case <-time.After(retryPeers):
+				// exclude = make(map[*peer]struct{})  ?
+				fmt.Println("retryPeers")
 			}
 		} else {
 			exclude[p] = struct{}{}
@@ -214,7 +219,9 @@ func (self *LesOdr) networkRequest(ctx context.Context, lreq LesOdrRequest) erro
 			req.lock.Unlock()
 			reqWg.Add(1)
 			cost := lreq.GetCost(p)
+			fmt.Println("waiting to send")
 			p.fcServer.SendRequest(reqID, cost)
+			fmt.Println("sending")
 			go self.requestPeer(req, p, delivered, timeout, reqWg)
 			lreq.Request(reqID, p)
 
