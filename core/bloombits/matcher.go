@@ -119,6 +119,7 @@ func (f *fetcher) firstIndex() (uint64, bool) {
 	f.reqLock.RLock()
 	defer f.reqLock.RUnlock()
 
+	fmt.Println("f.reqCnt", f.reqCnt)
 	return f.reqFirst, f.reqCnt > 0
 }
 
@@ -258,10 +259,11 @@ func (m *Matcher) subMatch(sectionChn chan uint64, andVectorChn chan BitVector, 
 			select {
 			case <-stop:
 				return
-			case s, ok := <-sectionChn:
+			case s, ok := <-processChn:
 				if !ok {
 					close(resIdxChn)
 					close(resDataChn)
+					return
 				}
 
 				var orVector BitVector
@@ -350,7 +352,6 @@ func (m *Matcher) GetMatches(start, end uint64, stop <-chan struct{}) chan uint6
 
 func (m *Matcher) NextRequest(stop <-chan struct{}) (bitIdx uint, sectionIdxList []uint64) {
 	m.reqLock.Lock()
-	defer m.reqLock.Unlock()
 
 	fmt.Println("1")
 	for {
@@ -361,7 +362,8 @@ func (m *Matcher) NextRequest(stop <-chan struct{}) (bitIdx uint, sectionIdxList
 			found     bool
 		)
 
-		for m.reqCnt == 0 {
+		fmt.Println("m.reqCnt", m.reqCnt)
+		for m.reqCnt <= 0 {
 			fmt.Println("4")
 			c := make(chan struct{})
 			m.wakeupQueue = append(m.wakeupQueue, c)
@@ -393,6 +395,7 @@ func (m *Matcher) NextRequest(stop <-chan struct{}) (bitIdx uint, sectionIdxList
 			if len(list) > 0 {
 				fmt.Println("11")
 				m.reqCnt -= len(list)
+				m.reqLock.Unlock()
 				return reqBitIdx, list
 			}
 		}
