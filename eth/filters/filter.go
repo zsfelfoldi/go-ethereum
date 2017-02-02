@@ -180,6 +180,35 @@ func (f *Filter) mipFind(start, end uint64, depth int) (logs []*types.Log, block
 	return nil, end
 }
 
+func (f *Filter) serveMatcher(ctx context.Context, stop chan struct{}) chan error {
+	errChn := make(chan error)
+	go func() {
+		for {
+			fmt.Println("NextRequest")
+			b, s := f.matcher.NextRequest(stop)
+			fmt.Println("NextRequest ret", b, s)
+			if s == nil {
+				return
+			}
+			data, err := f.backend.GetBloomBits(ctx, uint64(b), s)
+			fmt.Println("GetBloomBits", len(data), err)
+			if err != nil {
+				errChn <- err
+				return
+			}
+			decomp := make([]bloombits.BitVector, len(data))
+			for i, d := range data {
+				decomp[i] = bloombits.DecompressBloomBits(bloombits.CompVector(d))
+			}
+			fmt.Println("Deliver")
+			f.matcher.Deliver(b, s, decomp)
+			fmt.Println("Deliver ret")
+		}
+	}()
+
+	return errChn
+}
+
 func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.Log, blockNumber uint64, err error) {
 
 	checkBlock := func(i uint64, header *types.Header) (logs []*types.Log, blockNumber uint64, err error) {
@@ -200,36 +229,13 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 	}
 
 	if f.useBloomBits {
-		fmt.Println("GetMatches")
-		matches := f.matcher.GetMatches(start, end, ctx.Done())
-		fmt.Println("GetMatches ret")
 		stop := make(chan struct{})
 		defer close(stop)
+		fmt.Println("GetMatches")
+		matches := f.matcher.GetMatches(start, end, stop)
+		fmt.Println("GetMatches ret")
+		errChn := f.serveMatcher(ctx, stop)
 
-		errChn := make(chan error)
-		go func() {
-			for {
-				fmt.Println("NextRequest")
-				b, s := f.matcher.NextRequest(stop)
-				fmt.Println("NextRequest ret", b, s)
-				if s == nil {
-					return
-				}
-				data, err := f.backend.GetBloomBits(ctx, uint64(b), s)
-				fmt.Println("GetBloomBits", len(data), err)
-				if err != nil {
-					errChn <- err
-					return
-				}
-				decomp := make([]bloombits.BitVector, len(data))
-				for i, d := range data {
-					decomp[i] = bloombits.DecompressBloomBits(bloombits.CompVector(d))
-				}
-				fmt.Println("Deliver")
-				f.matcher.Deliver(b, s, decomp)
-				fmt.Println("Deliver ret")
-			}
-		}()
 	loop:
 		for {
 			select {
@@ -250,6 +256,8 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 				}
 			case err := <-errChn:
 				return logs, end, err
+			case <-ctx.Done():
+				return nil, end, ctx.Err()
 			}
 		}
 		return logs, end, nil

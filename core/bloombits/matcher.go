@@ -26,7 +26,7 @@ type fetcher struct {
 	newReqCallback   func()
 }
 
-func (f *fetcher) fetch(sectionChn chan uint64, stop <-chan struct{}) chan BitVector {
+func (f *fetcher) fetch(sectionChn chan uint64, stop chan struct{}) chan BitVector {
 	dataChn := make(chan BitVector)
 	returnChn := make(chan uint64)
 
@@ -171,7 +171,7 @@ loop:
 	}
 }
 
-func (m *Matcher) match(sectionChn chan uint64, stop <-chan struct{}) (chan uint64, chan BitVector) {
+func (m *Matcher) match(sectionChn chan uint64, stop chan struct{}) (chan uint64, chan BitVector) {
 	subIdx := m.topics
 	if len(m.addresses) > 0 {
 		subIdx = append([][]types.BloomIndexList{m.addresses}, subIdx...)
@@ -211,7 +211,7 @@ func (m *Matcher) getOrNewFetcher(idx uint) *fetcher {
 }
 
 // andVector == nil
-func (m *Matcher) subMatch(sectionChn chan uint64, andVectorChn chan BitVector, idxs []types.BloomIndexList, stop <-chan struct{}) (chan uint64, chan BitVector) {
+func (m *Matcher) subMatch(sectionChn chan uint64, andVectorChn chan BitVector, idxs []types.BloomIndexList, stop chan struct{}) (chan uint64, chan BitVector) {
 	// set up fetchers
 	fetchIdx := make([][3]chan uint64, len(idxs))
 	fetchData := make([][3]chan BitVector, len(idxs))
@@ -301,7 +301,7 @@ func (m *Matcher) subMatch(sectionChn chan uint64, andVectorChn chan BitVector, 
 	return resIdxChn, resDataChn
 }
 
-func (m *Matcher) GetMatches(start, end uint64, stop <-chan struct{}) chan uint64 {
+func (m *Matcher) GetMatches(start, end uint64, stop chan struct{}) chan uint64 {
 	sectionChn := make(chan uint64, channelCap)
 	resultsChn := make(chan uint64, channelCap)
 
@@ -350,7 +350,7 @@ func (m *Matcher) GetMatches(start, end uint64, stop <-chan struct{}) chan uint6
 	return resultsChn
 }
 
-func (m *Matcher) NextRequest(stop <-chan struct{}) (bitIdx uint, sectionIdxList []uint64) {
+func (m *Matcher) NextRequest(stop chan struct{}) (bitIdx uint, sectionIdxList []uint64) {
 	m.reqLock.Lock()
 
 	fmt.Println("1")
