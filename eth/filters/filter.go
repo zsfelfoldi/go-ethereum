@@ -182,29 +182,31 @@ func (f *Filter) mipFind(start, end uint64, depth int) (logs []*types.Log, block
 
 func (f *Filter) serveMatcher(ctx context.Context, stop chan struct{}) chan error {
 	errChn := make(chan error)
-	go func() {
-		for {
-			fmt.Println("NextRequest")
-			b, s := f.matcher.NextRequest(stop)
-			fmt.Println("NextRequest ret", b, s)
-			if s == nil {
-				return
+	for i := 0; i < 10; i++ {
+		go func(i int) {
+			for {
+				fmt.Println(i, "NextRequest")
+				b, s := f.matcher.NextRequest(stop)
+				fmt.Println(i, "NextRequest ret", b, s)
+				if s == nil {
+					return
+				}
+				data, err := f.backend.GetBloomBits(ctx, uint64(b), s)
+				fmt.Println(i, "GetBloomBits", len(data), err)
+				if err != nil {
+					errChn <- err
+					return
+				}
+				decomp := make([]bloombits.BitVector, len(data))
+				for i, d := range data {
+					decomp[i] = bloombits.DecompressBloomBits(bloombits.CompVector(d))
+				}
+				fmt.Println(i, "Deliver")
+				f.matcher.Deliver(b, s, decomp)
+				fmt.Println(i, "Deliver ret")
 			}
-			data, err := f.backend.GetBloomBits(ctx, uint64(b), s)
-			fmt.Println("GetBloomBits", len(data), err)
-			if err != nil {
-				errChn <- err
-				return
-			}
-			decomp := make([]bloombits.BitVector, len(data))
-			for i, d := range data {
-				decomp[i] = bloombits.DecompressBloomBits(bloombits.CompVector(d))
-			}
-			fmt.Println("Deliver")
-			f.matcher.Deliver(b, s, decomp)
-			fmt.Println("Deliver ret")
-		}
-	}()
+		}(i)
+	}
 
 	return errChn
 }
