@@ -1,7 +1,6 @@
 package bloombits
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -13,22 +12,30 @@ const (
 	channelCap       = 100
 )
 
+// when received by fetcher:		data == nil, requested == false, fetched == chan struct{}
+// when returned by NextRequest:	data == nil, requested == true, fetched == chan struct{}
+// when data is delivered:			data == BitVector, requested == true, fetched == nil
 type req struct {
 	data      BitVector
 	requested bool
 	fetched   chan struct{}
 }
 
+type distReq struct {
+	bitIdx     uint
+	sectionIdx uint64
+}
+
 type fetcher struct {
-	reqMap           map[uint64]req
-	reqFirst, reqCnt uint64
-	reqLock          sync.RWMutex
-	newReqCallback   func()
+	bitIdx  uint
+	reqMap  map[uint64]req
+	reqLock sync.RWMutex
+	distChn chan distReq
 }
 
 func (f *fetcher) fetch(sectionChn chan uint64, stop chan struct{}) chan BitVector {
-	dataChn := make(chan BitVector)
-	returnChn := make(chan uint64)
+	dataChn := make(chan BitVector, channelCap)
+	returnChn := make(chan uint64, channelCap)
 
 	go func() {
 		defer close(returnChn)
@@ -46,15 +53,9 @@ func (f *fetcher) fetch(sectionChn chan uint64, stop chan struct{}) chan BitVect
 				_, ok = f.reqMap[idx]
 				if !ok {
 					f.reqMap[idx] = req{fetched: make(chan struct{})}
-					if idx < f.reqFirst || f.reqCnt == 0 {
-						f.reqFirst = idx
-					}
-					f.reqCnt++
+					f.distChn <- distReq{bitIdx: f.bitIdx, sectionIdx: idx}
 				}
 				f.reqLock.Unlock()
-				if !ok {
-					f.newReqCallback()
-				}
 				returnChn <- idx
 			}
 		}
@@ -91,38 +92,6 @@ func (f *fetcher) fetch(sectionChn chan uint64, stop chan struct{}) chan BitVect
 	return dataChn
 }
 
-func (f *fetcher) nextRequest() (sectionIdxList []uint64) {
-	f.reqLock.Lock()
-	defer f.reqLock.Unlock()
-
-	for f.reqCnt > 0 && len(sectionIdxList) < maxRequestLength {
-		sectionIdxList = append(sectionIdxList, f.reqFirst)
-		r := f.reqMap[f.reqFirst]
-		r.requested = true
-		f.reqMap[f.reqFirst] = r
-		f.reqCnt--
-		if f.reqCnt > 0 {
-		loop:
-			for {
-				f.reqFirst++
-				if r, ok := f.reqMap[f.reqFirst]; ok && !r.requested {
-					break loop
-				}
-			}
-		}
-	}
-
-	return
-}
-
-func (f *fetcher) firstIndex() (uint64, bool) {
-	f.reqLock.RLock()
-	defer f.reqLock.RUnlock()
-
-	fmt.Println("f.reqCnt", f.reqCnt)
-	return f.reqFirst, f.reqCnt > 0
-}
-
 func (f *fetcher) deliver(sectionIdxList []uint64, data []BitVector) {
 	f.reqLock.Lock()
 	defer f.reqLock.Unlock()
@@ -141,9 +110,8 @@ type Matcher struct {
 	topics    [][]types.BloomIndexList
 	fetchers  map[uint]*fetcher
 
-	wakeupQueue []chan struct{}
-	reqCnt      int
-	reqLock     sync.Mutex
+	distChn       chan distReq
+	getNextReqChn chan chan nextRequests
 }
 
 // SetAddresses matches only logs that are generated from addresses that are included
@@ -177,6 +145,9 @@ func (m *Matcher) match(sectionChn chan uint64, stop chan struct{}) (chan uint64
 		subIdx = append([][]types.BloomIndexList{m.addresses}, subIdx...)
 	}
 	m.fetchers = make(map[uint]*fetcher)
+	m.distChn = make(chan distReq, channelCap)
+	m.getNextReqChn = make(chan chan nextRequests) // should be a blocking channel
+	go m.distributeRequests(stop)
 
 	s := sectionChn
 	var bv chan BitVector
@@ -191,20 +162,9 @@ func (m *Matcher) getOrNewFetcher(idx uint) *fetcher {
 		return f
 	}
 	f := &fetcher{
-		reqMap: make(map[uint64]req),
-		newReqCallback: func() {
-			fmt.Println("cb 1")
-			m.reqLock.Lock()
-			fmt.Println("cb 2")
-			if m.reqCnt == 0 && len(m.wakeupQueue) > 0 {
-				fmt.Println("cb 3")
-				close(m.wakeupQueue[0])
-				m.wakeupQueue = m.wakeupQueue[1:]
-			}
-			m.reqCnt++
-			m.reqLock.Unlock()
-			fmt.Println("cb 4")
-		},
+		bitIdx:  idx,
+		reqMap:  make(map[uint64]req),
+		distChn: m.distChn,
 	}
 	m.fetchers[idx] = f
 	return f
@@ -350,55 +310,79 @@ func (m *Matcher) GetMatches(start, end uint64, stop chan struct{}) chan uint64 
 	return resultsChn
 }
 
-func (m *Matcher) NextRequest(stop chan struct{}) (bitIdx uint, sectionIdxList []uint64) {
-	m.reqLock.Lock()
+type nextRequests struct {
+	bitIdx         uint
+	sectionIdxList []uint64
+}
 
-	fmt.Println("1")
+func (m *Matcher) distributeRequests(stop chan struct{}) {
+	reqCnt := 0
+	reqs := make(map[uint][]uint64)
+	storeReq := func(r distReq) {
+		queue := reqs[r.bitIdx]
+		i := 0
+		for i < len(queue) && r.sectionIdx > queue[i] {
+			i++
+		}
+		reqs[r.bitIdx] = append(append(queue[:i], r.sectionIdx), queue[i:]...)
+		reqCnt++
+	}
+
 	for {
-		fmt.Println("2")
-		var (
-			firstIdx  uint64
-			reqBitIdx uint
-			found     bool
-		)
-
-		fmt.Println("m.reqCnt", m.reqCnt)
-		for m.reqCnt <= 0 {
-			fmt.Println("4")
-			c := make(chan struct{})
-			m.wakeupQueue = append(m.wakeupQueue, c)
-			m.reqLock.Unlock()
+		if reqCnt == 0 {
 			select {
+			case r := <-m.distChn:
+				storeReq(r)
 			case <-stop:
-				fmt.Println("5")
-				return 0, nil
-			case <-c:
-				fmt.Println("6")
+				return
 			}
-			m.reqLock.Lock()
-			fmt.Println("7")
-		}
+		} else {
+			select {
+			case r := <-m.distChn:
+				storeReq(r)
+			case <-stop:
+				return
+			case c := <-m.getNextReqChn:
+				var (
+					found       bool
+					bestBit     uint
+					bestSection uint64
+				)
 
-		fmt.Println("8")
-		for i, f := range m.fetchers {
-			if first, ok := f.firstIndex(); ok && (!found || first < firstIdx) {
-				firstIdx = first
-				reqBitIdx = i
-				found = true
-			}
-		}
-		fmt.Println("9")
+				for bitIdx, queue := range reqs {
+					if len(queue) > 0 && (!found || queue[0] < bestSection) {
+						found = true
+						bestBit = bitIdx
+						bestSection = queue[0]
+					}
+				}
+				if !found {
+					panic(nil)
+				}
 
-		if found {
-			fmt.Println("10")
-			list := m.fetchers[reqBitIdx].nextRequest()
-			if len(list) > 0 {
-				fmt.Println("11")
-				m.reqCnt -= len(list)
-				m.reqLock.Unlock()
-				return reqBitIdx, list
+				bestQueue := reqs[bestBit]
+				cnt := len(bestQueue)
+				if cnt > maxRequestLength {
+					cnt = maxRequestLength
+				}
+				res := nextRequests{bestBit, bestQueue[:cnt]}
+				reqs[bestBit] = bestQueue[cnt:]
+				reqCnt -= cnt
+
+				c <- res
 			}
 		}
+	}
+}
+
+func (m *Matcher) NextRequest(stop chan struct{}) (bitIdx uint, sectionIdxList []uint64) {
+	c := make(chan nextRequests)
+	select {
+	case m.getNextReqChn <- c:
+		r := <-c
+		return r.bitIdx, r.sectionIdxList
+	case <-stop:
+		return 0, nil
 	}
 }
 
