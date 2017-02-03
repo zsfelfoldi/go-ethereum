@@ -2,6 +2,7 @@ package bloombits
 
 import (
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -328,18 +329,31 @@ func (m *Matcher) distributeRequests(stop chan struct{}) {
 		reqCnt++
 	}
 
+	storeReqs := func(r distReq) {
+		storeReq(r)
+		timeout := time.After(time.Microsecond)
+		for {
+			select {
+			case <-timeout:
+				return
+			case r := <-m.distChn:
+				storeReq(r)
+			}
+		}
+	}
+
 	for {
 		if reqCnt == 0 {
 			select {
 			case r := <-m.distChn:
-				storeReq(r)
+				storeReqs(r)
 			case <-stop:
 				return
 			}
 		} else {
 			select {
 			case r := <-m.distChn:
-				storeReq(r)
+				storeReqs(r)
 			case <-stop:
 				return
 			case c := <-m.getNextReqChn:
