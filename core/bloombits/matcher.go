@@ -47,10 +47,9 @@ type fetcher struct {
 	bitIdx  uint
 	reqMap  map[uint64]req
 	reqLock sync.RWMutex
-	distChn chan distReq
 }
 
-func (f *fetcher) fetch(sectionChn chan uint64, stop chan struct{}) chan BitVector {
+func (f *fetcher) fetch(sectionChn chan uint64, distChn chan distReq, stop chan struct{}) chan BitVector {
 	dataChn := make(chan BitVector, channelCap)
 	returnChn := make(chan uint64, channelCap)
 
@@ -67,10 +66,15 @@ func (f *fetcher) fetch(sectionChn chan uint64, stop chan struct{}) chan BitVect
 				}
 
 				f.reqLock.Lock()
-				_, ok = f.reqMap[idx]
-				if !ok {
-					f.reqMap[idx] = req{fetched: make(chan struct{})}
-					f.distChn <- distReq{bitIdx: f.bitIdx, sectionIdx: idx}
+				r := f.reqMap[idx]
+				if r.data == nil {
+					if r.fetched == nil {
+						r.fetched = make(chan struct{})
+					}
+					if !r.requested {
+						distChn <- distReq{bitIdx: f.bitIdx, sectionIdx: idx}
+					}
+					f.reqMap[idx] = r
 				}
 				f.reqLock.Unlock()
 				returnChn <- idx
@@ -112,8 +116,20 @@ func (f *fetcher) fetch(sectionChn chan uint64, stop chan struct{}) chan BitVect
 	return dataChn
 }
 
+func (f *fetcher) requested(sectionIdxList []uint64) {
+	fmt.Println("requested", f.bitIdx, sectionIdxList)
+	f.reqLock.Lock()
+	defer f.reqLock.Unlock()
+
+	for _, idx := range sectionIdxList {
+		r := f.reqMap[idx]
+		r.requested = true
+		f.reqMap[idx] = r
+	}
+}
+
 func (f *fetcher) deliver(sectionIdxList []uint64, data []BitVector) {
-	fmt.Println("deliver", f.bitIdx, sectionIdxList)
+	fmt.Println("deliver", f.bitIdx, sectionIdxList, data != nil)
 	f.reqLock.Lock()
 	defer f.reqLock.Unlock()
 
@@ -191,9 +207,8 @@ func (m *Matcher) getOrNewFetcher(idx uint) *fetcher {
 		return f
 	}
 	f := &fetcher{
-		bitIdx:  idx,
-		reqMap:  make(map[uint64]req),
-		distChn: m.distChn,
+		bitIdx: idx,
+		reqMap: make(map[uint64]req),
 	}
 	m.fetchers[idx] = f
 	return f
@@ -207,7 +222,7 @@ func (m *Matcher) subMatch(sectionChn chan uint64, andVectorChn chan BitVector, 
 	for i, idx := range idxs {
 		for j, ii := range idx {
 			fetchIdx[i][j] = make(chan uint64, channelCap)
-			fetchData[i][j] = m.getOrNewFetcher(ii).fetch(fetchIdx[i][j], stop)
+			fetchData[i][j] = m.getOrNewFetcher(ii).fetch(fetchIdx[i][j], m.distChn, stop)
 		}
 	}
 
@@ -435,6 +450,7 @@ func (m *Matcher) NextRequest(stop chan struct{}) (bitIdx uint, sectionIdxList [
 	case m.getNextReqChn <- c:
 		r := <-c
 		fmt.Println("request", r.bitIdx, r.sectionIdxList)
+		m.fetchers[r.bitIdx].requested(r.sectionIdxList)
 		return r.bitIdx, r.sectionIdxList
 	case <-stop:
 		return 0, nil
