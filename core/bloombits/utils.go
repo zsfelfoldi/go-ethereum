@@ -15,6 +15,10 @@
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 package bloombits
 
+import (
+	"github.com/ethereum/go-ethereum/core/types"
+)
+
 const SectionSize = 4096
 
 type (
@@ -51,6 +55,39 @@ func bvIsNonZero(a BitVector) bool {
 		}
 	}
 	return false
+}
+
+func CompressBloomBits(bits BitVector) CompVector {
+	if len(bits) != SectionSize/8 {
+		panic(nil)
+	}
+	c := compressBits(bits)
+	if len(c) >= SectionSize/8 {
+		// make a copy so that output is always detached from input
+		return CompVector(bvCopy(bits))
+	}
+	return CompVector(c)
+}
+
+func compressBits(bits []byte) []byte {
+	l := len(bits)
+	b := make([]byte, l/8)
+	c := make([]byte, l)
+	cl := 0
+	for i, v := range bits {
+		if v != 0 {
+			c[cl] = v
+			cl++
+			b[i/8] |= 1 << byte(7-i%8)
+		}
+	}
+	if cl == 0 {
+		return nil
+	}
+	if l > 8 {
+		b = compressBits(b)
+	}
+	return append(b, c[0:cl]...)
 }
 
 func DecompressBloomBits(bits CompVector) BitVector {
@@ -93,4 +130,36 @@ func decompressBits(bits []byte, targetLen int) ([]byte, int) {
 		}
 	}
 	return dc, ofs
+}
+
+const BloomLength = 2048
+
+type BloomBitsCreator struct {
+	blooms [BloomLength][SectionSize / 8]byte
+	bitIdx uint
+}
+
+func (b *BloomBitsCreator) AddHeaderBloom(bloom types.Bloom) {
+	if b.bitIdx >= SectionSize {
+		panic("too many header blooms added")
+	}
+
+	byteIdx := b.bitIdx / 8
+	bitMask := byte(1) << byte(7-b.bitIdx%8)
+	for bloomBitIdx, _ := range b.blooms {
+		bloomByteIdx := SectionSize/8 - 1 - bloomBitIdx/8
+		bloomBitMask := byte(1) << byte(bloomBitIdx%8)
+		if (bloom[bloomByteIdx] & bloomBitMask) != 0 {
+			b.blooms[bloomBitIdx][byteIdx] |= bitMask
+		}
+	}
+	b.bitIdx++
+}
+
+func (b *BloomBitsCreator) GetBitVector(idx uint) BitVector {
+	if b.bitIdx != SectionSize {
+		panic("not enough header blooms added")
+	}
+
+	return BitVector(b.blooms[idx][:])
 }

@@ -25,6 +25,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/bloombits"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -342,9 +343,7 @@ func storeChtRoot(db ethdb.Database, num uint64, root common.Hash) {
 	db.Put(append(chtPrefix, encNumber[:]...), root[:])
 }
 
-const bloomBits = 2048
-
-var bloomBitsPrefix = []byte("bloom")
+var bloomBitsTriePrefix = []byte("bloom")
 
 func makeCht(db ethdb.Database) bool {
 	headHash := core.GetHeadBlockHash(db)
@@ -379,7 +378,7 @@ func makeCht(db ethdb.Database) bool {
 	var compSize, decompSize uint64
 loop:
 	for newChtNum > lastChtNum {
-		var blooms [bloomBits][light.ChtFrequency / 8]byte
+		bloomBitsCreator := &bloombits.BloomBitsCreator{}
 
 		for num := lastChtNum * light.ChtFrequency; num < (lastChtNum+1)*light.ChtFrequency; num++ {
 
@@ -403,25 +402,17 @@ loop:
 			if header == nil {
 				return false
 			}
-			bitIdx := num - lastChtNum*light.ChtFrequency
-			byteIdx := bitIdx / 8
-			bitMask := byte(1) << byte(7-bitIdx%8)
-			for bloomBitIdx, _ := range blooms {
-				bloomByteIdx := bloomBits/8 - 1 - bloomBitIdx/8
-				bloomBitMask := byte(1) << byte(bloomBitIdx%8)
-				if (header.Bloom[bloomByteIdx] & bloomBitMask) != 0 {
-					blooms[bloomBitIdx][byteIdx] |= bitMask
-				}
-			}
+
+			bloomBitsCreator.AddHeaderBloom(header.Bloom)
 		}
 
-		for i, bloomData := range blooms {
+		for i := uint(0); i < bloombits.BloomLength; i++ {
 			var encKey [10]byte
 			binary.BigEndian.PutUint16(encKey[0:2], uint16(i))
 			binary.BigEndian.PutUint64(encKey[2:10], lastChtNum)
-			key := append(bloomBitsPrefix, encKey[:]...)
-			data := light.CompressBloomBits(bloomData[:])
-			decompSize += uint64(len(bloomData))
+			key := append(bloomBitsTriePrefix, encKey[:]...)
+			data := bloombits.CompressBloomBits(bloomBitsCreator.GetBitVector(i))
+			decompSize += bloombits.SectionSize / 8
 			compSize += uint64(len(data))
 			if len(data) > 0 {
 				t.Update(key, data)

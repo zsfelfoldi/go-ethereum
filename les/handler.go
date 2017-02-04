@@ -904,7 +904,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 					var encNumber [10]byte
 					binary.BigEndian.PutUint16(encNumber[0:2], uint16(req.BitIdx))
 					binary.BigEndian.PutUint64(encNumber[2:10], req.SectionIdx)
-					proof := tr.Prove(append(bloomBitsPrefix, encNumber[:]...))
+					proof := tr.Prove(append(bloomBitsTriePrefix, encNumber[:]...))
 					if lastProof != nil {
 						fullProof := make([]rlp.RawValue, len(proof))
 						copy(fullProof, proof)

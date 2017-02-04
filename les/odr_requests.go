@@ -429,7 +429,7 @@ func (self *BloomRequest) Valid(db ethdb.Database, msg *Msg) bool {
 		}
 		lastProof = proof.Proof
 		binary.BigEndian.PutUint64(encNumber[2:10], self.SectionIdxList[i])
-		value, err := trie.VerifyProof(self.ChtRoot, append(bloomBitsPrefix, encNumber[:]...), proof.Proof)
+		value, err := trie.VerifyProof(self.ChtRoot, append(bloomBitsTriePrefix, encNumber[:]...), proof.Proof)
 		if err != nil {
 			glog.V(logger.Debug).Infof("ODR: CHT merkle proof verification error: %v", err)
 			return false
