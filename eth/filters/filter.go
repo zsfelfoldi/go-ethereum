@@ -185,14 +185,14 @@ func (f *Filter) serveMatcher(ctx context.Context, stop chan struct{}) chan erro
 	for i := 0; i < 10; i++ {
 		go func(i int) {
 			for {
-				fmt.Println(i, "NextRequest")
+				//fmt.Println(i, "NextRequest")
 				b, s := f.matcher.NextRequest(stop)
-				fmt.Println(i, "NextRequest ret", b, s)
+				//fmt.Println(i, "NextRequest ret", b, s)
 				if s == nil {
 					return
 				}
 				data, err := f.backend.GetBloomBits(ctx, uint64(b), s)
-				fmt.Println(i, "GetBloomBits", len(data), err)
+				//fmt.Println(i, "GetBloomBits", len(data), err)
 				if err != nil {
 					errChn <- err
 					return
@@ -201,9 +201,9 @@ func (f *Filter) serveMatcher(ctx context.Context, stop chan struct{}) chan erro
 				for i, d := range data {
 					decomp[i] = bloombits.DecompressBloomBits(bloombits.CompVector(d))
 				}
-				fmt.Println(i, "Deliver")
+				//fmt.Println(i, "Deliver")
 				f.matcher.Deliver(b, s, decomp)
-				fmt.Println(i, "Deliver ret")
+				//fmt.Println(i, "Deliver ret")
 			}
 		}(i)
 	}
@@ -233,9 +233,9 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 	if f.useBloomBits {
 		stop := make(chan struct{})
 		defer close(stop)
-		fmt.Println("GetMatches")
+		//fmt.Println("GetMatches")
 		matches := f.matcher.GetMatches(start, end, stop)
-		fmt.Println("GetMatches ret")
+		//fmt.Println("GetMatches ret")
 		errChn := f.serveMatcher(ctx, stop)
 
 	loop:
@@ -253,6 +253,12 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 				}
 
 				l, b, e := checkBlock(i, header)
+
+				fmt.Println("match", i, f.bloomFilter(header.Bloom), len(l))
+				/*for i := 0; i < 16; i++ {
+					fmt.Println(header.Bloom[i*16 : i*16+16])
+				}*/
+
 				if l != nil || e != nil {
 					return l, b, e
 				}

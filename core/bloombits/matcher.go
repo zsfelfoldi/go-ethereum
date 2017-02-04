@@ -1,6 +1,22 @@
+// Copyright 2017 The go-ethereum Authors
+// This file is part of the go-ethereum library.
+//
+// The go-ethereum library is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// The go-ethereum library is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 package bloombits
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -83,6 +99,9 @@ func (f *fetcher) fetch(sectionChn chan uint64, stop chan struct{}) chan BitVect
 					case <-stop:
 						return
 					case <-r.fetched:
+						f.reqLock.RLock()
+						r = f.reqMap[idx]
+						f.reqLock.RUnlock()
 					}
 				}
 				dataChn <- r.data
@@ -145,6 +164,7 @@ func (m *Matcher) match(sectionChn chan uint64, stop chan struct{}) (chan uint64
 	if len(m.addresses) > 0 {
 		subIdx = append([][]types.BloomIndexList{m.addresses}, subIdx...)
 	}
+	fmt.Println("idx", subIdx)
 	m.fetchers = make(map[uint]*fetcher)
 	m.distChn = make(chan distReq, channelCap)
 	m.getNextReqChn = make(chan chan nextRequests) // should be a blocking channel
@@ -295,7 +315,7 @@ func (m *Matcher) GetMatches(start, end uint64, stop chan struct{}) chan uint64 
 				match := <-bv
 				for i, b := range match {
 					if b != 0 {
-						for bit := uint(0); i < 8; i++ {
+						for bit := uint(0); bit < 8; bit++ {
 							if b&(1<<(7-bit)) != 0 {
 								resultsChn <- idx*SectionSize + uint64(i)*8 + uint64(bit)
 							}
