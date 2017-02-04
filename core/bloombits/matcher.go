@@ -113,14 +113,19 @@ func (f *fetcher) fetch(sectionChn chan uint64, stop chan struct{}) chan BitVect
 }
 
 func (f *fetcher) deliver(sectionIdxList []uint64, data []BitVector) {
+	fmt.Println("deliver", f.bitIdx, sectionIdxList)
 	f.reqLock.Lock()
 	defer f.reqLock.Unlock()
 
 	for i, idx := range sectionIdxList {
 		r := f.reqMap[idx]
-		r.data = data[i]
-		close(r.fetched)
-		r.fetched = nil
+		if data != nil {
+			r.data = data[i]
+			close(r.fetched)
+			r.fetched = nil
+		} else {
+			r.requested = false
+		}
 		f.reqMap[idx] = r
 	}
 }
@@ -132,6 +137,10 @@ type Matcher struct {
 
 	distChn       chan distReq
 	getNextReqChn chan chan nextRequests
+}
+
+func NewMatcher() *Matcher {
+	return &Matcher{fetchers: make(map[uint]*fetcher)}
 }
 
 // SetAddresses matches only logs that are generated from addresses that are included
@@ -165,7 +174,6 @@ func (m *Matcher) match(sectionChn chan uint64, stop chan struct{}) (chan uint64
 		subIdx = append([][]types.BloomIndexList{m.addresses}, subIdx...)
 	}
 	fmt.Println("idx", subIdx)
-	m.fetchers = make(map[uint]*fetcher)
 	m.distChn = make(chan distReq, channelCap)
 	m.getNextReqChn = make(chan chan nextRequests) // should be a blocking channel
 	go m.distributeRequests(stop)
@@ -312,16 +320,28 @@ func (m *Matcher) GetMatches(start, end uint64, stop chan struct{}) chan uint64 
 				if !ok {
 					return
 				}
-				match := <-bv
-				for i, b := range match {
+				match := <-bv //nil check
+				sectionStart := idx * SectionSize
+				s := sectionStart
+				if start > s {
+					s = start
+				}
+				e := sectionStart + SectionSize - 1
+				if end < e {
+					e = end
+				}
+				for i := s; i <= e; i++ {
+					b := match[(i-sectionStart)/8]
+					bit := 7 - i%8
 					if b != 0 {
-						for bit := uint(0); bit < 8; bit++ {
-							if b&(1<<(7-bit)) != 0 {
-								resultsChn <- idx*SectionSize + uint64(i)*8 + uint64(bit)
-							}
+						if b&(1<<bit) != 0 {
+							resultsChn <- i
 						}
+					} else {
+						i += bit
 					}
 				}
+
 			case <-stop:
 				return
 			}
@@ -414,12 +434,17 @@ func (m *Matcher) NextRequest(stop chan struct{}) (bitIdx uint, sectionIdxList [
 	select {
 	case m.getNextReqChn <- c:
 		r := <-c
+		fmt.Println("request", r.bitIdx, r.sectionIdxList)
 		return r.bitIdx, r.sectionIdxList
 	case <-stop:
 		return 0, nil
 	}
 }
 
+// It is possible to deliver data even after GetMatches has been stopped. Once a vector has been
+// requested, the next call to GetMatches will keep waiting for delivery.
+// If retrieval has been cancelled, call Deliver with data == nil. In this case the next call to
+// GetMatches will re-request it.
 func (m *Matcher) Deliver(bitIdx uint, sectionIdxList []uint64, data []BitVector) {
 	m.fetchers[bitIdx].deliver(sectionIdxList, data)
 }

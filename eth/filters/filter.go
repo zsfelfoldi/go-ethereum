@@ -66,7 +66,7 @@ func New(backend Backend, useMipMap bool) *Filter {
 		useMipMap:    useMipMap,
 		useBloomBits: !useMipMap,
 		db:           backend.ChainDb(),
-		matcher:      &bloombits.Matcher{},
+		matcher:      bloombits.NewMatcher(),
 	}
 }
 
@@ -194,6 +194,7 @@ func (f *Filter) serveMatcher(ctx context.Context, stop chan struct{}) chan erro
 				data, err := f.backend.GetBloomBits(ctx, uint64(b), s)
 				//fmt.Println(i, "GetBloomBits", len(data), err)
 				if err != nil {
+					f.matcher.Deliver(b, s, nil)
 					errChn <- err
 					return
 				}
