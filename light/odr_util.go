@@ -18,12 +18,12 @@ package light
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/bloombits"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -39,7 +39,6 @@ var (
 	ErrNoTrustedCht = errors.New("No trusted canonical hash trie")
 	ErrNoHeader     = errors.New("Header not found")
 	trustedChtKey   = []byte("TrustedCHT")
-	bloomBitsPrefix = []byte("bloom")
 )
 
 const (
@@ -190,21 +189,16 @@ func GetBlockReceipts(ctx context.Context, odr OdrBackend, hash common.Hash, num
 	}
 }
 
-func GetBloomBits(ctx context.Context, odr OdrBackend, bitIdx uint64, sectionIdxList []uint64) ([][]byte, error) {
-	db := odr.Database()
-	var encKey [10]byte
-	binary.BigEndian.PutUint16(encKey[0:2], uint16(bitIdx))
-	result := make([][]byte, len(sectionIdxList))
+func GetBloomBits(ctx context.Context, odr OdrBackend, bitIdx uint64, sectionIdxList []uint64) ([]bloombits.CompVector, error) {
+	result := make([]bloombits.CompVector, len(sectionIdxList))
 	var (
 		reqList []uint64
 		reqIdx  []int
 	)
-	cht := GetTrustedCht(db)
+	cht := GetTrustedCht(odr.Database())
 
 	for i, sectionIdx := range sectionIdxList {
-		binary.BigEndian.PutUint64(encKey[2:10], sectionIdx)
-		key := append(bloomBitsPrefix, encKey[:]...)
-		bloomBits, err := db.Get(key)
+		bloomBits, err := core.GetBloomBits(odr.Database(), bitIdx, sectionIdx)
 		if err == nil {
 			result[i] = bloomBits
 		} else {
@@ -228,12 +222,4 @@ func GetBloomBits(ctx context.Context, odr OdrBackend, bitIdx uint64, sectionIdx
 		}
 		return result, nil
 	}
-}
-
-func StoreBloomBits(db ethdb.Database, bitIdx, sectionIdx uint64, bloomBits []byte) {
-	var encKey [10]byte
-	binary.BigEndian.PutUint16(encKey[0:2], uint16(bitIdx))
-	binary.BigEndian.PutUint64(encKey[2:10], sectionIdx)
-	key := append(bloomBitsPrefix, encKey[:]...)
-	db.Put(key, bloomBits)
 }

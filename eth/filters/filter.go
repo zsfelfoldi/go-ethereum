@@ -38,7 +38,7 @@ type Backend interface {
 	EventMux() *event.TypeMux
 	HeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*types.Header, error)
 	GetReceipts(ctx context.Context, blockHash common.Hash) (types.Receipts, error)
-	GetBloomBits(ctx context.Context, bitIdx uint64, sectionIdxList []uint64) ([][]byte, error)
+	GetBloomBits(ctx context.Context, bitIdx uint64, sectionIdxList []uint64) ([]bloombits.CompVector, error)
 }
 
 // Filter can be used to retrieve and filter logs.

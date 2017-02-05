@@ -22,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/bloombits"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -199,8 +200,16 @@ func (b *EthApiBackend) AccountManager() *accounts.Manager {
 	return b.eth.AccountManager()
 }
 
-func (b *EthApiBackend) GetBloomBits(ctx context.Context, bitIdx uint64, sectionIdxList []uint64) ([][]byte, error) {
-	return nil, nil
+func (b *EthApiBackend) GetBloomBits(ctx context.Context, bitIdx uint64, sectionIdxList []uint64) ([]bloombits.CompVector, error) {
+	results := make([]bloombits.CompVector, len(sectionIdxList))
+	var err error
+	for i, idx := range sectionIdxList {
+		results[i], err = core.GetBloomBits(b.eth.chainDb, bitIdx, idx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return results, nil
 }
 
 type EthApiState struct {

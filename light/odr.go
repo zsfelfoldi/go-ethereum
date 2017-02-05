@@ -170,6 +170,6 @@ type BloomRequest struct {
 // StoreResult stores the retrieved data in local database
 func (req *BloomRequest) StoreResult(db ethdb.Database) {
 	for i, sectionIdx := range req.SectionIdxList {
-		StoreBloomBits(db, req.BitIdx, sectionIdx, req.BloomBits[i])
+		core.StoreBloomBits(db, req.BitIdx, sectionIdx, req.BloomBits[i])
 	}
 }
