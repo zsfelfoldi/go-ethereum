@@ -231,10 +231,16 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 	}
 
 	if f.useBloomBits {
+		haveBloomBitsBefore := core.GetBloomBitsAvailable(f.db) * bloombits.SectionSize
+		e := end
+		if haveBloomBitsBefore <= e {
+			e = haveBloomBitsBefore - 1
+		}
+
 		stop := make(chan struct{})
 		defer close(stop)
 		//fmt.Println("GetMatches")
-		matches := f.matcher.GetMatches(start, end, stop)
+		matches := f.matcher.GetMatches(start, e, stop)
 		//fmt.Println("GetMatches ret")
 		errChn := f.serveMatcher(ctx, stop)
 
@@ -268,7 +274,12 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 				return nil, end, ctx.Err()
 			}
 		}
-		return logs, end, nil
+
+		if end < haveBloomBitsBefore {
+			return logs, end, nil
+		} else {
+			start = haveBloomBitsBefore
+		}
 	}
 
 	for i := start; i <= end; i++ {
