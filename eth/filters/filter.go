@@ -17,7 +17,6 @@
 package filters
 
 import (
-	"fmt"
 	"math"
 	"time"
 
@@ -255,7 +254,7 @@ func (f *Filter) getLogs(ctx context.Context, start, end uint64) (logs []*types.
 
 				l, b, e := checkBlock(i, header)
 
-				fmt.Println("match", i, f.bloomFilter(header.Bloom), len(l))
+				//fmt.Println("match", i, f.bloomFilter(header.Bloom), len(l))
 				/*for i := 0; i < 16; i++ {
 					fmt.Println(header.Bloom[i*16 : i*16+16])
 				}*/

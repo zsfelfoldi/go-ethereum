@@ -16,7 +16,6 @@
 package bloombits
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -117,7 +116,7 @@ func (f *fetcher) fetch(sectionChn chan uint64, distChn chan distReq, stop chan 
 }
 
 func (f *fetcher) requested(sectionIdxList []uint64) {
-	fmt.Println("requested", f.bitIdx, sectionIdxList)
+	//fmt.Println("requested", f.bitIdx, sectionIdxList)
 	f.reqLock.Lock()
 	defer f.reqLock.Unlock()
 
@@ -129,7 +128,7 @@ func (f *fetcher) requested(sectionIdxList []uint64) {
 }
 
 func (f *fetcher) deliver(sectionIdxList []uint64, data []BitVector) {
-	fmt.Println("deliver", f.bitIdx, sectionIdxList, data != nil)
+	//fmt.Println("deliver", f.bitIdx, sectionIdxList, data != nil)
 	f.reqLock.Lock()
 	defer f.reqLock.Unlock()
 
@@ -189,7 +188,7 @@ func (m *Matcher) match(sectionChn chan uint64, stop chan struct{}) (chan uint64
 	if len(m.addresses) > 0 {
 		subIdx = append([][]types.BloomIndexList{m.addresses}, subIdx...)
 	}
-	fmt.Println("idx", subIdx)
+	//fmt.Println("idx", subIdx)
 	m.distChn = make(chan distReq, channelCap)
 	m.getNextReqChn = make(chan chan nextRequests) // should be a blocking channel
 	go m.distributeRequests(stop)
@@ -449,7 +448,7 @@ func (m *Matcher) NextRequest(stop chan struct{}) (bitIdx uint, sectionIdxList [
 	select {
 	case m.getNextReqChn <- c:
 		r := <-c
-		fmt.Println("request", r.bitIdx, r.sectionIdxList)
+		//fmt.Println("request", r.bitIdx, r.sectionIdxList)
 		m.fetchers[r.bitIdx].requested(r.sectionIdxList)
 		return r.bitIdx, r.sectionIdxList
 	case <-stop:
