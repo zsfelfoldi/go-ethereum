@@ -127,6 +127,8 @@ type ProtocolManager struct {
 
 	bloomBitsUpdateChn chan uint64
 	bloomBitsMu        sync.Mutex
+	bloomBitsCalcValid bool
+	bloomBitsCalcIdx   uint64
 
 	// wait group is used for graceful shutdowns during downloading
 	// and processing
@@ -213,6 +215,7 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 			blockchain.InsertHeaderChain, nil, nil, blockchain.Rollback, removePeer)
 
 		blockchain.(*light.LightChain).AddNewHeadCallback(manager.newHeadCallback)
+		go manager.bloomBitsUpdateLoop()
 	}
 
 	if odr != nil {
@@ -241,37 +244,29 @@ func (pm *ProtocolManager) bloomBitsUpdateLoop() {
 			return
 		case targetSectionCnt = <-pm.bloomBitsUpdateChn:
 			if !updating {
+				updating = true
 				tryUpdate <- struct{}{}
 			}
 		case <-tryUpdate:
 			pm.bloomBitsMu.Lock()
 			sectionIdx := core.GetBloomBitsAvailable(pm.chainDb)
 			if targetSectionCnt > sectionIdx {
-				lastBlockNum := (sectionIdx+1)*bloombits.SectionSize - 1
-				lastBlockHash := core.GetCanonicalHash(pm.chainDb, lastBlockNum)
+				pm.bloomBitsCalcValid = true
+				pm.bloomBitsCalcIdx = sectionIdx
 
 				pm.bloomBitsMu.Unlock()
 				err := core.MakeBloomBitsSection(pm.chainDb, sectionIdx)
 				pm.bloomBitsMu.Lock()
 
-				if err == nil {
-					store := true
-					select {
-					case targetSectionCnt = <-pm.bloomBitsUpdateChn:
-						if targetSectionCnt <= sectionIdx {
-							// chain
-							store = false
-						}
-					default:
-					}
-					if store {
-						glog.V(logger.Info).Infof("Stored bloomBits section #%d", sectionIdx)
-						sectionIdx++
-						core.StoreBloomBitsAvailable(pm.chainDb, sectionIdx)
-					}
+				if err == nil && pm.bloomBitsCalcValid {
+					glog.V(logger.Info).Infof("Stored bloomBits section #%d", sectionIdx)
+					sectionIdx++
+					core.StoreBloomBitsAvailable(pm.chainDb, sectionIdx)
 				} else {
-					glog.V(logger.Info).Infof("Error calculating bloomBits section #%d: %v", sectionIdx, err)
+					// unsuccessful bloomBits calculation may happen because of a reorg
+					glog.V(logger.Info).Infof("Error calculating bloomBits section #%d: %v   valid: %v", sectionIdx, err, pm.bloomBitsCalcValid)
 				}
+				pm.bloomBitsCalcValid = false
 			}
 			pm.bloomBitsMu.Unlock()
 
@@ -301,6 +296,9 @@ func (pm *ProtocolManager) newHeadCallback(head *types.Header, rollback bool) {
 	}
 	lastSectionCnt := core.GetBloomBitsAvailable(pm.chainDb)
 
+	if rbSectionCnt <= pm.bloomBitsCalcIdx {
+		pm.bloomBitsCalcValid = false
+	}
 	if rbSectionCnt < lastSectionCnt {
 		core.StoreBloomBitsAvailable(pm.chainDb, rbSectionCnt)
 		pm.bloomBitsUpdateChn <- rbSectionCnt
