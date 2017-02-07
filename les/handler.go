@@ -29,12 +29,14 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/bloombits"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/logger"
 	"github.com/ethereum/go-ethereum/logger/glog"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -123,6 +125,9 @@ type ProtocolManager struct {
 	syncing  bool
 	syncDone chan struct{}
 
+	bloomBitsUpdateChn chan uint64
+	bloomBitsMu        sync.Mutex
+
 	// wait group is used for graceful shutdowns during downloading
 	// and processing
 	wg sync.WaitGroup
@@ -133,19 +138,20 @@ type ProtocolManager struct {
 func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, networkId int, mux *event.TypeMux, pow pow.PoW, blockchain BlockChain, txpool txPool, chainDb ethdb.Database, odr *LesOdr, txrelay *LesTxRelay) (*ProtocolManager, error) {
 	// Create the protocol manager with the base fields
 	manager := &ProtocolManager{
-		lightSync:   lightSync,
-		eventMux:    mux,
-		blockchain:  blockchain,
-		chainConfig: chainConfig,
-		chainDb:     chainDb,
-		networkId:   networkId,
-		txpool:      txpool,
-		txrelay:     txrelay,
-		odr:         odr,
-		peers:       newPeerSet(),
-		newPeerCh:   make(chan *peer),
-		quitSync:    make(chan struct{}),
-		noMorePeers: make(chan struct{}),
+		lightSync:          lightSync,
+		eventMux:           mux,
+		blockchain:         blockchain,
+		chainConfig:        chainConfig,
+		chainDb:            chainDb,
+		networkId:          networkId,
+		txpool:             txpool,
+		txrelay:            txrelay,
+		odr:                odr,
+		peers:              newPeerSet(),
+		newPeerCh:          make(chan *peer),
+		quitSync:           make(chan struct{}),
+		noMorePeers:        make(chan struct{}),
+		bloomBitsUpdateChn: make(chan uint64, 100),
 	}
 	// Initiate a sub-protocol for every implemented version we can handle
 	manager.SubProtocols = make([]p2p.Protocol, 0, len(ProtocolVersions))
@@ -205,6 +211,8 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 		manager.downloader = downloader.New(downloader.LightSync, chainDb, manager.eventMux, blockchain.HasHeader, nil, blockchain.GetHeaderByHash,
 			nil, blockchain.CurrentHeader, nil, nil, nil, blockchain.GetTdByHash,
 			blockchain.InsertHeaderChain, nil, nil, blockchain.Rollback, removePeer)
+
+		blockchain.(*light.LightChain).AddNewHeadCallback(manager.newHeadCallback)
 	}
 
 	if odr != nil {
@@ -220,6 +228,86 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 	manager.fetcher = fetcher.New(chainman.GetBlockNoOdr, validator, nil, heighter, chainman.InsertChain, manager.removePeer)
 	*/
 	return manager, nil
+}
+
+func (pm *ProtocolManager) bloomBitsUpdateLoop() {
+	tryUpdate := make(chan struct{})
+	updating := false
+	var targetSectionCnt uint64
+
+	for {
+		select {
+		case <-pm.quitSync:
+			return
+		case targetSectionCnt = <-pm.bloomBitsUpdateChn:
+			if !updating {
+				tryUpdate <- struct{}{}
+			}
+		case <-tryUpdate:
+			pm.bloomBitsMu.Lock()
+			sectionIdx := core.GetBloomBitsAvailable(pm.chainDb)
+			if targetSectionCnt > sectionIdx {
+				lastBlockNum := (sectionIdx+1)*bloombits.SectionSize - 1
+				lastBlockHash := core.GetCanonicalHash(pm.chainDb, lastBlockNum)
+
+				pm.bloomBitsMu.Unlock()
+				err := core.MakeBloomBitsSection(pm.chainDb, sectionIdx)
+				pm.bloomBitsMu.Lock()
+
+				if err == nil {
+					store := true
+					select {
+					case targetSectionCnt = <-pm.bloomBitsUpdateChn:
+						if targetSectionCnt <= sectionIdx {
+							// chain
+							store = false
+						}
+					default:
+					}
+					if store {
+						glog.V(logger.Info).Infof("Stored bloomBits section #%d", sectionIdx)
+						sectionIdx++
+						core.StoreBloomBitsAvailable(pm.chainDb, sectionIdx)
+					}
+				} else {
+					glog.V(logger.Info).Infof("Error calculating bloomBits section #%d: %v", sectionIdx, err)
+				}
+			}
+			pm.bloomBitsMu.Unlock()
+
+			if targetSectionCnt > sectionIdx {
+				go func() {
+					time.Sleep(time.Millisecond * 100)
+					tryUpdate <- struct{}{}
+				}()
+			} else {
+				updating = false
+			}
+		}
+	}
+}
+
+const bloomBitsConfirmations = 200
+
+func (pm *ProtocolManager) newHeadCallback(head *types.Header, rollback bool) {
+	pm.bloomBitsMu.Lock()
+	defer pm.bloomBitsMu.Unlock()
+
+	headNum := head.Number.Uint64()
+	rbSectionCnt := headNum / bloombits.SectionSize
+	var newSectionCnt uint64
+	if headNum >= bloomBitsConfirmations-1 {
+		newSectionCnt = (headNum + 1 - bloomBitsConfirmations) / bloombits.SectionSize
+	}
+	lastSectionCnt := core.GetBloomBitsAvailable(pm.chainDb)
+
+	if rbSectionCnt < lastSectionCnt {
+		core.StoreBloomBitsAvailable(pm.chainDb, rbSectionCnt)
+		pm.bloomBitsUpdateChn <- rbSectionCnt
+	}
+	if newSectionCnt > lastSectionCnt {
+		pm.bloomBitsUpdateChn <- newSectionCnt
+	}
 }
 
 func (pm *ProtocolManager) removePeer(id string) {
