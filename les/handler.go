@@ -234,20 +234,23 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 }
 
 func (pm *ProtocolManager) bloomBitsUpdateLoop() {
-	tryUpdate := make(chan struct{})
+	tryUpdate := make(chan struct{}, 1)
 	updating := false
 	var targetSectionCnt uint64
 
 	for {
+		fmt.Println("loop")
 		select {
 		case <-pm.quitSync:
 			return
 		case targetSectionCnt = <-pm.bloomBitsUpdateChn:
+			fmt.Println("receive new")
 			if !updating {
 				updating = true
 				tryUpdate <- struct{}{}
 			}
 		case <-tryUpdate:
+			fmt.Println("try")
 			pm.bloomBitsMu.Lock()
 			sectionIdx := core.GetBloomBitsAvailable(pm.chainDb)
 			if targetSectionCnt > sectionIdx {
@@ -255,6 +258,7 @@ func (pm *ProtocolManager) bloomBitsUpdateLoop() {
 				pm.bloomBitsCalcIdx = sectionIdx
 
 				pm.bloomBitsMu.Unlock()
+				fmt.Println("make")
 				err := core.MakeBloomBitsSection(pm.chainDb, sectionIdx)
 				pm.bloomBitsMu.Lock()
 
@@ -289,12 +293,14 @@ func (pm *ProtocolManager) newHeadCallback(head *types.Header, rollback bool) {
 	defer pm.bloomBitsMu.Unlock()
 
 	headNum := head.Number.Uint64()
+	fmt.Println("callback", headNum)
 	rbSectionCnt := headNum / bloombits.SectionSize
 	var newSectionCnt uint64
 	if headNum >= bloomBitsConfirmations-1 {
 		newSectionCnt = (headNum + 1 - bloomBitsConfirmations) / bloombits.SectionSize
 	}
 	lastSectionCnt := core.GetBloomBitsAvailable(pm.chainDb)
+	fmt.Println("a r n", lastSectionCnt, rbSectionCnt, newSectionCnt)
 
 	if rbSectionCnt <= pm.bloomBitsCalcIdx {
 		pm.bloomBitsCalcValid = false
@@ -304,6 +310,7 @@ func (pm *ProtocolManager) newHeadCallback(head *types.Header, rollback bool) {
 		pm.bloomBitsUpdateChn <- rbSectionCnt
 	}
 	if newSectionCnt > lastSectionCnt {
+		fmt.Println("send new")
 		pm.bloomBitsUpdateChn <- newSectionCnt
 	}
 }

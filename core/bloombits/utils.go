@@ -147,7 +147,7 @@ func (b *BloomBitsCreator) AddHeaderBloom(bloom types.Bloom) {
 	byteIdx := b.bitIdx / 8
 	bitMask := byte(1) << byte(7-b.bitIdx%8)
 	for bloomBitIdx, _ := range b.blooms {
-		bloomByteIdx := SectionSize/8 - 1 - bloomBitIdx/8
+		bloomByteIdx := BloomLength/8 - 1 - bloomBitIdx/8
 		bloomBitMask := byte(1) << byte(bloomBitIdx%8)
 		if (bloom[bloomByteIdx] & bloomBitMask) != 0 {
 			b.blooms[bloomBitIdx][byteIdx] |= bitMask

@@ -68,6 +68,10 @@ func GetTrustedCht(db ethdb.Database) TrustedCht {
 func WriteTrustedCht(db ethdb.Database, cht TrustedCht) {
 	data, _ := rlp.EncodeToBytes(cht)
 	db.Put(trustedChtKey, data)
+	b := cht.Number * ChtFrequency / bloombits.SectionSize
+	if core.GetBloomBitsAvailable(db) < b {
+		core.StoreBloomBitsAvailable(db, b)
+	}
 }
 
 func DeleteTrustedCht(db ethdb.Database) {

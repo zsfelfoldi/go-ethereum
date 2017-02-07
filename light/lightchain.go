@@ -104,6 +104,7 @@ func NewLightChain(odr OdrBackend, config *params.ChainConfig, pow pow.PoW, mux 
 			return nil, err
 		}
 		glog.V(logger.Info).Infoln("WARNING: Wrote default ethereum genesis block")
+		core.StoreBloomBitsAvailable(odr.Database(), 0)
 	}
 
 	if bc.genesisBlock.Hash() == (common.Hash{212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69, 161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163}) {
