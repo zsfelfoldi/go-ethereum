@@ -277,15 +277,17 @@ func (pool *TxPool) setNewHead(ctx context.Context, newHeader *types.Header) (tx
 	// clear old mined tx entries of old blocks
 	if idx := newHeader.Number.Uint64(); idx > pool.clearIdx+txPermanent {
 		idx2 := idx - txPermanent
-		for i := pool.clearIdx; i < idx2; i++ {
-			hash := core.GetCanonicalHash(pool.chainDb, i)
-			if list, ok := pool.mined[hash]; ok {
-				hashes := make([]common.Hash, len(list))
-				for i, tx := range list {
-					hashes[i] = tx.Hash()
+		if len(pool.mined) > 0 {
+			for i := pool.clearIdx; i < idx2; i++ {
+				hash := core.GetCanonicalHash(pool.chainDb, i)
+				if list, ok := pool.mined[hash]; ok {
+					hashes := make([]common.Hash, len(list))
+					for i, tx := range list {
+						hashes[i] = tx.Hash()
+					}
+					pool.relay.Discard(hashes)
+					delete(pool.mined, hash)
 				}
-				pool.relay.Discard(hashes)
-				delete(pool.mined, hash)
 			}
 		}
 		pool.clearIdx = idx2
