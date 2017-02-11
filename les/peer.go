@@ -40,7 +40,10 @@ var (
 	errNotRegistered     = errors.New("peer is not registered")
 )
 
-const maxHeadInfoLen = 20
+const (
+	maxHeadInfoLen    = 20
+	maxResponseErrors = 50 // number of invalid responses tolerated (makes the protocol less brittle but still avoids spam)
+)
 
 type peer struct {
 	*p2p.Peer
@@ -57,8 +60,9 @@ type peer struct {
 
 	announceChn chan announceData
 
-	poolEntry *poolEntry
-	hasBlock  func(common.Hash, uint64) bool
+	poolEntry      *poolEntry
+	hasBlock       func(common.Hash, uint64) bool
+	responseErrors int
 
 	fcClient       *flowcontrol.ClientNode // nil if the peer is server only
 	fcServer       *flowcontrol.ServerNode // nil if the peer is client only

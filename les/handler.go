@@ -924,7 +924,13 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 	}
 
 	if deliverMsg != nil {
-		return pm.odr.Deliver(p, deliverMsg)
+		err := pm.odr.Deliver(p, deliverMsg)
+		if err != nil {
+			p.responseErrors++
+			if p.responseErrors > maxResponseErrors {
+				return err
+			}
+		}
 	}
 
 	return nil
