@@ -393,10 +393,10 @@ func (self *BloomRequest) Request(reqID uint64, peer *peer) error {
 	return peer.RequestBloomBits(reqID, self.GetCost(peer), reqs)
 }
 
-// Valid processes an ODR request reply message from the LES network
+// Validate processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (self *BloomRequest) Valid(db ethdb.Database, msg *Msg) bool {
+func (self *BloomRequest) Validate(db ethdb.Database, msg *Msg) bool {
 	glog.V(logger.Debug).Infof("ODR: validating CHT #%d bloom bit #%d section #%d", self.ChtNum, self.BitIdx, self.SectionIdxList[0])
 
 	if msg.MsgType != MsgBloomBits {
