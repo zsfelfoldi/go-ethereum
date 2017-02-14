@@ -43,7 +43,6 @@ func NewLesTxRelay() *LesTxRelay {
 	return &LesTxRelay{
 		txSent:    make(map[common.Hash]*ltrInfo),
 		txPending: make(map[common.Hash]struct{}),
-		ps:        newPeerSet(),
 	}
 }
 
@@ -119,11 +118,11 @@ func (self *LesTxRelay) send(txs types.Transactions, count int) {
 			return peer.GetRequestCost(SendTxMsg, len(ll))
 		}, func(dp distPeer) bool {
 			return dp.(*peer) == pp
-		}, func(dp distPeer) {
+		}, func(dp distPeer) func() {
 			peer := dp.(*peer)
 			cost := peer.GetRequestCost(SendTxMsg, len(ll))
 			peer.fcServer.SendRequest(reqID, cost)
-			go peer.SendTxs(reqID, cost, ll)
+			return func() { peer.SendTxs(reqID, cost, ll) }
 		})
 		self.reqDist.queue(rq)
 	}

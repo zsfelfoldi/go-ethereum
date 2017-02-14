@@ -124,7 +124,7 @@ func (peer *ServerNode) recalcBLE(time mclock.AbsTime) {
 }
 
 // safetyMargin is added to the flow control waiting time when estimated buffer value is low
-const safetyMargin = time.Millisecond * 200
+const safetyMargin = time.Millisecond
 
 func (peer *ServerNode) canSend(maxCost uint64) (time.Duration, float64) {
 	peer.recalcBLE(mclock.Now())
@@ -172,6 +172,10 @@ func (peer *ServerNode) GotReply(reqID, bv uint64) {
 		return
 	}
 	delete(peer.pending, reqID)
-	peer.bufEstimate = bv - (peer.sumCost - sc)
+	cc := peer.sumCost - sc
+	peer.bufEstimate = 0
+	if bv > cc {
+		peer.bufEstimate = bv - cc
+	}
 	peer.lastTime = mclock.Now()
 }

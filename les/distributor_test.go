@@ -39,8 +39,8 @@ func (r *testDistReq) canSend(dp distPeer) bool {
 	return ok
 }
 
-func (r *testDistReq) request(dp distPeer) {
-	dp.(*testDistPeer).send(r)
+func (r *testDistReq) request(dp distPeer) func() {
+	return func() { dp.(*testDistPeer).send(r) }
 }
 
 type testDistPeer struct {
@@ -100,6 +100,14 @@ func (p *testDistPeer) waitBefore(cost uint64) (time.Duration, float64) {
 	} else {
 		return time.Duration(sumCost - testDistBufLimit), 0
 	}
+}
+
+func (p *testDistPeer) canSendOrdered() bool {
+	return true
+}
+
+func (p *testDistPeer) orderedSend(f func()) {
+	f()
 }
 
 func TestRequestDistributor(t *testing.T) {
