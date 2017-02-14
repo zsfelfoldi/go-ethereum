@@ -18,6 +18,7 @@
 package flowcontrol
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -70,26 +71,28 @@ func (peer *ClientNode) AcceptRequest() (uint64, bool) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
-	time := mclock.Now()
-	peer.recalcBV(time)
-	return peer.bufValue, peer.cm.accept(peer.cmNode, time)
+	now := mclock.Now()
+	peer.recalcBV(now)
+	fmt.Println("accept", time.Duration(now), "bv", time.Duration(peer.bufValue))
+	return peer.bufValue, peer.cm.accept(peer.cmNode, now)
 }
 
 func (peer *ClientNode) RequestProcessed(cost uint64) (bv, realCost uint64) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
-	time := mclock.Now()
-	peer.recalcBV(time)
+	now := mclock.Now()
+	peer.recalcBV(now)
 	peer.bufValue -= cost
-	peer.recalcBV(time)
-	rcValue, rcost := peer.cm.processed(peer.cmNode, time)
+	peer.recalcBV(now)
+	rcValue, rcost := peer.cm.processed(peer.cmNode, now)
 	if rcValue < peer.params.BufLimit {
 		bv := peer.params.BufLimit - rcValue
 		if bv > peer.bufValue {
 			peer.bufValue = bv
 		}
 	}
+	fmt.Println("processed", time.Duration(now), "maxCost", time.Duration(cost), "realCost", time.Duration(rcost), "bv", time.Duration(peer.bufValue))
 	return peer.bufValue, rcost
 }
 
@@ -133,6 +136,7 @@ func (peer *ServerNode) canSend(maxCost uint64) (time.Duration, float64) {
 		maxCost = peer.params.BufLimit
 	}
 	if peer.bufEstimate >= maxCost {
+		fmt.Println("canSend", time.Duration(peer.lastTime))
 		return 0, float64(peer.bufEstimate-maxCost) / float64(peer.params.BufLimit)
 	}
 	return time.Duration((maxCost - peer.bufEstimate) * uint64(fcTimeConst) / peer.params.MinRecharge), 0
@@ -153,6 +157,7 @@ func (peer *ServerNode) SendRequest(reqID, maxCost uint64) {
 	defer peer.lock.Unlock()
 
 	peer.bufEstimate -= maxCost
+	fmt.Println("sending", reqID, "bufEst", time.Duration(peer.bufEstimate), "cost", time.Duration(maxCost))
 	peer.sumCost += maxCost
 	if reqID >= 0 {
 		peer.pending[reqID] = peer.sumCost
@@ -172,6 +177,11 @@ func (peer *ServerNode) GotReply(reqID, bv uint64) {
 		return
 	}
 	delete(peer.pending, reqID)
-	peer.bufEstimate = bv - (peer.sumCost - sc)
+	cc := peer.sumCost - sc
+	peer.bufEstimate = 0
+	if bv > cc {
+		peer.bufEstimate = bv - cc
+	}
 	peer.lastTime = mclock.Now()
+	fmt.Println("reply", time.Duration(peer.lastTime), reqID, "bufEst", time.Duration(peer.bufEstimate), "bv", time.Duration(bv), "cc", time.Duration(cc))
 }

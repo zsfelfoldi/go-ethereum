@@ -513,7 +513,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	// main loop. handle incoming messages.
 	for {
 		if err := pm.handleMsg(p); err != nil {
-			glog.V(logger.Debug).Infof("%v: message handling failed: %v", p, err)
+			glog.V(logger.Info).Infof("%v: message handling failed: %v", p, err)
 			return err
 		}
 	}
@@ -543,6 +543,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			cost = pm.server.defParams.BufLimit
 		}
 		if cost > bufValue {
+			fmt.Println("too early")
 			glog.V(logger.Error).Infof("Request from %v came %v too early", p.id, time.Duration((cost-bufValue)*1000000/pm.server.defParams.MinRecharge))
 			return true
 		}
@@ -996,6 +997,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&req); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
+		fmt.Println("GetBloomBitsMsg", req.ReqID)
 		// Gather state data until the fetch or network limits is reached
 		var (
 			byteCnt int
