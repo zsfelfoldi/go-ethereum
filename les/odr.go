@@ -184,7 +184,7 @@ func (self *LesOdr) networkRequest(ctx context.Context, lreq LesOdrRequest) erro
 		p := dp.(*peer)
 		_, ok := exclude[p]
 		return !ok && lreq.CanSend(p)
-	}, func(dp distPeer) {
+	}, func(dp distPeer) func() {
 		p := dp.(*peer)
 		exclude[p] = struct{}{}
 		delivered := make(chan struct{})
@@ -196,7 +196,7 @@ func (self *LesOdr) networkRequest(ctx context.Context, lreq LesOdrRequest) erro
 		cost := lreq.GetCost(p)
 		p.fcServer.SendRequest(reqID, cost)
 		go self.requestPeer(req, p, delivered, timeout, reqWg)
-		go lreq.Request(reqID, p)
+		return func() { lreq.Request(reqID, p) }
 	})
 
 	self.mlock.Lock()
