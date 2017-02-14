@@ -355,11 +355,11 @@ func (pm *ProtocolManager) handle(p *peer) error {
 				return peer.GetRequestCost(GetBlockHeadersMsg, amount)
 			}, func(dp distPeer) bool {
 				return dp.(*peer) == p
-			}, func(dp distPeer) {
+			}, func(dp distPeer) func() {
 				peer := dp.(*peer)
 				cost := peer.GetRequestCost(GetBlockHeadersMsg, amount)
 				peer.fcServer.SendRequest(reqID, cost)
-				go peer.RequestHeadersByHash(reqID, cost, origin, amount, skip, reverse)
+				return func() { peer.RequestHeadersByHash(reqID, cost, origin, amount, skip, reverse) }
 			})
 			_, ok := <-pm.reqDist.queue(rq)
 			if !ok {
@@ -374,11 +374,11 @@ func (pm *ProtocolManager) handle(p *peer) error {
 				return peer.GetRequestCost(GetBlockHeadersMsg, amount)
 			}, func(dp distPeer) bool {
 				return dp.(*peer) == p
-			}, func(dp distPeer) {
+			}, func(dp distPeer) func() {
 				peer := dp.(*peer)
 				cost := peer.GetRequestCost(GetBlockHeadersMsg, amount)
 				peer.fcServer.SendRequest(reqID, cost)
-				go peer.RequestHeadersByNumber(reqID, cost, origin, amount, skip, reverse)
+				return func() { peer.RequestHeadersByNumber(reqID, cost, origin, amount, skip, reverse) }
 			})
 			_, ok := <-pm.reqDist.queue(rq)
 			if !ok {

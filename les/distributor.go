@@ -54,17 +54,22 @@ type requestDistributor struct {
 // immediately). At least one of these values is always zero.
 type distPeer interface {
 	waitBefore(uint64) (time.Duration, float64)
+	canSendOrdered() bool
+	orderedSend(f func())
 }
 
 // distReq is the request abstraction used by the distributor. It is based on
 // three callback functions:
 // - getCost returns the upper estimate of the cost of sending the request to a given peer
 // - canSend tells if the server peer is suitable to serve the request
-// - request sends the request to the given peer (callback function should not block)
+// - request prepares sending the request to the given peer and returns a function that
+// does the actual sending. Request order should be preserved but the callback itself should not
+// block until it is sent because other peers might still be able to receive requests while
+// one of them is blocking. Instead, the returned function is put in the peer's orderedSend queue.
 type distReq struct {
 	getCost func(distPeer) uint64
 	canSend func(distPeer) bool
-	request func(distPeer)
+	request func(distPeer) func()
 
 	reqOrder uint64
 	// only for queued requests
@@ -85,7 +90,7 @@ func newRequestDistributor(getAllPeers func() map[distPeer]struct{}, stopChn cha
 }
 
 // newDistReq creates a new request instance that can be queued for distribution
-func newDistReq(getCost func(distPeer) uint64, canSend func(distPeer) bool, request func(distPeer)) *distReq {
+func newDistReq(getCost func(distPeer) uint64, canSend func(distPeer) bool, request func(distPeer) func()) *distReq {
 	return &distReq{
 		getCost: getCost,
 		canSend: canSend,
@@ -127,7 +132,10 @@ mainLoop:
 				if req != nil && wait == 0 {
 					chn := req.sentChn
 					d.remove(req)
-					req.request(peer)
+					send := req.request(peer)
+					if send != nil {
+						peer.orderedSend(send)
+					}
 					chn <- peer
 					close(chn)
 				} else {
@@ -185,7 +193,7 @@ func (d *requestDistributor) nextRequest() (distPeer, *distReq, time.Duration) {
 	for (len(peers) > 0 || req == d.queueFirst) && req != nil {
 		canSend := false
 		for peer, _ := range peers {
-			if req.canSend(peer) {
+			if peer.canSendOrdered() && req.canSend(peer) {
 				canSend = true
 				cost := req.getCost(peer)
 				wait, bufRemain := peer.waitBefore(cost)

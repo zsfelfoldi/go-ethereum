@@ -418,13 +418,14 @@ func (f *lightFetcher) nextRequest() (*distReq, uint64) {
 			p := dp.(*peer)
 			fp := f.peers[p]
 			return fp != nil && fp.nodeByHash[bestHash] != nil
-		}, func(dp distPeer) {
+		}, func(dp distPeer) func() {
 			go func() {
 				p := dp.(*peer)
 				glog.V(logger.Debug).Infof("synchronising with peer %v", p.id)
 				f.pm.synchronise(p)
 				f.syncDone <- p
 			}()
+			return nil
 		})
 	} else {
 		rq = newDistReq(func(dp distPeer) uint64 {
@@ -441,7 +442,7 @@ func (f *lightFetcher) nextRequest() (*distReq, uint64) {
 			}
 			n := fp.nodeByHash[bestHash]
 			return n != nil && !n.requested
-		}, func(dp distPeer) {
+		}, func(dp distPeer) func() {
 			p := dp.(*peer)
 			f.lock.Lock()
 			fp := f.peers[p]
@@ -458,11 +459,11 @@ func (f *lightFetcher) nextRequest() (*distReq, uint64) {
 			f.reqMu.Lock()
 			f.requested[reqID] = fetchRequest{hash: bestHash, amount: bestAmount, peer: p, sent: mclock.Now()}
 			f.reqMu.Unlock()
-			go p.RequestHeadersByHash(reqID, cost, bestHash, int(bestAmount), 0, true)
 			go func() {
 				time.Sleep(hardRequestTimeout)
 				f.timeoutChn <- reqID
 			}()
+			return func() { p.RequestHeadersByHash(reqID, cost, bestHash, int(bestAmount), 0, true) }
 		})
 	}
 	return rq, reqID

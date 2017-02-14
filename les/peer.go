@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -63,6 +64,8 @@ type peer struct {
 	poolEntry      *poolEntry
 	hasBlock       func(common.Hash, uint64) bool
 	responseErrors int
+	orderedSendChn chan func()
+	orderedSendCnt int32
 
 	fcClient       *flowcontrol.ClientNode // nil if the peer is server only
 	fcServer       *flowcontrol.ServerNode // nil if the peer is client only
@@ -81,6 +84,44 @@ func newPeer(version, network int, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
 		id:          fmt.Sprintf("%x", id[:8]),
 		announceChn: make(chan announceData, 20),
 	}
+}
+
+const orderedSendCapacity = 100
+
+// orderedSendLoop starts a goroutine that sends requests to the peer in the same
+// order they were put into the sending queue by orderedSend
+func (p *peer) orderedSendLoop() {
+	if p.orderedSendChn != nil {
+		panic("p.orderedSendChn != nil")
+	}
+	p.orderedSendChn = make(chan func(), orderedSendCapacity)
+	p.orderedSendCnt = 0
+	go func() {
+		for f := range p.orderedSendChn {
+			atomic.AddInt32(&p.orderedSendCnt, -1)
+			f()
+		}
+	}()
+}
+
+// canSendOrdered checks if you can queue at least one more orderedSend request.
+// Note: canSendOrdered and orderedSend should be called from the same goroutine.
+// The orderedSendLoop goroutine can turn it from false to true at any time but
+// once it returns true, the next orderedSend will always succeed.
+func (p *peer) canSendOrdered() bool {
+	return atomic.LoadInt32(&p.orderedSendCnt) < orderedSendCapacity
+}
+
+// orderedSend puts a request send callback to the sending queue
+func (p *peer) orderedSend(f func()) {
+	if p.orderedSendChn == nil {
+		panic("send: p.orderedSendChn == nil")
+	}
+
+	if atomic.AddInt32(&p.orderedSendCnt, 1) > orderedSendCapacity {
+		panic("orderedSendCapacity exceeded")
+	}
+	p.orderedSendChn <- f
 }
 
 // Info gathers and returns a collection of metadata known about a peer.
@@ -453,6 +494,7 @@ func (ps *peerSet) Register(p *peer) error {
 		return errAlreadyRegistered
 	}
 	ps.peers[p.id] = p
+	p.orderedSendLoop()
 	return nil
 }
 
@@ -462,8 +504,14 @@ func (ps *peerSet) Unregister(id string) error {
 	ps.lock.Lock()
 	defer ps.lock.Unlock()
 
-	if _, ok := ps.peers[id]; !ok {
+	if p, ok := ps.peers[id]; !ok {
 		return errNotRegistered
+	} else {
+		if p.orderedSendChn == nil {
+			panic("p.orderedSendChn == nil")
+		}
+		close(p.orderedSendChn)
+		p.orderedSendChn = nil
 	}
 	delete(ps.peers, id)
 	return nil
