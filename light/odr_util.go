@@ -18,56 +18,17 @@ package light
 
 import (
 	"bytes"
-	"errors"
-	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/bloombits"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
 	"golang.org/x/net/context"
 )
 
 var sha3_nil = crypto.Keccak256Hash(nil)
-
-var (
-	ErrNoTrustedCht = errors.New("No trusted canonical hash trie")
-	ErrNoHeader     = errors.New("Header not found")
-
-	ChtFrequency     = uint64(4096)
-	ChtConfirmations = uint64(2048)
-	trustedChtKey    = []byte("TrustedCHT")
-)
-
-type ChtNode struct {
-	Hash common.Hash
-	Td   *big.Int
-}
-
-type TrustedCht struct {
-	Number uint64
-	Root   common.Hash
-}
-
-func GetTrustedCht(db ethdb.Database) TrustedCht {
-	data, _ := db.Get(trustedChtKey)
-	var res TrustedCht
-	if err := rlp.DecodeBytes(data, &res); err != nil {
-		return TrustedCht{0, common.Hash{}}
-	}
-	return res
-}
-
-func WriteTrustedCht(db ethdb.Database, cht TrustedCht) {
-	data, _ := rlp.EncodeToBytes(cht)
-	db.Put(trustedChtKey, data)
-}
-
-func DeleteTrustedCht(db ethdb.Database) {
-	db.Delete(trustedChtKey)
-}
 
 func GetHeaderByNumber(ctx context.Context, odr OdrBackend, number uint64) (*types.Header, error) {
 	db := odr.Database()
@@ -81,12 +42,12 @@ func GetHeaderByNumber(ctx context.Context, odr OdrBackend, number uint64) (*typ
 		return header, nil
 	}
 
-	cht := GetTrustedCht(db)
-	if number >= cht.Number*ChtFrequency {
+	chtCount := GetChtCount(db)
+	if number >= chtCount*ChtFrequency {
 		return nil, ErrNoTrustedCht
 	}
 
-	r := &ChtRequest{ChtRoot: cht.Root, ChtNum: cht.Number, BlockNum: number}
+	r := &ChtRequest{ChtRoot: GetChtRoot(db, chtCount-1), ChtNum: chtCount - 1, BlockNum: number}
 	if err := odr.Retrieve(ctx, r); err != nil {
 		return nil, err
 	} else {
@@ -180,4 +141,40 @@ func GetBlockReceipts(ctx context.Context, odr OdrBackend, hash common.Hash, num
 		return nil, err
 	}
 	return r.Receipts, nil
+}
+
+func GetBloomBits(ctx context.Context, odr OdrBackend, bitIdx uint64, sectionIdxList []uint64) ([]bloombits.CompVector, error) {
+	db := odr.Database()
+	result := make([]bloombits.CompVector, len(sectionIdxList))
+	var (
+		reqList []uint64
+		reqIdx  []int
+	)
+	chtCount := GetChtCount(db)
+
+	for i, sectionIdx := range sectionIdxList {
+		bloomBits, err := core.GetBloomBits(db, bitIdx, sectionIdx)
+		if err == nil {
+			result[i] = bloomBits
+		} else {
+			if sectionIdx >= chtCount {
+				return nil, ErrNoTrustedCht
+			}
+			reqList = append(reqList, sectionIdx)
+			reqIdx = append(reqIdx, i)
+		}
+	}
+	if reqList == nil {
+		return result, nil
+	}
+
+	r := &BloomRequest{ChtRoot: GetChtRoot(db, chtCount-1), ChtNum: chtCount - 1, BitIdx: bitIdx, SectionIdxList: reqList}
+	if err := odr.Retrieve(ctx, r); err != nil {
+		return nil, err
+	} else {
+		for i, idx := range reqIdx {
+			result[idx] = r.BloomBits[i]
+		}
+		return result, nil
+	}
 }

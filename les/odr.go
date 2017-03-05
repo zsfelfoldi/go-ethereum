@@ -86,6 +86,7 @@ const (
 	MsgReceipts
 	MsgProofs
 	MsgHeaderProofs
+	MsgBloomBits
 )
 
 // Msg encodes a LES message that delivers reply data for a request

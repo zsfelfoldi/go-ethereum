@@ -104,31 +104,10 @@ func NewLightChain(odr OdrBackend, config *params.ChainConfig, pow pow.PoW, mux 
 		log.Warn("Wrote default ethereum genesis block")
 	}
 
-	if bc.genesisBlock.Hash() == (common.Hash{212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69, 161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163}) {
+	if bc.genesisBlock.Hash() == common.HexToHash("d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3") {
 		// add trusted CHT
-		if config.DAOForkSupport {
-			WriteTrustedCht(bc.chainDb, TrustedCht{
-				Number: 637,
-				Root:   common.HexToHash("01e408d9b1942f05dba1a879f3eaafe34d219edaeb8223fecf1244cc023d3e23"),
-			})
-		} else {
-			WriteTrustedCht(bc.chainDb, TrustedCht{
-				Number: 523,
-				Root:   common.HexToHash("c035076523faf514038f619715de404a65398c51899b5dccca9c05b00bc79315"),
-			})
-		}
+		WriteTrustedCht(bc.chainDb, 99, common.HexToHash("dfde5086531475bff63fdb1f180bf097b6469733785481bd8aa47bc01f23d927"))
 		log.Info("Added trusted CHT for mainnet")
-	} else {
-		if bc.genesisBlock.Hash() == (common.Hash{12, 215, 134, 162, 66, 93, 22, 241, 82, 198, 88, 49, 108, 66, 62, 108, 225, 24, 30, 21, 195, 41, 88, 38, 215, 201, 144, 76, 186, 156, 227, 3}) {
-			// add trusted CHT for testnet
-			WriteTrustedCht(bc.chainDb, TrustedCht{
-				Number: 452,
-				Root:   common.HexToHash("511da2c88e32b14cf4a4e62f7fcbb297139faebc260a4ab5eb43cce6edcba324"),
-			})
-			log.Info("Added trusted CHT for testnet")
-		} else {
-			DeleteTrustedCht(bc.chainDb)
-		}
 	}
 
 	if err := bc.loadLastState(); err != nil {
@@ -450,6 +429,7 @@ func (self *LightChain) InsertHeaderChain(chain []*types.Header, checkFreq int) 
 		return err
 	}
 	i, err := self.hc.InsertHeaderChain(chain, checkFreq, whFunc)
+
 	go self.postChainEvents(events)
 	return i, err
 }
@@ -516,9 +496,9 @@ func (self *LightChain) GetHeaderByNumberOdr(ctx context.Context, number uint64)
 
 func (self *LightChain) SyncCht(ctx context.Context) bool {
 	headNum := self.CurrentHeader().Number.Uint64()
-	cht := GetTrustedCht(self.chainDb)
-	if headNum+1 < cht.Number*ChtFrequency {
-		num := cht.Number*ChtFrequency - 1
+	chtCount := GetChtCount(self.chainDb)
+	if headNum+1 < chtCount*ChtFrequency {
+		num := chtCount*ChtFrequency - 1
 		header, err := GetHeaderByNumber(ctx, self.odr, num)
 		if header != nil && err == nil {
 			self.mu.Lock()
