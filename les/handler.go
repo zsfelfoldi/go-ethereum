@@ -18,6 +18,7 @@
 package les
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -34,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/discover"
@@ -50,15 +52,17 @@ const (
 
 	ethVersion = 63 // equivalent eth version for the downloader
 
-	MaxHeaderFetch       = 192 // Amount of block headers to be fetched per retrieval request
-	MaxBodyFetch         = 32  // Amount of block bodies to be fetched per retrieval request
-	MaxReceiptFetch      = 128 // Amount of transaction receipts to allow fetching per request
-	MaxCodeFetch         = 64  // Amount of contract codes to allow fetching per request
-	MaxProofsFetch       = 64  // Amount of merkle proofs to be fetched per retrieval request
-	MaxHeaderProofsFetch = 64  // Amount of merkle proofs to be fetched per retrieval request
-	MaxTxSend            = 64  // Amount of transactions to be send per request
+	MaxHeaderFetch    = 192 // Amount of block headers to be fetched per retrieval request
+	MaxBodyFetch      = 32  // Amount of block bodies to be fetched per retrieval request
+	MaxReceiptFetch   = 128 // Amount of transaction receipts to allow fetching per request
+	MaxCodeFetch      = 64  // Amount of contract codes to allow fetching per request
+	MaxProofsFetch    = 64  // Amount of merkle proofs to be fetched per retrieval request
+	MaxPPTProofsFetch = 64  // Amount of merkle proofs to be fetched per retrieval request
+	MaxTxSend         = 64  // Amount of transactions to be send per request
 
 	disableClientRemovePeer = false
+
+	bloomBitsSection = light.BloomTrieFrequency
 )
 
 // errIncompatibleConfig is returned if the requested protocols and configs are
@@ -202,6 +206,10 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 		manager.downloader = downloader.New(downloader.LightSync, chainDb, manager.eventMux, blockchain.HasHeader, nil, blockchain.GetHeaderByHash,
 			nil, blockchain.CurrentHeader, nil, nil, nil, blockchain.GetTdByHash,
 			blockchain.InsertHeaderChain, nil, nil, blockchain.Rollback, removePeer)
+
+		blockchain.(*light.LightChain).AddChainProcessor(eth.NewBloomBitsProcessor(manager.chainDb, manager.quitSync, bloomBitsSection))
+	} else {
+		blockchain.(*core.BlockChain).AddChainProcessor(light.NewChtProcessor(manager.chainDb, manager.quitSync))
 	}
 
 	manager.reqDist = newRequestDistributor(func() map[distPeer]struct{} {
@@ -261,7 +269,7 @@ func (pm *ProtocolManager) Start(srvr *p2p.Server) {
 	if srvr != nil {
 		topicDisc = srvr.DiscV5
 	}
-	lesTopic := discv5.Topic("LES@" + common.Bytes2Hex(pm.blockchain.Genesis().Hash().Bytes()[0:8]))
+	lesTopic := discv5.Topic("LES2@" + common.Bytes2Hex(pm.blockchain.Genesis().Hash().Bytes()[0:8]))
 	if pm.lightSync {
 		// start sync handler
 		if srvr != nil { // srvr is nil during testing
@@ -432,7 +440,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	}
 }
 
-var reqList = []uint64{GetBlockHeadersMsg, GetBlockBodiesMsg, GetCodeMsg, GetReceiptsMsg, GetProofsMsg, SendTxMsg, GetHeaderProofsMsg}
+var reqList = []uint64{GetBlockHeadersMsg, GetBlockBodiesMsg, GetCodeMsg, GetReceiptsMsg, GetProofsMsg, SendTxMsg, GetPPTProofsMsg}
 
 // handleMsg is invoked whenever an inbound message is received from a remote
 // peer. The remote connection is torn down upon returning any error.
@@ -784,36 +792,50 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		// Gather state data until the fetch or network limits is reached
 		var (
-			bytes  int
-			proofs proofsData
+			lastBHash  common.Hash
+			lastAccKey []byte
+			tr, str    *trie.Trie
 		)
 		reqCnt := len(req.Reqs)
 		if reject(uint64(reqCnt), MaxProofsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
+
+		proofDb := light.NewProofDb()
+
 		for _, req := range req.Reqs {
-			if bytes >= softResponseLimit {
+			if proofDb.DataSize() >= softResponseLimit {
 				break
 			}
-			// Retrieve the requested state entry, stopping if enough was found
-			if header := core.GetHeader(pm.chainDb, req.BHash, core.GetBlockNumber(pm.chainDb, req.BHash)); header != nil {
-				if tr, _ := trie.New(header.Root, pm.chainDb); tr != nil {
-					if len(req.AccKey) > 0 {
+			if tr == nil || req.BHash != lastBHash {
+				if header := core.GetHeader(pm.chainDb, req.BHash, core.GetBlockNumber(pm.chainDb, req.BHash)); header != nil {
+					tr, _ = trie.New(header.Root, pm.chainDb)
+				} else {
+					tr = nil
+				}
+				lastBHash = req.BHash
+				str = nil
+			}
+			if tr != nil {
+				if len(req.AccKey) > 0 {
+					if str == nil || !bytes.Equal(req.AccKey, lastAccKey) {
 						sdata := tr.Get(req.AccKey)
-						tr = nil
+						str = nil
 						var acc state.Account
 						if err := rlp.DecodeBytes(sdata, &acc); err == nil {
-							tr, _ = trie.New(acc.Root, pm.chainDb)
+							str, _ = trie.New(acc.Root, pm.chainDb)
 						}
+						lastAccKey = common.CopyBytes(req.AccKey)
 					}
-					if tr != nil {
-						proof := tr.Prove(req.Key)
-						proofs = append(proofs, proof)
-						bytes += len(proof)
+					if str != nil {
+						str.Prove(req.Key, req.FromLevel, proofDb)
 					}
+				} else {
+					tr.Prove(req.Key, req.FromLevel, proofDb)
 				}
 			}
 		}
+		proofs := proofDb.ProofSet()
 		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
 		return p.SendProofs(req.ReqID, bv, proofs)
@@ -827,7 +849,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		// A batch of merkle proofs arrived to one of our previous requests
 		var resp struct {
 			ReqID, BV uint64
-			Data      [][]rlp.RawValue
+			Data      light.ProofSet
 		}
 		if err := msg.Decode(&resp); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
@@ -839,62 +861,90 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			Obj:     resp.Data,
 		}
 
-	case GetHeaderProofsMsg:
-		p.Log().Trace("Received headers proof request")
+	case GetPPTProofsMsg:
+		p.Log().Trace("Received PPT proof request")
 		// Decode the retrieval message
 		var req struct {
 			ReqID uint64
-			Reqs  []ChtReq
+			Reqs  []PPTReq
 		}
 		if err := msg.Decode(&req); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		// Gather state data until the fetch or network limits is reached
 		var (
-			bytes  int
-			proofs []ChtResp
+			auxBytes int
+			auxData  [][]byte
 		)
 		reqCnt := len(req.Reqs)
-		if reject(uint64(reqCnt), MaxHeaderProofsFetch) {
+		if reject(uint64(reqCnt), MaxPPTProofsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
+
+		var (
+			lastIdx   uint64
+			lastPPTId uint
+			root      common.Hash
+			tr        *trie.Trie
+		)
+
+		proofDb := light.NewProofDb()
+
 		for _, req := range req.Reqs {
-			if bytes >= softResponseLimit {
+			if proofDb.DataSize()+auxBytes >= softResponseLimit {
 				break
 			}
-
-			if header := pm.blockchain.GetHeaderByNumber(req.BlockNum); header != nil {
-				if root := getChtRoot(pm.chainDb, req.ChtNum); root != (common.Hash{}) {
-					if tr, _ := trie.New(root, pm.chainDb); tr != nil {
-						var encNumber [8]byte
-						binary.BigEndian.PutUint64(encNumber[:], req.BlockNum)
-						proof := tr.Prove(encNumber[:])
-						proofs = append(proofs, ChtResp{Header: header, Proof: proof})
-						bytes += len(proof) + estHeaderRlpSize
+			if tr == nil || req.PPTId != lastPPTId || req.TrieIdx != lastIdx {
+				var prefix string
+				root, prefix = pm.getPPT(req.PPTId, req.TrieIdx)
+				if root != (common.Hash{}) {
+					if t, err := trie.New(root, ethdb.NewTable(pm.chainDb, prefix)); err == nil {
+						tr = t
 					}
+				}
+				lastPPTId = req.PPTId
+				lastIdx = req.TrieIdx
+			}
+			if req.AuxReq == PPTAuxRoot {
+				var data []byte
+				if root != (common.Hash{}) {
+					data = root[:]
+				}
+				auxData = append(auxData, data)
+				auxBytes += len(data)
+			} else {
+				if tr != nil {
+					tr.Prove(req.Key, req.FromLevel, proofDb)
+				}
+				if req.AuxReq != 0 {
+					data := pm.getPPTAuxData(req)
+					auxData = append(auxData, data)
+					auxBytes += len(data)
 				}
 			}
 		}
+		proofs := proofDb.ProofSet()
 		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
-		return p.SendHeaderProofs(req.ReqID, bv, proofs)
+		return p.SendPPTProofs(req.ReqID, bv, PPTResps{Proofs: proofs, AuxData: auxData})
 
-	case HeaderProofsMsg:
+	case PPTProofsMsg:
 		if pm.odr == nil {
 			return errResp(ErrUnexpectedResponse, "")
 		}
 
-		p.Log().Trace("Received headers proof response")
+		p.Log().Trace("Received PPT proof response")
 		var resp struct {
 			ReqID, BV uint64
-			Data      []ChtResp
+			Data      PPTResps
 		}
 		if err := msg.Decode(&resp); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
+
 		p.fcServer.GotReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
-			MsgType: MsgHeaderProofs,
+			MsgType: MsgPPTProofs,
 			ReqID:   resp.ReqID,
 			Obj:     resp.Data,
 		}
@@ -933,6 +983,28 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func (pm *ProtocolManager) getPPT(id uint, idx uint64) (common.Hash, string) {
+	switch id {
+	case PPTChain:
+		return light.GetChtRoot(pm.chainDb, idx), light.ChtTablePrefix
+	case PPTBloomBits:
+		return light.GetBloomTrieRoot(pm.chainDb, idx), light.BloomTrieTablePrefix
+	}
+	return common.Hash{}, ""
+}
+
+func (pm *ProtocolManager) getPPTAuxData(req PPTReq) []byte {
+	if req.PPTId == PPTChain && req.AuxReq == PPTChainAuxHeader {
+		if len(req.Key) != 8 {
+			return nil
+		}
+		blockNum := binary.BigEndian.Uint64(req.Key)
+		hash := core.GetCanonicalHash(pm.chainDb, blockNum)
+		return core.GetHeaderRLP(pm.chainDb, hash, blockNum)
 	}
 	return nil
 }

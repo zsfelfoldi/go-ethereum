@@ -298,24 +298,24 @@ func addMipmapBloomBins(db ethdb.Database) (err error) {
 
 // BloomBitsProcessorBackend implements ChainSectionProcessorBackend
 type BloomBitsProcessorBackend struct {
-	db                  ethdb.Database
-	lastCount, lastProg uint64
+	db                               ethdb.Database
+	lastCount, lastProg, sectionSize uint64
 }
 
 // number of confirmation blocks before a section is considered probably final and its bloom bits are calculated
 const bloomBitsConfirmations = 512
 
 // NewBloomBitsProcessor returns a chain processor that generates bloom bits data for the canonical chain
-func NewBloomBitsProcessor(db ethdb.Database, stop chan struct{}) *core.ChainSectionProcessor {
-	backend := &BloomBitsProcessorBackend{db: db, lastCount: core.GetBloomBitsAvailable(db)}
-	return core.NewChainSectionProcessor(backend, bloomBitsSection, bloomBitsConfirmations, time.Millisecond*100, stop)
+func NewBloomBitsProcessor(db ethdb.Database, stop chan struct{}, sectionSize uint64) *core.ChainSectionProcessor {
+	backend := &BloomBitsProcessorBackend{db: db, lastCount: core.GetBloomBitsAvailable(db), sectionSize: sectionSize}
+	return core.NewChainSectionProcessor(backend, sectionSize, bloomBitsConfirmations, time.Millisecond*100, stop)
 }
 
 // Process calculates bloom bits for a given section
 func (b *BloomBitsProcessorBackend) Process(sectionIdx uint64) bool {
-	bc := bloombits.NewBloomBitsCreator(bloomBitsSection)
+	bc := bloombits.NewBloomBitsCreator(b.sectionSize)
 	var header *types.Header
-	for i := sectionIdx * bloomBitsSection; i < (sectionIdx+1)*bloomBitsSection; i++ {
+	for i := sectionIdx * b.sectionSize; i < (sectionIdx+1)*b.sectionSize; i++ {
 		hash := core.GetCanonicalHash(b.db, i)
 		header = core.GetHeader(b.db, hash, i)
 		if header == nil {
@@ -326,7 +326,7 @@ func (b *BloomBitsProcessorBackend) Process(sectionIdx uint64) bool {
 	}
 
 	for i := 0; i < bloombits.BloomLength; i++ {
-		core.StoreBloomBits(b.db, uint64(i), sectionIdx, bloombits.CompressBloomBits(bc.GetBitVector(uint(i)), bloomBitsSection))
+		core.StoreBloomBits(b.db, uint64(i), sectionIdx, bloombits.CompressBloomBits(bc.GetBitVector(uint(i)), int(b.sectionSize)))
 	}
 
 	return true

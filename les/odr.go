@@ -76,7 +76,7 @@ const (
 	MsgCode
 	MsgReceipts
 	MsgProofs
-	MsgHeaderProofs
+	MsgPPTProofs
 )
 
 // Msg encodes a LES message that delivers reply data for a request

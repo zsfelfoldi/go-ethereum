@@ -21,19 +21,14 @@ import (
 	"encoding/binary"
 	"math"
 	"sync"
-	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/light"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/trie"
 )
 
 type LesServer struct {
@@ -49,7 +44,6 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	pm.blockLoop()
 
 	srv := &LesServer{protocolManager: pm}
 	pm.server = srv
@@ -80,6 +74,10 @@ func (s *LesServer) Stop() {
 		<-s.protocolManager.noMorePeers
 	}()
 	s.protocolManager.Stop()
+}
+
+func (s *LesServer) AddBloomBitsProcessor(cp *core.ChainSectionProcessor) {
+	cp.AddChildProcessor(light.NewBloomTrieProcessor(s.protocolManager.chainDb, s.protocolManager.quitSync))
 }
 
 type requestCosts struct {
@@ -263,145 +261,4 @@ func (s *requestCostStats) update(msgCode, reqCnt, cost uint64) {
 		return
 	}
 	c.add(float64(reqCnt), float64(cost))
-}
-
-func (pm *ProtocolManager) blockLoop() {
-	pm.wg.Add(1)
-	sub := pm.eventMux.Subscribe(core.ChainHeadEvent{})
-	newCht := make(chan struct{}, 10)
-	newCht <- struct{}{}
-	go func() {
-		var mu sync.Mutex
-		var lastHead *types.Header
-		lastBroadcastTd := common.Big0
-		for {
-			select {
-			case ev := <-sub.Chan():
-				peers := pm.peers.AllPeers()
-				if len(peers) > 0 {
-					header := ev.Data.(core.ChainHeadEvent).Block.Header()
-					hash := header.Hash()
-					number := header.Number.Uint64()
-					td := core.GetTd(pm.chainDb, hash, number)
-					if td != nil && td.Cmp(lastBroadcastTd) > 0 {
-						var reorg uint64
-						if lastHead != nil {
-							reorg = lastHead.Number.Uint64() - core.FindCommonAncestor(pm.chainDb, header, lastHead).Number.Uint64()
-						}
-						lastHead = header
-						lastBroadcastTd = td
-
-						log.Debug("Announcing block to peers", "number", number, "hash", hash, "td", td, "reorg", reorg)
-
-						announce := announceData{Hash: hash, Number: number, Td: td, ReorgDepth: reorg}
-						for _, p := range peers {
-							select {
-							case p.announceChn <- announce:
-							default:
-								pm.removePeer(p.id)
-							}
-						}
-					}
-				}
-				newCht <- struct{}{}
-			case <-newCht:
-				go func() {
-					mu.Lock()
-					more := makeCht(pm.chainDb)
-					mu.Unlock()
-					if more {
-						time.Sleep(time.Millisecond * 10)
-						newCht <- struct{}{}
-					}
-				}()
-			case <-pm.quitSync:
-				sub.Unsubscribe()
-				pm.wg.Done()
-				return
-			}
-		}
-	}()
-}
-
-var (
-	lastChtKey = []byte("LastChtNumber") // chtNum (uint64 big endian)
-	chtPrefix  = []byte("cht")           // chtPrefix + chtNum (uint64 big endian) -> trie root hash
-)
-
-func getChtRoot(db ethdb.Database, num uint64) common.Hash {
-	var encNumber [8]byte
-	binary.BigEndian.PutUint64(encNumber[:], num)
-	data, _ := db.Get(append(chtPrefix, encNumber[:]...))
-	return common.BytesToHash(data)
-}
-
-func storeChtRoot(db ethdb.Database, num uint64, root common.Hash) {
-	var encNumber [8]byte
-	binary.BigEndian.PutUint64(encNumber[:], num)
-	db.Put(append(chtPrefix, encNumber[:]...), root[:])
-}
-
-func makeCht(db ethdb.Database) bool {
-	headHash := core.GetHeadBlockHash(db)
-	headNum := core.GetBlockNumber(db, headHash)
-
-	var newChtNum uint64
-	if headNum > light.ChtConfirmations {
-		newChtNum = (headNum - light.ChtConfirmations) / light.ChtFrequency
-	}
-
-	var lastChtNum uint64
-	data, _ := db.Get(lastChtKey)
-	if len(data) == 8 {
-		lastChtNum = binary.BigEndian.Uint64(data[:])
-	}
-	if newChtNum <= lastChtNum {
-		return false
-	}
-
-	var t *trie.Trie
-	if lastChtNum > 0 {
-		var err error
-		t, err = trie.New(getChtRoot(db, lastChtNum), db)
-		if err != nil {
-			lastChtNum = 0
-		}
-	}
-	if lastChtNum == 0 {
-		t, _ = trie.New(common.Hash{}, db)
-	}
-
-	for num := lastChtNum * light.ChtFrequency; num < (lastChtNum+1)*light.ChtFrequency; num++ {
-		hash := core.GetCanonicalHash(db, num)
-		if hash == (common.Hash{}) {
-			panic("Canonical hash not found")
-		}
-		td := core.GetTd(db, hash, num)
-		if td == nil {
-			panic("TD not found")
-		}
-		var encNumber [8]byte
-		binary.BigEndian.PutUint64(encNumber[:], num)
-		var node light.ChtNode
-		node.Hash = hash
-		node.Td = td
-		data, _ := rlp.EncodeToBytes(node)
-		t.Update(encNumber[:], data)
-	}
-
-	root, err := t.Commit()
-	if err != nil {
-		lastChtNum = 0
-	} else {
-		lastChtNum++
-
-		log.Trace("Generated CHT", "number", lastChtNum, "root", root.Hex())
-
-		storeChtRoot(db, lastChtNum, root)
-		var data [8]byte
-		binary.BigEndian.PutUint64(data[:], lastChtNum)
-		db.Put(lastChtKey, data[:])
-	}
-
-	return newChtNum > lastChtNum
 }
