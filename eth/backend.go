@@ -299,6 +299,10 @@ func CreatePoW(ctx *node.ServiceContext, config *Config) pow.PoW {
 // APIs returns the collection of RPC services the ethereum package offers.
 // NOTE, some of these services probably need to be moved to somewhere else.
 func (s *Ethereum) APIs() []rpc.API {
+	var bbSection uint64
+	if useBloomBits {
+		bbSection = bloomBitsSection
+	}
 	return append(ethapi.GetAPIs(s.ApiBackend, s.solcPath), []rpc.API{
 		{
 			Namespace: "eth",
@@ -323,7 +327,7 @@ func (s *Ethereum) APIs() []rpc.API {
 		}, {
 			Namespace: "eth",
 			Version:   "1.0",
-			Service:   filters.NewPublicFilterAPI(s.ApiBackend, false),
+			Service:   filters.NewPublicFilterAPI(s.ApiBackend, false, bbSection),
 			Public:    true,
 		}, {
 			Namespace: "admin",

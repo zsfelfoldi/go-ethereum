@@ -44,6 +44,9 @@ import (
 const (
 	softResponseLimit = 2 * 1024 * 1024 // Target maximum size of returned blocks, headers or node data.
 	estHeaderRlpSize  = 500             // Approximate size of an RLP encoded block header
+
+	useBloomBits     = false
+	bloomBitsSection = 4096
 )
 
 var (
@@ -86,7 +89,8 @@ type ProtocolManager struct {
 	quitSync    chan struct{}
 	noMorePeers chan struct{}
 
-	lesServer LesServer
+	lesServer          LesServer
+	bloomBitsProcessor *core.ChainSectionProcessor
 
 	// wait group is used for graceful shutdowns during downloading
 	// and processing
@@ -113,6 +117,12 @@ func NewProtocolManager(config *params.ChainConfig, fastSync bool, networkId int
 		txsyncCh:    make(chan *txsync),
 		quitSync:    make(chan struct{}),
 	}
+
+	if useBloomBits {
+		manager.bloomBitsProcessor = NewBloomBitsProcessor(manager.chaindb, manager.quitSync)
+		blockchain.AddChainProcessor(manager.bloomBitsProcessor)
+	}
+
 	// Figure out whether to allow fast sync or not
 	if fastSync && blockchain.CurrentBlock().NumberU64() > 0 {
 		log.Warn("Blockchain not empty, fast sync disabled")
