@@ -104,6 +104,8 @@ type BlockChain struct {
 	procInterrupt int32          // interrupt signaler for block processing
 	wg            sync.WaitGroup // chain processing wait group for shutting down
 
+	chainProcessors []ChainProcessor // NewHead function called under chain lock after a new head has been written to the db
+
 	pow       pow.PoW
 	processor Processor // block processor interface
 	validator Validator // block and state validator interface
@@ -171,6 +173,15 @@ func NewBlockChain(chainDb ethdb.Database, config *params.ChainConfig, pow pow.P
 	return bc, nil
 }
 
+// AddChainProcessor adds a new head callback function that will be
+// called under chain lock after a new head has been written to the db
+func (self *BlockChain) AddChainProcessor(cp ChainProcessor) {
+	self.chainmu.Lock()
+	self.chainProcessors = append(self.chainProcessors, cp)
+	cp.NewHead(self.hc.CurrentHeader().Number.Uint64(), false)
+	self.chainmu.Unlock()
+}
+
 func (self *BlockChain) getProcInterrupt() bool {
 	return atomic.LoadInt32(&self.procInterrupt) == 1
 }
@@ -234,6 +245,7 @@ func (bc *BlockChain) SetHead(head uint64) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
+	oldHead := bc.hc.CurrentHeader().Number.Uint64()
 	delFn := func(hash common.Hash, num uint64) {
 		DeleteBody(bc.chainDb, hash, num)
 	}
@@ -247,6 +259,11 @@ func (bc *BlockChain) SetHead(head uint64) {
 
 	// Update all computed fields to the new head
 	currentHeader := bc.hc.CurrentHeader()
+	if head < oldHead {
+		for _, cp := range bc.chainProcessors {
+			cp.NewHead(head, true)
+		}
+	}
 	if bc.currentBlock != nil && currentHeader.Number.Uint64() < bc.currentBlock.NumberU64() {
 		bc.currentBlock = bc.GetBlock(currentHeader.Hash(), currentHeader.Number.Uint64())
 	}
@@ -622,12 +639,15 @@ func (self *BlockChain) Rollback(chain []common.Hash) {
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
+	var rollbackHead *types.Header
+
 	for i := len(chain) - 1; i >= 0; i-- {
 		hash := chain[i]
 
 		currentHeader := self.hc.CurrentHeader()
 		if currentHeader.Hash() == hash {
-			self.hc.SetCurrentHeader(self.GetHeader(currentHeader.ParentHash, currentHeader.Number.Uint64()-1))
+			rollbackHead = self.GetHeader(currentHeader.ParentHash, currentHeader.Number.Uint64()-1)
+			self.hc.SetCurrentHeader(rollbackHead)
 		}
 		if self.currentFastBlock.Hash() == hash {
 			self.currentFastBlock = self.GetBlock(self.currentFastBlock.ParentHash(), self.currentFastBlock.NumberU64()-1)
@@ -636,6 +656,12 @@ func (self *BlockChain) Rollback(chain []common.Hash) {
 		if self.currentBlock.Hash() == hash {
 			self.currentBlock = self.GetBlock(self.currentBlock.ParentHash(), self.currentBlock.NumberU64()-1)
 			WriteHeadBlockHash(self.chainDb, self.currentBlock.Hash())
+		}
+	}
+
+	if rollbackHead != nil {
+		for _, cp := range self.chainProcessors {
+			cp.NewHead(rollbackHead.Number.Uint64(), true)
 		}
 	}
 }
@@ -1296,7 +1322,16 @@ func (self *BlockChain) InsertHeaderChain(chain []*types.Header, checkFreq int) 
 		self.mu.Lock()
 		defer self.mu.Unlock()
 
-		_, err := self.hc.WriteHeader(header)
+		_, err := self.hc.WriteHeader(header, func(head *types.Header) {
+			for _, cp := range self.chainProcessors {
+				cp.NewHead(head.Number.Uint64(), true)
+			}
+		})
+
+		for _, cp := range self.chainProcessors {
+			cp.NewHead(header.Number.Uint64(), false)
+		}
+
 		return err
 	}
 
@@ -1319,7 +1354,7 @@ func (self *BlockChain) writeHeader(header *types.Header) error {
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
-	_, err := self.hc.WriteHeader(header)
+	_, err := self.hc.WriteHeader(header, nil)
 	return err
 }
 
