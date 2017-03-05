@@ -27,13 +27,8 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
-// Constants to match up protocol versions and messages
-const (
-	lpv1 = 1
-)
-
 // Supported versions of the les protocol (first is primary).
-var ProtocolVersions = []uint{lpv1}
+var ProtocolVersions = []uint{2}
 
 // Number of implemented message corresponding to different protocol versions.
 var ProtocolLengths = []uint64{15}
@@ -59,8 +54,8 @@ const (
 	GetCodeMsg         = 0x0a
 	CodeMsg            = 0x0b
 	SendTxMsg          = 0x0c
-	GetHeaderProofsMsg = 0x0d
-	HeaderProofsMsg    = 0x0e
+	GetPPTProofsMsg    = 0x0d
+	PPTProofsMsg       = 0x0e
 )
 
 type errCode int
@@ -189,10 +184,3 @@ type newBlockData struct {
 
 // blockBodiesData is the network packet for block content distribution.
 type blockBodiesData []*types.Body
-
-// CodeData is the network response packet for a node data retrieval.
-type CodeData []struct {
-	Value []byte
-}
-
-type proofsData [][]rlp.RawValue

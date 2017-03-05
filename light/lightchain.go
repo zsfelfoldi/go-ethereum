@@ -107,7 +107,8 @@ func NewLightChain(odr OdrBackend, config *params.ChainConfig, pow pow.PoW, mux 
 
 	if bc.genesisBlock.Hash() == params.MainNetGenesisHash {
 		// add trusted CHT
-		WriteTrustedCht(bc.chainDb, TrustedCht{Number: 805, Root: common.HexToHash("85e4286fe0a730390245c49de8476977afdae0eb5530b277f62a52b12313d50f")})
+		WriteTrustedCht(bc.chainDb, 101, common.HexToHash("78c79933d389f96d9aacd13f9fe9670e7177299a2d757dd4d84fbcc7691c7a6b"))
+		WriteTrustedBloomTrie(bc.chainDb, 101, common.HexToHash("69d72c860d1f71f1da33802787d98ce84b6bc72772c568c3d262a9212924a277"))
 		log.Info("Added trusted CHT for mainnet")
 	}
 
@@ -507,9 +508,9 @@ func (self *LightChain) GetHeaderByNumberOdr(ctx context.Context, number uint64)
 
 func (self *LightChain) SyncCht(ctx context.Context) bool {
 	headNum := self.CurrentHeader().Number.Uint64()
-	cht := GetTrustedCht(self.chainDb)
-	if headNum+1 < cht.Number*ChtFrequency {
-		num := cht.Number*ChtFrequency - 1
+	chtCount := GetChtCount(self.chainDb)
+	if headNum+1 < chtCount*ChtFrequency {
+		num := chtCount*ChtFrequency - 1
 		header, err := GetHeaderByNumber(ctx, self.odr, num)
 		if header != nil && err == nil {
 			self.mu.Lock()

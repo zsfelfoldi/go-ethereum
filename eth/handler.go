@@ -119,7 +119,7 @@ func NewProtocolManager(config *params.ChainConfig, fastSync bool, networkId int
 	}
 
 	if useBloomBits {
-		manager.bloomBitsProcessor = NewBloomBitsProcessor(manager.chaindb, manager.quitSync)
+		manager.bloomBitsProcessor = NewBloomBitsProcessor(manager.chaindb, manager.quitSync, bloomBitsSection)
 		blockchain.AddChainProcessor(manager.bloomBitsProcessor)
 	}
 

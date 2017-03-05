@@ -158,5 +158,5 @@ func (b *LesApiBackend) AccountManager() *accounts.Manager {
 }
 
 func (b *LesApiBackend) GetBloomBits(ctx context.Context, bitIdx uint64, sectionIdxList []uint64) ([]bloombits.CompVector, error) {
-	return nil, nil // implemented in a subsequent PR
+	return light.GetBloomBits(ctx, b.eth.odr, bitIdx, sectionIdxList)
 }

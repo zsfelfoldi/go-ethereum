@@ -25,8 +25,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/downloader"
+	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/p2p"
-	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
@@ -310,7 +310,7 @@ func testGetProofs(t *testing.T, protocol int) {
 	defer peer.close()
 
 	var proofreqs []ProofReq
-	var proofs [][]rlp.RawValue
+	proofs := light.NewProofDb()
 
 	accounts := []common.Address{testBankAddress, acc1Addr, acc2Addr, {}}
 	for i := uint64(0); i <= bc.CurrentBlock().NumberU64(); i++ {
@@ -325,14 +325,13 @@ func testGetProofs(t *testing.T, protocol int) {
 			}
 			proofreqs = append(proofreqs, req)
 
-			proof := trie.Prove(crypto.Keccak256(acc[:]))
-			proofs = append(proofs, proof)
+			trie.Prove(crypto.Keccak256(acc[:]), 0, proofs)
 		}
 	}
 	// Send the proof request and verify the response
 	cost := peer.GetRequestCost(GetProofsMsg, len(proofreqs))
 	sendRequest(peer.app, GetProofsMsg, 42, cost, proofreqs)
-	if err := expectResponse(peer.app, ProofsMsg, 42, testBufLimit, proofs); err != nil {
+	if err := expectResponse(peer.app, ProofsMsg, 42, testBufLimit, proofs.ProofSet()); err != nil {
 		t.Errorf("proofs mismatch: %v", err)
 	}
 }

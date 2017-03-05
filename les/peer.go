@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
+	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
 )
@@ -201,13 +202,13 @@ func (p *peer) SendReceiptsRLP(reqID, bv uint64, receipts []rlp.RawValue) error 
 }
 
 // SendProofs sends a batch of merkle proofs, corresponding to the ones requested.
-func (p *peer) SendProofs(reqID, bv uint64, proofs proofsData) error {
+func (p *peer) SendProofs(reqID, bv uint64, proofs light.ProofSet) error {
 	return sendResponse(p.rw, ProofsMsg, reqID, bv, proofs)
 }
 
 // SendHeaderProofs sends a batch of header proofs, corresponding to the ones requested.
-func (p *peer) SendHeaderProofs(reqID, bv uint64, proofs []ChtResp) error {
-	return sendResponse(p.rw, HeaderProofsMsg, reqID, bv, proofs)
+func (p *peer) SendPPTProofs(reqID, bv uint64, resp PPTResps) error {
+	return sendResponse(p.rw, PPTProofsMsg, reqID, bv, resp)
 }
 
 // RequestHeadersByHash fetches a batch of blocks' headers corresponding to the
@@ -233,7 +234,7 @@ func (p *peer) RequestBodies(reqID, cost uint64, hashes []common.Hash) error {
 
 // RequestCode fetches a batch of arbitrary data from a node's known state
 // data, corresponding to the specified hashes.
-func (p *peer) RequestCode(reqID, cost uint64, reqs []*CodeReq) error {
+func (p *peer) RequestCode(reqID, cost uint64, reqs []CodeReq) error {
 	p.Log().Debug("Fetching batch of codes", "count", len(reqs))
 	return sendRequest(p.rw, GetCodeMsg, reqID, cost, reqs)
 }
@@ -245,15 +246,15 @@ func (p *peer) RequestReceipts(reqID, cost uint64, hashes []common.Hash) error {
 }
 
 // RequestProofs fetches a batch of merkle proofs from a remote node.
-func (p *peer) RequestProofs(reqID, cost uint64, reqs []*ProofReq) error {
+func (p *peer) RequestProofs(reqID, cost uint64, reqs []ProofReq) error {
 	p.Log().Debug("Fetching batch of proofs", "count", len(reqs))
 	return sendRequest(p.rw, GetProofsMsg, reqID, cost, reqs)
 }
 
 // RequestHeaderProofs fetches a batch of header merkle proofs from a remote node.
-func (p *peer) RequestHeaderProofs(reqID, cost uint64, reqs []*ChtReq) error {
+func (p *peer) RequestPPTProofs(reqID, cost uint64, reqs []PPTReq) error {
 	p.Log().Debug("Fetching batch of header proofs", "count", len(reqs))
-	return sendRequest(p.rw, GetHeaderProofsMsg, reqID, cost, reqs)
+	return sendRequest(p.rw, GetPPTProofsMsg, reqID, cost, reqs)
 }
 
 func (p *peer) SendTxs(reqID, cost uint64, txs types.Transactions) error {
