@@ -26,6 +26,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/bloombits"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
@@ -293,4 +294,43 @@ func addMipmapBloomBins(db ethdb.Database) (err error) {
 	}
 	log.Info("Bloom-bin upgrade completed", "elapsed", common.PrettyDuration(time.Since(tstart)))
 	return nil
+}
+
+type BloomBitsProcessorBackend struct {
+	db ethdb.Database
+}
+
+const bloomBitsConfirmations = 2048
+
+func NewBloomBitsProcessor(db ethdb.Database, stop chan struct{}) *core.ChainSectionProcessor {
+	return core.NewChainSectionProcessor(&BloomBitsProcessorBackend{db: db}, bloombits.SectionSize, bloomBitsConfirmations, time.Millisecond*100, stop)
+}
+
+func (b *BloomBitsProcessorBackend) Process(sectionIdx uint64) bool {
+	bc := &bloombits.BloomBitsCreator{}
+	var header *types.Header
+	for i := sectionIdx * bloombits.SectionSize; i < (sectionIdx+1)*bloombits.SectionSize; i++ {
+		hash := core.GetCanonicalHash(b.db, i)
+		header = core.GetHeader(b.db, hash, i)
+		if header == nil {
+			log.Error("Error creating bloomBits data", "section", sectionIdx, "missing header", i)
+			return false
+		}
+		bc.AddHeaderBloom(header.Bloom)
+	}
+
+	for i := 0; i < bloombits.BloomLength; i++ {
+		core.StoreBloomBits(b.db, uint64(i), sectionIdx, bloombits.CompressBloomBits(bc.GetBitVector(uint(i))))
+	}
+
+	return true
+}
+
+func (b *BloomBitsProcessorBackend) SetStored(count uint64) {
+	log.Info("Stored bloomBits data", "section", count-1)
+	core.StoreBloomBitsAvailable(b.db, count)
+}
+
+func (b *BloomBitsProcessorBackend) GetStored() uint64 {
+	return core.GetBloomBitsAvailable(b.db)
 }

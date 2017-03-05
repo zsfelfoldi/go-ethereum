@@ -76,7 +76,7 @@ func TestBlockSubscription(t *testing.T) {
 		mux     = new(event.TypeMux)
 		db, _   = ethdb.NewMemDatabase()
 		backend = &testBackend{mux, db}
-		api     = NewPublicFilterAPI(backend, false)
+		api     = NewPublicFilterAPI(backend, false, false)
 
 		genesis     = core.WriteGenesisBlockForTesting(db)
 		chain, _    = core.GenerateChain(params.TestChainConfig, genesis, db, 10, func(i int, gen *core.BlockGen) {})
@@ -130,7 +130,7 @@ func TestPendingTxFilter(t *testing.T) {
 		mux     = new(event.TypeMux)
 		db, _   = ethdb.NewMemDatabase()
 		backend = &testBackend{mux, db}
-		api     = NewPublicFilterAPI(backend, false)
+		api     = NewPublicFilterAPI(backend, false, false)
 
 		transactions = []*types.Transaction{
 			types.NewTransaction(0, common.HexToAddress("0xb794f5ea0ba39494ce83a213fffba74279579268"), new(big.Int), new(big.Int), new(big.Int), nil),
@@ -180,7 +180,7 @@ func TestLogFilterCreation(t *testing.T) {
 		mux     = new(event.TypeMux)
 		db, _   = ethdb.NewMemDatabase()
 		backend = &testBackend{mux, db}
-		api     = NewPublicFilterAPI(backend, false)
+		api     = NewPublicFilterAPI(backend, false, false)
 
 		testCases = []struct {
 			crit    FilterCriteria
@@ -225,7 +225,7 @@ func TestInvalidLogFilterCreation(t *testing.T) {
 		mux     = new(event.TypeMux)
 		db, _   = ethdb.NewMemDatabase()
 		backend = &testBackend{mux, db}
-		api     = NewPublicFilterAPI(backend, false)
+		api     = NewPublicFilterAPI(backend, false, false)
 	)
 
 	// different situations where log filter creation should fail.
@@ -251,7 +251,7 @@ func TestLogFilter(t *testing.T) {
 		mux     = new(event.TypeMux)
 		db, _   = ethdb.NewMemDatabase()
 		backend = &testBackend{mux, db}
-		api     = NewPublicFilterAPI(backend, false)
+		api     = NewPublicFilterAPI(backend, false, false)
 
 		firstAddr      = common.HexToAddress("0x1111111111111111111111111111111111111111")
 		secondAddr     = common.HexToAddress("0x2222222222222222222222222222222222222222")
@@ -359,7 +359,7 @@ func TestPendingLogsSubscription(t *testing.T) {
 		mux     = new(event.TypeMux)
 		db, _   = ethdb.NewMemDatabase()
 		backend = &testBackend{mux, db}
-		api     = NewPublicFilterAPI(backend, false)
+		api     = NewPublicFilterAPI(backend, false, false)
 
 		firstAddr      = common.HexToAddress("0x1111111111111111111111111111111111111111")
 		secondAddr     = common.HexToAddress("0x2222222222222222222222222222222222222222")
