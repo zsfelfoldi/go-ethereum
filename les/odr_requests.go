@@ -43,7 +43,7 @@ var (
 	errReceiptHashMismatch = errors.New("receipt hash mismatch")
 	errDataHashMismatch    = errors.New("data hash mismatch")
 	errCHTHashMismatch     = errors.New("cht hash mismatch")
-	errInvalidProof        = errors.New("invalid merkle proof")
+	errCHTNumberMismatch   = errors.New("cht number mismatch")
 )
 
 type LesOdrRequest interface {
@@ -218,7 +218,7 @@ func (r *TrieRequest) Validate(db ethdb.Database, msg *Msg) error {
 	if msg.MsgType != MsgProofs {
 		return errInvalidMessageType
 	}
-	proofs := msg.Obj.([][]rlp.RawValue)
+	proofs := msg.Obj.(trie.ProofSet)
 	if len(proofs) != 1 {
 		return errMultipleEntries
 	}
@@ -287,9 +287,9 @@ type ChtReq struct {
 	ChtNum, BlockNum, FromLevel uint64
 }
 
-type ChtResp struct {
-	Header *types.Header
-	Proof  []rlp.RawValue
+type ChtResps struct { // describes all responses, not just a single one
+	Proofs  trie.ProofSet
+	Headers [][]byte
 }
 
 // ODR request type for requesting headers by Canonical Hash Trie, see LesOdrRequest interface
@@ -329,17 +329,25 @@ func (r *ChtRequest) Validate(db ethdb.Database, msg *Msg) error {
 	if msg.MsgType != MsgHeaderProofs {
 		return errInvalidMessageType
 	}
-	proofs := msg.Obj.([]ChtResp)
-	if len(proofs) != 1 {
+	resp := msg.Obj.(ChtResps)
+	if len(resp.Proofs) != 1 || len(resp.Headers) != 1 {
 		return errMultipleEntries
 	}
-	proof := proofs[0]
+	proof := resp.Proofs[0]
+	headerEnc := resp.Headers[0]
+	if len(headerEnc) == 0 {
+		return errHeaderUnavailable
+	}
+	var header *types.Header
+	if err := rlp.DecodeBytes(headerEnc, header); err != nil {
+		return errHeaderUnavailable
+	}
 
 	// Verify the CHT
 	var encNumber [8]byte
 	binary.BigEndian.PutUint64(encNumber[:], r.BlockNum)
 
-	value, err := trie.VerifyProof(r.ChtRoot, encNumber[:], proof.Proof)
+	value, err := trie.VerifyProof(r.ChtRoot, encNumber[:], proof)
 	if err != nil {
 		return err
 	}
@@ -347,12 +355,15 @@ func (r *ChtRequest) Validate(db ethdb.Database, msg *Msg) error {
 	if err := rlp.DecodeBytes(value, &node); err != nil {
 		return err
 	}
-	if node.Hash != proof.Header.Hash() {
+	if node.Hash != header.Hash() {
 		return errCHTHashMismatch
 	}
+	if r.BlockNum != header.Number.Uint64() {
+		return errCHTNumberMismatch
+	}
 	// Verifications passed, store and return
-	r.Header = proof.Header
-	r.Proof = proof.Proof
+	r.Header = header
+	r.Proof = proof
 	r.Td = node.Td
 
 	return nil
@@ -360,10 +371,6 @@ func (r *ChtRequest) Validate(db ethdb.Database, msg *Msg) error {
 
 type BloomReq struct {
 	ChtNum, BitIdx, SectionIdx, FromLevel uint64
-}
-
-type BloomResp struct {
-	Proof []rlp.RawValue
 }
 
 // ODR request type for requesting headers by Canonical Hash Trie, see LesOdrRequest interface
@@ -407,35 +414,24 @@ func (r *BloomRequest) Validate(db ethdb.Database, msg *Msg) error {
 	if msg.MsgType != MsgBloomBits {
 		return errInvalidMessageType
 	}
-	proofs := msg.Obj.([]BloomResp)
+	proofs := msg.Obj.(trie.ProofSet)
 	if len(proofs) != len(r.SectionIdxList) {
 		return errMultipleEntries
 	}
 
-	r.Proofs = make([][]rlp.RawValue, len(r.SectionIdxList))
 	r.BloomBits = make([][]byte, len(r.SectionIdxList))
+	r.Proofs = proofs
 
 	// Verify the proofs
 	var encNumber [10]byte
 	binary.BigEndian.PutUint16(encNumber[0:2], uint16(r.BitIdx))
-	var lastProof []rlp.RawValue
+
 	for i, proof := range proofs {
-		for i, data := range proof.Proof {
-			if len(data) == 1 && data[0] == 0 {
-				if i < len(lastProof) {
-					proof.Proof[i] = lastProof[i]
-				} else {
-					return errInvalidProof
-				}
-			}
-		}
-		lastProof = proof.Proof
 		binary.BigEndian.PutUint64(encNumber[2:10], r.SectionIdxList[i])
-		value, err := trie.VerifyProof(r.ChtRoot, append(light.BloomBitsTriePrefix, encNumber[:]...), proof.Proof)
+		value, err := trie.VerifyProof(r.ChtRoot, append(light.BloomBitsTriePrefix, encNumber[:]...), proof)
 		if err != nil {
 			return err
 		}
-		r.Proofs[i] = proof.Proof
 		r.BloomBits[i] = value
 	}
 

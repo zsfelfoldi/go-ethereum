@@ -27,6 +27,15 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+type (
+	// Proof describes a merkle proof as a set of trie nodes
+	Proof [][]byte
+	// ProofSet is list of merkle proofs that can be "compacted" by removing
+	// nodes that are the same as the one at the same index in the previous proof.
+	// These nodes are replaced with zero-length arrays.
+	ProofSet []Proof
+)
+
 // Prove constructs a merkle proof for key. The result contains all
 // encoded nodes on the path to the value at key. The value itself is
 // also included in the last node and can be retrieved by verifying
@@ -36,7 +45,7 @@ import (
 // contains all nodes of the longest existing prefix of the key
 // (at least the root node), ending with the node that proves the
 // absence of the key.
-func (t *Trie) Prove(key []byte) []rlp.RawValue {
+func (t *Trie) Prove(key []byte) Proof {
 	// Collect all nodes on the path to key.
 	key = compactHexDecode(key)
 	nodes := []node{}
@@ -68,7 +77,7 @@ func (t *Trie) Prove(key []byte) []rlp.RawValue {
 		}
 	}
 	hasher := newHasher(0, 0)
-	proof := make([]rlp.RawValue, 0, len(nodes))
+	proof := make(Proof, 0, len(nodes))
 	for i, n := range nodes {
 		// Don't bother checking for errors here since hasher panics
 		// if encoding doesn't work and we're not writing to any database.
@@ -88,7 +97,7 @@ func (t *Trie) Prove(key []byte) []rlp.RawValue {
 // value for key in a trie with the given root hash. VerifyProof
 // returns an error if the proof contains invalid trie nodes or the
 // wrong value.
-func VerifyProof(rootHash common.Hash, key []byte, proof []rlp.RawValue) (value []byte, err error) {
+func VerifyProof(rootHash common.Hash, key []byte, proof Proof) (value []byte, err error) {
 	key = compactHexDecode(key)
 	sha := sha3.NewKeccak256()
 	wantHash := rootHash.Bytes()
@@ -145,4 +154,36 @@ func get(tn node, key []byte) ([]byte, node) {
 		}
 	}
 	return nil, tn.(valueNode)
+}
+
+func (ps ProofSet) Compact() {
+	var maxLen int
+	for _, p := range ps {
+		l := len(p)
+		if l > maxLen {
+			maxLen = l
+		}
+	}
+
+	for i := 0; i < maxLen; i++ {
+		for j := len(ps) - 1; j > 0; j-- {
+			if len(ps[j]) > i && len(ps[j-1]) > i && bytes.Equal(ps[j][i], ps[j-1][i]) {
+				ps[j][i] = nil
+			}
+		}
+	}
+}
+
+func (ps ProofSet) Decompact() error {
+	for i, p := range ps {
+		for j, n := range p {
+			if len(n) == 0 {
+				if i == 0 || len(ps[i-1]) <= j {
+					return fmt.Errorf("Invalid compact proof set")
+				}
+				ps[i][j] = ps[i-1][j]
+			}
+		}
+	}
+	return nil
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 )
 
 var (
@@ -233,17 +234,17 @@ func (p *peer) SendReceiptsRLP(reqID, bv uint64, receipts []rlp.RawValue) error 
 }
 
 // SendProofs sends a batch of merkle proofs, corresponding to the ones requested.
-func (p *peer) SendProofs(reqID, bv uint64, proofs proofsData) error {
+func (p *peer) SendProofs(reqID, bv uint64, proofs trie.ProofSet) error {
 	return sendResponse(p.rw, ProofsMsg, reqID, bv, proofs)
 }
 
 // SendHeaderProofs sends a batch of header proofs, corresponding to the ones requested.
-func (p *peer) SendHeaderProofs(reqID, bv uint64, proofs []ChtResp) error {
-	return sendResponse(p.rw, HeaderProofsMsg, reqID, bv, proofs)
+func (p *peer) SendHeaderProofs(reqID, bv uint64, resp ChtResps) error {
+	return sendResponse(p.rw, HeaderProofsMsg, reqID, bv, resp)
 }
 
 // SendBloomBits sends a batch of bloom proofs, corresponding to the ones requested.
-func (p *peer) SendBloomBits(reqID, bv uint64, proofs []BloomResp) error {
+func (p *peer) SendBloomBits(reqID, bv uint64, proofs trie.ProofSet) error {
 	return sendResponse(p.rw, BloomBitsMsg, reqID, bv, proofs)
 }
 

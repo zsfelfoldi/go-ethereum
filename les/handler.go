@@ -18,7 +18,6 @@
 package les
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -783,7 +782,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		// Gather state data until the fetch or network limits is reached
 		var (
 			bytes  int
-			proofs proofsData
+			proofs trie.ProofSet
 		)
 		reqCnt := len(req.Reqs)
 		if reject(uint64(reqCnt), MaxProofsFetch) {
@@ -794,6 +793,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				break
 			}
 			// Retrieve the requested state entry, stopping if enough was found
+			proofAdded := false
 			if header := core.GetHeader(pm.chainDb, req.BHash, core.GetBlockNumber(pm.chainDb, req.BHash)); header != nil {
 				if tr, _ := trie.New(header.Root, pm.chainDb); tr != nil {
 					if len(req.AccKey) > 0 {
@@ -807,9 +807,18 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 					if tr != nil {
 						proof := tr.Prove(req.Key)
 						proofs = append(proofs, proof)
-						bytes += len(proof)
+						proofAdded = true
 					}
 				}
+			}
+			if !proofAdded {
+				proofs = append(proofs, nil)
+			}
+		}
+		proofs.Compact()
+		for _, p := range proofs {
+			for _, n := range p {
+				bytes += len(n)
 			}
 		}
 		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
@@ -825,9 +834,12 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		// A batch of merkle proofs arrived to one of our previous requests
 		var resp struct {
 			ReqID, BV uint64
-			Data      [][]rlp.RawValue
+			Data      trie.ProofSet
 		}
 		if err := msg.Decode(&resp); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		if err := resp.Data.Decompact(); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		p.fcServer.GotReply(resp.ReqID, resp.BV)
@@ -849,8 +861,9 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		// Gather state data until the fetch or network limits is reached
 		var (
-			bytes  int
-			proofs []ChtResp
+			bytes   int
+			proofs  trie.ProofSet
+			headers [][]byte
 		)
 		reqCnt := len(req.Reqs)
 		if reject(uint64(reqCnt), MaxHeaderProofsFetch) {
@@ -864,21 +877,34 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				break
 			}
 
-			if header := pm.blockchain.GetHeaderByNumber(req.BlockNum); header != nil {
-				if root := light.GetChtRoot(pm.chainDb, req.ChtNum); root != (common.Hash{}) {
-					if tr, _ := trie.New(root, cdb); tr != nil {
-						var encNumber [8]byte
-						binary.BigEndian.PutUint64(encNumber[:], req.BlockNum)
-						proof := tr.Prove(encNumber[:])
-						proofs = append(proofs, ChtResp{Header: header, Proof: proof})
-						bytes += len(proof) + estHeaderRlpSize
+			proofAdded := false
+			if root := light.GetChtRoot(pm.chainDb, req.ChtNum); root != (common.Hash{}) {
+				if tr, _ := trie.New(root, cdb); tr != nil {
+					var encNumber [8]byte
+					binary.BigEndian.PutUint64(encNumber[:], req.BlockNum)
+					proof := tr.Prove(encNumber[:])
+					proofs = append(proofs, proof)
+					proofAdded = true
+
+					hash := tr.Get(encNumber[:])
+					var headerEnc []byte
+					if len(hash) == len(common.Hash{}) {
+						if header := pm.blockchain.GetHeader(common.BytesToHash(hash), req.BlockNum); header != nil {
+							headerEnc, _ = rlp.EncodeToBytes(header)
+							bytes += len(headerEnc)
+						}
 					}
+					headers = append(headers, headerEnc)
 				}
+			}
+			if !proofAdded {
+				proofs = append(proofs, nil)
+				headers = append(headers, nil)
 			}
 		}
 		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
-		return p.SendHeaderProofs(req.ReqID, bv, proofs)
+		return p.SendHeaderProofs(req.ReqID, bv, ChtResps{proofs, headers})
 
 	case HeaderProofsMsg:
 		if pm.odr == nil {
@@ -888,11 +914,15 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		p.Log().Trace("Received headers proof response")
 		var resp struct {
 			ReqID, BV uint64
-			Data      []ChtResp
+			Data      ChtResps
 		}
 		if err := msg.Decode(&resp); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
+		if err := resp.Data.Proofs.Decompact(); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+
 		p.fcServer.GotReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
 			MsgType: MsgHeaderProofs,
@@ -913,16 +943,15 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		// Gather state data until the fetch or network limits is reached
 		var (
 			byteCnt int
-			proofs  []BloomResp
+			proofs  trie.ProofSet
 		)
 		reqCnt := len(req.Reqs)
 		if reject(uint64(reqCnt), MaxBloomBitsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 		var (
-			lastRoot  common.Hash
-			tr        *trie.Trie
-			lastProof []rlp.RawValue
+			lastRoot common.Hash
+			tr       *trie.Trie
 		)
 
 		cdb := ethdb.NewTable(pm.chainDb, light.ChtTablePrefix)
@@ -932,6 +961,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				break
 			}
 
+			proofAdded := false
 			if root := light.GetChtRoot(pm.chainDb, req.ChtNum); root != (common.Hash{}) {
 				if root != lastRoot {
 					tr, _ = trie.New(root, cdb)
@@ -942,24 +972,18 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 					binary.BigEndian.PutUint16(encNumber[0:2], uint16(req.BitIdx))
 					binary.BigEndian.PutUint64(encNumber[2:10], req.SectionIdx)
 					proof := tr.Prove(append(light.BloomBitsTriePrefix, encNumber[:]...))
-					if lastProof != nil {
-						fullProof := make([]rlp.RawValue, len(proof))
-						copy(fullProof, proof)
-					loop:
-						for i, data := range proof {
-							if i < len(lastProof) && bytes.Equal(lastProof[i], data) {
-								proof[i] = []byte{0}
-							} else {
-								break loop
-							}
-						}
-						lastProof = fullProof
-					} else {
-						lastProof = proof
-					}
-					proofs = append(proofs, BloomResp{Proof: proof})
-					byteCnt += len(proof)
+					proofs = append(proofs, proof)
+					proofAdded = true
 				}
+			}
+			if !proofAdded {
+				proofs = append(proofs, nil)
+			}
+		}
+		proofs.Compact()
+		for _, p := range proofs {
+			for _, n := range p {
+				byteCnt += len(n)
 			}
 		}
 		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
@@ -974,9 +998,12 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		p.Log().Trace("Received bloom bits response")
 		var resp struct {
 			ReqID, BV uint64
-			Data      []BloomResp
+			Data      trie.ProofSet
 		}
 		if err := msg.Decode(&resp); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		if err := resp.Data.Decompact(); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		p.fcServer.GotReply(resp.ReqID, resp.BV)

@@ -310,7 +310,7 @@ func testGetProofs(t *testing.T, protocol int) {
 	defer peer.close()
 
 	var proofreqs []ProofReq
-	var proofs [][]rlp.RawValue
+	var proofs trie.ProofSet
 
 	accounts := []common.Address{testBankAddress, acc1Addr, acc2Addr, {}}
 	for i := uint64(0); i <= bc.CurrentBlock().NumberU64(); i++ {

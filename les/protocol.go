@@ -196,5 +196,3 @@ type blockBodiesData []*types.Body
 type CodeData []struct {
 	Value []byte
 }
-
-type proofsData [][]rlp.RawValue

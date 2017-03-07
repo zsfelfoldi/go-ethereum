@@ -26,7 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 	"golang.org/x/net/context"
 )
 
@@ -80,7 +80,7 @@ type TrieRequest struct {
 	OdrRequest
 	Id    *TrieID
 	Key   []byte
-	Proof []rlp.RawValue
+	Proof trie.Proof
 }
 
 // StoreResult stores the retrieved data in local database
@@ -89,7 +89,7 @@ func (req *TrieRequest) StoreResult(db ethdb.Database) {
 }
 
 // storeProof stores the new trie nodes obtained from a merkle proof in the database
-func storeProof(db ethdb.Database, proof []rlp.RawValue) {
+func storeProof(db ethdb.Database, proof trie.Proof) {
 	for _, buf := range proof {
 		hash := crypto.Keccak256(buf)
 		val, _ := db.Get(hash)
@@ -145,7 +145,7 @@ type ChtRequest struct {
 	ChtRoot          common.Hash
 	Header           *types.Header
 	Td               *big.Int
-	Proof            []rlp.RawValue
+	Proof            trie.Proof
 }
 
 // StoreResult stores the retrieved data in local database
@@ -164,7 +164,7 @@ type BloomRequest struct {
 	SectionIdxList []uint64
 	ChtRoot        common.Hash
 	BloomBits      [][]byte
-	Proofs         [][]rlp.RawValue
+	Proofs         trie.ProofSet
 }
 
 // StoreResult stores the retrieved data in local database
