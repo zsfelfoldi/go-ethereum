@@ -272,20 +272,25 @@ func GetTransaction(db ethdb.Database, hash common.Hash) (*types.Transaction, co
 	if err := rlp.DecodeBytes(data, &tx); err != nil {
 		return nil, common.Hash{}, 0, 0
 	}
+
+	meta := GetTransactionChainPosition(db, hash)
+	if meta.BlockHash == nil {
+		return nil, common.Hash{}, 0, 0
+	}
+	return &tx, common.BytesToHash(meta.BlockHash), meta.BlockIndex, meta.TxIndex
+}
+
+func GetTransactionChainPosition(db ethdb.Database, hash common.Hash) TxChainPos {
 	// Retrieve the blockchain positional metadata
-	data, _ = db.Get(append(hash.Bytes(), txMetaSuffix...))
+	data, _ := db.Get(append(hash.Bytes(), txMetaSuffix...))
 	if len(data) == 0 {
-		return nil, common.Hash{}, 0, 0
+		return TxChainPos{}
 	}
-	var meta struct {
-		BlockHash  common.Hash
-		BlockIndex uint64
-		Index      uint64
-	}
+	var meta TxChainPos
 	if err := rlp.DecodeBytes(data, &meta); err != nil {
-		return nil, common.Hash{}, 0, 0
+		return TxChainPos{}
 	}
-	return &tx, meta.BlockHash, meta.BlockIndex, meta.Index
+	return meta
 }
 
 // GetReceipt returns a receipt by hash

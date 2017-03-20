@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
@@ -57,8 +58,10 @@ type peer struct {
 	headInfo *announceData
 	lock     sync.RWMutex
 
-	announceChn chan announceData
-	sendQueue   *execQueue
+	announceChn   chan announceData
+	sendQueue     *execQueue
+	announcedHead common.Hash
+	announceMu    sync.Mutex
 
 	poolEntry      *poolEntry
 	hasBlock       func(common.Hash, uint64) bool
@@ -206,9 +209,14 @@ func (p *peer) SendProofs(reqID, bv uint64, proofs light.ProofSet) error {
 	return sendResponse(p.rw, ProofsMsg, reqID, bv, proofs)
 }
 
-// SendHeaderProofs sends a batch of header proofs, corresponding to the ones requested.
+// SendPPTProofs sends a batch of PPT proofs, corresponding to the ones requested.
 func (p *peer) SendPPTProofs(reqID, bv uint64, resp PPTResps) error {
 	return sendResponse(p.rw, PPTProofsMsg, reqID, bv, resp)
+}
+
+// SendTxStatus sends a batch of transaction status records, corresponding to the ones requested.
+func (p *peer) SendTxStatus(reqID, bv uint64, status []core.TxStatusData) error {
+	return sendResponse(p.rw, TxStatusMsg, reqID, bv, status)
 }
 
 // RequestHeadersByHash fetches a batch of blocks' headers corresponding to the
@@ -258,8 +266,13 @@ func (p *peer) RequestPPTProofs(reqID, cost uint64, reqs []PPTReq) error {
 }
 
 func (p *peer) SendTxs(reqID, cost uint64, txs types.Transactions) error {
-	p.Log().Debug("Fetching batch of transactions", "count", len(txs))
-	return p2p.Send(p.rw, SendTxMsg, txs)
+	p.Log().Debug("Sending batch of transactions", "count", len(txs))
+	return sendRequest(p.rw, SendTxMsg, reqID, cost, txs)
+}
+
+func (p *peer) RequestTxStatus(reqID, cost uint64, txHashes []common.Hash) error {
+	p.Log().Debug("Requesting status for a batch of transactions", "count", len(txHashes))
+	return sendRequest(p.rw, GetTxStatusMsg, reqID, cost, txHashes)
 }
 
 type keyValueEntry struct {
@@ -461,7 +474,6 @@ func (ps *peerSet) Register(p *peer) error {
 		return errAlreadyRegistered
 	}
 	ps.peers[p.id] = p
-	p.sendQueue = newExecQueue(100)
 	return nil
 }
 
@@ -471,10 +483,8 @@ func (ps *peerSet) Unregister(id string) error {
 	ps.lock.Lock()
 	defer ps.lock.Unlock()
 
-	if p, ok := ps.peers[id]; !ok {
+	if _, ok := ps.peers[id]; !ok {
 		return errNotRegistered
-	} else {
-		p.sendQueue.quit()
 	}
 	delete(ps.peers, id)
 	return nil

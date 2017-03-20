@@ -44,6 +44,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	if err != nil {
 		return nil, err
 	}
+	pm.blockLoop()
 
 	srv := &LesServer{protocolManager: pm}
 	pm.server = srv
