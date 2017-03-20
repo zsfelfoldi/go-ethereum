@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rlp"
 	"gopkg.in/karalabe/cookiejar.v2/collections/prque"
 )
 
@@ -84,6 +85,7 @@ type stateFn func() (*state.StateDB, error)
 type TxPool struct {
 	config       *params.ChainConfig
 	currentState stateFn // The state function which will allow us to do some pre checks
+	currentHead  common.Hash
 	pendingState *state.ManagedState
 	gasLimit     func() *big.Int // The current gas limit function callback
 	minGasPrice  *big.Int
@@ -93,15 +95,20 @@ type TxPool struct {
 	signer       types.Signer
 	mu           sync.RWMutex
 
-	pending map[common.Address]*txList         // All currently processable transactions
-	queue   map[common.Address]*txList         // Queued but non-processable transactions
-	all     map[common.Hash]*types.Transaction // All transactions to allow lookups
-	beats   map[common.Address]time.Time       // Last heartbeat from each known account
+	pending map[common.Address]*txList   // All currently processable transactions
+	queue   map[common.Address]*txList   // Queued but non-processable transactions
+	all     map[common.Hash]txLookupRec  // All transactions to allow lookups
+	beats   map[common.Address]time.Time // Last heartbeat from each known account
 
 	wg   sync.WaitGroup // for shutdown sync
 	quit chan struct{}
 
 	homestead bool
+}
+
+type txLookupRec struct {
+	tx      *types.Transaction
+	pending bool
 }
 
 func NewTxPool(config *params.ChainConfig, eventMux *event.TypeMux, currentStateFn stateFn, gasLimitFn func() *big.Int) *TxPool {
@@ -110,7 +117,7 @@ func NewTxPool(config *params.ChainConfig, eventMux *event.TypeMux, currentState
 		signer:       types.NewEIP155Signer(config.ChainId),
 		pending:      make(map[common.Address]*txList),
 		queue:        make(map[common.Address]*txList),
-		all:          make(map[common.Hash]*types.Transaction),
+		all:          make(map[common.Hash]txLookupRec),
 		beats:        make(map[common.Address]time.Time),
 		eventMux:     eventMux,
 		currentState: currentStateFn,
@@ -148,6 +155,7 @@ func (pool *TxPool) eventLoop() {
 			}
 
 			pool.resetState()
+			pool.currentHead = ev.Block.Hash()
 			pool.mu.Unlock()
 		case GasPriceChanged:
 			pool.mu.Lock()
@@ -255,6 +263,65 @@ func (pool *TxPool) Pending() (map[common.Address]types.Transactions, error) {
 	return pending, nil
 }
 
+const (
+	TxStatusUnknown = iota
+	TxStatusQueued
+	TxStatusPending
+	TxStatusIncluded // Data contains a TxChainPos struct
+	TxStatusError    // Data contains the error string
+)
+
+type TxStatusData struct {
+	Status uint
+	Data   rlp.RawValue
+}
+
+type TxChainPos struct {
+	BlockHash           []byte
+	BlockIndex, TxIndex uint64
+}
+
+//txHashes should always be present
+// included status is not checked here
+func (pool *TxPool) AddOrGetTxStatus(head common.Hash, txs []*types.Transaction, txHashes []common.Hash) []TxStatusData {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+
+	if head != pool.currentHead {
+		// chain head does not match the latest processed head, rolled back txs may not have been added; exit without blocking
+		return nil
+	}
+	state, err := pool.currentState()
+	if err != nil {
+		return nil
+	}
+
+	status := make([]TxStatusData, len(txHashes))
+	for i, tx := range txs {
+		if err := pool.add(tx); err != nil {
+			status[i] = TxStatusData{TxStatusError, (rlp.RawValue)(err.Error())}
+		}
+	}
+
+	// check queue first
+	pool.promoteExecutables(state)
+
+	// invalidate any txs
+	pool.demoteUnexecutables(state)
+
+	for i, hash := range txHashes {
+		r, ok := pool.all[hash]
+		if ok {
+			if r.pending {
+				status[i] = TxStatusData{TxStatusPending, nil}
+			} else {
+				status[i] = TxStatusData{TxStatusQueued, nil}
+			}
+		}
+	}
+	return status
+}
+
 // SetLocal marks a transaction as local, skipping gas price
 //  check against local miner minimum in the future
 func (pool *TxPool) SetLocal(tx *types.Transaction) {
@@ -318,7 +385,7 @@ func (pool *TxPool) validateTx(tx *types.Transaction) error {
 func (pool *TxPool) add(tx *types.Transaction) error {
 	// If the transaction is already known, discard it
 	hash := tx.Hash()
-	if pool.all[hash] != nil {
+	if pool.all[hash].tx != nil {
 		log.Trace("Discarding already known transaction", "hash", hash)
 		return fmt.Errorf("known transaction: %x", hash)
 	}
@@ -354,7 +421,7 @@ func (pool *TxPool) enqueueTx(hash common.Hash, tx *types.Transaction) {
 		delete(pool.all, old.Hash())
 		queuedReplaceCounter.Inc(1)
 	}
-	pool.all[hash] = tx
+	pool.all[hash] = txLookupRec{tx, false}
 }
 
 // promoteTx adds a transaction to the pending (processable) list of transactions.
@@ -379,7 +446,7 @@ func (pool *TxPool) promoteTx(addr common.Address, hash common.Hash, tx *types.T
 		delete(pool.all, old.Hash())
 		pendingReplaceCounter.Inc(1)
 	}
-	pool.all[hash] = tx // Failsafe to work around direct pending inserts (tests)
+	pool.all[hash] = txLookupRec{tx, true} // Failsafe to work around direct pending inserts (tests)
 
 	// Set the potentially new pending nonce and notify any subsystems of the new tx
 	pool.beats[addr] = time.Now()
@@ -434,7 +501,7 @@ func (pool *TxPool) Get(hash common.Hash) *types.Transaction {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
 
-	return pool.all[hash]
+	return pool.all[hash].tx
 }
 
 // Remove removes the transaction with the given hash from the pool.
@@ -459,10 +526,11 @@ func (pool *TxPool) RemoveBatch(txs types.Transactions) {
 // transactions back to the future queue.
 func (pool *TxPool) removeTx(hash common.Hash) {
 	// Fetch the transaction we wish to delete
-	tx, ok := pool.all[hash]
+	t, ok := pool.all[hash]
 	if !ok {
 		return
 	}
+	tx := t.tx
 	addr, _ := types.Sender(pool.signer, tx) // already validated during insertion
 
 	// Remove it from the list of known transactions

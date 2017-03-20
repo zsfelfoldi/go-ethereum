@@ -1444,3 +1444,14 @@ func (self *BlockChain) GetHeaderByNumber(number uint64) *types.Header {
 
 // Config retrieves the blockchain's chain configuration.
 func (self *BlockChain) Config() *params.ChainConfig { return self.config }
+
+// LockChain locks the chain mutex for reading so that multiple canonical hashes can be
+// retrieved while it is guaranteed that they belong to the same version of the chain
+func (self *BlockChain) LockChain() {
+	self.chainmu.RLock()
+}
+
+// UnlockChain unlocks the chain mutex
+func (self *BlockChain) UnlockChain() {
+	self.chainmu.RUnlock()
+}

@@ -31,7 +31,7 @@ import (
 var ProtocolVersions = []uint{2}
 
 // Number of implemented message corresponding to different protocol versions.
-var ProtocolLengths = []uint64{15}
+var ProtocolLengths = []uint64{17}
 
 const (
 	NetworkId          = 1
@@ -53,9 +53,11 @@ const (
 	ProofsMsg          = 0x09
 	GetCodeMsg         = 0x0a
 	CodeMsg            = 0x0b
-	SendTxMsg          = 0x0c
-	GetPPTProofsMsg    = 0x0d
-	PPTProofsMsg       = 0x0e
+	GetPPTProofsMsg    = 0x0c
+	PPTProofsMsg       = 0x0d
+	SendTxMsg          = 0x0e
+	GetTxStatusMsg     = 0x0f
+	TxStatusMsg        = 0x10
 )
 
 type errCode int
@@ -175,12 +177,3 @@ func (hn *hashOrNumber) DecodeRLP(s *rlp.Stream) error {
 	}
 	return err
 }
-
-// newBlockData is the network packet for the block propagation message.
-type newBlockData struct {
-	Block *types.Block
-	TD    *big.Int
-}
-
-// blockBodiesData is the network packet for block content distribution.
-type blockBodiesData []*types.Body
