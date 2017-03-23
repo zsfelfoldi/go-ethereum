@@ -244,7 +244,7 @@ func (pm *ProtocolManager) removePeer(id string) {
 	if peer == nil {
 		return
 	}
-	peer.sendQueue.Stop()
+	peer.sendQueue.quit()
 	log.Debug("Removing light Ethereum peer", "peer", id)
 	if err := pm.peers.Unregister(id); err != nil {
 		if err == errNotRegistered {
@@ -343,7 +343,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		p.Log().Error("Light Ethereum peer registration failed", "err", err)
 		return err
 	}
-	p.sendQueue = common.NewExecQueue(100)
+	p.sendQueue = newExecQueue(100)
 	defer func() {
 		if pm.server != nil && pm.server.fcManager != nil && p.fcClient != nil {
 			p.fcClient.Remove(pm.server.fcManager)
@@ -427,7 +427,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 				select {
 				case announce := <-p.announceChn:
 					p.announceMu.Lock()
-					p.sendQueue.Queue(func() { p.SendAnnounce(announce) })
+					p.sendQueue.queue(func() { p.SendAnnounce(announce) })
 					p.announcedHead = announce.Hash
 					p.announceMu.Unlock()
 				case <-stop:
@@ -582,7 +582,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 
 		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + query.Amount*costs.reqCost)
 		pm.server.fcCostStats.update(msg.Code, query.Amount, rcost)
-		p.sendQueue.Queue(func() { p.SendBlockHeaders(req.ReqID, bv, headers) })
+		p.sendQueue.queue(func() { p.SendBlockHeaders(req.ReqID, bv, headers) })
 		return nil
 
 	case BlockHeadersMsg:
@@ -640,7 +640,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
-		p.sendQueue.Queue(func() { p.SendBlockBodiesRLP(req.ReqID, bv, bodies) })
+		p.sendQueue.queue(func() { p.SendBlockBodiesRLP(req.ReqID, bv, bodies) })
 		return nil
 
 	case BlockBodiesMsg:
@@ -702,7 +702,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
-		p.sendQueue.Queue(func() { p.SendCode(req.ReqID, bv, data) })
+		p.sendQueue.queue(func() { p.SendCode(req.ReqID, bv, data) })
 		return nil
 
 	case CodeMsg:
@@ -766,7 +766,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
-		p.sendQueue.Queue(func() { p.SendReceiptsRLP(req.ReqID, bv, receipts) })
+		p.sendQueue.queue(func() { p.SendReceiptsRLP(req.ReqID, bv, receipts) })
 		return nil
 
 	case ReceiptsMsg:
@@ -848,7 +848,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		proofs := proofDb.ProofSet()
 		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
-		p.sendQueue.Queue(func() { p.SendProofs(req.ReqID, bv, proofs) })
+		p.sendQueue.queue(func() { p.SendProofs(req.ReqID, bv, proofs) })
 		return nil
 
 	case ProofsMsg:
@@ -937,7 +937,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		proofs := proofDb.ProofSet()
 		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
-		p.sendQueue.Queue(func() { p.SendPPTProofs(req.ReqID, bv, PPTResps{Proofs: proofs, AuxData: auxData}) })
+		p.sendQueue.queue(func() { p.SendPPTProofs(req.ReqID, bv, PPTResps{Proofs: proofs, AuxData: auxData}) })
 		return nil
 
 	case PPTProofsMsg:
@@ -989,7 +989,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			if res != nil {
 				bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
 				pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
-				p.sendQueue.Queue(func() { p.SendTxStatus(req.ReqID, bv, res) })
+				p.sendQueue.queue(func() { p.SendTxStatus(req.ReqID, bv, res) })
 			}
 			p.announceMu.Unlock()
 			if res != nil {
@@ -1026,7 +1026,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			if res != nil {
 				bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
 				pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
-				p.sendQueue.Queue(func() { p.SendTxStatus(req.ReqID, bv, res) })
+				p.sendQueue.queue(func() { p.SendTxStatus(req.ReqID, bv, res) })
 			}
 			p.announceMu.Unlock()
 			if res != nil {
