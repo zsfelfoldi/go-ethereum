@@ -274,7 +274,7 @@ func GetTransaction(db ethdb.Database, hash common.Hash) (*types.Transaction, co
 	}
 
 	meta := GetTransactionChainPosition(db, hash)
-	if meta.BlockHash == nil {
+	if meta.BlockHash == (common.Hash{}) {
 		return nil, common.Hash{}, 0, 0
 	}
 	return &tx, common.BytesToHash(meta.BlockHash), meta.BlockIndex, meta.TxIndex
@@ -443,20 +443,12 @@ func WriteTransactions(db ethdb.Database, block *types.Block) error {
 			return err
 		}
 		// Encode and queue up the transaction metadata for storage
-		meta := struct {
-			BlockHash  common.Hash
-			BlockIndex uint64
-			Index      uint64
-		}{
+		meta := TxChainPos{
 			BlockHash:  block.Hash(),
 			BlockIndex: block.NumberU64(),
 			Index:      uint64(i),
 		}
-		data, err = rlp.EncodeToBytes(meta)
-		if err != nil {
-			return err
-		}
-		if err := batch.Put(append(tx.Hash().Bytes(), txMetaSuffix...), data); err != nil {
+		if err := WriteTransactionChainPosition(batch, meta); err != nil {
 			return err
 		}
 	}
@@ -465,6 +457,14 @@ func WriteTransactions(db ethdb.Database, block *types.Block) error {
 		log.Crit("Failed to store transactions", "err", err)
 	}
 	return nil
+}
+
+func WriteTransactionChainPosition(db ethdb.DatabaseWriter, meta TxChainPos) error {
+	data, err := rlp.EncodeToBytes(meta)
+	if err != nil {
+		return err
+	}
+	return db.Put(append(tx.Hash().Bytes(), txMetaSuffix...), data)
 }
 
 // WriteReceipt stores a single transaction receipt into the database.
@@ -536,6 +536,10 @@ func DeleteBlockReceipts(db ethdb.Database, hash common.Hash, number uint64) {
 // DeleteTransaction removes all transaction data associated with a hash.
 func DeleteTransaction(db ethdb.Database, hash common.Hash) {
 	db.Delete(hash.Bytes())
+	DeleteTransactionChainPosition(db, hash)
+}
+
+func DeleteTransactionChainPosition(db ethdb.DatabaseWriter, hash common.Hash) {
 	db.Delete(append(hash.Bytes(), txMetaSuffix...))
 }
 
