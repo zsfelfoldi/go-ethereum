@@ -277,7 +277,7 @@ type TxStatusData struct {
 }
 
 type TxChainPos struct {
-	BlockHash           []byte
+	BlockHash           common.Hash
 	BlockIndex, TxIndex uint64
 }
 

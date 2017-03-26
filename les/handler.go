@@ -93,13 +93,9 @@ type BlockChain interface {
 	UnlockChain()
 }
 
-type txPool interface {
-	AddOrGetTxStatus(head common.Hash, txs []*types.Transaction, txHashes []common.Hash) []core.TxStatusData
-}
-
 type ProtocolManager struct {
 	lightSync   bool
-	txpool      txPool
+	txpool      *txPool
 	txrelay     *LesTxRelay
 	networkId   int
 	chainConfig *params.ChainConfig
@@ -1055,7 +1051,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 
 		p.fcServer.GotReply(resp.ReqID, resp.BV)
-		//TODO: something
+		pm.txpool.deliver(resp.ReqID, p.Head(), resp.Status)
 
 	default:
 		p.Log().Trace("Received unknown message", "code", msg.Code)

@@ -17,14 +17,18 @@
 package ethdb
 
 type Database interface {
-	Put(key []byte, value []byte) error
+	DatabaseWriter
 	Get(key []byte) ([]byte, error)
-	Delete(key []byte) error
 	Close()
 	NewBatch() Batch
 }
 
-type Batch interface {
+type DatabaseWriter interface {
 	Put(key, value []byte) error
+	Delete(key []byte) error
+}
+
+type Batch interface {
+	DatabaseWriter
 	Write() error
 }
