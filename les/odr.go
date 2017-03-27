@@ -29,11 +29,6 @@ import (
 	"golang.org/x/net/context"
 )
 
-var (
-	softRequestTimeout = time.Millisecond * 500
-	hardRequestTimeout = time.Second * 10
-)
-
 // peerDropFn is a callback type for dropping a peer detected as malicious.
 type peerDropFn func(id string)
 
@@ -224,6 +219,7 @@ func (self *LesOdr) networkRequest(ctx context.Context, lreq LesOdrRequest) erro
 			return nil
 		case _, ok := <-peerChn:
 			if !ok {
+				xxx
 				return ErrNoPeers
 			}
 		}

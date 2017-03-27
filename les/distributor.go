@@ -23,6 +23,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
 // ErrNoPeers is returned if no peers capable of serving a queued request are available
@@ -52,6 +54,23 @@ type distPeer interface {
 	queueSend(f func())
 }
 
+type reqStatus struct {
+	status int
+	sent   mclock.AbsTime
+}
+
+const (
+	reqStatusNone        = iota // not sent or hard timeout reached (peer dropped)
+	reqStatusSent               // request sent, timer started, expecting answer
+	reqStatusSoftTimeout        // soft timeout, more requests should be sent if possible but still expecting answer
+	reqStatusDelivered          // reply delivered (either right or wrong), nothing else expected
+)
+
+var (
+	softRequestTimeout = time.Millisecond * 500
+	hardRequestTimeout = time.Second * 10
+)
+
 // distReq is the request abstraction used by the distributor. It is based on
 // three callback functions:
 // - getCost returns the upper estimate of the cost of sending the request to a given peer
@@ -68,6 +87,10 @@ type distReq struct {
 	reqOrder uint64
 	sentChn  chan distPeer
 	element  *list.Element
+
+	lock   sync.RWMutex
+	sent   mclock.AbsTime
+	sentTo [distPeer]reqStatus
 }
 
 // newRequestDistributor creates a new request distributor
@@ -112,6 +135,10 @@ func (d *requestDistributor) loop() {
 					if send != nil {
 						peer.queueSend(send)
 					}
+					req.lock.Lock()
+					req.sentTo[peer] = reqStatus{reqStatusSent, mclock.Now()}
+					req.sentCnt++
+					req.lock.Unlock()
 					chn <- peer
 					close(chn)
 				} else {
@@ -165,8 +192,9 @@ func (d *requestDistributor) nextRequest() (distPeer, *distReq, time.Duration) {
 	for (len(peers) > 0 || elem == d.reqQueue.Front()) && elem != nil {
 		req := elem.Value.(*distReq)
 		canSend := false
+		req.lock.RLock()
 		for peer, _ := range peers {
-			if peer.canQueue() && req.canSend(peer) {
+			if _, ok := req.sentTo[peer]; !ok && peer.canQueue() && req.canSend(peer) {
 				canSend = true
 				cost := req.getCost(peer)
 				wait, bufRemain := peer.waitBefore(cost)
@@ -185,6 +213,7 @@ func (d *requestDistributor) nextRequest() (distPeer, *distReq, time.Duration) {
 				delete(peers, peer)
 			}
 		}
+		req.lock.RUnlock()
 		next := elem.Next()
 		if !canSend && elem == d.reqQueue.Front() {
 			close(req.sentChn)
@@ -257,3 +286,25 @@ func (d *requestDistributor) remove(r *distReq) {
 		r.element = nil
 	}
 }
+
+func (r *distReq) delivered(peer distPeer) bool {
+	req.lock.Lock()
+	r := req.sentTo[peer]
+	old := r.status
+	r.status = reqStatusDelivered
+	req.sentTo[peer] = r
+	req.lock.Unlock()
+	return old == reqStatusSent || old == reqStatusSoftTimeout
+}
+
+func (r *distReq) check(peer distPeer) time.Duration {
+	req.lock.RLock()
+	r, ok := req.sentTo[peer]
+	req.lock.RUnlock()
+	if !ok || r.status == reqStatusDelivered {
+		return 0
+	}
+	
+}
+
+func (d *requestDistributor) 
