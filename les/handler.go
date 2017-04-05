@@ -1051,7 +1051,12 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 
 		p.fcServer.GotReply(resp.ReqID, resp.BV)
-		pm.txpool.deliver(resp.ReqID, p.Head(), resp.Status)
+		if err := pm.txpool.deliver(p, resp.ReqID, p.Head(), resp.Status); err != nil {
+			p.responseErrors++
+			if p.responseErrors > maxResponseErrors {
+				return err
+			}
+		}
 
 	default:
 		p.Log().Trace("Received unknown message", "code", msg.Code)
@@ -1059,8 +1064,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 	}
 
 	if deliverMsg != nil {
-		err := pm.odr.Deliver(p, deliverMsg)
-		if err != nil {
+		if err := pm.odr.Deliver(p, deliverMsg); err != nil {
 			p.responseErrors++
 			if p.responseErrors > maxResponseErrors {
 				return err

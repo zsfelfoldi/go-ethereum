@@ -18,51 +18,132 @@
 package les
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/light"
-	"golang.org/x/net/context"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 type txPool struct {
-	reqDist *requestDistributor
+	db         ethdb.Database
+	reqDist    *requestDistributor
+	removePeer peerDropFn
+	serverPool odrPeerSelector
+	config     *params.ChainConfig
 
-	tracker   *light.TxTracker
-	updateChn chan light.TxTrackerUpdate
+	tracker      *light.TxTracker
+	startStopChn chan txPoolStartStopReq
+	updateChn    chan light.TxTrackerUpdate
+	deliverChn   chan txStatusData
 }
 
 type txPoolStartStopReq struct {
-	id     interface{}
 	resChn chan *txPoolResults
+	start  bool
+}
+
+type txStatusResp struct {
+	peer   distPeer
+	reqID  uint64
+	head   common.Hash
+	status []core.TxStatusData
+	errChn chan error
+}
+
+type txPoolResults struct {
+	pending, queued map[common.Address]types.Transactions
+	err             error
 }
 
 func (t *txPool) eventLoop() {
-	waiting := make(map[interface{}]chan *txPoolResults)
-	reqs := make(map[uint64]uint64) // reqID -> updateCnt; deleted when answered or timed out
+	waiting := make(map[chan *txPoolResults]struct{})
+	sentReqs := make(map[uint64]*distReq)
 	var (
-		updateCnt                  uint64
-		lastResults                *txPoolResults
-		lastResultsTime            mclock.AbsTime
-		requestQueued, requestSent *distReq
-		tracked                    map[common.Hash]struct{}
-		trackerHead                common.Hash
+		updateCnt         uint64
+		lastResults       *txPoolResults
+		lastResultsTime   mclock.AbsTime
+		lastRequest       *distReq
+		lastRequestHashes []common.Hash
+		reqStopChn        chan struct{}
+		tracked           map[common.Hash]struct{}
+		trackerHead       common.Hash
+		trackerHeadNum    uint64
 	)
+
+	sendNewReq := func() {
+		head := trackerHead
+		amount := len(tracked)
+		txHashes := make([]common.Hash, 0, amount)
+		for txh, _ := range tracked {
+			txHashes = append(txHashes, txh)
+		}
+
+		reqID := getNextReqID()
+		lastRequestHashes = txHashes
+		lastRequest = &distReq{
+			getCost: func(dp distPeer) uint64 {
+				peer := dp.(*peer)
+				return peer.GetRequestCost(GetTxStatusMsg, amount)
+			},
+			canSend: func(dp distPeer) bool {
+				return dp.(*peer).Head() == head
+			},
+			request: func(dp distPeer) func() {
+				peer := dp.(*peer)
+				cost := peer.GetRequestCost(GetTxStatusMsg, amount)
+				peer.fcServer.QueueRequest(reqID, cost)
+				return func() { peer.RequestTxStatus(reqID, cost, txHashes) }
+			},
+		}
+
+		sentReqs[reqID] = lastRequest
+		reqStopChn = t.reqDist.retrieve(lastRequest, func(p distPeer, respTime time.Duration, srto, hrto bool) {
+			pp := p.(*peer)
+			if t.serverPool != nil {
+				t.serverPool.adjustResponseTime(pp.poolEntry, respTime, srto)
+			}
+			if hrto {
+				pp.Log().Debug("Request timed out hard")
+				t.removePeer(pp.id)
+			}
+		})
+	}
 
 	for {
 		select {
-		case s := <-t.startStopReq:
-			if s.resChn == nil {
-				close(waiting[id])
-				delete(waiting, s.id)
+		case s := <-t.startStopChn:
+			if s.start {
+				if lastResults != nil && time.Duration(mclock.Now()-lastResultsTime) < time.Second {
+					s.resChn <- lastResults
+				} else {
+					waiting[s.resChn] = struct{}{}
+					if lastRequest == nil {
+						sendNewReq()
+					}
+				}
 			} else {
-				waiting[id] = s.resChn
+				if _, ok := waiting[s.resChn]; ok {
+					close(s.resChn)
+					delete(waiting, s.resChn)
+				}
+				if len(waiting) == 0 && lastRequest != nil {
+					lastRequest.stop(nil)
+					lastRequest = nil
+					reqStopChn = nil
+				}
 			}
 
 		case u := <-t.updateChn:
 			if u.Head != trackerHead || len(u.Added) > 0 {
 				trackerHead == u.Head
+				//headnum
 				// invalidate all previous requests and results
 				updateCnt++
 				lastResults = nil
@@ -80,113 +161,107 @@ func (t *txPool) eventLoop() {
 				delete(tracked, txh)
 			}
 
-		case <-t.deliverChn:
-		case <-t.stop:
-		case <-sendNewReq:
-			if requestQueued == nil && requestSent == nil {
-				head := trackerHead
-				amount := len(tracked)
-				txHashes := make([]common.Hash, 0, amount)
-				for txh, _ := range tracked {
-					txHashes = append(txHashes, txh)
-				}
-
-				reqID := getNextReqID()
-				rq := &distReq{
-					getCost: func(dp distPeer) uint64 {
-						peer := dp.(*peer)
-						return peer.GetRequestCost(GetTxStatusMsg, amount)
-					},
-					canSend: func(dp distPeer) bool {
-						return dp.(*peer).Head() == head
-					},
-					request: func(dp distPeer) func() {
-						peer := dp.(*peer)
-						cost := peer.GetRequestCost(GetTxStatusMsg, amount)
-						peer.fcServer.QueueRequest(reqID, cost)
-						return func() { peer.RequestTxStatus(reqID, cost, txHashes) }
-					},
-				}
-
-				reqs[reqID] = updateCnt
-				requestQueued = rq
-				sentChn := t.reqDist.queue(rq)
-
-				go func() {
-					_, ok := <-sentChn
-					if ok {
-						sentReq <- reqID
-					} else {
-						cancelledReq <- reqID
+		case s := <-t.deliverChn:
+			if req, ok := sentReqs[s.reqID]; ok {
+				valid := false
+				var err error
+				if req == lastRequest && s.head == trackerHead {
+					valid = true
+					res := &txPoolResults{
+						pending: make(map[common.Address]types.Transactions),
+						queued:  make(map[common.Address]types.Transactions),
 					}
-				}()
-			}
-
-		case reqID := <-sentReq:
-			if reqs[reqID] == updateCnt {
-				requestSent = requestQueued
-			}
-			requestQueued = nil
-			go func() {
-				time.Sleep(softRequestTimeout)
-				checkSoftTimeout <- reqID
-			}()
-
-		case reqID := <-cancelledReq:
-			requestQueued = nil
-			delete(reqs, reqID)
-			go func() {
-				time.Sleep(time.Millisecond * 10)
-				sendNewReq <- struct{}{}
-			}()
-
-		case reqID := <-checkSoftTimeout:
-			if cnt, ok := reqs[reqID]; ok {
-				//TODO update stats
-				if cnt == updateCnt && requestSent != nil {
-					// still valid, try resending
-					requestQueued = requestSent
-					requestSent = nil
-					sentChn := t.reqDist.queue(rq)
-
-					go func() {
-						_, ok := <-sentChn
-						if ok {
-							sentReq <- reqID
-						} else {
-							cancelledReq <- reqID
+					signer := types.MakeSigner(t.config, big.NewInt(trackerHeadNum))
+				loop:
+					for i, status := range s.status {
+						txHash := lastRequestHashes[i]
+						switch s.Status {
+						case core.TxStatusQueued, core.TxStatusPending:
+							tx := core.GetTransactionData(t.db, txHash)
+							if tx == nil {
+								valid = false
+								err = errors.New("Local transaction not found in database")
+								break loop
+							}
+							from, e := types.Sender(signer, tx)
+							if e != nil {
+								valid = false
+								err = e
+								break loop
+							}
+							if s.Status == core.TxStatusPending {
+								res.pending[from] = append(res.pending[from], tx)
+							} else {
+								res.queued[from] = append(res.queued[from], tx)
+							}
+						case core.TxStatusIncluded:
+							var pos core.TxChainPos
+							if e := rlp.DecodeBytes(s.Data, &pos); e != nil {
+								valid = false
+								err = e
+								break loop
+							}
+							if !t.tracker.CheckTxChainPos(txHash, pos) {
+								valid = false
+								err = errors.New("Invalid tx chain position")
+								break loop
+							}
+						case core.TxStatusError:
+							valid = false
+							err = errors.New("Unexpected TxStatusError")
+							break loop
 						}
-					}()
+					}
+
+					if valid {
+						for resChn, _ := range waiting {
+							resChn <- res
+							delete(waiting, resChn)
+						}
+						lastResults = res
+						lastResultsTime = mclock.Now()
+					}
+				}
+				req.delivered(s.peer, valid)
+				s.errChn <- err
+			} else {
+				s.errChn <- ErrUnexpectedResponse
+			}
+
+		case <-reqStopChn:
+			if err := lastRequest.getError(); err != nil && len(waiting) > 0 {
+				res := &txPoolResults{err: err}
+				for resChn, _ := range waiting {
+					resChn <- res
+					delete(waiting, resChn)
 				}
 			}
-		}
 
+		case <-t.stop:
+			if lastRequest != nil {
+				lastRequest.stop(nil)
+				lastRequest = nil
+				reqStopChn = nil
+			}
+			return
+		}
 	}
 }
 
 func (t *txPool) getContents(ctx context.Context) (map[common.Address]types.Transactions, map[common.Address]types.Transactions, error) {
-	for {
-
-		sent := false
-		select {
-		case _, ok := <-sentChn:
-			if ok {
-				// request successfully sent
-				sent = true
-			} else {
-				// no suitable peers at the moment, wait a little bit and retry
-				time.Sleep(time.Millisecond * 10)
-			}
-		case <-updateChn:
-			// pool updated, cancel request and retry
-			sent = !t.reqDist.cancel(rq)
-		case <-ctx.Done():
-			// cancelled, return with error
-			return nil, nil, ctx.Err()
-		}
+	chn := make(chan *txPoolResults)
+	t.startStopChn <- txPoolStartStopReq{chn, true}
+	select {
+	case res := <-chn:
+		return res.pending, res.queued, res.err
+	case <-ctx.Done():
+		t.startStopChn <- txPoolStartStopReq{chn, false}
+		return nil, nil, ctx.Err()
 	}
 }
 
-func (t *txPool) deliver(reqID uint64, head common.Hash, status []core.TxChainPos) {
-
+func (t *txPool) deliver(peer distPeer, reqID uint64, head common.Hash, status []core.TxStatusData) error {
+	errChn := make(chan error)
+	t.deliverChn <- txStatusResp{peer, reqID, head, status, errChn}
+	return <-errChn
 }

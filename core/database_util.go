@@ -263,21 +263,24 @@ func GetBlockReceipts(db ethdb.Database, hash common.Hash, number uint64) types.
 // GetTransaction retrieves a specific transaction from the database, along with
 // its added positional metadata.
 func GetTransaction(db ethdb.Database, hash common.Hash) (*types.Transaction, common.Hash, uint64, uint64) {
+	tx := GetTransactionData(db, hash)
+	if tx == nil {
+		return nil, common.Hash{}, 0, 0
+	}
+	return tx, common.BytesToHash(meta.BlockHash), meta.BlockIndex, meta.TxIndex
+}
+
+func GetTransactionData(db ethdb.Database, hash common.Hash) *types.Transaction {
 	// Retrieve the transaction itself from the database
 	data, _ := db.Get(hash.Bytes())
 	if len(data) == 0 {
-		return nil, common.Hash{}, 0, 0
+		return nil
 	}
 	var tx types.Transaction
 	if err := rlp.DecodeBytes(data, &tx); err != nil {
-		return nil, common.Hash{}, 0, 0
+		return nil
 	}
-
-	meta := GetTransactionChainPosition(db, hash)
-	if meta.BlockHash == (common.Hash{}) {
-		return nil, common.Hash{}, 0, 0
-	}
-	return &tx, common.BytesToHash(meta.BlockHash), meta.BlockIndex, meta.TxIndex
+	return &tx
 }
 
 func GetTransactionChainPosition(db ethdb.Database, hash common.Hash) TxChainPos {

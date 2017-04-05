@@ -18,6 +18,7 @@ package light
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"sync"
 
@@ -61,7 +62,7 @@ func forEachKey(db ethdb.Database, startPrefix, endPrefix []byte, fn func(key []
 // implements core.ChainProcessor
 func (t *TxTracker) NewHead(headNum uint64, rollBack bool) {
 	t.lock.Lock()
-	defer t.lock.Lock()
+	defer t.lock.Unlock()
 
 	batch := t.db.NewBatch()
 	if rollBack && headNum < t.headNum {
@@ -82,7 +83,7 @@ func (t *TxTracker) NewHead(headNum uint64, rollBack bool) {
 }
 
 // blocking
-func (t *TxTracker) CheckTxChainPos(hash common.Hash, pos core.TxChainPos) bool {
+func (t *TxTracker) CheckTxChainPos(ctx context.Context, hash common.Hash, pos core.TxChainPos) bool {
 	p := core.GetTransactionChainPosition(t.db, hash)
 	if p.BlockHash != (common.Hash{}) {
 		return pos == p
