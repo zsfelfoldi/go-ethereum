@@ -36,6 +36,7 @@ type txPool struct {
 	reqDist    *requestDistributor
 	removePeer peerDropFn
 	serverPool odrPeerSelector
+	chain      light.LightChain
 	config     *params.ChainConfig
 
 	tracker      *light.TxTracker
@@ -50,7 +51,7 @@ type txPoolStartStopReq struct {
 }
 
 type txStatusResp struct {
-	peer   distPeer
+	peer   *peer
 	reqID  uint64
 	head   common.Hash
 	status []core.TxStatusData
@@ -163,54 +164,81 @@ func (t *txPool) eventLoop() {
 
 		case s := <-t.deliverChn:
 			if req, ok := sentReqs[s.reqID]; ok {
+				t.chain.LockChain()
 				valid := false
 				var err error
-				if req == lastRequest && s.head == trackerHead {
-					valid = true
-					res := &txPoolResults{
-						pending: make(map[common.Address]types.Transactions),
-						queued:  make(map[common.Address]types.Transactions),
-					}
-					signer := types.MakeSigner(t.config, big.NewInt(trackerHeadNum))
-				loop:
-					for i, status := range s.status {
-						txHash := lastRequestHashes[i]
-						switch s.Status {
-						case core.TxStatusQueued, core.TxStatusPending:
-							tx := core.GetTransactionData(t.db, txHash)
-							if tx == nil {
-								valid = false
-								err = errors.New("Local transaction not found in database")
-								break loop
-							}
-							from, e := types.Sender(signer, tx)
-							if e != nil {
-								valid = false
-								err = e
-								break loop
-							}
-							if s.Status == core.TxStatusPending {
-								res.pending[from] = append(res.pending[from], tx)
-							} else {
-								res.queued[from] = append(res.queued[from], tx)
-							}
-						case core.TxStatusIncluded:
-							var pos core.TxChainPos
-							if e := rlp.DecodeBytes(s.Data, &pos); e != nil {
-								valid = false
-								err = e
-								break loop
-							}
-							if !t.tracker.CheckTxChainPos(txHash, pos) {
-								valid = false
-								err = errors.New("Invalid tx chain position")
-								break loop
-							}
-						case core.TxStatusError:
-							valid = false
-							err = errors.New("Unexpected TxStatusError")
-							break loop
+				// if the request is obsolete, the reply is ignored (not valid but also no error)
+				if req == lastRequest && s.head == chain.LastBlockHash() {
+					if len(s.status) == len(lastRequestHashes) {
+						valid = true
+						res := &txPoolResults{
+							pending: make(map[common.Address]types.Transactions),
+							queued:  make(map[common.Address]types.Transactions),
 						}
+						signer := types.MakeSigner(t.config, big.NewInt(trackerHeadNum))
+						errCh := make(chan bool, len(s.status))
+						waitErrCnt := 0
+					loop:
+						for i, status := range s.status {
+							txHash := lastRequestHashes[i]
+							switch s.Status {
+							case core.TxStatusQueued, core.TxStatusPending:
+								tx := core.GetTransactionData(t.db, txHash)
+								if tx == nil {
+									valid = false
+									err = errors.New("Local transaction not found in database")
+									break loop
+								}
+								from, e := types.Sender(signer, tx)
+								if e != nil {
+									valid = false
+									err = e
+									break loop
+								}
+								if s.Status == core.TxStatusPending {
+									res.pending[from] = append(res.pending[from], tx)
+								} else {
+									res.queued[from] = append(res.queued[from], tx)
+								}
+							case core.TxStatusIncluded:
+								var pos core.TxChainPos
+								if e := rlp.DecodeBytes(s.Data, &pos); e != nil {
+									valid = false
+									err = e
+									break loop
+								}
+								ok, waitErrCh := t.tracker.CheckTxChainPos(txHash, pos, errCh)
+								if !ok {
+									valid = false
+									err = errors.New("Invalid tx chain position")
+									break loop
+								}
+								if waitErrCh {
+									waitErrCnt++
+								}
+							case core.TxStatusError:
+								valid = false
+								err = errors.New("Unexpected TxStatusError")
+								break loop
+							}
+						}
+
+						if waitErrCnt > 0 {
+							go func() {
+								for waitErrCnt > 0 {
+									if <-errCh {
+										s.peer.responseErrors++
+										if s.peer.responseErrors > maxResponseErrors {
+											t.removePeer(s.peer)
+										}
+										return
+									}
+								}
+							}()
+						}
+
+					} else {
+						err = errors.New("Incorrect number of tx status entries")
 					}
 
 					if valid {
@@ -222,6 +250,7 @@ func (t *txPool) eventLoop() {
 						lastResultsTime = mclock.Now()
 					}
 				}
+				t.chain.UnlockChain()
 				req.delivered(s.peer, valid)
 				s.errChn <- err
 			} else {
@@ -260,7 +289,7 @@ func (t *txPool) getContents(ctx context.Context) (map[common.Address]types.Tran
 	}
 }
 
-func (t *txPool) deliver(peer distPeer, reqID uint64, head common.Hash, status []core.TxStatusData) error {
+func (t *txPool) deliver(peer *peer, reqID uint64, head common.Hash, status []core.TxStatusData) error {
 	errChn := make(chan error)
 	t.deliverChn <- txStatusResp{peer, reqID, head, status, errChn}
 	return <-errChn

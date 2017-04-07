@@ -442,7 +442,8 @@ func WriteTransactions(db ethdb.Database, block *types.Block) error {
 		if err != nil {
 			return err
 		}
-		if err = batch.Put(tx.Hash().Bytes(), data); err != nil {
+		txHash := tx.Hash()
+		if err = batch.Put(txHash.Bytes(), data); err != nil {
 			return err
 		}
 		// Encode and queue up the transaction metadata for storage
@@ -451,7 +452,7 @@ func WriteTransactions(db ethdb.Database, block *types.Block) error {
 			BlockIndex: block.NumberU64(),
 			Index:      uint64(i),
 		}
-		if err := WriteTransactionChainPosition(batch, meta); err != nil {
+		if err := WriteTransactionChainPosition(batch, txHash, meta); err != nil {
 			return err
 		}
 	}
@@ -462,12 +463,12 @@ func WriteTransactions(db ethdb.Database, block *types.Block) error {
 	return nil
 }
 
-func WriteTransactionChainPosition(db ethdb.DatabaseWriter, meta TxChainPos) error {
+func WriteTransactionChainPosition(db ethdb.DatabaseWriter, txHash common.Hash, meta TxChainPos) error {
 	data, err := rlp.EncodeToBytes(meta)
 	if err != nil {
 		return err
 	}
-	return db.Put(append(tx.Hash().Bytes(), txMetaSuffix...), data)
+	return db.Put(append(txHash.Bytes(), txMetaSuffix...), data)
 }
 
 // WriteReceipt stores a single transaction receipt into the database.

@@ -21,8 +21,10 @@ import (
 	"context"
 	"encoding/binary"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/ethdb"
 )
@@ -35,9 +37,13 @@ var (
 type TxTracker struct {
 	db      ethdb.Database
 	odr     OdrBackend
+	chain   LightChain
 	lock    sync.RWMutex
 	head    common.Hash
 	headNum uint64
+
+	fetchLock sync.Mutex
+	blocks    map[common.Hash]*trackerBlockFetcher
 }
 
 type TxTrackerUpdate struct {
@@ -82,12 +88,105 @@ func (t *TxTracker) NewHead(headNum uint64, rollBack bool) {
 	batch.Write()
 }
 
-// blocking
-func (t *TxTracker) CheckTxChainPos(ctx context.Context, hash common.Hash, pos core.TxChainPos) bool {
-	p := core.GetTransactionChainPosition(t.db, hash)
-	if p.BlockHash != (common.Hash{}) {
-		return pos == p
+type trackerTxFetch struct {
+	hash  common.Hash
+	pos   core.TxChainPos
+	errCh chan bool
+}
+
+type trackerBlockFetch struct {
+	timeout mclock.AbsTime
+	txFetch []trackerTxFetch
+}
+
+const fetchBlockTimeout = time.Second * 10
+
+func (t *TxTracker) foundTxPos(txHash common.Hash, pos core.TxChainPos) {
+	batch := t.db.NewBatch()
+	core.WriteTransactionChainPosition(batch, txHash, pos)
+	batch.Delete(append(trackedHashes, txHash.Bytes()...))
+	var encNum [8]byte
+	binary.BigEndian.PutUint64(encNum[:], pos.BlockIndex)
+	batch.Put(append(txHashesByBlockPrefix, encNum[:]...), nil)
+	batch.Write()
+}
+
+// called under chain lock
+func (t *TxTracker) CheckTxChainPos(txHash common.Hash, pos core.TxChainPos, errCh chan bool) (ok, waitErrCh bool) {
+	if core.GetCanonicalHash(t.db, pos.BlockIndex) != pos.BlockHash {
+		// chain is locked, local and remote head matches, reported inclusion block is expected to be canonical
+		return false, false
 	}
 
-	GetBlock(ctx, t.odr, pos.BlockHash, pos.BlockIndex)
+	if storedPos := core.GetTransactionChainPosition(t.db, txHash); storedPos.BlockHash != (common.Hash{}) {
+		return pos == storedPos, false
+	}
+	if block := core.GetBlock(t.db, pos.BlockHash, pos.BlockIndex); block == nil {
+		txs := block.Transactions()
+		if len(txs) > pos.TxIndex && txs[pos.TxIndex].Hash() == txHash {
+			t.foundTxPos(txHash, pos)
+			return true, false
+		} else {
+			return false, false
+		}
+	}
+
+	t.fetchLock.Lock()
+	defer t.fetchLock.Unlock()
+
+	txFetch := trackerTxFetch{txHash, pos, errCh}
+
+	if f := t.blocks[hash]; f != nil {
+		f.timeout = mclock.Now() + mclock.AbsTime(fetchBlockTimeout)
+		f.txFetch = append(f.txFetch, txFetch)
+	} else {
+		f = &trackerBlockFetch{timeout: mclock.Now() + mclock.AbsTime(fetchBlockTimeout), txFetch: []trackerTxFetch{txFetch}}
+		t.blocks[hash] = f
+		ctx, cancel := context.WithCancel(context.Backgroud())
+		go func() {
+			block, _ := GetBlock(ctx, bf.odr, hash, num)
+			var processed bool
+
+			if block != nil {
+				txs := block.Transactions()
+				t.chain.LockChain()
+				defer t.chain.UnlockChain()
+				// if the block is no longer canonical, the tx chain positions have been invalidated
+				if core.GetCanonicalHash(t.db, pos.BlockIndex) == pos.BlockHash {
+					processed = true
+					for _, txFetch := range f.txFetch {
+						if len(txs) > txFetch.pos.TxIndex && txs[txFetch.pos.TxIndex].Hash() == txFetch.hash {
+							t.foundTxPos(txFetch.hash, txFetch.pos)
+							txFetch.errCh <- false
+						} else {
+							txFetch.errCh <- true
+						}
+					}
+				}
+			}
+
+			if !processed {
+				for _, txFetch := range f.txFetch {
+					txFetch.errCh <- false
+				}
+			}
+			t.fetchLock.Lock()
+			delete(t.blocks, hash)
+			t.fetchLock.Unlock()
+		}()
+		go func() {
+			for {
+				t.fetchLock.RLock()
+				wait := time.Duration(f.timeout - mclock.Now())
+				t.fetchLock.RUnlock()
+				if wait <= 0 {
+					cancel()
+					return
+				}
+				time.Sleep(wait)
+			}
+		}()
+	}
+
+	return true, true
 }
