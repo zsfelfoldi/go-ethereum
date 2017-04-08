@@ -344,6 +344,10 @@ func (tb *tableBatch) Put(key, value []byte) error {
 	return tb.batch.Put(append([]byte(tb.prefix), key...), value)
 }
 
+func (tb *tableBatch) Delete(key []byte) error {
+	return tb.batch.Delete(append([]byte(tb.prefix), key...))
+}
+
 func (tb *tableBatch) Write() error {
 	return tb.batch.Write()
 }

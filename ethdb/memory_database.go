@@ -95,7 +95,10 @@ func (db *MemDatabase) NewBatch() Batch {
 	return &memBatch{db: db}
 }
 
-type kv struct{ k, v []byte }
+type kv struct {
+	k, v []byte
+	del  bool
+}
 
 type memBatch struct {
 	db     *MemDatabase
@@ -107,7 +110,15 @@ func (b *memBatch) Put(key, value []byte) error {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
-	b.writes = append(b.writes, kv{common.CopyBytes(key), common.CopyBytes(value)})
+	b.writes = append(b.writes, kv{common.CopyBytes(key), common.CopyBytes(value), false})
+	return nil
+}
+
+func (b *memBatch) Delete(key []byte) error {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+
+	b.writes = append(b.writes, kv{common.CopyBytes(key), nil, true})
 	return nil
 }
 
@@ -119,7 +130,11 @@ func (b *memBatch) Write() error {
 	defer b.db.lock.Unlock()
 
 	for _, kv := range b.writes {
-		b.db.db[string(kv.k)] = kv.v
+		if kv.del {
+			delete(b.db.db, string(kv.k))
+		} else {
+			b.db.db[string(kv.k)] = kv.v
+		}
 	}
 	return nil
 }
