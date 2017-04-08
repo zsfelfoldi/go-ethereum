@@ -123,9 +123,9 @@ func (pool *TxPool) GetNonce(ctx context.Context, addr common.Address) (uint64, 
 }
 
 type txBlockData struct {
-	BlockHash  common.Hash
-	BlockIndex uint64
-	Index      uint64
+	BlockHash   common.Hash
+	BlockNumber uint64
+	Index       uint64
 }
 
 // storeTxBlockData stores the block position of a mined tx in the local db

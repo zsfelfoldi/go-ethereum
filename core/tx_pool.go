@@ -277,8 +277,8 @@ type TxStatusData struct {
 }
 
 type TxChainPos struct {
-	BlockHash           common.Hash
-	BlockIndex, TxIndex uint64
+	BlockHash            common.Hash
+	BlockNumber, TxIndex uint64
 }
 
 //txHashes should always be present

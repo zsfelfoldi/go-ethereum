@@ -267,7 +267,8 @@ func GetTransaction(db ethdb.Database, hash common.Hash) (*types.Transaction, co
 	if tx == nil {
 		return nil, common.Hash{}, 0, 0
 	}
-	return tx, common.BytesToHash(meta.BlockHash), meta.BlockIndex, meta.TxIndex
+	meta := GetTransactionChainPosition(db, hash)
+	return tx, meta.BlockHash, meta.BlockNumber, meta.TxIndex
 }
 
 func GetTransactionData(db ethdb.Database, hash common.Hash) *types.Transaction {
@@ -448,9 +449,9 @@ func WriteTransactions(db ethdb.Database, block *types.Block) error {
 		}
 		// Encode and queue up the transaction metadata for storage
 		meta := TxChainPos{
-			BlockHash:  block.Hash(),
-			BlockIndex: block.NumberU64(),
-			Index:      uint64(i),
+			BlockHash:   block.Hash(),
+			BlockNumber: block.NumberU64(),
+			TxIndex:     uint64(i),
 		}
 		if err := WriteTransactionChainPosition(batch, txHash, meta); err != nil {
 			return err

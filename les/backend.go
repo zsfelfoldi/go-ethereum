@@ -51,7 +51,7 @@ type LightEthereum struct {
 	// Channel for shutting down the service
 	shutdownChan chan bool
 	// Handlers
-	txPool          *light.TxPool
+	txPool          *txPool
 	blockchain      *light.LightChain
 	protocolManager *ProtocolManager
 	// DB interfaces
@@ -70,6 +70,9 @@ type LightEthereum struct {
 }
 
 func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
+	if !config.LightMode {
+		panic(nil)
+	}
 	chainDb, err := eth.CreateDB(ctx, config, "lightchaindata")
 	if err != nil {
 		return nil, err
@@ -103,8 +106,8 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 		return nil, err
 	}
 
-	eth.txPool = light.NewTxPool(eth.chainConfig, eth.eventMux, eth.blockchain, eth.relay)
-	if eth.protocolManager, err = NewProtocolManager(eth.chainConfig, config.LightMode, config.NetworkId, eth.eventMux, eth.pow, eth.blockchain, nil, chainDb, odr, relay); err != nil {
+	eth.txPool = newTxPool(eth.chainConfig, eth.blockchain)
+	if eth.protocolManager, err = NewProtocolManager(eth.chainConfig, true, config.NetworkId, eth.eventMux, eth.pow, eth.blockchain, eth.txPool, nil, chainDb, odr, relay); err != nil {
 		return nil, err
 	}
 	relay.ps = eth.protocolManager.peers
@@ -170,7 +173,7 @@ func (s *LightEthereum) ResetWithGenesisBlock(gb *types.Block) {
 }
 
 func (s *LightEthereum) BlockChain() *light.LightChain      { return s.blockchain }
-func (s *LightEthereum) TxPool() *light.TxPool              { return s.txPool }
+func (s *LightEthereum) TxPool() *txPool                    { return s.txPool }
 func (s *LightEthereum) LesVersion() int                    { return int(s.protocolManager.SubProtocols[0].Version) }
 func (s *LightEthereum) Downloader() *downloader.Downloader { return s.protocolManager.downloader }
 func (s *LightEthereum) EventMux() *event.TypeMux           { return s.eventMux }

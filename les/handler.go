@@ -93,9 +93,14 @@ type BlockChain interface {
 	UnlockChain()
 }
 
+type ethTxPool interface {
+	AddOrGetTxStatus(head common.Hash, txs []*types.Transaction, txHashes []common.Hash) []core.TxStatusData
+}
+
 type ProtocolManager struct {
 	lightSync   bool
-	txpool      *txPool
+	txPool      *txPool
+	ethTxPool   ethTxPool
 	txrelay     *LesTxRelay
 	networkId   int
 	chainConfig *params.ChainConfig
@@ -130,7 +135,7 @@ type ProtocolManager struct {
 
 // NewProtocolManager returns a new ethereum sub protocol manager. The Ethereum sub protocol manages peers capable
 // with the ethereum network.
-func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, networkId int, mux *event.TypeMux, pow pow.PoW, blockchain BlockChain, txpool txPool, chainDb ethdb.Database, odr *LesOdr, txrelay *LesTxRelay) (*ProtocolManager, error) {
+func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, networkId int, mux *event.TypeMux, pow pow.PoW, blockchain BlockChain, txPool *txPool, ethTxPool ethTxPool, chainDb ethdb.Database, odr *LesOdr, txrelay *LesTxRelay) (*ProtocolManager, error) {
 	// Create the protocol manager with the base fields
 	manager := &ProtocolManager{
 		lightSync:   lightSync,
@@ -139,7 +144,8 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 		chainConfig: chainConfig,
 		chainDb:     chainDb,
 		networkId:   networkId,
-		txpool:      txpool,
+		txPool:      txPool,
+		ethTxPool:   ethTxPool,
 		txrelay:     txrelay,
 		odr:         odr,
 		peers:       newPeerSet(),
@@ -958,7 +964,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 
 	case SendTxMsg:
-		if pm.txpool == nil {
+		if pm.ethTxPool == nil {
 			return errResp(ErrUnexpectedResponse, "")
 		}
 		// Transactions arrived, parse all of them and deliver to the pool
@@ -1000,7 +1006,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		return fmt.Errorf("Chain head, txPool head and announced head does not match")
 
 	case GetTxStatusMsg:
-		if pm.txpool == nil {
+		if pm.ethTxPool == nil {
 			return errResp(ErrUnexpectedResponse, "")
 		}
 		// Transactions arrived, parse all of them and deliver to the pool
@@ -1051,7 +1057,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 
 		p.fcServer.GotReply(resp.ReqID, resp.BV)
-		if err := pm.txpool.deliver(p, resp.ReqID, p.Head(), resp.Status); err != nil {
+		if err := pm.txPool.deliver(p, resp.ReqID, p.Head(), resp.Status); err != nil {
 			p.responseErrors++
 			if p.responseErrors > maxResponseErrors {
 				return err
@@ -1114,14 +1120,14 @@ func (pm *ProtocolManager) addOrGetTxStatus(head common.Hash, txs []*types.Trans
 		return nil
 	}
 
-	status := pm.txpool.AddOrGetTxStatus(head, txs, txHashes)
+	status := pm.ethTxPool.AddOrGetTxStatus(head, txs, txHashes)
 	if status == nil {
 		return nil
 	}
 	for i, s := range status {
 		if s.Status == core.TxStatusUnknown || s.Status == core.TxStatusError {
 			pos := core.GetTransactionChainPosition(pm.chainDb, txHashes[i])
-			if pos.BlockHash != nil {
+			if pos.BlockHash != (common.Hash{}) {
 				enc, err := rlp.EncodeToBytes(pos)
 				if err != nil {
 					panic(err)

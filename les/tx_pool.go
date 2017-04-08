@@ -20,14 +20,17 @@ package les
 import (
 	"context"
 	"errors"
-	"sync"
+	"math/big"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -36,13 +39,14 @@ type txPool struct {
 	reqDist    *requestDistributor
 	removePeer peerDropFn
 	serverPool odrPeerSelector
-	chain      light.LightChain
+	chain      *light.LightChain
 	config     *params.ChainConfig
 
 	tracker      *light.TxTracker
 	startStopChn chan txPoolStartStopReq
 	updateChn    chan light.TxTrackerUpdate
-	deliverChn   chan txStatusData
+	deliverChn   chan txStatusResp
+	quit         chan struct{}
 }
 
 type txPoolStartStopReq struct {
@@ -63,11 +67,14 @@ type txPoolResults struct {
 	err             error
 }
 
+func newTxPool(config *params.ChainConfig, chain *light.LightChain) *txPool {
+	return nil
+}
+
 func (t *txPool) eventLoop() {
 	waiting := make(map[chan *txPoolResults]struct{})
 	sentReqs := make(map[uint64]*distReq)
 	var (
-		updateCnt         uint64
 		lastResults       *txPoolResults
 		lastResultsTime   mclock.AbsTime
 		lastRequest       *distReq
@@ -142,74 +149,68 @@ func (t *txPool) eventLoop() {
 			}
 
 		case u := <-t.updateChn:
-			if u.Head != trackerHead || len(u.Added) > 0 {
-				trackerHead == u.Head
-				//headnum
-				// invalidate all previous requests and results
-				updateCnt++
-				lastResults = nil
-				lastResultsTime = 0
-				if requestQueued != nil {
-					t.reqDist.cancel(requestQueued)
-				}
-				requestSent = nil
-
-			}
 			for _, txh := range u.Added {
 				tracked[txh] = struct{}{}
 			}
 			for _, txh := range u.Removed {
 				delete(tracked, txh)
 			}
+			if u.Head != trackerHead || len(u.Added) > 0 {
+				trackerHead = u.Head
+				trackerHeadNum = u.HeadNum
+				// invalidate all previous requests and results, send new request if necessary
+				lastResults = nil
+				lastResultsTime = 0
+				if lastRequest != nil {
+					lastRequest.stop(nil)
+					lastRequest = nil
+					reqStopChn = nil
+					sendNewReq()
+				}
+			}
 
 		case s := <-t.deliverChn:
-			if req, ok := sentReqs[s.reqID]; ok {
+			if req, ok := sentReqs[s.reqID]; ok && req.expectResponseFrom(s.peer) {
 				t.chain.LockChain()
-				valid := false
 				var err error
-				// if the request is obsolete, the reply is ignored (not valid but also no error)
-				if req == lastRequest && s.head == chain.LastBlockHash() {
+				// if the request is obsolete, the reply is ignored (no error)
+				if req == lastRequest && s.head == t.chain.LastBlockHash() {
 					if len(s.status) == len(lastRequestHashes) {
-						valid = true
 						res := &txPoolResults{
 							pending: make(map[common.Address]types.Transactions),
 							queued:  make(map[common.Address]types.Transactions),
 						}
-						signer := types.MakeSigner(t.config, big.NewInt(trackerHeadNum))
+						signer := types.MakeSigner(t.config, big.NewInt(int64(trackerHeadNum)))
 						errCh := make(chan bool, len(s.status))
 						waitErrCnt := 0
 					loop:
 						for i, status := range s.status {
 							txHash := lastRequestHashes[i]
-							switch s.Status {
+							switch status.Status {
 							case core.TxStatusQueued, core.TxStatusPending:
 								tx := core.GetTransactionData(t.db, txHash)
 								if tx == nil {
-									valid = false
 									err = errors.New("Local transaction not found in database")
 									break loop
 								}
 								from, e := types.Sender(signer, tx)
 								if e != nil {
-									valid = false
 									err = e
 									break loop
 								}
-								if s.Status == core.TxStatusPending {
+								if status.Status == core.TxStatusPending {
 									res.pending[from] = append(res.pending[from], tx)
 								} else {
 									res.queued[from] = append(res.queued[from], tx)
 								}
 							case core.TxStatusIncluded:
 								var pos core.TxChainPos
-								if e := rlp.DecodeBytes(s.Data, &pos); e != nil {
-									valid = false
+								if e := rlp.DecodeBytes(status.Data, &pos); e != nil {
 									err = e
 									break loop
 								}
 								ok, waitErrCh := t.tracker.CheckTxChainPos(txHash, pos, errCh)
 								if !ok {
-									valid = false
 									err = errors.New("Invalid tx chain position")
 									break loop
 								}
@@ -217,7 +218,6 @@ func (t *txPool) eventLoop() {
 									waitErrCnt++
 								}
 							case core.TxStatusError:
-								valid = false
 								err = errors.New("Unexpected TxStatusError")
 								break loop
 							}
@@ -229,7 +229,7 @@ func (t *txPool) eventLoop() {
 									if <-errCh {
 										s.peer.responseErrors++
 										if s.peer.responseErrors > maxResponseErrors {
-											t.removePeer(s.peer)
+											t.removePeer(s.peer.id)
 										}
 										return
 									}
@@ -237,24 +237,23 @@ func (t *txPool) eventLoop() {
 							}()
 						}
 
+						if err == nil {
+							for resChn, _ := range waiting {
+								resChn <- res
+								delete(waiting, resChn)
+							}
+							lastResults = res
+							lastResultsTime = mclock.Now()
+						}
 					} else {
 						err = errors.New("Incorrect number of tx status entries")
 					}
-
-					if valid {
-						for resChn, _ := range waiting {
-							resChn <- res
-							delete(waiting, resChn)
-						}
-						lastResults = res
-						lastResultsTime = mclock.Now()
-					}
 				}
 				t.chain.UnlockChain()
-				req.delivered(s.peer, valid)
+				req.delivered(s.peer, err == nil)
 				s.errChn <- err
 			} else {
-				s.errChn <- ErrUnexpectedResponse
+				s.errChn <- errResp(ErrUnexpectedResponse, "")
 			}
 
 		case <-reqStopChn:
@@ -266,7 +265,7 @@ func (t *txPool) eventLoop() {
 				}
 			}
 
-		case <-t.stop:
+		case <-t.quit:
 			if lastRequest != nil {
 				lastRequest.stop(nil)
 				lastRequest = nil
@@ -293,4 +292,50 @@ func (t *txPool) deliver(peer *peer, reqID uint64, head common.Hash, status []co
 	errChn := make(chan error)
 	t.deliverChn <- txStatusResp{peer, reqID, head, status, errChn}
 	return <-errChn
+}
+
+// Stop stops the light transaction pool
+func (t *txPool) Stop() {
+	close(t.quit)
+	log.Info("Transaction pool stopped")
+}
+
+// GetNonce returns the "pending" nonce of a given address. It always queries
+// the nonce belonging to the latest header too in order to detect if another
+// client using the same key sent a transaction.
+func (t *txPool) GetNonce(ctx context.Context, addr common.Address) (uint64, error) {
+	return 0, nil
+}
+
+// Stats returns the number of currently pending (locally created) transactions
+func (t *txPool) Stats() (pending int) {
+	return
+}
+
+// Add adds a transaction to the pool if valid and passes it to the tx relay
+// backend
+func (t *txPool) Add(ctx context.Context, tx *types.Transaction) error {
+	return nil
+}
+
+// GetTransaction returns a transaction if it is contained in the pool
+// and nil otherwise.
+func (t *txPool) GetTransaction(hash common.Hash) *types.Transaction {
+	return nil
+}
+
+// GetTransactions returns all currently processable transactions.
+// The returned slice may be modified by the caller.
+func (t *txPool) GetTransactions() (txs types.Transactions, err error) {
+	return nil, nil
+}
+
+// Content retrieves the data content of the transaction pool, returning all the
+// pending as well as queued transactions, grouped by account and nonce.
+func (t *txPool) Content() (map[common.Address]types.Transactions, map[common.Address]types.Transactions) {
+	return nil, nil
+}
+
+// RemoveTx removes the transaction with the given hash from the pool.
+func (t *txPool) RemoveTx(hash common.Hash) {
 }
