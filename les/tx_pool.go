@@ -40,9 +40,9 @@ type txPool struct {
 	removePeer peerDropFn
 	serverPool odrPeerSelector
 	chain      *light.LightChain
+	tracker    *light.TxTracker
 	config     *params.ChainConfig
 
-	tracker      *light.TxTracker
 	startStopChn chan txPoolStartStopReq
 	updateChn    chan light.TxTrackerUpdate
 	deliverChn   chan txStatusResp
@@ -67,8 +67,17 @@ type txPoolResults struct {
 	err             error
 }
 
-func newTxPool(config *params.ChainConfig, chain *light.LightChain) *txPool {
-	return nil
+func newTxPool(config *params.ChainConfig, odr light.OdrBackend, chain *light.LightChain) *txPool {
+	return &txPool{
+		db:           odr.Database(),
+		chain:        chain,
+		tracker:      light.NewTxTracker(odr, chain),
+		config:       config,
+		startStopChn: make(chan txPoolStartStopReq, 10),
+		updateChn:    make(chan light.TxTrackerUpdate, 10),
+		deliverChn:   make(chan txStatusResp, 100),
+		quit:         make(chan struct{}),
+	}
 }
 
 func (t *txPool) eventLoop() {

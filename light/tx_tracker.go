@@ -66,6 +66,17 @@ func forEachKey(db ethdb.Database, startPrefix, endPrefix []byte, fn func(key []
 	it.Release()
 }
 
+func NewTxTracker(odr OdrBackend, chain LightChain) *TxTracker {
+	t := &TxTracker{
+		db:     odr.Database(),
+		odr:    odr,
+		chain:  chain,
+		blocks: make(map[common.Hash]*trackerBlockFetch),
+	}
+	chain.AddChainProcessor(t)
+	return t
+}
+
 // implements core.ChainProcessor
 func (t *TxTracker) NewHead(headNum uint64, rollBack bool) {
 	t.lock.Lock()

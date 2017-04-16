@@ -101,7 +101,6 @@ type ProtocolManager struct {
 	lightSync   bool
 	txPool      *txPool
 	ethTxPool   ethTxPool
-	txrelay     *LesTxRelay
 	networkId   int
 	chainConfig *params.ChainConfig
 	blockchain  BlockChain
@@ -135,7 +134,7 @@ type ProtocolManager struct {
 
 // NewProtocolManager returns a new ethereum sub protocol manager. The Ethereum sub protocol manages peers capable
 // with the ethereum network.
-func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, networkId int, mux *event.TypeMux, pow pow.PoW, blockchain BlockChain, txPool *txPool, ethTxPool ethTxPool, chainDb ethdb.Database, odr *LesOdr, txrelay *LesTxRelay) (*ProtocolManager, error) {
+func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, networkId int, mux *event.TypeMux, pow pow.PoW, blockchain BlockChain, txPool *txPool, ethTxPool ethTxPool, chainDb ethdb.Database, odr *LesOdr) (*ProtocolManager, error) {
 	// Create the protocol manager with the base fields
 	manager := &ProtocolManager{
 		lightSync:   lightSync,
@@ -146,7 +145,6 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 		networkId:   networkId,
 		txPool:      txPool,
 		ethTxPool:   ethTxPool,
-		txrelay:     txrelay,
 		odr:         odr,
 		peers:       newPeerSet(),
 		newPeerCh:   make(chan *peer),

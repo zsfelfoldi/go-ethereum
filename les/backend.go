@@ -46,7 +46,6 @@ import (
 
 type LightEthereum struct {
 	odr         *LesOdr
-	relay       *LesTxRelay
 	chainConfig *params.ChainConfig
 	// Channel for shutting down the service
 	shutdownChan chan bool
@@ -81,10 +80,8 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 		return nil, err
 	}
 	odr := NewLesOdr(chainDb)
-	relay := NewLesTxRelay()
 	eth := &LightEthereum{
 		odr:            odr,
-		relay:          relay,
 		chainDb:        chainDb,
 		eventMux:       ctx.EventMux,
 		accountManager: ctx.AccountManager,
@@ -106,12 +103,13 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 		return nil, err
 	}
 
-	eth.txPool = newTxPool(eth.chainConfig, eth.blockchain)
-	if eth.protocolManager, err = NewProtocolManager(eth.chainConfig, true, config.NetworkId, eth.eventMux, eth.pow, eth.blockchain, eth.txPool, nil, chainDb, odr, relay); err != nil {
+	eth.txPool = newTxPool(eth.chainConfig, odr, eth.blockchain)
+	if eth.protocolManager, err = NewProtocolManager(eth.chainConfig, true, config.NetworkId, eth.eventMux, eth.pow, eth.blockchain, eth.txPool, nil, chainDb, odr); err != nil {
 		return nil, err
 	}
-	relay.ps = eth.protocolManager.peers
-	relay.reqDist = eth.protocolManager.reqDist
+	eth.txPool.reqDist = eth.protocolManager.reqDist
+	eth.txPool.removePeer = eth.protocolManager.removePeer
+	eth.txPool.serverPool = eth.protocolManager.serverPool
 
 	eth.ApiBackend = &LesApiBackend{eth, nil}
 	eth.ApiBackend.gpo = gasprice.NewLightPriceOracle(eth.ApiBackend)
