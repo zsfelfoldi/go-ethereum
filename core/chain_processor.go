@@ -169,10 +169,12 @@ func (csp *ChainSectionProcessor) NewHead(headNum uint64, rollback bool) {
 		if headNum >= csp.confirmReq {
 			newCount = (headNum + 1 - csp.confirmReq) / csp.sectionSize
 			if newCount > csp.stored {
-				select {
-				case <-csp.stop:
-				case csp.updateChn <- newCount:
-				}
+				go func() {
+					select {
+					case <-csp.stop:
+					case csp.updateChn <- newCount:
+					}
+				}()
 			}
 		}
 	}

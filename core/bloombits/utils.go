@@ -17,7 +17,10 @@ package bloombits
 
 import (
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/golang/snappy"
 )
+
+var CompressMethod int
 
 type (
 	BitVector  []byte
@@ -63,20 +66,32 @@ func bvIsNonZero(a BitVector) bool {
 
 // CompressBloomBits compresses a bit vector for storage/network transfer purposes
 func CompressBloomBits(bits BitVector, sectionSize int) CompVector {
-	if len(bits) != sectionSize/8 {
-		panic(nil)
+	switch CompressMethod {
+	case 0:
+		return CompVector(bits)
+	case 1:
+		if len(bits) != sectionSize/8 {
+			panic(nil)
+		}
+		c := compressBits(bits)
+		if len(c) >= sectionSize/8 {
+			// make a copy so that output is always detached from input
+			return CompVector(bvCopy(bits, sectionSize))
+		}
+		return CompVector(c)
+	case 2:
+		return CompVector(snappy.Encode(nil, bits))
 	}
-	c := compressBits(bits)
-	if len(c) >= sectionSize/8 {
-		// make a copy so that output is always detached from input
-		return CompVector(bvCopy(bits, sectionSize))
-	}
-	return CompVector(c)
+	return nil
 }
 
 func compressBits(bits []byte) []byte {
 	l := len(bits)
-	b := make([]byte, l/8)
+	ll := l / 8
+	if ll == 0 {
+		ll = 1
+	}
+	b := make([]byte, ll)
 	c := make([]byte, l)
 	cl := 0
 	for i, v := range bits {
@@ -89,7 +104,7 @@ func compressBits(bits []byte) []byte {
 	if cl == 0 {
 		return nil
 	}
-	if l > 8 {
+	if ll > 1 {
 		b = compressBits(b)
 	}
 	return append(b, c[0:cl]...)
@@ -97,15 +112,27 @@ func compressBits(bits []byte) []byte {
 
 // DeompressBloomBits decompresses a bit vector
 func DecompressBloomBits(bits CompVector, sectionSize int) BitVector {
-	if len(bits) == sectionSize/8 {
-		// make a copy so that output is always detached from input
-		return bvCopy(BitVector(bits), sectionSize)
+	switch CompressMethod {
+	case 0:
+		return BitVector(bits)
+	case 1:
+		if len(bits) == sectionSize/8 {
+			// make a copy so that output is always detached from input
+			return bvCopy(BitVector(bits), sectionSize)
+		}
+		dc, ofs := decompressBits(bits, sectionSize/8)
+		if ofs != len(bits) {
+			panic(nil)
+		}
+		return dc
+	case 2:
+		bv, err := snappy.Decode(nil, bits)
+		if err != nil {
+			panic(err)
+		}
+		return BitVector(bv)
 	}
-	dc, ofs := decompressBits(bits, sectionSize/8)
-	if ofs != len(bits) {
-		panic(nil)
-	}
-	return dc
+	return nil
 }
 
 func decompressBits(bits []byte, targetLen int) ([]byte, int) {
@@ -120,7 +147,7 @@ func decompressBits(bits []byte, targetLen int) ([]byte, int) {
 		b   []byte
 		ofs int
 	)
-	if l == 1 {
+	if l <= 1 {
 		b = bits[0:1]
 		ofs = 1
 	} else {
