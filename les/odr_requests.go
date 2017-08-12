@@ -43,6 +43,7 @@ var (
 	errReceiptHashMismatch = errors.New("receipt hash mismatch")
 	errDataHashMismatch    = errors.New("data hash mismatch")
 	errCHTHashMismatch     = errors.New("cht hash mismatch")
+	errUselessNodes        = errors.New("useless nodes in merkle proof nodeset")
 )
 
 type LesOdrRequest interface {
@@ -215,15 +216,19 @@ func (r *TrieRequest) Validate(db ethdb.Database, msg *Msg) error {
 	if msg.MsgType != MsgProofs {
 		return errInvalidMessageType
 	}
-	proofs := msg.Obj.([][]rlp.RawValue)
-	if len(proofs) != 1 {
-		return errMultipleEntries
-	}
+
+	proofs := msg.Obj.(light.NodeList)
 	// Verify the proof and store if checks out
-	if _, err, _ := trie.VerifyProof(r.Id.Root, r.Key, light.NodeList(proofs[0]).NodeSet()); err != nil {
+	pdb := proofs.NodeSet()
+	cdb := pdb.ReadCache()
+	if _, err, _ := trie.VerifyProof(r.Id.Root, r.Key, cdb); err != nil {
 		return fmt.Errorf("merkle proof verification failed: %v", err)
 	}
-	r.Proof = proofs[0]
+	// check if all nodes have been read by VerifyProof
+	if pdb.KeyCount() != cdb.KeyCount() {
+		return errUselessNodes
+	}
+	r.Proof = pdb
 	return nil
 }
 
