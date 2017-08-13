@@ -333,7 +333,7 @@ func (r *ChtRequest) CanSend(peer *peer) bool {
 	peer.lock.RLock()
 	defer peer.lock.RUnlock()
 
-	return peer.headInfo.Number >= light.ChtConfirmations && r.ChtNum <= (peer.headInfo.Number-light.ChtConfirmations)/light.ChtFrequency
+	return peer.headInfo.Number >= light.PPTConfirmations && r.ChtNum <= (peer.headInfo.Number-light.PPTConfirmations)/light.ChtFrequency
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
@@ -423,7 +423,7 @@ func (r *BloomRequest) CanSend(peer *peer) bool {
 	peer.lock.RLock()
 	defer peer.lock.RUnlock()
 
-	return peer.headInfo.Number >= light.BloomTrieConfirmations && r.BltNum <= (peer.headInfo.Number-light.BloomTrieConfirmations)/light.BloomTrieFrequency
+	return peer.headInfo.Number >= light.PPTConfirmations && r.BltNum <= (peer.headInfo.Number-light.PPTConfirmations)/light.BloomTrieFrequency
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)

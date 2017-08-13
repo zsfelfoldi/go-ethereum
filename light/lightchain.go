@@ -95,10 +95,8 @@ func NewLightChain(odr OdrBackend, config *params.ChainConfig, engine consensus.
 	if bc.genesisBlock == nil {
 		return nil, core.ErrNoGenesis
 	}
-	if bc.genesisBlock.Hash() == params.MainnetGenesisHash {
-		// add trusted CHT
-		WriteTrustedCht(bc.chainDb, TrustedCht{Number: 805, Root: common.HexToHash("85e4286fe0a730390245c49de8476977afdae0eb5530b277f62a52b12313d50f")})
-		log.Info("Added trusted CHT for mainnet")
+	if ppt, ok := trustedCheckpoints[bc.genesisBlock.Hash()]; ok {
+		bc.addTrustedCheckpoint(ppt)
 	}
 
 	if err := bc.loadLastState(); err != nil {
@@ -113,6 +111,16 @@ func NewLightChain(odr OdrBackend, config *params.ChainConfig, engine consensus.
 		}
 	}
 	return bc, nil
+}
+
+// addTrustedCheckpoint adds a trusted checkpoint to the blockchain
+func (self *LightChain) addTrustedCheckpoint(ppt trustedCheckpoint) {
+	StoreChtRoot(self.chainDb, ppt.sectionIdx, ppt.sectionHead, ppt.chtRoot)
+	self.odr.ChtIndexer().AddKnownSectionHead(ppt.sectionIdx, ppt.sectionHead)
+	StoreBloomTrieRoot(self.chainDb, ppt.sectionIdx, ppt.sectionHead, ppt.bltRoot)
+	self.odr.BltIndexer().AddKnownSectionHead(ppt.sectionIdx, ppt.sectionHead)
+	self.odr.BloomIndexer().AddKnownSectionHead(ppt.sectionIdx, ppt.sectionHead)
+	log.Info("Added trusted PPT")
 }
 
 func (self *LightChain) getProcInterrupt() bool {
@@ -445,9 +453,9 @@ func (self *LightChain) GetHeaderByNumberOdr(ctx context.Context, number uint64)
 
 func (self *LightChain) SyncCht(ctx context.Context) bool {
 	headNum := self.CurrentHeader().Number.Uint64()
-	cht := GetTrustedCht(self.chainDb)
-	if headNum+1 < cht.Number*ChtFrequency {
-		num := cht.Number*ChtFrequency - 1
+	chtCount, _, _ := self.odr.ChtIndexer().Sections()
+	if headNum+1 < chtCount*ChtFrequency {
+		num := chtCount*ChtFrequency - 1
 		header, err := GetHeaderByNumber(ctx, self.odr, num)
 		if header != nil && err == nil {
 			self.mu.Lock()

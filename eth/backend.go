@@ -53,6 +53,7 @@ type LesServer interface {
 	Start(srvr *p2p.Server)
 	Stop()
 	Protocols() []p2p.Protocol
+	SetBloomBitsIndexer(bbIndexer *core.ChainIndexer)
 }
 
 // Ethereum implements the Ethereum full node service.
@@ -89,6 +90,7 @@ type Ethereum struct {
 
 func (s *Ethereum) AddLesServer(ls LesServer) {
 	s.lesServer = ls
+	ls.SetBloomBitsIndexer(s.bbIndexer)
 }
 
 // New creates a new Ethereum object (including the

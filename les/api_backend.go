@@ -175,16 +175,17 @@ func (b *LesApiBackend) AccountManager() *accounts.Manager {
 }
 
 func (b *LesApiBackend) GetBloomBits(ctx context.Context, bitIdx uint64, sectionIdxList []uint64) ([][]byte, error) {
-	return nil, nil // implemented in a subsequent PR
+	return light.GetBloomBits(ctx, b.eth.odr, bitIdx, sectionIdxList)
 }
 
 func (b *LesApiBackend) BloomBitsSections() uint64 {
-	return 0
+	sections, _, _ := b.eth.bbIndexer.Sections()
+	return sections
 }
 
 func (b *LesApiBackend) BloomBitsConfig() filters.BloomConfig {
 	return filters.BloomConfig{
-		SectionSize:    32768,
+		SectionSize:    light.BloomTrieFrequency,
 		MaxRequestLen:  16,
 		MaxRequestWait: time.Microsecond * 100,
 	}
