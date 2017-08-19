@@ -149,15 +149,22 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, network
 		manager.retriever = odr.retriever
 		manager.reqDist = odr.retriever.dist
 	}
+	var protocolVersions []uint
+	if lightSync {
+		protocolVersions = ClientProtocolVersions
+	} else {
+		protocolVersions = ServerProtocolVersions
+	}
+
 	// Initiate a sub-protocol for every implemented version we can handle
-	manager.SubProtocols = make([]p2p.Protocol, 0, len(ProtocolVersions))
-	for i, version := range ProtocolVersions {
+	manager.SubProtocols = make([]p2p.Protocol, 0, len(protocolVersions))
+	for _, version := range protocolVersions {
 		// Compatible, initialize the sub-protocol
 		version := version // Closure for the run
 		manager.SubProtocols = append(manager.SubProtocols, p2p.Protocol{
 			Name:    "les",
 			Version: version,
-			Length:  ProtocolLengths[i],
+			Length:  ProtocolLengths[version],
 			Run: func(p *p2p.Peer, rw p2p.MsgReadWriter) error {
 				var entry *poolEntry
 				peer := manager.newPeer(int(version), networkId, p, rw)

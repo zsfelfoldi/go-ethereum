@@ -134,6 +134,10 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 }
 
 func lesTopic(genesisHash common.Hash) discv5.Topic {
+	return discv5.Topic("LES2@" + common.Bytes2Hex(genesisHash.Bytes()[0:8]))
+}
+
+func lesV1Topic(genesisHash common.Hash) discv5.Topic {
 	return discv5.Topic("LES@" + common.Bytes2Hex(genesisHash.Bytes()[0:8]))
 }
 
