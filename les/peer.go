@@ -18,6 +18,7 @@
 package les
 
 import (
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"math/big"
@@ -41,13 +42,22 @@ var (
 
 const maxResponseErrors = 50 // number of invalid responses tolerated (makes the protocol less brittle but still avoids spam)
 
+const (
+	announceTypeNone = iota
+	announceTypeSimple
+	announceTypeSigned
+)
+
 type peer struct {
 	*p2p.Peer
+	pubKey *ecdsa.PublicKey
 
 	rw p2p.MsgReadWriter
 
 	version int    // Protocol version negotiated
 	network uint64 // Network ID being on
+
+	announceType, requestAnnounceType uint64
 
 	id string
 
@@ -69,9 +79,14 @@ type peer struct {
 
 func newPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
 	id := p.ID()
+	pubKey, err := id.Pubkey()
+	if err != nil {
+		panic(err) // p2p should already have it checked
+	}
 
 	return &peer{
 		Peer:        p,
+		pubKey:      pubKey,
 		rw:          rw,
 		version:     version,
 		network:     network,
@@ -300,7 +315,7 @@ func (l keyValueList) decode() keyValueMap {
 func (m keyValueMap) get(key string, val interface{}) error {
 	enc, ok := m[key]
 	if !ok {
-		return errResp(ErrHandshakeMissingKey, "%s", key)
+		return errResp(ErrMissingKey, "%s", key)
 	}
 	if val == nil {
 		return nil
@@ -359,6 +374,9 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		list := server.fcCostStats.getCurrentList()
 		send = send.add("flowControl/MRC", list)
 		p.fcCosts = list.decode()
+	} else {
+		p.requestAnnounceType = announceTypeSimple // set to default until "very light" client mode is implemented
+		send = send.add("announceType", p.requestAnnounceType)
 	}
 	recvList, err := p.sendReceiveHandshake(send)
 	if err != nil {
@@ -403,6 +421,9 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		/*if recv.get("serveStateSince", nil) == nil {
 			return errResp(ErrUselessPeer, "wanted client, got server")
 		}*/
+		if recv.get("announceType", &p.announceType) != nil {
+			p.announceType = announceTypeSimple
+		}
 		p.fcClient = flowcontrol.NewClientNode(server.fcManager, server.defParams)
 	} else {
 		if recv.get("serveChainSince", nil) != nil {
