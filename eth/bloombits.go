@@ -62,8 +62,12 @@ func (eth *Ethereum) startBloomHandlers() {
 					task.Bitsets = make([][]byte, len(task.Sections))
 					for i, section := range task.Sections {
 						head := core.GetCanonicalHash(eth.chainDb, (section+1)*params.BloomBitsBlocks-1)
-						blob, err := bitutil.DecompressBytes(core.GetBloomBits(eth.chainDb, task.Bit, section, head), int(params.BloomBitsBlocks)/8)
+						compVector, err := core.GetBloomBits(eth.chainDb, task.Bit, section, head)
 						if err != nil {
+							panic(err)
+						}
+						blob, err2 := bitutil.DecompressBytes(compVector, int(params.BloomBitsBlocks)/8)
+						if err2 != nil {
 							panic(err)
 						}
 						task.Bitsets[i] = blob
