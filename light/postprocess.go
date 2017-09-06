@@ -236,7 +236,7 @@ func (b *BloomTrieIndexerBackend) Process(header *types.Header) {
 func (b *BloomTrieIndexerBackend) Commit() error {
 	var compSize, decompSize uint64
 
-	for i := uint64(0); i < bloombits.BloomLength; i++ {
+	for i := uint(0); i < bloombits.BloomLength; i++ {
 		var encKey [10]byte
 		binary.BigEndian.PutUint16(encKey[0:2], uint16(i))
 		binary.BigEndian.PutUint64(encKey[2:10], b.section)

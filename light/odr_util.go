@@ -135,7 +135,7 @@ func GetBlockReceipts(ctx context.Context, odr OdrBackend, hash common.Hash, num
 }
 
 // GetBloomBits retrieves a batch of compressed bloomBits vectors belonging to the given bit index and section indexes
-func GetBloomBits(ctx context.Context, odr OdrBackend, bitIdx uint64, sectionIdxList []uint64) ([][]byte, error) {
+func GetBloomBits(ctx context.Context, odr OdrBackend, bitIdx uint, sectionIdxList []uint64) ([][]byte, error) {
 	db := odr.Database()
 	result := make([][]byte, len(sectionIdxList))
 	var (

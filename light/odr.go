@@ -150,7 +150,8 @@ func (req *ChtRequest) StoreResult(db ethdb.Database) {
 // BloomRequest is the ODR request type for retrieving bloom filters from a CHT structure
 type BloomRequest struct {
 	OdrRequest
-	BltNum, BitIdx uint64
+	BltNum         uint64
+	BitIdx         uint
 	SectionIdxList []uint64
 	BltRoot        common.Hash
 	BloomBits      [][]byte
@@ -165,6 +166,6 @@ func (req *BloomRequest) StoreResult(db ethdb.Database) {
 		// a key with a zero sectionHead. GetBloomBits will look there too if we still don't have the canonical
 		// hash. In the unlikely case we've retrieved the section head hash since then, we'll just retrieve the
 		// bit vector again from the network.
-		core.StoreBloomBits(db, req.BitIdx, sectionIdx, sectionHead, req.BloomBits[i])
+		core.WriteBloomBits(db, req.BitIdx, sectionIdx, sectionHead, req.BloomBits[i])
 	}
 }
