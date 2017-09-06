@@ -189,15 +189,20 @@ type TxPool struct {
 	locals  *accountSet // Set of local transaction to exepmt from evicion rules
 	journal *txJournal  // Journal of local transaction to back up to disk
 
-	pending map[common.Address]*txList         // All currently processable transactions
-	queue   map[common.Address]*txList         // Queued but non-processable transactions
-	beats   map[common.Address]time.Time       // Last heartbeat from each known account
-	all     map[common.Hash]*types.Transaction // All transactions to allow lookups
-	priced  *txPricedList                      // All transactions sorted by price
+	pending map[common.Address]*txList   // All currently processable transactions
+	queue   map[common.Address]*txList   // Queued but non-processable transactions
+	beats   map[common.Address]time.Time // Last heartbeat from each known account
+	all     map[common.Hash]txLookupRec  // All transactions to allow lookups
+	priced  *txPricedList                // All transactions sorted by price
 
 	wg sync.WaitGroup // for shutdown sync
 
 	homestead bool
+}
+
+type txLookupRec struct {
+	tx      *types.Transaction
+	pending bool
 }
 
 // NewTxPool creates a new transaction pool to gather, sort and filter inbound
@@ -215,7 +220,7 @@ func NewTxPool(config TxPoolConfig, chainconfig *params.ChainConfig, blockChain 
 		pending:      make(map[common.Address]*txList),
 		queue:        make(map[common.Address]*txList),
 		beats:        make(map[common.Address]time.Time),
-		all:          make(map[common.Hash]*types.Transaction),
+		all:          make(map[common.Hash]txLookupRec),
 		chainHeadCh:  make(chan ChainHeadEvent, chainHeadChanSize),
 		rmTxCh:       make(chan RemovedTransactionEvent, rmTxChanSize),
 		gasPrice:     new(big.Int).SetUint64(config.PriceLimit),
@@ -543,7 +548,7 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 func (pool *TxPool) add(tx *types.Transaction, local bool) (bool, error) {
 	// If the transaction is already known, discard it
 	hash := tx.Hash()
-	if pool.all[hash] != nil {
+	if _, ok := pool.all[hash]; ok {
 		log.Trace("Discarding already known transaction", "hash", hash)
 		return false, fmt.Errorf("known transaction: %x", hash)
 	}
@@ -584,7 +589,7 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (bool, error) {
 			pool.priced.Removed()
 			pendingReplaceCounter.Inc(1)
 		}
-		pool.all[tx.Hash()] = tx
+		pool.all[tx.Hash()] = txLookupRec{tx, false}
 		pool.priced.Put(tx)
 		pool.journalTx(from, tx)
 
@@ -627,7 +632,7 @@ func (pool *TxPool) enqueueTx(hash common.Hash, tx *types.Transaction) (bool, er
 		pool.priced.Removed()
 		queuedReplaceCounter.Inc(1)
 	}
-	pool.all[hash] = tx
+	pool.all[hash] = txLookupRec{tx, false}
 	pool.priced.Put(tx)
 	return old != nil, nil
 }
@@ -671,8 +676,8 @@ func (pool *TxPool) promoteTx(addr common.Address, hash common.Hash, tx *types.T
 		pendingReplaceCounter.Inc(1)
 	}
 	// Failsafe to work around direct pending inserts (tests)
-	if pool.all[hash] == nil {
-		pool.all[hash] = tx
+	if pool.all[hash].tx == nil {
+		pool.all[hash] = txLookupRec{tx, true}
 		pool.priced.Put(tx)
 	}
 	// Set the potentially new pending nonce and notify any subsystems of the new tx
@@ -699,14 +704,16 @@ func (pool *TxPool) AddRemote(tx *types.Transaction) error {
 // marking the senders as a local ones in the mean time, ensuring they go around
 // the local pricing constraints.
 func (pool *TxPool) AddLocals(txs []*types.Transaction) error {
-	return pool.addTxs(txs, !pool.config.NoLocals)
+	_, err := pool.addTxs(txs, !pool.config.NoLocals)
+	return err
 }
 
 // AddRemotes enqueues a batch of transactions into the pool if they are valid.
 // If the senders are not among the locally tracked ones, full pricing constraints
 // will apply.
 func (pool *TxPool) AddRemotes(txs []*types.Transaction) error {
-	return pool.addTxs(txs, false)
+	_, err := pool.addTxs(txs, false)
+	return err
 }
 
 // addTx enqueues a single transaction into the pool if it is valid.
@@ -732,14 +739,16 @@ func (pool *TxPool) addTx(tx *types.Transaction, local bool) error {
 }
 
 // addTxs attempts to queue a batch of transactions if they are valid.
-func (pool *TxPool) addTxs(txs []*types.Transaction, local bool) error {
+func (pool *TxPool) addTxs(txs []*types.Transaction, local bool) ([]error, error) {
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
 	// Add the batch of transaction, tracking the accepted ones
 	dirty := make(map[common.Address]struct{})
-	for _, tx := range txs {
-		if replace, err := pool.add(tx, local); err == nil {
+	txErr := make([]error, len(txs))
+	for i, tx := range txs {
+		var replace bool
+		if replace, txErr[i] = pool.add(tx, local); txErr[i] == nil {
 			if !replace {
 				from, _ := types.Sender(pool.signer, tx) // already validated
 				dirty[from] = struct{}{}
@@ -750,7 +759,7 @@ func (pool *TxPool) addTxs(txs []*types.Transaction, local bool) error {
 	if len(dirty) > 0 {
 		state, err := pool.blockChain.State()
 		if err != nil {
-			return err
+			return txErr, err
 		}
 		addrs := make([]common.Address, 0, len(dirty))
 		for addr, _ := range dirty {
@@ -758,7 +767,49 @@ func (pool *TxPool) addTxs(txs []*types.Transaction, local bool) error {
 		}
 		pool.promoteExecutables(state, addrs)
 	}
-	return nil
+	return txErr, nil
+}
+
+const (
+	TxStatusUnknown = iota
+	TxStatusQueued
+	TxStatusPending
+	TxStatusIncluded // Data contains a TxChainPos struct
+	TxStatusError    // Data contains the error string
+)
+
+type TxStatusData struct {
+	Status uint
+	Data   []byte
+}
+
+//txHashes should always be present
+// included status is not checked here
+func (pool *TxPool) AddOrGetTxStatus(txs []*types.Transaction, txHashes []common.Hash) ([]TxStatusData, error) {
+	status := make([]TxStatusData, len(txHashes))
+	if txs != nil {
+		txErr, err := pool.addTxs(txs, false)
+		if err != nil {
+			return nil, err
+		}
+		for i, err := range txErr {
+			if err != nil {
+				status[i] = TxStatusData{TxStatusError, ([]byte)(err.Error())}
+			}
+		}
+	}
+
+	for i, hash := range txHashes {
+		r, ok := pool.all[hash]
+		if ok {
+			if r.pending {
+				status[i] = TxStatusData{TxStatusPending, nil}
+			} else {
+				status[i] = TxStatusData{TxStatusQueued, nil}
+			}
+		}
+	}
+	return status, nil
 }
 
 // Get returns a transaction if it is contained in the pool
@@ -767,7 +818,7 @@ func (pool *TxPool) Get(hash common.Hash) *types.Transaction {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
 
-	return pool.all[hash]
+	return pool.all[hash].tx
 }
 
 // Remove removes the transaction with the given hash from the pool.
@@ -792,10 +843,11 @@ func (pool *TxPool) RemoveBatch(txs types.Transactions) {
 // transactions back to the future queue.
 func (pool *TxPool) removeTx(hash common.Hash) {
 	// Fetch the transaction we wish to delete
-	tx, ok := pool.all[hash]
+	txl, ok := pool.all[hash]
 	if !ok {
 		return
 	}
+	tx := txl.tx
 	addr, _ := types.Sender(pool.signer, tx) // already validated during insertion
 
 	// Remove it from the list of known transactions

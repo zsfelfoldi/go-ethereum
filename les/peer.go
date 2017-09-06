@@ -233,6 +233,11 @@ func (p *peer) SendPPTProofs(reqID, bv uint64, resp PPTResps) error {
 	return sendResponse(p.rw, PPTProofsMsg, reqID, bv, resp)
 }
 
+// SendTxStatus sends a batch of transaction status records, corresponding to the ones requested.
+func (p *peer) SendTxStatus(reqID, bv uint64, status []core.TxStatusData) error {
+	return sendResponse(p.rw, TxStatusMsg, reqID, bv, status)
+}
+
 // RequestHeadersByHash fetches a batch of blocks' headers corresponding to the
 // specified header query, based on the hash of an origin block.
 func (p *peer) RequestHeadersByHash(reqID, cost uint64, origin common.Hash, amount int, skip int, reverse bool) error {
