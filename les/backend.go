@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/bloombits"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/eth/downloader"
@@ -61,6 +62,7 @@ type LightEthereum struct {
 	// DB interfaces
 	chainDb ethdb.Database // Block chain database
 
+	bloomRequests                     chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bbIndexer, chtIndexer, bltIndexer *core.ChainIndexer
 
 	ApiBackend *LesApiBackend
@@ -99,7 +101,8 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 		engine:         eth.CreateConsensusEngine(ctx, config, chainConfig, chainDb),
 		shutdownChan:   make(chan bool),
 		networkId:      config.NetworkId,
-		bbIndexer:      eth.NewBloomBitsProcessor(chainDb, light.BloomTrieFrequency),
+		bloomRequests:  make(chan chan *bloombits.Retrieval),
+		bbIndexer:      eth.NewBloomIndexer(chainDb, light.BloomTrieFrequency),
 		chtIndexer:     light.NewChtIndexer(chainDb, true),
 		bltIndexer:     light.NewBloomTrieIndexer(chainDb, true),
 	}
