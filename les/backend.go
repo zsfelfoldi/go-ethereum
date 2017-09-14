@@ -121,7 +121,7 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 		core.WriteChainConfig(chainDb, genesisHash, chainConfig)
 	}
 
-	leth.bbIndexer.Start(leth.blockchain)
+	//leth.bbIndexer.Start(leth.blockchain)
 
 	leth.txPool = light.NewTxPool(leth.chainConfig, leth.blockchain, leth.relay)
 	if leth.protocolManager, err = NewProtocolManager(leth.chainConfig, true, config.NetworkId, leth.eventMux, leth.engine, leth.peers, leth.blockchain, nil, chainDb, leth.odr, leth.relay, quitSync, &leth.wg); err != nil {
