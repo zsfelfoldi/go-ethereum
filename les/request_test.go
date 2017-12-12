@@ -84,8 +84,8 @@ func testAccess(t *testing.T, protocol int, fn accessTestFn) {
 	ldb, _ := ethdb.NewMemDatabase()
 	odr := NewLesOdr(ldb, light.NewChtIndexer(db, true), light.NewBloomTrieIndexer(db, true), eth.NewBloomIndexer(db, light.BloomTrieFrequency), rm)
 
-	pm := newTestProtocolManagerMust(t, false, 4, testChainGen, nil, nil, db)
-	lpm := newTestProtocolManagerMust(t, true, 0, nil, peers, odr, ldb)
+	pm := newTestProtocolManagerMust(t, false, 4, testChainGen, nil, nil, db, nil)
+	lpm := newTestProtocolManagerMust(t, true, 0, nil, peers, odr, ldb, nil)
 	_, err1, lpeer, err2 := newTestPeerPair("peer", protocol, pm, lpm)
 	select {
 	case <-time.After(time.Millisecond * 100):

@@ -19,6 +19,7 @@ package utils
 
 import (
 	"crypto/ecdsa"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"math/big"
@@ -163,6 +164,10 @@ var (
 	LightModeFlag = cli.BoolFlag{
 		Name:  "light",
 		Usage: "Enable light client mode",
+	}
+	ULCModeConfigFlag = cli.StringFlag{
+		Name:  "ulcconfig",
+		Usage: "Config file to use for ULC mode",
 	}
 	defaultSyncMode = eth.DefaultConfig.SyncMode
 	SyncModeFlag    = TextMarshalerFlag{
@@ -726,6 +731,26 @@ func setIPC(ctx *cli.Context, cfg *node.Config) {
 	case ctx.GlobalIsSet(IPCPathFlag.Name):
 		cfg.IPCPath = ctx.GlobalString(IPCPathFlag.Name)
 	}
+}
+
+// SetULCFromFile setup ULC config from file if given.
+func SetULCFromFile(ctx *cli.Context, cfg *eth.Config, p2pCfg *p2p.Config) {
+	path := ctx.GlobalString(ULCModeConfigFlag.Name)
+	if path == "" {
+		return
+	}
+
+	cfgData, err := ioutil.ReadFile(path)
+	if err != nil {
+		Fatalf("Failed to read ULC config file: %v", err)
+	}
+
+	err = json.Unmarshal(cfgData, &cfg.ULC)
+	if err != nil {
+		Fatalf(err.Error())
+	}
+
+	eth.SetULC(cfg.ULC, p2pCfg)
 }
 
 // makeDatabaseHandles raises out the number of allowed file handles per process

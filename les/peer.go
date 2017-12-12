@@ -49,6 +49,12 @@ const (
 	announceTypeSigned
 )
 
+const (
+	allRequests = iota
+	onlyAnnounceRequests
+	noRequests
+)
+
 type peer struct {
 	*p2p.Peer
 	pubKey *ecdsa.PublicKey
@@ -76,9 +82,12 @@ type peer struct {
 	fcServer       *flowcontrol.ServerNode // nil if the peer is client only
 	fcServerParams *flowcontrol.ServerParams
 	fcCosts        requestCostTable
+
+	isTrusted       bool
+	allowedRequests uint64
 }
 
-func newPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
+func newPeer(version int, network uint64, isTrusted bool, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
 	id := p.ID()
 	pubKey, _ := id.Pubkey()
 
@@ -90,6 +99,7 @@ func newPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *pe
 		network:     network,
 		id:          fmt.Sprintf("%x", id[:8]),
 		announceChn: make(chan announceData, 20),
+		isTrusted:   isTrusted,
 	}
 }
 
@@ -415,13 +425,20 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		send = send.add("flowControl/MRC", list)
 		p.fcCosts = list.decode()
 	} else {
-		p.requestAnnounceType = announceTypeSimple // set to default until "very light" client mode is implemented
-		send = send.add("announceType", p.requestAnnounceType)
+		//on client node
+		p.announceType = announceTypeSimple
+		if p.isTrusted {
+			send = send.add("allowedRequests", uint64(onlyAnnounceRequests))
+			p.announceType = uint64(announceTypeSigned)
+		}
+		send = send.add("announceType", p.announceType)
 	}
+
 	recvList, err := p.sendReceiveHandshake(send)
 	if err != nil {
 		return err
 	}
+
 	recv := recvList.decode()
 
 	var rGenesis, rHash common.Hash
@@ -456,15 +473,22 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 	if int(rVersion) != p.version {
 		return errResp(ErrProtocolVersionMismatch, "%d (!= %d)", rVersion, p.version)
 	}
+
 	if server != nil {
 		// until we have a proper peer connectivity API, allow LES connection to other servers
 		/*if recv.get("serveStateSince", nil) == nil {
 			return errResp(ErrUselessPeer, "wanted client, got server")
 		}*/
 		if recv.get("announceType", &p.announceType) != nil {
+			//set default announceType on server side
 			p.announceType = announceTypeSimple
 		}
 		p.fcClient = flowcontrol.NewClientNode(server.fcManager, server.defParams)
+
+		//which requests could receive the peer
+		if recv.get("allowedRequests", &p.allowedRequests) != nil {
+			p.allowedRequests = allRequests
+		}
 	} else {
 		if recv.get("serveChainSince", nil) != nil {
 			return errResp(ErrUselessPeer, "peer cannot serve chain")
@@ -490,7 +514,6 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		p.fcServer = flowcontrol.NewServerNode(params)
 		p.fcCosts = MRC.decode()
 	}
-
 	p.headInfo = &announceData{Td: rTd, Hash: rHash, Number: rNum}
 	return nil
 }

@@ -72,6 +72,9 @@ type NodeConfig struct {
 
 	// WhisperEnabled specifies whether the node should run the Whisper protocol.
 	WhisperEnabled bool
+
+	// Ultra Light client options
+	ULC *eth.ULCConfig
 }
 
 // defaultNodeConfig contains the default node configuration values to use if all
@@ -107,6 +110,7 @@ func NewNode(datadir string, config *NodeConfig) (stack *Node, _ error) {
 	if config.BootstrapNodes == nil || config.BootstrapNodes.Size() == 0 {
 		config.BootstrapNodes = defaultNodeConfig.BootstrapNodes
 	}
+
 	// Create the empty networking stack
 	nodeConf := &node.Config{
 		Name:        clientIdentifier,
@@ -122,6 +126,12 @@ func NewNode(datadir string, config *NodeConfig) (stack *Node, _ error) {
 			MaxPeers:         config.MaxPeers,
 		},
 	}
+
+	// setup ULC
+	if config.EthereumEnabled {
+		eth.SetULC(config.ULC, &nodeConf.P2P)
+	}
+
 	rawStack, err := node.New(nodeConf)
 	if err != nil {
 		return nil, err

@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
@@ -122,12 +123,28 @@ type ProtocolManager struct {
 
 	// wait group is used for graceful shutdowns during downloading
 	// and processing
-	wg *sync.WaitGroup
+	wg  *sync.WaitGroup
+	ulc *ulc
 }
 
 // NewProtocolManager returns a new ethereum sub protocol manager. The Ethereum sub protocol manages peers capable
 // with the ethereum network.
-func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, protocolVersions []uint, networkId uint64, mux *event.TypeMux, engine consensus.Engine, peers *peerSet, blockchain BlockChain, txpool txPool, chainDb ethdb.Database, odr *LesOdr, txrelay *LesTxRelay, quitSync chan struct{}, wg *sync.WaitGroup) (*ProtocolManager, error) {
+func NewProtocolManager(
+	chainConfig *params.ChainConfig,
+	lightSync bool,
+	protocolVersions []uint,
+	networkId uint64,
+	mux *event.TypeMux,
+	engine consensus.Engine,
+	peers *peerSet,
+	blockchain BlockChain,
+	txpool txPool,
+	chainDb ethdb.Database,
+	odr *LesOdr,
+	txrelay *LesTxRelay,
+	quitSync chan struct{},
+	wg *sync.WaitGroup,
+	ulcConfig *eth.ULCConfig) (*ProtocolManager, error) {
 	// Create the protocol manager with the base fields
 	manager := &ProtocolManager{
 		lightSync:   lightSync,
@@ -148,6 +165,10 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, protoco
 	if odr != nil {
 		manager.retriever = odr.retriever
 		manager.reqDist = odr.retriever.dist
+	}
+
+	if ulcConfig != nil {
+		manager.ulc = newULC(ulcConfig)
 	}
 
 	// Initiate a sub-protocol for every implemented version we can handle
@@ -205,6 +226,9 @@ func NewProtocolManager(chainConfig *params.ChainConfig, lightSync bool, protoco
 
 	if lightSync {
 		manager.downloader = downloader.New(downloader.LightSync, chainDb, manager.eventMux, nil, blockchain, removePeer)
+		if manager.ulc != nil && len(manager.ulc.trustedKeys) > 0 {
+			manager.downloader.IsTrustedPeer = manager.ulc.isTrusted
+		}
 		manager.peers.notify((*downloaderPeerNotify)(manager))
 		manager.fetcher = newLightFetcher(manager)
 	}
@@ -254,7 +278,11 @@ func (pm *ProtocolManager) Stop() {
 }
 
 func (pm *ProtocolManager) newPeer(pv int, nv uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
-	return newPeer(pv, nv, p, newMeteredMsgWriter(rw))
+	var isTrusted bool
+	if pm.ulc != nil {
+		isTrusted = pm.ulc.isTrusted(p.ID())
+	}
+	return newPeer(pv, nv, isTrusted, p, newMeteredMsgWriter(rw))
 }
 
 // handle is the callback invoked to manage the life cycle of a les peer. When
@@ -279,9 +307,11 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		p.Log().Debug("Light Ethereum handshake failed", "err", err)
 		return err
 	}
+
 	if rw, ok := p.rw.(*meteredMsgReadWriter); ok {
 		rw.Init(p.version)
 	}
+
 	// Register the peer locally
 	if err := pm.peers.Register(p); err != nil {
 		p.Log().Error("Light Ethereum peer registration failed", "err", err)
@@ -293,6 +323,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		}
 		pm.removePeer(p.id)
 	}()
+
 	// Register the peer in the downloader. If the downloader considers it banned, we disconnect
 	if pm.lightSync {
 		p.lock.Lock()
@@ -1195,6 +1226,10 @@ func (pc *peerConnection) RequestHeadersByHash(origin common.Hash, amount int, s
 			return peer.GetRequestCost(GetBlockHeadersMsg, amount)
 		},
 		canSend: func(dp distPeer) bool {
+			if dp.(*peer).allowedRequests != allRequests {
+				return false
+			}
+
 			return dp.(*peer) == pc.peer
 		},
 		request: func(dp distPeer) func() {
@@ -1219,7 +1254,12 @@ func (pc *peerConnection) RequestHeadersByNumber(origin uint64, amount int, skip
 			return peer.GetRequestCost(GetBlockHeadersMsg, amount)
 		},
 		canSend: func(dp distPeer) bool {
-			return dp.(*peer) == pc.peer
+			p := dp.(*peer)
+			if p.allowedRequests != allRequests {
+				return false
+			}
+
+			return p == pc.peer
 		},
 		request: func(dp distPeer) func() {
 			peer := dp.(*peer)
@@ -1237,14 +1277,18 @@ func (pc *peerConnection) RequestHeadersByNumber(origin uint64, amount int, skip
 
 func (d *downloaderPeerNotify) registerPeer(p *peer) {
 	pm := (*ProtocolManager)(d)
-	pc := &peerConnection{
-		manager: pm,
-		peer:    p,
+	if pm.ulc == nil || p.isTrusted {
+		pc := &peerConnection{
+			manager: pm,
+			peer:    p,
+		}
+		pm.downloader.RegisterLightPeer(p.id, ethVersion, pc)
 	}
-	pm.downloader.RegisterLightPeer(p.id, ethVersion, pc)
 }
 
 func (d *downloaderPeerNotify) unregisterPeer(p *peer) {
 	pm := (*ProtocolManager)(d)
-	pm.downloader.UnregisterPeer(p.id)
+	if pm.ulc == nil || p.isTrusted {
+		pm.downloader.UnregisterPeer(p.id)
+	}
 }
