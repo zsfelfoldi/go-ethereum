@@ -21,9 +21,9 @@ import (
 	"encoding/binary"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/trie"
 )
 
 var (
@@ -40,7 +40,7 @@ type StmtLookupEntry struct {
 }
 
 // GetBlock retrieves an entire block corresponding to the number.
-func GetBlock(db trie.Database, number uint64) *Block {
+func GetBlock(db ethdb.Database, number uint64) *Block {
 	data, _ := db.Get(mkBlockKey(number))
 	if len(data) == 0 {
 		return nil
@@ -54,7 +54,7 @@ func GetBlock(db trie.Database, number uint64) *Block {
 }
 
 // WriteBlock serializes and writes block into the database
-func WriteBlock(db trie.Database, block *Block) error {
+func WriteBlock(db ethdb.Database, block *Block) error {
 	var buf bytes.Buffer
 	err := block.EncodeRLP(&buf)
 	if err != nil {
@@ -67,7 +67,7 @@ func WriteBlock(db trie.Database, block *Block) error {
 }
 
 // WriteLastObserverBlockHash writes last block hash to DB under key headBlockKey
-func WriteLastObserverBlockHash(db trie.Database, hash common.Hash) error {
+func WriteLastObserverBlockHash(db ethdb.Database, hash common.Hash) error {
 	if err := db.Put(lastBlockKey, hash.Bytes()); err != nil {
 		log.Crit("Failed to store last observer block's hash", "err", err)
 	}

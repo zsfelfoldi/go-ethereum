@@ -87,7 +87,7 @@ func (o *Chain) CurrentBlock() *Block {
 
 // LockAndGetTrie lock trie mutex and get r/w access to the current observer trie
 func (o *Chain) LockAndGetTrie() *trie.Trie {
-	t, err := trie.New(o.currentBlock.Hash(), o.db)
+	t, err := trie.New(o.currentBlock.Hash(), trie.NewDatabase(o.db))
 	if err != nil {
 		panic(err)
 	}
