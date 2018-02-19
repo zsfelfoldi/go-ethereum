@@ -19,17 +19,18 @@ package observer
 import (
 	"crypto/ecdsa"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
-// ErrNoFirstBlock - ...
-var ErrNoFirstBlock = errors.New("First block not found in observer chain")
+// ErrNoFirstBlock if chain not yet contains a first block.
+var ErrNoFirstBlock = errors.New("first block not found in observer chain")
 
 // ErrNoBlock if we can not retrieve requested block
-var ErrNoBlock = errors.New("Block not found in observer chain")
+var ErrNoBlock = errors.New("block not found in observer chain")
 
 // -----
 // CHAIN
@@ -39,79 +40,97 @@ var ErrNoBlock = errors.New("Block not found in observer chain")
 // genesis block.
 type Chain struct {
 	db           ethdb.Database
+	privateKey   *ecdsa.PrivateKey
 	firstBlock   *Block
 	currentBlock *Block
-	privateKey   *ecdsa.PrivateKey
+	trieLock     sync.RWMutex
+	trie         *trie.Trie
 }
 
 // NewChain returns a fully initialised Observer chain
 // using information available in the database
 func NewChain(db ethdb.Database, privKey *ecdsa.PrivateKey) (*Chain, error) {
-	oc := &Chain{
+	c := &Chain{
 		db:         db,
 		privateKey: privKey,
 	}
+	// Generate genesis block.
 	firstBlock := GetBlock(db, 0)
 	if firstBlock == nil {
 		firstBlock = NewBlock(privKey)
 	}
-	oc.firstBlock = firstBlock
-	oc.currentBlock = firstBlock
+	c.firstBlock = firstBlock
+	c.currentBlock = firstBlock
 	if err := WriteBlock(db, firstBlock); err != nil {
 		return nil, err
 	}
-	if WriteLastObserverBlockHash(db, firstBlock.Hash()) != nil {
-		return nil, nil
+	if err := WriteLastObserverBlockHash(db, firstBlock.Hash()); err != nil {
+		return nil, err
 	}
-	return oc, nil
+	return c, nil
 }
 
-// Block returns a single block by its
-func (o *Chain) Block(number uint64) (*Block, error) {
-	b := GetBlock(o.db, number)
+// Block returns a single block by its number.
+func (c *Chain) Block(number uint64) (*Block, error) {
+	b := GetBlock(c.db, number)
 	if b == nil {
 		return nil, ErrNoBlock
 	}
 	return b, nil
 }
 
-// FirstBlock ...
-func (o *Chain) FirstBlock() *Block {
-	return o.firstBlock
+// FirstBlock returns the first block of the observer chain.
+func (c *Chain) FirstBlock() *Block {
+	return c.firstBlock
 }
 
-// CurrentBlock ...
-func (o *Chain) CurrentBlock() *Block {
-	return o.currentBlock
+// CurrentBlock returns the current active block.
+func (c *Chain) CurrentBlock() *Block {
+	return c.currentBlock
 }
 
-// LockAndGetTrie lock trie mutex and get r/w access to the current observer trie
-func (o *Chain) LockAndGetTrie() *trie.Trie {
-	t, err := trie.New(o.currentBlock.Hash(), trie.NewDatabase(o.db))
+// LockAndGetTrie lock trie mutex and get r/w access to the current observer trie.
+func (c *Chain) LockAndGetTrie() (*trie.Trie, error) {
+	c.trieLock.Lock()
+	tr, err := trie.New(c.currentBlock.TrieRoot(), trie.NewDatabase(c.db))
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	return t
+	c.trie = tr
+	return tr, nil
 }
 
-// UnlockTrie unlock trie mutex
-func (o *Chain) UnlockTrie() {
-
+// UnlockTrie unlocks the trie mutex.
+func (c *Chain) UnlockTrie() error {
+	if c.trie == nil {
+		return errors.New("no locked trie")
+	}
+	hash, err := c.trie.Commit(nil)
+	if err != nil {
+		return err
+	}
+	successor := c.currentBlock.CreateSuccessor(hash, c.privateKey)
+	if successor != nil {
+		return errors.New("cannot create new block")
+	}
+	c.currentBlock = successor
+	c.trieLock.Unlock()
+	return nil
 }
 
 // CreateBlock commits current trie and seals a new block; continues using the same trie
-// values are persistent, we will care about garbage collection later
-func (o *Chain) CreateBlock() *Block {
+// values are persistent, we will care about garbage collection later.
+func (c *Chain) CreateBlock() *Block {
 	return &Block{}
 }
 
-// AutoCreateBlocks ...
-// creates a new block periodically until chain is closed; non-blocking, starts a goroutine
-func (o *Chain) AutoCreateBlocks(period time.Duration) {
+// AutoCreateBlocks starts a goroutine automatically creating blocks periodically until
+// the chain is closed. It's non-blocking.
+func (c *Chain) AutoCreateBlocks(period time.Duration) {
 
 }
 
-// Close closes the chain
-func (o *Chain) Close() {
+// Close closes the chain.
+func (c *Chain) Close() {
 
 }
