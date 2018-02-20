@@ -19,11 +19,13 @@ package observer
 import (
 	"crypto/ecdsa"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
@@ -49,6 +51,8 @@ type Chain struct {
 
 	trieMu sync.RWMutex
 	trie   *trie.Trie
+
+	closeC chan struct{}
 }
 
 // NewChain returns a fully initialised Observer chain
@@ -126,8 +130,7 @@ func (c *Chain) UnlockTrie() {
 	c.trieMu.Unlock()
 }
 
-// CreateBlock commits current trie and seals a new block; continues using the same trie
-// values are persistent, we will care about garbage collection later.
+// CreateBlock commits current trie and seals a new block.
 func (c *Chain) CreateBlock() (*Block, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -135,6 +138,7 @@ func (c *Chain) CreateBlock() (*Block, error) {
 	var err error
 	if c.trie != nil {
 		// Commit the trie.
+		// QUESTION: How does it affect a potential user/owner of a locked trie?
 		hash, err = c.trie.Commit(nil)
 		if err != nil {
 			c.trie = nil
@@ -157,10 +161,41 @@ func (c *Chain) CreateBlock() (*Block, error) {
 // AutoCreateBlocks starts a goroutine automatically creating blocks periodically until
 // the chain is closed. It's non-blocking.
 func (c *Chain) AutoCreateBlocks(period time.Duration) {
-
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closeC != nil {
+		return
+	}
+	c.closeC = make(chan struct{})
+	go c.loop(period)
 }
 
 // Close closes the chain.
 func (c *Chain) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closeC == nil {
+		return
+	}
+	close(c.closeC)
+	return
+}
 
+// loop realizes the chains backend goroutine.
+func (c *Chain) loop(period time.Duration) {
+	ticker := time.NewTicker(period)
+	for {
+		select {
+		case <-ticker.C:
+			// Time to create a new block.
+			_, err := c.CreateBlock()
+			if err != nil {
+				log.Debug(fmt.Sprint(err))
+			}
+		case <-c.closeC:
+			// Close has been called.
+			// TODO: Check for cleanup tasks like locked tries.
+			return
+		}
+	}
 }
