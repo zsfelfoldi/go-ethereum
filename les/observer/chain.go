@@ -22,15 +22,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
-// ErrNoFirstBlock if chain not yet contains a first block.
-var ErrNoFirstBlock = errors.New("first block not found in observer chain")
-
-// ErrNoBlock if we can not retrieve requested block
-var ErrNoBlock = errors.New("block not found in observer chain")
+var (
+	ErrNoFirstBlock      = errors.New("first block not found in observer chain")
+	ErrNoBlock           = errors.New("block not found in observer chain")
+	ErrNoLockedTrie      = errors.New("no locked trie")
+	ErrCannotCreateBlock = errors.New("cannot create new block")
+)
 
 // -----
 // CHAIN
@@ -39,12 +41,14 @@ var ErrNoBlock = errors.New("block not found in observer chain")
 // Chain represents the canonical observer chain given a database with a
 // genesis block.
 type Chain struct {
+	mu           sync.Mutex
 	db           ethdb.Database
 	privateKey   *ecdsa.PrivateKey
 	firstBlock   *Block
 	currentBlock *Block
-	trieLock     sync.RWMutex
-	trie         *trie.Trie
+
+	trieMu sync.RWMutex
+	trie   *trie.Trie
 }
 
 // NewChain returns a fully initialised Observer chain
@@ -72,6 +76,8 @@ func NewChain(db ethdb.Database, privKey *ecdsa.PrivateKey) (*Chain, error) {
 
 // Block returns a single block by its number.
 func (c *Chain) Block(number uint64) (*Block, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	b := GetBlock(c.db, number)
 	if b == nil {
 		return nil, ErrNoBlock
@@ -81,17 +87,26 @@ func (c *Chain) Block(number uint64) (*Block, error) {
 
 // FirstBlock returns the first block of the observer chain.
 func (c *Chain) FirstBlock() *Block {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.firstBlock
 }
 
 // CurrentBlock returns the current active block.
 func (c *Chain) CurrentBlock() *Block {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.currentBlock
 }
 
 // LockAndGetTrie lock trie mutex and get r/w access to the current observer trie.
 func (c *Chain) LockAndGetTrie() (*trie.Trie, error) {
-	c.trieLock.Lock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.trie != nil {
+		return c.trie, nil
+	}
+	c.trieMu.Lock()
 	tr, err := trie.New(c.currentBlock.TrieRoot(), trie.NewDatabase(c.db))
 	if err != nil {
 		return nil, err
@@ -101,27 +116,42 @@ func (c *Chain) LockAndGetTrie() (*trie.Trie, error) {
 }
 
 // UnlockTrie unlocks the trie mutex.
-func (c *Chain) UnlockTrie() error {
+func (c *Chain) UnlockTrie() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.trie == nil {
-		return errors.New("no locked trie")
+		// Avoid unlocking unlocked trie.
+		return
 	}
-	hash, err := c.trie.Commit(nil)
-	if err != nil {
-		return err
-	}
-	successor := c.currentBlock.CreateSuccessor(hash, c.privateKey)
-	if successor != nil {
-		return errors.New("cannot create new block")
-	}
-	c.currentBlock = successor
-	c.trieLock.Unlock()
-	return nil
+	c.trieMu.Unlock()
 }
 
 // CreateBlock commits current trie and seals a new block; continues using the same trie
 // values are persistent, we will care about garbage collection later.
-func (c *Chain) CreateBlock() *Block {
-	return &Block{}
+func (c *Chain) CreateBlock() (*Block, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var hash common.Hash
+	var err error
+	if c.trie != nil {
+		// Commit the trie.
+		hash, err = c.trie.Commit(nil)
+		if err != nil {
+			c.trie = nil
+			c.trieMu.Unlock()
+			return nil, err
+		}
+	} else {
+		// No trie, use current one.
+		hash = c.currentBlock.TrieRoot()
+	}
+	// Create successor block.
+	successor := c.currentBlock.CreateSuccessor(hash, c.privateKey)
+	if successor != nil {
+		return nil, ErrCannotCreateBlock
+	}
+	c.currentBlock = successor
+	return c.currentBlock, nil
 }
 
 // AutoCreateBlocks starts a goroutine automatically creating blocks periodically until
