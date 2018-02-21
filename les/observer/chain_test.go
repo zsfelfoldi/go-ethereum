@@ -17,93 +17,185 @@
 package observer_test
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"testing"
+	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/observer"
+	"github.com/ethereum/go-ethereum/trie"
 )
 
-func TestNewChainHasFistBlockWithNumberZero(t *testing.T) {
-	testdb, _ := ethdb.NewMemDatabase()
-	//testdb, _ := ethdb.NewLDBDatabase("./xxx", 10, 256)
-
-	privKey, err := crypto.GenerateKey()
+// TestChainCreation tests the correct creation of an
+// observer chain with its first block.
+func TestChainCreation(t *testing.T) {
+	// Infrastructure.
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Errorf("generation of private key failed")
+		t.Errorf("generation of private key failed: %v", err)
 	}
-
-	c, err := observer.NewChain(testdb, privKey)
+	db, err := ethdb.NewMemDatabase()
 	if err != nil {
-		t.Errorf("NewChain() error = %v", err)
-		return
+		t.Errorf("creation of memory database failed: %v", err)
+	}
+	// Chain creation.
+	c, err := observer.NewChain(db, privKey)
+	if err != nil {
+		t.Errorf("creation of new chain failed: %v", err)
 	}
 	if c.FirstBlock().Number().Uint64() != 0 {
-		t.Errorf("First block number is not zero")
+		t.Errorf("first block number is not zero")
 	}
 	if c.CurrentBlock().Number().Uint64() != 0 {
-		t.Errorf("Last block number is not zero")
+		t.Errorf("last block number is not zero")
 	}
+	block, err := c.Block(0)
+	if err != nil {
+		t.Errorf("cannot retrieve block 0: %v", err)
+	}
+	if block.Number().Uint64() != 0 {
+		t.Errorf("block number 0 returns illegal block bumber")
+	}
+	c.Close()
 }
 
-func TestWeCanRetrieveFirstBlockFromNewChain(t *testing.T) {
-	testdb, _ := ethdb.NewMemDatabase()
-
-	privKey, err := crypto.GenerateKey()
+// TestBlockCreation tests the creation of new blocks.
+func TestBlockCreation(t *testing.T) {
+	// Infrastructure.
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Errorf("generation of private key failed")
+		t.Errorf("generation of private key failed: %v", err)
 	}
-
-	c, err := observer.NewChain(testdb, privKey)
+	db, err := ethdb.NewMemDatabase()
 	if err != nil {
-		t.Errorf("NewChain() error = %v", err)
-		return
+		t.Errorf("creation of memory database failed: %v", err)
 	}
-
-	fBlock, err := c.Block(0)
+	// Chain creation with first new block.
+	c, err := observer.NewChain(db, privKey)
 	if err != nil {
-		t.Errorf("Retrieve block error = %v", err)
+		t.Errorf("creation of new chain failed: %v", err)
 	}
-	if fBlock.Number().Uint64() != 0 {
-		t.Errorf("First Block has no zero number")
+	blockA := c.CreateBlock()
+	if blockA.PrevHash() != c.FirstBlock().Hash() {
+		t.Errorf("new blocks hash doesn't point to previous one")
 	}
+	blockNoA := blockA.Number().Uint64()
+	if blockNoA != c.FirstBlock().Number().Uint64()+1 {
+		t.Errorf("number of created block is wrong")
+	}
+	if blockNoA != c.CurrentBlock().Number().Uint64() {
+		t.Errorf("returned block and current block differ")
+	}
+	// Second new block.
+	blockB := c.CreateBlock()
+	if blockB.PrevHash() != blockA.Hash() {
+		t.Errorf("new blocks hash doesn't point to previous one")
+	}
+	blockNoB := blockB.Number().Uint64()
+	if blockNoB != blockNoA+1 {
+		t.Errorf("number of created block is wrong")
+	}
+	if blockNoB != c.CurrentBlock().Number().Uint64() {
+		t.Errorf("returned block and current block differ")
+	}
+	c.Close()
 }
 
-func TestCanPersistSecondBlock(t *testing.T) {
-	testdb, _ := ethdb.NewMemDatabase()
-
-	privKey, err := crypto.GenerateKey()
+// TestAutoBlockCreation tests the creation of new blocks
+// automatically in the background.
+func TestAutoBlockCreation(t *testing.T) {
+	// Infrastructure.
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Errorf("generation of private key failed")
+		t.Errorf("generation of private key failed: %v", err)
 	}
-
-	c, err := observer.NewChain(testdb, privKey)
+	db, err := ethdb.NewMemDatabase()
 	if err != nil {
-		t.Errorf("NewChain() error = %v", err)
-		return
+		t.Errorf("creation of memory database failed: %v", err)
 	}
-	t.Log(c)
-
-	//	sts := []*observer.Statement{
-	//		observer.NewStatement([]byte("foo"), []byte("123")),
-	//		observer.NewStatement([]byte("bar"), []byte("456")),
-	//		observer.NewStatement([]byte("baz"), []byte("789")),
-	//	}
-
-	secondBlock := observer.NewBlock(privKey)
-	if err := observer.WriteBlock(testdb, secondBlock); err != nil {
-		t.Errorf("WriteBlock error = %v", err)
-	}
-
-	b2 := c.FirstBlock().CreateSuccessor(common.Hash{}, privKey)
-	observer.WriteBlock(testdb, b2)
-
-	b2Retrieved, err := c.Block(1)
+	// Chain creation.
+	c, err := observer.NewChain(db, privKey)
 	if err != nil {
-		t.Errorf("Retrieve block error = %v", err)
+		t.Errorf("creation of new chain failed: %v", err)
 	}
-	if b2Retrieved.Number().Uint64() != 1 {
-		t.Errorf("Second Block Number is not 1")
+	blockNo := c.CurrentBlock().Number().Uint64()
+	c.AutoCreateBlocks(10 * time.Millisecond)
+	// Periodically check current block number.
+	for i := 0; i < 10; i++ {
+		time.Sleep(15 * time.Millisecond)
+		currentNo := c.CurrentBlock().Number().Uint64()
+		if currentNo <= blockNo {
+			t.Errorf("current block number %d not greater than predecessor %d", currentNo, blockNo)
+		}
+		blockNo = currentNo
 	}
+	c.Close()
+}
+
+// TestLockAndUnlock tests the locking and unlocking of the rie.
+func TestLockAndUnlock(t *testing.T) {
+	// Helper.
+	update := func(tr *trie.Trie, key, value string) {
+		err := tr.TryUpdate([]byte(key), []byte(value))
+		if err != nil {
+			t.Errorf("updating trie failed")
+		}
+	}
+	assert := func(tr *trie.Trie, key, value string) {
+		v, err := tr.TryGet([]byte(key))
+		if err != nil {
+			t.Errorf("getting from trie failed")
+		}
+		if string(v) != value {
+			t.Errorf("retrieved value from trie is wrong")
+		}
+	}
+	// Infrastructure.
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Errorf("generation of private key failed: %v", err)
+	}
+	db, err := ethdb.NewMemDatabase()
+	if err != nil {
+		t.Errorf("creation of memory database failed: %v", err)
+	}
+	// Chain creation.
+	c, err := observer.NewChain(db, privKey)
+	if err != nil {
+		t.Errorf("creation of new chain failed: %v", err)
+	}
+	// Lock, unlock, commit trie.
+	tr, err := c.LockAndGetTrie()
+	if err != nil {
+		t.Errorf("cannot lock and get trie: %v", err)
+	}
+	update(tr, "foo", "123")
+	update(tr, "bar", "456")
+	update(tr, "baz", "789")
+	_, err = c.LockAndGetTrie()
+	if err != observer.ErrLockedTrie {
+		t.Errorf("expected locked trie error")
+	}
+	c.UnlockTrie()
+	tr, err = c.LockAndGetTrie()
+	if err != nil {
+		t.Errorf("cannot lock and get trie: %v", err)
+	}
+	update(tr, "yadda", "999")
+	block := c.CreateBlock()
+	if block == nil {
+		t.Errorf("cannot commit and create block")
+	}
+	// Check values.
+	tr, err = c.LockAndGetTrie()
+	if err != nil {
+		t.Errorf("cannot lock and get trie: %v", err)
+	}
+	assert(tr, "foo", "123")
+	assert(tr, "bar", "456")
+	assert(tr, "baz", "789")
+	assert(tr, "yadda", "999")
+	c.Close()
 }

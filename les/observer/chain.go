@@ -23,15 +23,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
+// Errors of observer chain.
 var (
 	ErrNoFirstBlock      = errors.New("first block not found in observer chain")
 	ErrNoBlock           = errors.New("block not found in observer chain")
+	ErrLockedTrie        = errors.New("locked trie")
 	ErrNoLockedTrie      = errors.New("no locked trie")
 	ErrCannotCreateBlock = errors.New("cannot create new block")
 )
@@ -108,11 +109,12 @@ func (c *Chain) LockAndGetTrie() (*trie.Trie, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.trie != nil {
-		return c.trie, nil
+		return nil, ErrLockedTrie
 	}
 	c.trieMu.Lock()
 	tr, err := trie.New(c.currentBlock.TrieRoot(), trie.NewDatabase(c.db))
 	if err != nil {
+		c.trieMu.Unlock()
 		return nil, err
 	}
 	c.trie = tr
@@ -127,35 +129,21 @@ func (c *Chain) UnlockTrie() {
 		// Avoid unlocking unlocked trie.
 		return
 	}
-	c.trieMu.Unlock()
+	c.commitTrie()
 }
 
 // CreateBlock commits current trie and seals a new block.
-func (c *Chain) CreateBlock() (*Block, error) {
+func (c *Chain) CreateBlock() *Block {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var hash common.Hash
-	var err error
 	if c.trie != nil {
 		// Commit the trie.
-		// QUESTION: How does it affect a potential user/owner of a locked trie?
-		hash, err = c.trie.Commit(nil)
-		if err != nil {
-			c.trie = nil
-			c.trieMu.Unlock()
-			return nil, err
-		}
+		c.commitTrie()
 	} else {
 		// No trie, use current one.
-		hash = c.currentBlock.TrieRoot()
+		c.currentBlock = c.currentBlock.CreateSuccessor(c.currentBlock.TrieRoot(), c.privateKey)
 	}
-	// Create successor block.
-	successor := c.currentBlock.CreateSuccessor(hash, c.privateKey)
-	if successor != nil {
-		return nil, ErrCannotCreateBlock
-	}
-	c.currentBlock = successor
-	return c.currentBlock, nil
+	return c.currentBlock
 }
 
 // AutoCreateBlocks starts a goroutine automatically creating blocks periodically until
@@ -178,7 +166,21 @@ func (c *Chain) Close() {
 		return
 	}
 	close(c.closeC)
-	return
+	c.closeC = nil
+}
+
+// commitTrie internally is used by UnlockTrie and CreateBlock. It commits
+// the trie and creates the new block based on the hash.
+func (c *Chain) commitTrie() {
+	trieRoot, err := c.trie.Commit(nil)
+	if err != nil {
+		log.Debug(fmt.Sprint(err))
+		return
+	}
+	block := c.currentBlock.CreateSuccessor(trieRoot, c.privateKey)
+	c.currentBlock = block
+	c.trie = nil
+	c.trieMu.Unlock()
 }
 
 // loop realizes the chains backend goroutine.
@@ -188,10 +190,7 @@ func (c *Chain) loop(period time.Duration) {
 		select {
 		case <-ticker.C:
 			// Time to create a new block.
-			_, err := c.CreateBlock()
-			if err != nil {
-				log.Debug(fmt.Sprint(err))
-			}
+			c.CreateBlock()
 		case <-c.closeC:
 			// Close has been called.
 			// TODO: Check for cleanup tasks like locked tries.
