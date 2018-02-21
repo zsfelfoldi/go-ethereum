@@ -52,6 +52,7 @@ type Chain struct {
 
 	trieMu sync.RWMutex
 	trie   *trie.Trie
+	trieDB *trie.Database
 
 	closeC chan struct{}
 }
@@ -62,6 +63,7 @@ func NewChain(db ethdb.Database, privKey *ecdsa.PrivateKey) (*Chain, error) {
 	c := &Chain{
 		db:         db,
 		privateKey: privKey,
+		trieDB:     trie.NewDatabase(db),
 	}
 	// Generate genesis block.
 	firstBlock := GetBlock(db, 0)
@@ -112,7 +114,7 @@ func (c *Chain) LockAndGetTrie() (*trie.Trie, error) {
 		return nil, ErrLockedTrie
 	}
 	c.trieMu.Lock()
-	tr, err := trie.New(c.currentBlock.TrieRoot(), trie.NewDatabase(c.db))
+	tr, err := trie.New(c.currentBlock.TrieRoot(), c.trieDB)
 	if err != nil {
 		c.trieMu.Unlock()
 		return nil, err

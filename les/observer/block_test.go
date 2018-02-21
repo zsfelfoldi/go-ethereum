@@ -127,13 +127,14 @@ func TestBlockTrieRoot(t *testing.T) {
 	if err != nil {
 		t.Errorf("creation of memory database failed")
 	}
+	trieDB := trie.NewDatabase(db)
 	// Genesis block.
 	genesis := observer.NewBlock(privKey)
 	if genesis.Number().Uint64() != 0 {
 		t.Errorf("number of genesis block is not 0")
 	}
 	// Now get trie and modify it to generate a successor block.
-	tr, err := trie.New(genesis.TrieRoot(), trie.NewDatabase(db))
+	tr, err := trie.New(genesis.TrieRoot(), trieDB)
 	if err != nil {
 		t.Errorf("instantiating the trie failed")
 	}
@@ -155,7 +156,7 @@ func TestBlockTrieRoot(t *testing.T) {
 		t.Errorf("2nd block previous hash has to be genesis block hash")
 	}
 	// Last but not least a final block.
-	tr, err = trie.New(second.TrieRoot(), trie.NewDatabase(db))
+	tr, err = trie.New(second.TrieRoot(), trieDB)
 	if err != nil {
 		t.Errorf("instantiating the next trie failed")
 	}
