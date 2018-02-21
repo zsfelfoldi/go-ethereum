@@ -144,18 +144,21 @@ func TestBlockTrieRoot(t *testing.T) {
 	if err != nil {
 		t.Errorf("committing the trie updates failed")
 	}
-	successor := genesis.CreateSuccessor(trieRoot, privKey)
-	if successor.Number().Uint64() != 1 {
-		t.Errorf("number of successor block is not 1")
+	second := genesis.CreateSuccessor(trieRoot, privKey)
+	if second.Number().Uint64() != 1 {
+		t.Errorf("number of 2nd block is not 1")
 	}
-	if bytes.Equal(genesis.Signature(), successor.Signature()) {
-		t.Errorf("signature of successor has to be different")
+	if bytes.Equal(genesis.Signature(), second.Signature()) {
+		t.Errorf("signature of 2nd block has to be different")
 	}
-	if !bytes.Equal(genesis.Hash().Bytes(), successor.PrevHash().Bytes()) {
-		t.Errorf("successor previous hash has to be genesis hash")
+	if !bytes.Equal(genesis.Hash().Bytes(), second.PrevHash().Bytes()) {
+		t.Errorf("2nd block previous hash has to be genesis block hash")
 	}
 	// Last but not least a final block.
-	tr, _ = trie.New(successor.TrieRoot(), trie.NewDatabase(db))
+	tr, err = trie.New(second.TrieRoot(), trie.NewDatabase(db))
+	if err != nil {
+		t.Errorf("instantiating the next trie failed")
+	}
 	assert(tr, "foo", "123")
 	assert(tr, "bar", "456")
 	assert(tr, "baz", "789")
@@ -165,14 +168,14 @@ func TestBlockTrieRoot(t *testing.T) {
 	if err != nil {
 		t.Errorf("committing the trie updates failed")
 	}
-	last := successor.CreateSuccessor(trieRoot, privKey)
-	if last.Number().Uint64() != 2 {
-		t.Errorf("number of last block is not 2")
+	third := second.CreateSuccessor(trieRoot, privKey)
+	if third.Number().Uint64() != 2 {
+		t.Errorf("number of 3rd block is not 2")
 	}
-	if bytes.Equal(successor.Signature(), last.Signature()) {
-		t.Errorf("signature of last has to be different")
+	if bytes.Equal(second.Signature(), third.Signature()) {
+		t.Errorf("signature of 3rd block has to be different")
 	}
-	if !bytes.Equal(successor.Hash().Bytes(), last.PrevHash().Bytes()) {
-		t.Errorf("lasts previous hash has to be successor hash")
+	if !bytes.Equal(second.Hash().Bytes(), third.PrevHash().Bytes()) {
+		t.Errorf("3rd block hash has to be second block hash")
 	}
 }

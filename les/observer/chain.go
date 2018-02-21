@@ -178,6 +178,14 @@ func (c *Chain) commitTrie() {
 		return
 	}
 	block := c.currentBlock.CreateSuccessor(trieRoot, c.privateKey)
+	if err := WriteBlock(c.db, block); err != nil {
+		log.Debug(fmt.Sprint(err))
+		return
+	}
+	if err := WriteLastObserverBlockHash(c.db, block.Hash()); err != nil {
+		log.Debug(fmt.Sprint(err))
+		return
+	}
 	c.currentBlock = block
 	c.trie = nil
 	c.trieMu.Unlock()
