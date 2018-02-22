@@ -77,7 +77,10 @@ func TestBlockCreation(t *testing.T) {
 	if err != nil {
 		t.Errorf("creation of new chain failed: %v", err)
 	}
-	blockA := c.CreateBlock()
+	blockA, err := c.CreateBlock()
+	if err != nil {
+		t.Errorf("creation of new block failed: %v", err)
+	}
 	if blockA.PrevHash() != c.FirstBlock().Hash() {
 		t.Errorf("new blocks hash doesn't point to previous one")
 	}
@@ -89,7 +92,10 @@ func TestBlockCreation(t *testing.T) {
 		t.Errorf("returned block and current block differ")
 	}
 	// Second new block.
-	blockB := c.CreateBlock()
+	blockB, err := c.CreateBlock()
+	if err != nil {
+		t.Errorf("creation of new block failed: %v", err)
+	}
 	if blockB.PrevHash() != blockA.Hash() {
 		t.Errorf("new blocks hash doesn't point to previous one")
 	}
@@ -134,8 +140,8 @@ func TestAutoBlockCreation(t *testing.T) {
 	c.Close()
 }
 
-// TestLockAndUnlock tests the locking and unlocking of the rie.
-func TestLockAndUnlock(t *testing.T) {
+// TestTrieDo tests the acting on a trie.
+func TestTrieDo(t *testing.T) {
 	// Helper.
 	update := func(tr *trie.Trie, key, value string) {
 		err := tr.TryUpdate([]byte(key), []byte(value))
@@ -166,36 +172,42 @@ func TestLockAndUnlock(t *testing.T) {
 	if err != nil {
 		t.Errorf("creation of new chain failed: %v", err)
 	}
-	// Lock, unlock, commit trie.
-	tr, err := c.LockAndGetTrie()
+	// Several updates.
+	err = c.TrieDo(func(tr *trie.Trie) error {
+		update(tr, "foo", "123")
+		update(tr, "bar", "456")
+		return nil
+	})
 	if err != nil {
-		t.Errorf("cannot lock and get trie: %v", err)
+		t.Errorf("first acting on trie failed: %v", err)
 	}
-	update(tr, "foo", "123")
-	update(tr, "bar", "456")
-	update(tr, "baz", "789")
-	_, err = c.LockAndGetTrie()
-	if err != observer.ErrLockedTrie {
-		t.Errorf("expected locked trie error")
-	}
-	c.UnlockTrie()
-	tr, err = c.LockAndGetTrie()
+	err = c.TrieDo(func(tr *trie.Trie) error {
+		update(tr, "baz", "789")
+		return nil
+	})
 	if err != nil {
-		t.Errorf("cannot lock and get trie: %v", err)
+		t.Errorf("second acting on trie failed: %v", err)
 	}
-	update(tr, "yadda", "999")
-	block := c.CreateBlock()
-	if block == nil {
+	if _, err := c.CreateBlock(); err != nil {
+		t.Errorf("cannot commit and create block")
+	}
+	err = c.TrieDo(func(tr *trie.Trie) error {
+		update(tr, "yadda", "999")
+		return nil
+	})
+	if err != nil {
+		t.Errorf("third acting on trie failed: %v", err)
+	}
+	if _, err := c.CreateBlock(); err != nil {
 		t.Errorf("cannot commit and create block")
 	}
 	// Check values.
-	tr, err = c.LockAndGetTrie()
-	if err != nil {
-		t.Errorf("cannot lock and get trie: %v", err)
-	}
-	assert(tr, "foo", "123")
-	assert(tr, "bar", "456")
-	assert(tr, "baz", "789")
-	assert(tr, "yadda", "999")
+	err = c.TrieDo(func(tr *trie.Trie) error {
+		assert(tr, "foo", "123")
+		assert(tr, "bar", "456")
+		assert(tr, "baz", "789")
+		assert(tr, "yadda", "999")
+		return nil
+	})
 	c.Close()
 }

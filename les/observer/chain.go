@@ -44,17 +44,14 @@ var (
 // Chain represents the canonical observer chain given a database with a
 // genesis block.
 type Chain struct {
-	mu           sync.Mutex
+	mu           sync.RWMutex
 	db           ethdb.Database
 	privateKey   *ecdsa.PrivateKey
-	firstBlock   *Block
+	genesisBlock *Block
 	currentBlock *Block
-
-	trieMu sync.RWMutex
-	trie   *trie.Trie
-	trieDB *trie.Database
-
-	closeC chan struct{}
+	trie         *trie.Trie
+	trieDB       *trie.Database
+	closeC       chan struct{}
 }
 
 // NewChain returns a fully initialised Observer chain
@@ -65,26 +62,34 @@ func NewChain(db ethdb.Database, privKey *ecdsa.PrivateKey) (*Chain, error) {
 		privateKey: privKey,
 		trieDB:     trie.NewDatabase(db),
 	}
-	// Generate genesis block.
-	firstBlock := GetBlock(db, 0)
-	if firstBlock == nil {
-		firstBlock = NewBlock(privKey)
+	// Check for genesis block, if needed generate it.
+	genesisBlock := GetBlock(db, 0)
+	if genesisBlock == nil {
+		genesisBlock = NewBlock(privKey)
+		if err := WriteBlock(db, genesisBlock); err != nil {
+			return nil, err
+		}
 	}
-	c.firstBlock = firstBlock
-	c.currentBlock = firstBlock
-	if err := WriteBlock(db, firstBlock); err != nil {
+	c.genesisBlock = genesisBlock
+	// Now check for current block.
+	currentBlock := GetHeadBlock(db)
+	if currentBlock == nil {
+		currentBlock = genesisBlock
+	}
+	c.currentBlock = currentBlock
+	// Initialise trie.
+	tr, err := trie.New(c.currentBlock.TrieRoot(), c.trieDB)
+	if err != nil {
 		return nil, err
 	}
-	if err := WriteLastObserverBlockHash(db, firstBlock.Hash()); err != nil {
-		return nil, err
-	}
+	c.trie = tr
 	return c, nil
 }
 
 // Block returns a single block by its number.
 func (c *Chain) Block(number uint64) (*Block, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	b := GetBlock(c.db, number)
 	if b == nil {
 		return nil, ErrNoBlock
@@ -94,58 +99,41 @@ func (c *Chain) Block(number uint64) (*Block, error) {
 
 // FirstBlock returns the first block of the observer chain.
 func (c *Chain) FirstBlock() *Block {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.firstBlock
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.genesisBlock
 }
 
 // CurrentBlock returns the current active block.
 func (c *Chain) CurrentBlock() *Block {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.currentBlock
 }
 
-// LockAndGetTrie lock trie mutex and get r/w access to the current observer trie.
-func (c *Chain) LockAndGetTrie() (*trie.Trie, error) {
+// TrieDo executes a function on the chains trie atomically.
+func (c *Chain) TrieDo(f func(*trie.Trie) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.trie != nil {
-		return nil, ErrLockedTrie
-	}
-	c.trieMu.Lock()
-	tr, err := trie.New(c.currentBlock.TrieRoot(), c.trieDB)
-	if err != nil {
-		c.trieMu.Unlock()
-		return nil, err
-	}
-	c.trie = tr
-	return tr, nil
-}
-
-// UnlockTrie unlocks the trie mutex.
-func (c *Chain) UnlockTrie() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.trie == nil {
-		// Avoid unlocking unlocked trie.
-		return
-	}
-	c.commitTrie()
+	return f(c.trie)
 }
 
 // CreateBlock commits current trie and seals a new block.
-func (c *Chain) CreateBlock() *Block {
+func (c *Chain) CreateBlock() (*Block, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.trie != nil {
-		// Commit the trie.
-		c.commitTrie()
-	} else {
-		// No trie, use current one.
-		c.currentBlock = c.currentBlock.CreateSuccessor(c.currentBlock.TrieRoot(), c.privateKey)
+	// Commit trie.
+	trieRoot, err := c.trie.Commit(nil)
+	if err != nil {
+		return nil, err
 	}
-	return c.currentBlock
+	// Create block and persist.
+	block := c.currentBlock.CreateSuccessor(trieRoot, c.privateKey)
+	if err := WriteBlock(c.db, block); err != nil {
+		return nil, err
+	}
+	c.currentBlock = block
+	return c.currentBlock, nil
 }
 
 // AutoCreateBlocks starts a goroutine automatically creating blocks periodically until
@@ -171,28 +159,6 @@ func (c *Chain) Close() {
 	c.closeC = nil
 }
 
-// commitTrie internally is used by UnlockTrie and CreateBlock. It commits
-// the trie and creates the new block based on the hash.
-func (c *Chain) commitTrie() {
-	trieRoot, err := c.trie.Commit(nil)
-	if err != nil {
-		log.Debug(fmt.Sprint(err))
-		return
-	}
-	block := c.currentBlock.CreateSuccessor(trieRoot, c.privateKey)
-	if err := WriteBlock(c.db, block); err != nil {
-		log.Debug(fmt.Sprint(err))
-		return
-	}
-	if err := WriteLastObserverBlockHash(c.db, block.Hash()); err != nil {
-		log.Debug(fmt.Sprint(err))
-		return
-	}
-	c.currentBlock = block
-	c.trie = nil
-	c.trieMu.Unlock()
-}
-
 // loop realizes the chains backend goroutine.
 func (c *Chain) loop(period time.Duration) {
 	ticker := time.NewTicker(period)
@@ -200,7 +166,9 @@ func (c *Chain) loop(period time.Duration) {
 		select {
 		case <-ticker.C:
 			// Time to create a new block.
-			c.CreateBlock()
+			if _, err := c.CreateBlock(); err != nil {
+				log.Debug(fmt.Sprintf("chain block creation failed: %v", err))
+			}
 		case <-c.closeC:
 			// Close has been called.
 			// TODO: Check for cleanup tasks like locked tries.

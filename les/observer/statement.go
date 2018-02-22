@@ -32,8 +32,8 @@ import (
 
 // keyValue manages the key and value of a statement.
 type keyValue struct {
-	Key   []byte `json:"key" gencodec:"required"`
-	Value []byte `json:"key" gencodec:"required"`
+	Key   []byte `json:"key"   gencodec:"required"`
+	Value []byte `json:"value" gencodec:"required"`
 
 	// Signature values.
 	// QUESTION: Will it be needed for statements?

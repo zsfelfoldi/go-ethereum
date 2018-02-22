@@ -20,16 +20,14 @@ import (
 	"bytes"
 	"encoding/binary"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
 var (
-	blockPrefix      = []byte("obs-")      // blockPrefix + num -> Block
-	stmtLookupPrefix = []byte("obssl-")    // stmtLookupPrefix + key -> StmtLookupEntry
-	lastBlockKey     = []byte("lastBlock") // keeps track of the last observer block
+	blockPrefix  = []byte("obs-")    // blockPrefix + num -> block
+	headBlockKey = []byte("obshead") // keeps track of the last observer block
 )
 
 // StmtLookupEntry is a positional metadata to help looking up the statement
@@ -47,29 +45,45 @@ func GetBlock(db ethdb.Database, number uint64) *Block {
 	}
 	b := new(Block)
 	if err := rlp.Decode(bytes.NewReader(data), b); err != nil {
-		log.Error("Invalid block RLP", "number", number, "err", err)
+		log.Error("invalid block RLP", "number", number, "err", err)
 		return nil
 	}
 	return b
 }
 
-// WriteBlock serializes and writes block into the database
-func WriteBlock(db ethdb.Database, block *Block) error {
-	var buf bytes.Buffer
-	err := block.EncodeRLP(&buf)
-	if err != nil {
-		return err
+// GetHeadBlock retrieves the head block.
+func GetHeadBlock(db ethdb.Database) *Block {
+	key, _ := db.Get(headBlockKey)
+	if len(key) == 0 {
+		return nil
 	}
-	if err := db.Put(mkBlockKey(block.header.Number), buf.Bytes()); err != nil {
-		log.Crit("Failed to store observer block data", "err", err)
+	data, _ := db.Get(key)
+	if len(data) == 0 {
+		return nil
 	}
-	return nil
+	b := new(Block)
+	if err := rlp.Decode(bytes.NewReader(data), b); err != nil {
+		log.Error("invalid block RLP", "key", key, "err", err)
+		return nil
+	}
+	return b
 }
 
-// WriteLastObserverBlockHash writes last block hash to DB under key headBlockKey
-func WriteLastObserverBlockHash(db ethdb.Database, hash common.Hash) error {
-	if err := db.Put(lastBlockKey, hash.Bytes()); err != nil {
-		log.Crit("Failed to store last observer block's hash", "err", err)
+// WriteBlock serializes and writes block into the database. It also
+// updates the pointer to the head block.
+func WriteBlock(db ethdb.Database, block *Block) error {
+	var buf bytes.Buffer
+	if err := block.EncodeRLP(&buf); err != nil {
+		return err
+	}
+	key := mkBlockKey(block.header.Number)
+	if err := db.Put(key, buf.Bytes()); err != nil {
+		log.Crit("failed to store observer chain block data", "err", err)
+		return err
+	}
+	if err := db.Put(headBlockKey, key); err != nil {
+		log.Crit("failed to store observer chain head block key", "err", err)
+		return err
 	}
 	return nil
 }
@@ -84,10 +98,4 @@ func mkBlockKey(number uint64) []byte {
 	enc := make([]byte, 8)
 	binary.BigEndian.PutUint64(enc, number)
 	return append(blockPrefix, enc...)
-}
-
-// mkStmtLookupKey creates the database key for a given statement lookup key.
-// Ex: obssl-foo, obssl-bar
-func mkStmtLookupKey(key []byte) []byte {
-	return append(stmtLookupPrefix, key...)
 }
