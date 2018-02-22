@@ -17,12 +17,13 @@
 package observer
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie"
@@ -47,6 +48,7 @@ type Chain struct {
 	currentBlock *Block
 	trie         *trie.Trie
 	trieDB       *trie.Database
+	trieRoot     common.Hash
 	closeC       chan struct{}
 }
 
@@ -79,6 +81,7 @@ func NewChain(db ethdb.Database, privKey *ecdsa.PrivateKey) (*Chain, error) {
 		return nil, err
 	}
 	c.trie = tr
+	c.trieRoot = c.trie.Hash()
 	return c, nil
 }
 
@@ -119,12 +122,15 @@ func (c *Chain) CreateBlock() (*Block, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Commit trie.
-	trieRoot, err := c.trie.Commit(nil)
-	if err != nil {
-		return nil, err
+	if c.trieChanged() {
+		trieRoot, err := c.trie.Commit(nil)
+		if err != nil {
+			return nil, err
+		}
+		c.trieRoot = trieRoot
 	}
-	// Create block and persist.
-	block := c.currentBlock.CreateSuccessor(trieRoot, c.privateKey)
+	// Always create new block and persist.
+	block := c.currentBlock.CreateSuccessor(c.trieRoot, c.privateKey)
 	if err := WriteBlock(c.db, block); err != nil {
 		return nil, err
 	}
@@ -148,11 +154,27 @@ func (c *Chain) AutoCreateBlocks(period time.Duration) {
 func (c *Chain) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closeC == nil {
-		return
+	// Stop backend loop.
+	if c.closeC != nil {
+		close(c.closeC)
+		c.closeC = nil
 	}
-	close(c.closeC)
-	c.closeC = nil
+	// Check for modified trie.
+	if c.trieChanged() {
+		trieRoot, err := c.trie.Commit(nil)
+		if err != nil {
+			log.Error("cannot commit trie", "err", err)
+			return
+		}
+		c.trieRoot = trieRoot
+		// Create block and persist.
+		block := c.currentBlock.CreateSuccessor(c.trieRoot, c.privateKey)
+		if err := WriteBlock(c.db, block); err != nil {
+			log.Error("cannot write block", "err", err)
+			return
+		}
+		c.currentBlock = block
+	}
 }
 
 // loop realizes the chains backend goroutine.
@@ -163,7 +185,7 @@ func (c *Chain) loop(period time.Duration) {
 		case <-ticker.C:
 			// Time to create a new block.
 			if _, err := c.CreateBlock(); err != nil {
-				log.Debug(fmt.Sprintf("chain block creation failed: %v", err))
+				log.Error("chain block creation failed", "err", err)
 			}
 		case <-c.closeC:
 			// Close has been called.
@@ -171,4 +193,11 @@ func (c *Chain) loop(period time.Duration) {
 			return
 		}
 	}
+}
+
+// trieChanged checks if the current active trie changed.
+func (c *Chain) trieChanged() bool {
+	thb := c.trie.Hash().Bytes()
+	trhb := c.trieRoot.Bytes()
+	return !bytes.Equal(thb, trhb)
 }
