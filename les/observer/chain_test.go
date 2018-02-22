@@ -20,6 +20,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func TestChainCreation(t *testing.T) {
 	if err != nil {
 		t.Errorf("creation of new chain failed: %v", err)
 	}
-	if c.FirstBlock().Number().Uint64() != 0 {
+	if c.GenesisBlock().Number().Uint64() != 0 {
 		t.Errorf("first block number is not zero")
 	}
 	if c.CurrentBlock().Number().Uint64() != 0 {
@@ -81,11 +82,11 @@ func TestBlockCreation(t *testing.T) {
 	if err != nil {
 		t.Errorf("creation of new block failed: %v", err)
 	}
-	if blockA.PrevHash() != c.FirstBlock().Hash() {
+	if blockA.PrevHash() != c.GenesisBlock().Hash() {
 		t.Errorf("new blocks hash doesn't point to previous one")
 	}
 	blockNoA := blockA.Number().Uint64()
-	if blockNoA != c.FirstBlock().Number().Uint64()+1 {
+	if blockNoA != c.GenesisBlock().Number().Uint64()+1 {
 		t.Errorf("number of created block is wrong")
 	}
 	if blockNoA != c.CurrentBlock().Number().Uint64() {
@@ -105,6 +106,54 @@ func TestBlockCreation(t *testing.T) {
 	}
 	if blockNoB != c.CurrentBlock().Number().Uint64() {
 		t.Errorf("returned block and current block differ")
+	}
+	c.Close()
+}
+
+// TestChainReopen tests open/close chain multiple times.
+func TestChainReopen(t *testing.T) {
+	// Helper.
+	blockNumber := func(block *observer.Block) uint64 {
+		return block.Number().Uint64()
+	}
+	// Infrastructure.
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Errorf("generation of private key failed: %v", err)
+	}
+	db, err := ethdb.NewMemDatabase()
+	if err != nil {
+		t.Errorf("creation of memory database failed: %v", err)
+	}
+	// Create chain.
+	c, err := observer.NewChain(db, privKey)
+	if err != nil {
+		t.Errorf("creation of new chain failed: %v", err)
+	}
+	c.Close()
+	// Reopen chain first time and create two blocks.
+	c, err = observer.NewChain(db, privKey)
+	if err != nil {
+		t.Errorf("opening of chain failed: %v", err)
+	}
+	blockA, err := c.CreateBlock()
+	if err != nil {
+		t.Errorf("creation of new block failed: %v", err)
+	}
+	blockB, err := c.CreateBlock()
+	if err != nil {
+		t.Errorf("creation of new block failed: %v", err)
+	}
+	c.Close()
+	// Reopen chain second time and check current block.
+	c, err = observer.NewChain(db, privKey)
+	if err != nil {
+		t.Errorf("opening of chain failed: %v", err)
+	}
+	if blockNumber(c.CurrentBlock()) != blockNumber(blockB) ||
+		blockNumber(c.CurrentBlock()) != blockNumber(blockA)+1 ||
+		blockNumber(c.CurrentBlock()) != blockNumber(c.GenesisBlock())+2 {
+		t.Errorf("current block has illegal number")
 	}
 	c.Close()
 }
@@ -209,5 +258,12 @@ func TestTrieDo(t *testing.T) {
 		assert(tr, "yadda", "999")
 		return nil
 	})
+	// Return error.
+	err = c.TrieDo(func(tr *trie.Trie) error {
+		return errors.New("ouch")
+	})
+	if err == nil || err.Error() != "ouch" {
+		t.Errorf("expected error not returned")
+	}
 	c.Close()
 }

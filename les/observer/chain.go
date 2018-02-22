@@ -30,11 +30,7 @@ import (
 
 // Errors of observer chain.
 var (
-	ErrNoFirstBlock      = errors.New("first block not found in observer chain")
-	ErrNoBlock           = errors.New("block not found in observer chain")
-	ErrLockedTrie        = errors.New("locked trie")
-	ErrNoLockedTrie      = errors.New("no locked trie")
-	ErrCannotCreateBlock = errors.New("cannot create new block")
+	ErrNoBlock = errors.New("block not found in observer chain")
 )
 
 // -----
@@ -97,8 +93,8 @@ func (c *Chain) Block(number uint64) (*Block, error) {
 	return b, nil
 }
 
-// FirstBlock returns the first block of the observer chain.
-func (c *Chain) FirstBlock() *Block {
+// GenesisBlock returns the first block of the observer chain.
+func (c *Chain) GenesisBlock() *Block {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.genesisBlock
