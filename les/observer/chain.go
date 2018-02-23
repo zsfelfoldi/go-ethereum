@@ -180,6 +180,7 @@ func (c *Chain) Close() {
 // loop realizes the chains backend goroutine.
 func (c *Chain) loop(period time.Duration) {
 	ticker := time.NewTicker(period)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
