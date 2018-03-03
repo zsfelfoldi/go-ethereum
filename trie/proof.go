@@ -39,24 +39,25 @@ func (t *Trie) Prove(key []byte, fromLevel uint, proofDb ethdb.Putter) error {
 	key = keybytesToHex(key)
 	nodes := []node{}
 	tn := t.root
-	for len(key) > 0 && tn != nil {
+	ptr := 0
+	for len(key) > ptr && tn != nil {
 		switch n := tn.(type) {
 		case *shortNode:
-			if len(key) < len(n.Key) || !bytes.Equal(n.Key, key[:len(n.Key)]) {
+			if len(key) < ptr+len(n.Key) || !bytes.Equal(n.Key, key[ptr:ptr+len(n.Key)]) {
 				// The trie doesn't contain the key.
 				tn = nil
 			} else {
 				tn = n.Val
-				key = key[len(n.Key):]
+				ptr += len(n.Key)
 			}
 			nodes = append(nodes, n)
 		case *fullNode:
-			tn = n.Children[key[0]]
-			key = key[1:]
+			tn = n.Children[key[ptr]]
+			ptr++
 			nodes = append(nodes, n)
 		case hashNode:
 			var err error
-			tn, err = t.resolveHash(n, nil)
+			tn, err = t.resolveHash(n, key[:ptr])
 			if err != nil {
 				log.Error(fmt.Sprintf("Unhandled trie error: %v", err))
 				return err
@@ -69,8 +70,8 @@ func (t *Trie) Prove(key []byte, fromLevel uint, proofDb ethdb.Putter) error {
 	for i, n := range nodes {
 		// Don't bother checking for errors here since hasher panics
 		// if encoding doesn't work and we're not writing to any database.
-		n, _, _ = hasher.hashChildren(n, nil)
-		hn, _ := hasher.store(n, nil, false)
+		n, _, _ = hasher.hashChildren(n, nil, nil)
+		hn, _ := hasher.store(n, nil, nil, false)
 		if hash, ok := hn.(hashNode); ok || i == 0 {
 			// If the node's database encoding is a hash (or is the
 			// root node), it becomes a proof element.
