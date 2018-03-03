@@ -111,7 +111,6 @@ func (g *GarbageCollector) run(startKey []byte, maxEntries uint64) (nextKey []by
 		g.db.LDB().CompactRange(r)
 	}()
 
-	g.gcVersionHasData = g.hasData(g.gcVersion)
 	it.Seek(startKey)
 	for it.Valid() {
 		key := common.CopyBytes(it.Key())
@@ -184,11 +183,24 @@ func (g *GarbageCollector) gcEntry(key []byte, refkeys [][]byte) {
 
 // FullGC iterates through the entire database and removes all garbage
 func (g *GarbageCollector) FullGC(version uint64) {
-	log.Info("Starting full GC", "version", version)
 	g.gcVersion = version
+	for {
+		g.gcVersionHasData = g.hasData(g.gcVersion)
+		if g.gcVersionHasData != nil {
+			break
+		}
+		if g.gcVersion == 0 {
+			return
+		}
+		g.gcVersion--
+	}
+	log.Info("Starting full GC", "version", g.gcVersion)
 	key := g.prefix
-	for key != nil {
+	for {
 		key = g.run(key, 10000)
+		if key == nil {
+			break
+		}
 		k := key[len(g.prefix):]
 		if len(k) > 8 {
 			k = k[:8]
@@ -204,6 +216,8 @@ func (g *GarbageCollector) FullGC(version uint64) {
 // Note: pause does not guarantee anything but can be used to usually avoid collision between writes and GC deletions
 // and thereby increase the performance of both processes.
 func (g *GarbageCollector) BackgroundGC(currentVersion func() uint64, pause, stop *int32, wg *sync.WaitGroup) {
+	return
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -225,16 +239,23 @@ func (g *GarbageCollector) BackgroundGC(currentVersion func() uint64, pause, sto
 				}
 				headVersion := currentVersion()
 				if headVersion > 1000 {
-					g.gcVersion = headVersion - 1000
-					key = g.run(key, 1000)
-					if key == nil {
-						key = g.prefix
+					v := headVersion - 1000
+					h := g.hasData(v)
+					if h != nil {
+						g.gcVersion = v
+						g.gcVersionHasData = h
 					}
-					k := key[len(g.prefix):]
-					if len(k) > 8 {
-						k = k[:8]
+					if g.gcVersionHasData != nil {
+						key = g.run(key, 1000)
+						if key == nil {
+							key = g.prefix
+						}
+						k := key[len(g.prefix):]
+						if len(k) > 8 {
+							k = k[:8]
+						}
+						log.Info("Running GC...", "key", fmt.Sprintf("%016x", k), "keys checked", g.keysChecked, "keys removed", g.keysRemoved, "refs checked", g.refsChecked, "refs removed", g.refsRemoved)
 					}
-					log.Info("Running GC...", "key", fmt.Sprintf("%016x", k), "keys checked", g.keysChecked, "keys removed", g.keysRemoved, "refs checked", g.refsChecked, "refs removed", g.refsRemoved)
 				}
 			} else {
 				time.Sleep(time.Second)

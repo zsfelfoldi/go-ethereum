@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/consensus"
+	"github.com/ethereum/go-ethereum/core/hashtree"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -116,8 +117,9 @@ type BlockChain struct {
 	blockCache   *lru.Cache     // Cache for the most recent entire blocks
 	futureBlocks *lru.Cache     // future blocks are blocks added for later processing
 
-	quit    chan struct{} // blockchain quit channel
-	running int32         // running must be called atomically
+	quit       chan struct{} // blockchain quit channel
+	running    int32         // running must be called atomically
+	processing int32
 	// procInterrupt must be atomically called
 	procInterrupt int32          // interrupt signaler for block processing
 	wg            sync.WaitGroup // chain processing wait group for shutting down
@@ -126,6 +128,8 @@ type BlockChain struct {
 	processor Processor // block processor interface
 	validator Validator // block and state validator interface
 	vmConfig  vm.Config
+
+	gc *hashtree.GarbageCollector
 
 	badBlocks *lru.Cache // Bad block cache
 }
@@ -189,9 +193,30 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 			}
 		}
 	}
+
+	bc.gc = hashtree.NewGarbageCollector(db, []byte(state.DbPrefix), bc.hasDataCallback)
+
+	headBlock := bc.CurrentBlock().NumberU64()
+	if headBlock > 1000 {
+		bc.gc.FullGC(headBlock - 1000)
+	}
+
+	currentVersion := func() uint64 {
+		return bc.CurrentBlock().NumberU64()
+	}
+	bc.gc.BackgroundGC(currentVersion, &bc.processing, &bc.procInterrupt, &bc.wg)
+
 	// Take ownership of this particular state
 	go bc.update()
 	return bc, nil
+}
+
+func (bc *BlockChain) hasDataCallback(version uint64) func(position, hash []byte) bool {
+	header := bc.GetHeaderByNumber(version)
+	if header == nil {
+		return nil
+	}
+	return state.HasDataCallback(header.Root, bc.db)
 }
 
 func (bc *BlockChain) getProcInterrupt() bool {
@@ -625,8 +650,8 @@ func (bc *BlockChain) GetUnclesInChain(block *types.Block, length int) []*types.
 
 // TrieNode retrieves a blob of data associated with a trie node (or code hash)
 // either from ephemeral in-memory cache, or from persistent storage.
-func (bc *BlockChain) TrieNode(hash common.Hash) ([]byte, error) {
-	return bc.stateCache.TrieDB().Node(hash)
+func (bc *BlockChain) TrieNode(position []byte, hash common.Hash) ([]byte, error) {
+	return bc.stateCache.TrieDB().Node(position, hash)
 }
 
 // Stop stops the blockchain service. If any imports are currently in progress
@@ -655,13 +680,13 @@ func (bc *BlockChain) Stop() {
 				recent := bc.GetBlockByNumber(number - offset)
 
 				log.Info("Writing cached state to disk", "block", recent.Number(), "hash", recent.Hash(), "root", recent.Root())
-				if err := triedb.Commit(recent.Root(), true); err != nil {
+				if err := triedb.Commit(recent.Root(), true, number-offset, bc.gc); err != nil {
 					log.Error("Failed to commit recent state trie", "err", err)
 				}
 			}
 		}
 		for !bc.triegc.Empty() {
-			triedb.Dereference(bc.triegc.PopItem().(common.Hash), common.Hash{})
+			triedb.Dereference(bc.triegc.PopItem().(common.Hash), common.Hash{}, nil)
 		}
 		if size := triedb.Size(); size != 0 {
 			log.Error("Dangling trie nodes after full cleanup")
@@ -905,12 +930,12 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 
 	// If we're running an archive node, always flush
 	if bc.cacheConfig.Disabled {
-		if err := triedb.Commit(root, false); err != nil {
+		if err := triedb.Commit(root, false, block.NumberU64(), bc.gc); err != nil {
 			return NonStatTy, err
 		}
 	} else {
 		// Full but not archive node, do proper garbage collection
-		triedb.Reference(root, common.Hash{}) // metadata reference to keep trie alive
+		triedb.Reference(root, common.Hash{}, nil) // metadata reference to keep trie alive
 		bc.triegc.Push(root, -float32(block.NumberU64()))
 
 		if current := block.NumberU64(); current > triesInMemory {
@@ -937,7 +962,7 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 				}
 				// If optimum or critical limits reached, write to disk
 				if chosen >= lastWrite+triesInMemory || size >= 2*limit || bc.gcproc >= 2*bc.cacheConfig.TrieTimeLimit {
-					triedb.Commit(header.Root, true)
+					triedb.Commit(header.Root, true, current-triesInMemory, bc.gc)
 					lastWrite = chosen
 					bc.gcproc = 0
 				}
@@ -949,7 +974,7 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 					bc.triegc.Push(root, number)
 					break
 				}
-				triedb.Dereference(root.(common.Hash), common.Hash{})
+				triedb.Dereference(root.(common.Hash), common.Hash{}, nil)
 			}
 		}
 	}
@@ -1029,6 +1054,9 @@ func (bc *BlockChain) insertChain(chain types.Blocks) (int, []interface{}, []*ty
 
 	bc.chainmu.Lock()
 	defer bc.chainmu.Unlock()
+
+	atomic.StoreInt32(&bc.processing, 1)
+	defer atomic.StoreInt32(&bc.processing, 0)
 
 	// A queued approach to delivering events. This is generally
 	// faster than direct delivery and requires much less mutex

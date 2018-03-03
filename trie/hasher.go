@@ -53,7 +53,7 @@ func returnHasherToPool(h *hasher) {
 
 // hash collapses a node down into a hash node, also returning a copy of the
 // original node initialized with the computed hash to replace the original one.
-func (h *hasher) hash(n node, db *Database, force bool) (node, node, error) {
+func (h *hasher) hash(n node, db *Database, prefix []byte, force bool) (node, node, error) {
 	// If we're not storing the node, just hashing, use available cached data
 	if hash, dirty := n.cache(); hash != nil {
 		if db == nil {
@@ -70,11 +70,11 @@ func (h *hasher) hash(n node, db *Database, force bool) (node, node, error) {
 		}
 	}
 	// Trie not processed yet or needs storage, walk the children
-	collapsed, cached, err := h.hashChildren(n, db)
+	collapsed, cached, err := h.hashChildren(n, db, prefix)
 	if err != nil {
 		return hashNode{}, n, err
 	}
-	hashed, err := h.store(collapsed, db, force)
+	hashed, err := h.store(collapsed, db, prefix, force)
 	if err != nil {
 		return hashNode{}, n, err
 	}
@@ -100,7 +100,7 @@ func (h *hasher) hash(n node, db *Database, force bool) (node, node, error) {
 // hashChildren replaces the children of a node with their hashes if the encoded
 // size of the child is larger than a hash, returning the collapsed node as well
 // as a replacement for the original node with the child hashes cached in.
-func (h *hasher) hashChildren(original node, db *Database) (node, node, error) {
+func (h *hasher) hashChildren(original node, db *Database, prefix []byte) (node, node, error) {
 	var err error
 
 	switch n := original.(type) {
@@ -111,7 +111,7 @@ func (h *hasher) hashChildren(original node, db *Database) (node, node, error) {
 		cached.Key = common.CopyBytes(n.Key)
 
 		if _, ok := n.Val.(valueNode); !ok {
-			collapsed.Val, cached.Val, err = h.hash(n.Val, db, false)
+			collapsed.Val, cached.Val, err = h.hash(n.Val, db, concat(prefix, n.Key...), false)
 			if err != nil {
 				return original, original, err
 			}
@@ -127,7 +127,11 @@ func (h *hasher) hashChildren(original node, db *Database) (node, node, error) {
 
 		for i := 0; i < 16; i++ {
 			if n.Children[i] != nil {
-				collapsed.Children[i], cached.Children[i], err = h.hash(n.Children[i], db, false)
+				// copy prefix in order to be thread safe
+				childPrefix := make([]byte, len(prefix)+1)
+				copy(childPrefix[:len(prefix)], prefix)
+				childPrefix[len(prefix)] = byte(i)
+				collapsed.Children[i], cached.Children[i], err = h.hash(n.Children[i], db, childPrefix, false)
 				if err != nil {
 					return original, original, err
 				}
@@ -150,7 +154,7 @@ func (h *hasher) hashChildren(original node, db *Database) (node, node, error) {
 // store hashes the node n and if we have a storage layer specified, it writes
 // the key/value pair to it and tracks any node->child references as well as any
 // node->external trie references.
-func (h *hasher) store(n node, db *Database, force bool) (node, error) {
+func (h *hasher) store(n node, db *Database, prefix []byte, force bool) (node, error) {
 	// Don't store hashes or empty nodes.
 	if _, isHash := n.(hashNode); n == nil || isHash {
 		return n, nil
@@ -181,12 +185,16 @@ func (h *hasher) store(n node, db *Database, force bool) (node, error) {
 		switch n := n.(type) {
 		case *shortNode:
 			if child, ok := n.Val.(hashNode); ok {
-				db.reference(common.BytesToHash(child), hash)
+				path := compactToHex(n.Key)
+				if hasTerm(path) {
+					path = path[:len(path)-1]
+				}
+				db.reference(common.BytesToHash(child), hash, path)
 			}
 		case *fullNode:
 			for i := 0; i < 16; i++ {
 				if child, ok := n.Children[i].(hashNode); ok {
-					db.reference(common.BytesToHash(child), hash)
+					db.reference(common.BytesToHash(child), hash, []byte{byte(i)})
 				}
 			}
 		}
@@ -197,12 +205,16 @@ func (h *hasher) store(n node, db *Database, force bool) (node, error) {
 			switch n := n.(type) {
 			case *shortNode:
 				if child, ok := n.Val.(valueNode); ok {
-					h.onleaf(child, hash)
+					path := compactToHex(n.Key)
+					if hasTerm(path) {
+						path = path[:len(path)-1]
+					}
+					h.onleaf(child, hash, path)
 				}
 			case *fullNode:
 				for i := 0; i < 16; i++ {
 					if child, ok := n.Children[i].(valueNode); ok {
-						h.onleaf(child, hash)
+						h.onleaf(child, hash, []byte{byte(i)})
 					}
 				}
 			}
