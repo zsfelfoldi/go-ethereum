@@ -181,12 +181,12 @@ func (h *hasher) store(n node, db *Database, force bool) (node, error) {
 		switch n := n.(type) {
 		case *shortNode:
 			if child, ok := n.Val.(hashNode); ok {
-				db.reference(common.BytesToHash(child), hash)
+				db.reference(common.BytesToHash(child), hash, n.Key)
 			}
 		case *fullNode:
 			for i := 0; i < 16; i++ {
 				if child, ok := n.Children[i].(hashNode); ok {
-					db.reference(common.BytesToHash(child), hash)
+					db.reference(common.BytesToHash(child), hash, []byte{byte(i)})
 				}
 			}
 		}

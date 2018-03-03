@@ -44,6 +44,11 @@ var (
 	emptyCode = crypto.Keccak256Hash(nil)
 )
 
+const (
+	contractCodeSuffix    = 5
+	contractStorageSuffix = 6
+)
+
 // StateDBs within the ethereum protocol are used to store anything
 // within the merkle trie. StateDBs take care of caching and storing
 // nested states. It's the general query interface to retrieve:
@@ -615,11 +620,11 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 			return nil
 		}
 		if account.Root != emptyState {
-			s.db.TrieDB().Reference(account.Root, parent)
+			s.db.TrieDB().Reference(account.Root, parent, []byte{contractStorageSuffix})
 		}
 		code := common.BytesToHash(account.CodeHash)
 		if code != emptyCode {
-			s.db.TrieDB().Reference(code, parent)
+			s.db.TrieDB().Reference(code, parent, []byte{contractCodeSuffix})
 		}
 		return nil
 	})
