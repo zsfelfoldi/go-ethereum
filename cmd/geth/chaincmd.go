@@ -58,6 +58,33 @@ participating.
 
 It expects the genesis file as argument.`,
 	}
+	iterateCommand = cli.Command{
+		Action:    utils.MigrateFlags(iterateState),
+		Name:      "iterate",
+		Usage:     "Iterate through state",
+		ArgsUsage: "",
+		Flags: []cli.Flag{
+			utils.DataDirFlag,
+			utils.CacheFlag,
+			utils.GCModeFlag,
+			utils.CacheDatabaseFlag,
+			utils.CacheGCFlag,
+		},
+		Category:    "BLOCKCHAIN COMMANDS",
+		Description: ``,
+	}
+	gcCommand = cli.Command{
+		Action:    utils.MigrateFlags(gcState),
+		Name:      "gc",
+		Usage:     "Garbage collection on entire state",
+		ArgsUsage: "",
+		Flags: []cli.Flag{
+			utils.DataDirFlag,
+			utils.CacheFlag,
+		},
+		Category:    "BLOCKCHAIN COMMANDS",
+		Description: ``,
+	}
 	importCommand = cli.Command{
 		Action:    utils.MigrateFlags(importChain),
 		Name:      "import",
@@ -174,6 +201,40 @@ func initGenesis(ctx *cli.Context) error {
 		}
 		log.Info("Successfully wrote genesis state", "database", name, "hash", hash)
 	}
+	return nil
+}
+
+func iterateState(ctx *cli.Context) error {
+	stack := makeFullNode(ctx)
+	chain, chainDb := utils.MakeChain(ctx, stack)
+	defer chainDb.Close()
+
+	head := chain.CurrentHeader()
+	fmt.Printf("Head number: %d  hash: %x\n", head.Number.Uint64(), head.Hash())
+	s, err := state.New(head.Root, state.NewDatabase(chainDb))
+	if err != nil {
+		return err
+	}
+	start := time.Now()
+	it := state.NewNodeIterator(s)
+	cnt := 0
+	for it.Next() {
+		cnt++
+		if cnt%100000 == 0 {
+			fmt.Printf("Iterated through %d nodes\n", cnt)
+		}
+
+	}
+	fmt.Printf("Iterated through %d nodes in %v\n", cnt, time.Since(start))
+	return nil
+}
+
+func gcState(ctx *cli.Context) error {
+	stack := makeFullNode(ctx)
+	chain, chainDb := utils.MakeChain(ctx, stack)
+	defer chainDb.Close()
+
+	chain.FullGC()
 	return nil
 }
 

@@ -45,11 +45,11 @@ type odrDatabase struct {
 }
 
 func (db *odrDatabase) OpenTrie(root common.Hash) (state.Trie, error) {
-	return &odrTrie{db: db, id: db.id}, nil
+	return &odrTrie{db: db, id: db.id, dbPrefix: state.DbPrefix}, nil
 }
 
 func (db *odrDatabase) OpenStorageTrie(addrHash, root common.Hash) (state.Trie, error) {
-	return &odrTrie{db: db, id: StorageTrieID(db.id, addrHash, root)}, nil
+	return &odrTrie{db: db, id: StorageTrieID(db.id, addrHash, root), dbPrefix: append(state.DbPrefix, state.ContractStoragePositionPrefix(addrHash[:])...)}, nil
 }
 
 func (db *odrDatabase) CopyTrie(t state.Trie) state.Trie {
@@ -90,9 +90,10 @@ func (db *odrDatabase) TrieDB() *trie.Database {
 }
 
 type odrTrie struct {
-	db   *odrDatabase
-	id   *TrieID
-	trie *trie.Trie
+	db       *odrDatabase
+	dbPrefix []byte
+	id       *TrieID
+	trie     *trie.Trie
 }
 
 func (t *odrTrie) TryGet(key []byte) ([]byte, error) {
@@ -151,7 +152,7 @@ func (t *odrTrie) do(key []byte, fn func() error) error {
 	for {
 		var err error
 		if t.trie == nil {
-			t.trie, err = trie.New(t.id.Root, trie.NewDatabase(t.db.backend.Database()))
+			t.trie, err = trie.New(t.id.Root, trie.NewDatabase(t.db.backend.Database(), t.dbPrefix))
 		}
 		if err == nil {
 			err = fn()
@@ -177,7 +178,7 @@ func newNodeIterator(t *odrTrie, startkey []byte) trie.NodeIterator {
 	// Open the actual non-ODR trie if that hasn't happened yet.
 	if t.trie == nil {
 		it.do(func() error {
-			t, err := trie.New(t.id.Root, trie.NewDatabase(t.db.backend.Database()))
+			t, err := trie.New(t.id.Root, trie.NewDatabase(t.db.backend.Database(), t.dbPrefix))
 			if err == nil {
 				it.t.trie = t
 			}

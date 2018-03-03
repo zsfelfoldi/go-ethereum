@@ -57,7 +57,7 @@ func CacheUnloads() int64 {
 // LeafCallback is a callback type invoked when a trie operation reaches a leaf
 // node. It's used by state sync and commit to allow handling external references
 // between account and storage tries.
-type LeafCallback func(leaf []byte, parent common.Hash) error
+type LeafCallback func(leaf []byte, parent common.Hash, path []byte) error
 
 // Trie is a Merkle Patricia Trie.
 // The zero value is an empty trie with no database.
@@ -338,7 +338,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 		}
 
 	case *fullNode:
-		dirty, nn, err := t.delete(n.Children[key[0]], append(prefix, key[0]), key[1:])
+		dirty, nn, err := t.delete(n.Children[key[0]], concat(prefix, key[0]), key[1:])
 		if !dirty || err != nil {
 			return false, n, err
 		}
@@ -374,7 +374,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 				// shortNode{..., shortNode{...}}.  Since the entry
 				// might not be loaded yet, resolve it just for this
 				// check.
-				cnode, err := t.resolve(n.Children[pos], prefix)
+				cnode, err := t.resolve(n.Children[pos], append(prefix, byte(pos)))
 				if err != nil {
 					return false, nil, err
 				}
@@ -434,7 +434,7 @@ func (t *Trie) resolveHash(n hashNode, prefix []byte) (node, error) {
 
 	hash := common.BytesToHash(n)
 
-	enc, err := t.db.Node(hash)
+	enc, err := t.db.Node(hexToHashTreePos(prefix), hash)
 	if err != nil || enc == nil {
 		return nil, &MissingNodeError{NodeHash: hash, Path: prefix}
 	}
@@ -474,5 +474,31 @@ func (t *Trie) hashRoot(db *Database, onleaf LeafCallback) (node, node, error) {
 	}
 	h := newHasher(t.cachegen, t.cachelimit, onleaf)
 	defer returnHasherToPool(h)
-	return h.hash(t.root, db, true)
+	return h.hash(t.root, db, nil, true)
+}
+
+// HasData checks whether a trie node or the entry belonging to a secure trie key
+// preimage is present in the trie
+func (t *Trie) HasData(position, hash []byte) bool {
+	secTrieKey := len(position) > 0 && position[len(position)-1] == secTrieKeySuffix
+	if secTrieKey && (len(position) != len(hash)+1 || !bytes.Equal(position[:len(hash)], hash)) {
+		// position for a secure trie key is always hash + htSecTrieKeySuffix
+		return false
+	}
+	hex := hashTreePosToHex(position)
+	//fmt.Println("pos", position, "hex", hex, "hash", hash)
+	n, err := t.ProveHexKey(hex, 0, nil)
+	if n == nil || err != nil {
+		return false
+	}
+	if secTrieKey {
+		// for secure trie keys we only care about whether the given trie contains an
+		// entry at that key, regardless of its contents
+		return true
+	}
+	hasher := newHasher(0, 0, nil)
+	n, _, _ = hasher.hashChildren(n, nil, nil)
+	hn, _ := hasher.store(n, nil, nil, false)
+	nodeHash, ok := hn.(hashNode)
+	return ok && bytes.Equal(nodeHash, hash)
 }
