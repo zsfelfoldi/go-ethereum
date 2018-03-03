@@ -17,6 +17,7 @@
 package trie
 
 import (
+	"bytes"
 	"sync"
 	"time"
 
@@ -63,9 +64,9 @@ type Database struct {
 // cachedNode is all the information we know about a single cached node in the
 // memory database write layer.
 type cachedNode struct {
-	blob     []byte              // Cached data block of the trie node
-	parents  int                 // Number of live nodes referencing this one
-	children map[common.Hash]int // Children referenced by this nodes
+	blob     []byte                   // Cached data block of the trie node
+	parents  int                      // Number of live nodes referencing this one
+	children map[common.Hash][][]byte // Children referenced by this nodes
 }
 
 // NewDatabase creates a new trie database to store ephemeral trie content before
@@ -74,7 +75,7 @@ func NewDatabase(diskdb ethdb.Database) *Database {
 	return &Database{
 		diskdb: diskdb,
 		nodes: map[common.Hash]*cachedNode{
-			{}: {children: make(map[common.Hash]int)},
+			{}: {children: make(map[common.Hash][][]byte)},
 		},
 		preimages: make(map[common.Hash][]byte),
 	}
@@ -101,7 +102,7 @@ func (db *Database) insert(hash common.Hash, blob []byte) {
 	}
 	db.nodes[hash] = &cachedNode{
 		blob:     common.CopyBytes(blob),
-		children: make(map[common.Hash]int),
+		children: make(map[common.Hash][][]byte),
 	}
 	db.nodesSize += common.StorageSize(common.HashLength + len(blob))
 }
@@ -174,15 +175,15 @@ func (db *Database) Nodes() []common.Hash {
 }
 
 // Reference adds a new reference from a parent node to a child node.
-func (db *Database) Reference(child common.Hash, parent common.Hash) {
+func (db *Database) Reference(child common.Hash, parent common.Hash, path []byte) {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
-	db.reference(child, parent)
+	db.reference(child, parent, path)
 }
 
 // reference is the private locked version of Reference.
-func (db *Database) reference(child common.Hash, parent common.Hash) {
+func (db *Database) reference(child common.Hash, parent common.Hash, path []byte) {
 	// If the node does not exist, it's a node pulled from disk, skip
 	node, ok := db.nodes[child]
 	if !ok {
@@ -193,16 +194,16 @@ func (db *Database) reference(child common.Hash, parent common.Hash) {
 		return
 	}
 	node.parents++
-	db.nodes[parent].children[child]++
+	db.nodes[parent].children[child] = append(db.nodes[parent].children[child], path)
 }
 
 // Dereference removes an existing reference from a parent node to a child node.
-func (db *Database) Dereference(child common.Hash, parent common.Hash) {
+func (db *Database) Dereference(child common.Hash, parent common.Hash, path []byte) {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
 	nodes, storage, start := len(db.nodes), db.nodesSize, time.Now()
-	db.dereference(child, parent)
+	db.dereference(child, parent, path)
 
 	db.gcnodes += uint64(nodes - len(db.nodes))
 	db.gcsize += storage - db.nodesSize
@@ -213,13 +214,28 @@ func (db *Database) Dereference(child common.Hash, parent common.Hash) {
 }
 
 // dereference is the private locked version of Dereference.
-func (db *Database) dereference(child common.Hash, parent common.Hash) {
+func (db *Database) dereference(child common.Hash, parent common.Hash, path []byte) {
 	// Dereference the parent-child
 	node := db.nodes[parent]
 
-	node.children[child]--
-	if node.children[child] == 0 {
+	paths := node.children[child]
+	pos := -1
+	for i, p := range paths {
+		if bytes.Equal(path, p) {
+			pos = i
+			break
+		}
+	}
+	if pos != -1 {
+		path = append(path[:pos], path[pos+1:]...)
+	} else {
+		log.Error("Failed to dereference trie node (unknown path)")
+	}
+
+	if len(paths) == 0 {
 		delete(node.children, child)
+	} else {
+		node.children[child] = paths
 	}
 	// If the node does not exist, it's a previously committed node.
 	node, ok := db.nodes[child]
@@ -229,8 +245,10 @@ func (db *Database) dereference(child common.Hash, parent common.Hash) {
 	// If there are no more references to the child, delete it and cascade
 	node.parents--
 	if node.parents == 0 {
-		for hash := range node.children {
-			db.dereference(hash, child)
+		for hash, paths := range node.children {
+			for _, path := range paths {
+				db.dereference(hash, child, path)
+			}
 		}
 		delete(db.nodes, child)
 		db.nodesSize -= common.StorageSize(common.HashLength + len(node.blob))
@@ -267,7 +285,7 @@ func (db *Database) Commit(node common.Hash, report bool) error {
 	}
 	// Move the trie itself into the batch, flushing if enough data is accumulated
 	nodes, storage := len(db.nodes), db.nodesSize+db.preimagesSize
-	if err := db.commit(node, batch); err != nil {
+	if err := db.commit(node, batch, nil); err != nil {
 		log.Error("Failed to commit trie from trie database", "err", err)
 		db.lock.RUnlock()
 		return err
@@ -303,15 +321,17 @@ func (db *Database) Commit(node common.Hash, report bool) error {
 }
 
 // commit is the private locked version of Commit.
-func (db *Database) commit(hash common.Hash, batch ethdb.Batch) error {
+func (db *Database) commit(hash common.Hash, batch ethdb.Batch, path []byte) error {
 	// If the node does not exist, it's a previously committed node
 	node, ok := db.nodes[hash]
 	if !ok {
 		return nil
 	}
-	for child := range node.children {
-		if err := db.commit(child, batch); err != nil {
-			return err
+	for child, paths := range node.children {
+		for _, p := range paths {
+			if err := db.commit(child, batch, append(path, p...)); err != nil {
+				return err
+			}
 		}
 	}
 	if err := batch.Put(hash[:], node.blob); err != nil {
