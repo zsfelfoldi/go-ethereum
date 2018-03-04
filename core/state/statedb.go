@@ -49,6 +49,14 @@ const (
 	contractStorageSuffix = 6
 )
 
+func contractCodePosition(addrHash common.Hash) []byte {
+	return append(addrHash.Bytes(), contractCodeSuffix)
+}
+
+func contractStoragePositionPrefix(addrHash common.Hash) []byte {
+	return append(addrHash.Bytes(), contractStorageSuffix)
+}
+
 // StateDBs within the ethereum protocol are used to store anything
 // within the merkle trie. StateDBs take care of caching and storing
 // nested states. It's the general query interface to retrieve:

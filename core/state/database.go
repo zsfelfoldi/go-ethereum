@@ -29,6 +29,8 @@ import (
 // Trie cache generation limit after which to evic trie nodes from memory.
 var MaxTrieCacheGen = uint16(120)
 
+var DbPrefix = []byte("s")
+
 const (
 	// Number of past tries to keep. This value is chosen such that
 	// reasonable chain reorg depths will hit an existing trie.
@@ -78,12 +80,14 @@ type Trie interface {
 func NewDatabase(db ethdb.Database) Database {
 	csc, _ := lru.New(codeSizeCacheSize)
 	return &cachingDB{
-		db:            trie.NewDatabase(db),
+		diskdb:        db,
+		db:            trie.NewDatabase(db, DbPrefix),
 		codeSizeCache: csc,
 	}
 }
 
 type cachingDB struct {
+	diskdb        ethdb.Database
 	db            *trie.Database
 	mu            sync.Mutex
 	pastTries     []*trie.SecureTrie
@@ -121,7 +125,7 @@ func (db *cachingDB) pushTrie(t *trie.SecureTrie) {
 
 // OpenStorageTrie opens the storage trie of an account.
 func (db *cachingDB) OpenStorageTrie(addrHash, root common.Hash) (Trie, error) {
-	return trie.NewSecure(root, db.db, 0)
+	return trie.NewSecure(root, trie.NewDatabase(db.diskdb, append(DbPrefix, contractStoragePositionPrefix(addrHash)...)), 0)
 }
 
 // CopyTrie returns an independent copy of the given trie.
@@ -138,7 +142,7 @@ func (db *cachingDB) CopyTrie(t Trie) Trie {
 
 // ContractCode retrieves a particular contract's code.
 func (db *cachingDB) ContractCode(addrHash, codeHash common.Hash) ([]byte, error) {
-	code, err := db.db.Node(codeHash)
+	code, err := db.db.Node(contractCodePosition(addrHash), codeHash)
 	if err == nil {
 		db.codeSizeCache.Add(codeHash, len(code))
 	}
