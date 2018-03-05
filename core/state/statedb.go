@@ -652,7 +652,7 @@ func HasDataCallback(root common.Hash, db ethdb.Database) func(position, hash []
 	trieDb := trie.NewDatabase(db, DbPrefix)
 	t, err := trie.New(root, trieDb)
 	if err != nil {
-		panic(err)
+		return nil
 	}
 	return func(position, hash []byte) bool {
 		lp := len(position)
