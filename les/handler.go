@@ -584,11 +584,12 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				if err != nil {
 					continue
 				}
-				account, err := pm.getAccount(statedb, header.Root, common.BytesToHash(req.AccKey))
+				addrHash := common.BytesToHash(req.AccKey)
+				account, err := pm.getAccount(statedb, header.Root, addrHash)
 				if err != nil {
 					continue
 				}
-				code, _ := statedb.Database().TrieDB().Node(common.BytesToHash(account.CodeHash))
+				code, _ := statedb.Database().TrieDB().Node(state.ContractCodePosition(addrHash), common.BytesToHash(account.CodeHash))
 
 				data = append(data, code)
 				if bytes += len(code); bytes >= softResponseLimit {
@@ -856,7 +857,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if reject(uint64(reqCnt), MaxHelperTrieProofsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
-		trieDb := trie.NewDatabase(ethdb.NewTable(pm.chainDb, light.ChtTablePrefix))
+		trieDb := trie.NewDatabase(pm.chainDb, []byte(light.ChtTablePrefix))
 		for _, req := range req.Reqs {
 			if header := pm.blockchain.GetHeaderByNumber(req.BlockNum); header != nil {
 				sectionHead := core.GetCanonicalHash(pm.chainDb, req.ChtNum*light.CHTFrequencyServer-1)
@@ -915,7 +916,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 
 				var prefix string
 				if root, prefix = pm.getHelperTrie(req.Type, req.TrieIdx); root != (common.Hash{}) {
-					auxTrie, _ = trie.New(root, trie.NewDatabase(ethdb.NewTable(pm.chainDb, prefix)))
+					auxTrie, _ = trie.New(root, trie.NewDatabase(pm.chainDb, []byte(prefix)))
 				}
 			}
 			if req.AuxReq == auxRoot {

@@ -51,7 +51,7 @@ const (
 	contractStorageSuffix = 6
 )
 
-func contractCodePosition(addrHash common.Hash) []byte {
+func ContractCodePosition(addrHash common.Hash) []byte {
 	return append(addrHash.Bytes(), contractCodeSuffix)
 }
 
@@ -646,7 +646,7 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 // The callback tells if any state trie node, secure trie key preimage, contract code or contract storage
 // trie node is part of the given trie at the given position. The hash tree position encoding of state
 // trie nodes is identical to the general trie node position encoding. For contract code and storage
-// position encoding see contractCodePosition and storageTrieDb.
+// position encoding see ContractCodePosition and storageTrieDb.
 func HasDataCallback(root common.Hash, db ethdb.Database) func(position, hash []byte) bool {
 	t, err := trie.New(root, trie.NewDatabase(db, DbPrefix))
 	if err != nil {
