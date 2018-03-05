@@ -71,23 +71,25 @@ func (t *Trie) ProveHexKey(key []byte, fromLevel uint, proofDb ethdb.Putter) (no
 			panic(fmt.Sprintf("%T: invalid node: %v", tn, tn))
 		}
 	}
-	hasher := newHasher(0, 0, nil)
-	for i, n := range nodes {
-		// Don't bother checking for errors here since hasher panics
-		// if encoding doesn't work and we're not writing to any database.
-		n, _, _ = hasher.hashChildren(n, nil, nil)
-		hn, _ := hasher.store(n, nil, nil, false)
-		if hash, ok := hn.(hashNode); ok || i == 0 {
-			// If the node's database encoding is a hash (or is the
-			// root node), it becomes a proof element.
-			if fromLevel > 0 {
-				fromLevel--
-			} else {
-				enc, _ := rlp.EncodeToBytes(n)
-				if !ok {
-					hash = crypto.Keccak256(enc)
+	if proofDb != nil {
+		hasher := newHasher(0, 0, nil)
+		for i, n := range nodes {
+			// Don't bother checking for errors here since hasher panics
+			// if encoding doesn't work and we're not writing to any database.
+			n, _, _ = hasher.hashChildren(n, nil, nil)
+			hn, _ := hasher.store(n, nil, nil, false)
+			if hash, ok := hn.(hashNode); ok || i == 0 {
+				// If the node's database encoding is a hash (or is the
+				// root node), it becomes a proof element.
+				if fromLevel > 0 {
+					fromLevel--
+				} else {
+					enc, _ := rlp.EncodeToBytes(n)
+					if !ok {
+						hash = crypto.Keccak256(enc)
+					}
+					proofDb.Put(hash, enc)
 				}
-				proofDb.Put(hash, enc)
 			}
 		}
 	}
