@@ -343,8 +343,7 @@ func NewPrivateDebugAPI(config *params.ChainConfig, eth *Ethereum) *PrivateDebug
 
 // Preimage is a debug API function that returns the preimage for a sha3 hash, if known.
 func (api *PrivateDebugAPI) Preimage(ctx context.Context, hash common.Hash) (hexutil.Bytes, error) {
-	db := core.PreimageTable(api.eth.ChainDb())
-	return db.Get(hash.Bytes())
+	return core.GetPreimage(api.eth.ChainDb(), hash)
 }
 
 // GetBadBLocks returns a list of the last 'bad blocks' that the client has seen on the network
