@@ -44,10 +44,13 @@ type DatabaseReader interface {
 // the disk database. The aim is to accumulate trie writes in-memory and only
 // periodically flush a couple tries to disk, garbage collecting the remainder.
 type Database struct {
-	diskdb ethdb.Database // Persistent storage for matured trie nodes
+	*databaseShared
 	prefix []byte
 	reader *hashtree.Reader
+}
 
+type databaseShared struct {
+	diskdb    ethdb.Database              // Persistent storage for matured trie nodes
 	nodes     map[common.Hash]*cachedNode // Data and references relationships of a node
 	preimages map[common.Hash][]byte      // Preimages of nodes from the secure trie
 	seckeybuf [secureKeyLength]byte       // Ephemeral buffer for calculating preimage keys
@@ -74,13 +77,24 @@ type cachedNode struct {
 // its written out to disk or garbage collected.
 func NewDatabase(diskdb ethdb.Database, prefix []byte) *Database {
 	return &Database{
-		diskdb: diskdb,
 		prefix: prefix,
 		reader: hashtree.NewReader(diskdb, string(prefix)),
-		nodes: map[common.Hash]*cachedNode{
-			{}: {children: make(map[common.Hash][][]byte)},
+		databaseShared: &databaseShared{
+			diskdb: diskdb,
+			nodes: map[common.Hash]*cachedNode{
+				{}: {children: make(map[common.Hash][][]byte)},
+			},
+			preimages: make(map[common.Hash][]byte),
 		},
-		preimages: make(map[common.Hash][]byte),
+	}
+}
+
+func (db *Database) ChildDatabase(path []byte) *Database {
+	prefix := append(db.prefix, path...)
+	return &Database{
+		prefix:         prefix,
+		reader:         hashtree.NewReader(db.diskdb, string(prefix)),
+		databaseShared: db.databaseShared,
 	}
 }
 

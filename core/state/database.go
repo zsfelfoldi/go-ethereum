@@ -125,7 +125,7 @@ func (db *cachingDB) pushTrie(t *trie.SecureTrie) {
 
 // OpenStorageTrie opens the storage trie of an account.
 func (db *cachingDB) OpenStorageTrie(addrHash, root common.Hash) (Trie, error) {
-	return trie.NewSecure(root, trie.NewDatabase(db.diskdb, append(DbPrefix, ContractStoragePositionPrefix(addrHash[:])...)), 0)
+	return trie.NewSecure(root, db.db.ChildDatabase(ContractStoragePositionPrefix(addrHash[:])), 0)
 }
 
 // CopyTrie returns an independent copy of the given trie.

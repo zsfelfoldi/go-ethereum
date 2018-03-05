@@ -649,7 +649,8 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 // trie nodes is identical to the general trie node position encoding. For contract code and storage
 // position encoding see ContractCodePosition and storageTrieDb.
 func HasDataCallback(root common.Hash, db ethdb.Database) func(position, hash []byte) bool {
-	t, err := trie.New(root, trie.NewDatabase(db, DbPrefix))
+	trieDb := trie.NewDatabase(db, DbPrefix)
+	t, err := trie.New(root, trieDb)
 	if err != nil {
 		panic(err)
 	}
@@ -681,7 +682,7 @@ func HasDataCallback(root common.Hash, db ethdb.Database) func(position, hash []
 		}
 
 		// it is a storage trie node, check in the storage trie
-		st, err := trie.New(data.Root, trie.NewDatabase(db, append(DbPrefix, ContractStoragePositionPrefix(addrHash)...)))
+		st, err := trie.New(data.Root, trieDb.ChildDatabase(ContractStoragePositionPrefix(addrHash[:])))
 		if err != nil {
 			return false
 		}
