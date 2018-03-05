@@ -133,7 +133,7 @@ func (db *Database) Node(prefix []byte, hash common.Hash) ([]byte, error) {
 		return node.blob, nil
 	}
 	// Content unavailable in memory, attempt to retrieve from disk
-	return db.reader.Get(hexToHashTreePos(prefix), hash[:])
+	return db.reader.Get(prefix, hash[:])
 }
 
 // preimage retrieves a cached trie node pre-image from memory. If it cannot be
