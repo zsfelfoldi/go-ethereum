@@ -476,3 +476,29 @@ func (t *Trie) hashRoot(db *Database, onleaf LeafCallback) (node, node, error) {
 	defer returnHasherToPool(h)
 	return h.hash(t.root, db, nil, true)
 }
+
+// HasData checks whether a trie node or the entry belonging to a secure trie key
+// preimage is present in the trie
+func (t *Trie) HasData(position, hash []byte) bool {
+	secTrieKey := len(position) > 0 && position[len(position)-1] == secTrieKeySuffix
+	if secTrieKey && (len(position) != len(hash)+1 || !bytes.Equal(position[:len(hash)], hash)) {
+		// position for a secure trie key is always hash + htSecTrieKeySuffix
+		return false
+	}
+	hex := hashTreePosToHex(position)
+	//fmt.Println("pos", position, "hex", hex, "hash", hash)
+	n, err := t.ProveHexKey(hex, 0, nil)
+	if n == nil || err != nil {
+		return false
+	}
+	if secTrieKey {
+		// for secure trie keys we only care about whether the given trie contains an
+		// entry at that key, regardless of its contents
+		return true
+	}
+	hasher := newHasher(0, 0, nil)
+	n, _, _ = hasher.hashChildren(n, nil, nil)
+	hn, _ := hasher.store(n, nil, nil, false)
+	nodeHash, ok := hn.(hashNode)
+	return ok && bytes.Equal(nodeHash, hash)
+}
