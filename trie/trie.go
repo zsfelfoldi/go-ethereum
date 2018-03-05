@@ -434,7 +434,7 @@ func (t *Trie) resolveHash(n hashNode, prefix []byte) (node, error) {
 
 	hash := common.BytesToHash(n)
 
-	enc, err := t.db.Node(prefix, hash)
+	enc, err := t.db.Node(hexToHashTreePos(prefix), hash)
 	if err != nil || enc == nil {
 		return nil, &MissingNodeError{NodeHash: hash, Path: prefix}
 	}
