@@ -253,6 +253,7 @@ func (s *TrieSync) children(req *request, object node) ([]*request, error) {
 	type child struct {
 		node  node
 		depth int
+		path  []byte
 	}
 	children := []child{}
 
@@ -261,6 +262,7 @@ func (s *TrieSync) children(req *request, object node) ([]*request, error) {
 		children = []child{{
 			node:  node.Val,
 			depth: req.depth + len(node.Key),
+			path:  node.Key,
 		}}
 	case *fullNode:
 		for i := 0; i < 17; i++ {
@@ -268,6 +270,7 @@ func (s *TrieSync) children(req *request, object node) ([]*request, error) {
 				children = append(children, child{
 					node:  node.Children[i],
 					depth: req.depth + 1,
+					path:  []byte{byte(i)},
 				})
 			}
 		}
@@ -280,7 +283,7 @@ func (s *TrieSync) children(req *request, object node) ([]*request, error) {
 		// Notify any external watcher of a new key/value node
 		if req.callback != nil {
 			if node, ok := (child.node).(valueNode); ok {
-				if err := req.callback(node, req.hash); err != nil {
+				if err := req.callback(node, req.hash, child.path); err != nil {
 					return nil, err
 				}
 			}

@@ -196,7 +196,7 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 
 	bc.gc = hashtree.NewGarbageCollector(db, []byte(state.DbPrefix), bc.hasDataCallback)
 
-	/*headBlock := bc.currentBlock.NumberU64()
+	/*headBlock := bc.CurrentBlock().NumberU64()
 	if headBlock > 1000 {
 		bc.gc.FullGC(headBlock - 1000)
 	}*/

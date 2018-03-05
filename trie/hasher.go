@@ -185,7 +185,11 @@ func (h *hasher) store(n node, db *Database, prefix []byte, force bool) (node, e
 		switch n := n.(type) {
 		case *shortNode:
 			if child, ok := n.Val.(hashNode); ok {
-				db.reference(common.BytesToHash(child), hash, n.Key)
+				path := compactToHex(n.Key)
+				if hasTerm(path) {
+					path = path[:len(path)-1]
+				}
+				db.reference(common.BytesToHash(child), hash, path)
 			}
 		case *fullNode:
 			for i := 0; i < 16; i++ {
@@ -201,12 +205,16 @@ func (h *hasher) store(n node, db *Database, prefix []byte, force bool) (node, e
 			switch n := n.(type) {
 			case *shortNode:
 				if child, ok := n.Val.(valueNode); ok {
-					h.onleaf(child, hash)
+					path := compactToHex(n.Key)
+					if hasTerm(path) {
+						path = path[:len(path)-1]
+					}
+					h.onleaf(child, hash, path)
 				}
 			case *fullNode:
 				for i := 0; i < 16; i++ {
 					if child, ok := n.Children[i].(valueNode); ok {
-						h.onleaf(child, hash)
+						h.onleaf(child, hash, []byte{byte(i)})
 					}
 				}
 			}

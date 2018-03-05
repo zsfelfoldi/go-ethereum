@@ -114,11 +114,15 @@ func hasTerm(s []byte) bool {
 }
 
 func hexToHashTreePos(hex []byte) []byte {
-	terminator := byte(0)
-	if hasTerm(hex) {
-		terminator = 2
-		hex = hex[:len(hex)-1]
+	if len(hex) > 0 && hex[len(hex)-1] == 255 {
+		//fmt.Println("decode", hex, "len", len(hex))
+		hex = hex[:(len(hex)-1)/2*2]
+		buf := make([]byte, len(hex)/2)
+		decodeNibbles(hex, buf)
+		return buf
 	}
+
+	terminator := byte(0)
 	buf := make([]byte, len(hex)/2+1)
 	if len(hex)&1 == 1 {
 		terminator += hex[len(hex)-1]<<4 + 1

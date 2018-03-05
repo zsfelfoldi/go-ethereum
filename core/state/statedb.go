@@ -624,18 +624,18 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 		delete(s.stateObjectsDirty, addr)
 	}
 	// Write trie changes.
-	root, err = s.trie.Commit(func(leaf []byte, parent common.Hash) error {
+	root, err = s.trie.Commit(func(leaf []byte, parent common.Hash, path []byte) error {
 		var account Account
 		if err := rlp.DecodeBytes(leaf, &account); err != nil {
 			return nil
 		}
 		if account.Root != emptyState {
-			fmt.Printf("LeafCallback %x %x\n", parent, account.Root)
-			s.db.TrieDB().Reference(account.Root, parent, []byte{0, contractStorageSuffix})
+			//fmt.Printf("LeafCallback %x %x %x\n", parent, account.Root, path)
+			s.db.TrieDB().Reference(account.Root, parent, append(path, []byte{0, contractStorageSuffix}...))
 		}
 		code := common.BytesToHash(account.CodeHash)
 		if code != emptyCode {
-			s.db.TrieDB().Reference(code, parent, []byte{0, contractCodeSuffix})
+			s.db.TrieDB().Reference(code, parent, append(path, []byte{0, contractCodeSuffix, 255}...))
 		}
 		return nil
 	})

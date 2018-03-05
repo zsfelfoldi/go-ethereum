@@ -18,7 +18,7 @@ package trie
 
 import (
 	"bytes"
-	"fmt"
+	//"fmt"
 	"sync"
 	"time"
 
@@ -150,9 +150,9 @@ func (db *Database) Node(prefix []byte, hash common.Hash) ([]byte, error) {
 	// Content unavailable in memory, attempt to retrieve from disk
 
 	data, err := db.reader.Get(prefix, hash[:])
-	if err != nil {
+	/*if err != nil {
 		fmt.Printf("missing %x at prefix %x + %x\n", hash[:], db.prefix, prefix)
-	}
+	}*/
 	return data, err
 }
 
@@ -277,7 +277,7 @@ func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *ha
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
 	// by only uncaching existing data when the database write finalizes.
-	fmt.Println("Commit")
+	//fmt.Println("Commit")
 
 	db.lock.RLock()
 
@@ -357,7 +357,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 			}
 		}
 	}
-	fmt.Printf("write %x %x\n", hexToHashTreePos(path), hash[:])
+	//fmt.Printf("write %x %x\n", hexToHashTreePos(path), hash[:])
 
 	if err := writer.Put(hexToHashTreePos(path), hash[:], node.blob); err != nil {
 		return err
