@@ -223,7 +223,7 @@ func (db *Database) dereference(child common.Hash, parent common.Hash, path []by
 		}
 	}
 	if pos != -1 {
-		path = append(path[:pos], path[pos+1:]...)
+		paths = append(paths[:pos], paths[pos+1:]...)
 	} else {
 		log.Error("Failed to dereference trie node (unknown path)")
 	}
