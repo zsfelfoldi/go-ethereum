@@ -630,11 +630,12 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 			return nil
 		}
 		if account.Root != emptyState {
-			s.db.TrieDB().Reference(account.Root, parent, []byte{contractStorageSuffix})
+			fmt.Printf("LeafCallback %x %x\n", parent, account.Root)
+			s.db.TrieDB().Reference(account.Root, parent, []byte{0, contractStorageSuffix})
 		}
 		code := common.BytesToHash(account.CodeHash)
 		if code != emptyCode {
-			s.db.TrieDB().Reference(code, parent, []byte{contractCodeSuffix})
+			s.db.TrieDB().Reference(code, parent, []byte{0, contractCodeSuffix})
 		}
 		return nil
 	})
