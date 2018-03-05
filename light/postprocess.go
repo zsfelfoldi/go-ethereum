@@ -138,7 +138,7 @@ func NewChtIndexer(db ethdb.Database, clientMode bool) *core.ChainIndexer {
 	idb := ethdb.NewTable(db, "chtIndex-")
 	backend := &ChtIndexerBackend{
 		diskdb:      db,
-		triedb:      trie.NewDatabase(ethdb.NewTable(db, ChtTablePrefix)),
+		triedb:      trie.NewDatabase(db, []byte(ChtTablePrefix)),
 		sectionSize: sectionSize,
 	}
 	return core.NewChainIndexer(db, idb, backend, sectionSize, confirmReq, time.Millisecond*100, "cht")
@@ -177,7 +177,7 @@ func (c *ChtIndexerBackend) Commit() error {
 	if err != nil {
 		return err
 	}
-	c.triedb.Commit(root, false)
+	c.triedb.Commit(root, false, c.section, nil)
 
 	if ((c.section+1)*c.sectionSize)%CHTFrequencyClient == 0 {
 		log.Info("Storing CHT", "section", c.section*c.sectionSize/CHTFrequencyClient, "head", c.lastHash, "root", root)
@@ -225,7 +225,7 @@ type BloomTrieIndexerBackend struct {
 func NewBloomTrieIndexer(db ethdb.Database, clientMode bool) *core.ChainIndexer {
 	backend := &BloomTrieIndexerBackend{
 		diskdb: db,
-		triedb: trie.NewDatabase(ethdb.NewTable(db, BloomTrieTablePrefix)),
+		triedb: trie.NewDatabase(db, []byte(BloomTrieTablePrefix)),
 	}
 	idb := ethdb.NewTable(db, "bltIndex-")
 
@@ -296,7 +296,7 @@ func (b *BloomTrieIndexerBackend) Commit() error {
 	if err != nil {
 		return err
 	}
-	b.triedb.Commit(root, false)
+	b.triedb.Commit(root, false, b.section, nil)
 
 	sectionHead := b.sectionHeads[b.bloomTrieRatio-1]
 	log.Info("Storing bloom trie", "section", b.section, "head", sectionHead, "root", root, "compression", float64(compSize)/float64(decompSize))

@@ -55,7 +55,7 @@ func contractCodePosition(addrHash common.Hash) []byte {
 	return append(addrHash.Bytes(), contractCodeSuffix)
 }
 
-func contractStoragePositionPrefix(addrHash []byte) []byte {
+func ContractStoragePositionPrefix(addrHash []byte) []byte {
 	return append(addrHash, contractStorageSuffix)
 }
 
@@ -680,7 +680,7 @@ func HasDataCallback(root common.Hash, db ethdb.Database) func(position, hash []
 		}
 
 		// it is a storage trie node, check in the storage trie
-		st, err := trie.New(data.Root, trie.NewDatabase(db, append(DbPrefix, contractStoragePositionPrefix(addrHash)...)))
+		st, err := trie.New(data.Root, trie.NewDatabase(db, append(DbPrefix, ContractStoragePositionPrefix(addrHash)...)))
 		if err != nil {
 			return false
 		}
