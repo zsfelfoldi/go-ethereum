@@ -18,6 +18,7 @@ package trie
 
 import (
 	"bytes"
+	"fmt"
 	"sync"
 	"time"
 
@@ -133,7 +134,12 @@ func (db *Database) Node(prefix []byte, hash common.Hash) ([]byte, error) {
 		return node.blob, nil
 	}
 	// Content unavailable in memory, attempt to retrieve from disk
-	return db.reader.Get(prefix, hash[:])
+
+	data, err := db.reader.Get(prefix, hash[:])
+	if err != nil {
+		fmt.Printf("missing %x at prefix %x + %x\n", hash[:], db.prefix, prefix)
+	}
+	return data, err
 }
 
 // preimage retrieves a cached trie node pre-image from memory. If it cannot be
@@ -257,6 +263,8 @@ func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *ha
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
 	// by only uncaching existing data when the database write finalizes.
+	fmt.Println("Commit")
+
 	db.lock.RLock()
 
 	start := time.Now()
@@ -335,6 +343,8 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 			}
 		}
 	}
+	fmt.Printf("write %x %x\n", hexToHashTreePos(path), hash[:])
+
 	if err := writer.Put(hexToHashTreePos(path), hash[:], node.blob); err != nil {
 		return err
 	}
