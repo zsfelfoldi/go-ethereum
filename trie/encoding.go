@@ -129,8 +129,10 @@ func hexToHashTreePos(hex []byte) []byte {
 	return buf
 }
 
+const secTrieKeySuffix = 4
+
 func SecHashTreePos(hash []byte) []byte {
-	return append(hash, 4)
+	return append(hash, secTrieKeySuffix)
 }
 
 func hashTreePosToHex(pos []byte) []byte {

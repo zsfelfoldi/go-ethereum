@@ -35,8 +35,13 @@ import (
 // nodes of the longest existing prefix of the key (at least the root node), ending
 // with the node that proves the absence of the key.
 func (t *Trie) Prove(key []byte, fromLevel uint, proofDb ethdb.Putter) error {
-	// Collect all nodes on the path to key.
 	key = keybytesToHex(key)
+	_, err := t.ProveHexKey(key, fromLevel, proofDb)
+	return err
+}
+
+func (t *Trie) ProveHexKey(key []byte, fromLevel uint, proofDb ethdb.Putter) (node, error) { // Collect all nodes on the path to key.
+	// Collect all nodes on the path to key.
 	nodes := []node{}
 	tn := t.root
 	ptr := 0
@@ -60,7 +65,7 @@ func (t *Trie) Prove(key []byte, fromLevel uint, proofDb ethdb.Putter) error {
 			tn, err = t.resolveHash(n, key[:ptr])
 			if err != nil {
 				log.Error(fmt.Sprintf("Unhandled trie error: %v", err))
-				return err
+				return nil, err
 			}
 		default:
 			panic(fmt.Sprintf("%T: invalid node: %v", tn, tn))
@@ -86,7 +91,7 @@ func (t *Trie) Prove(key []byte, fromLevel uint, proofDb ethdb.Putter) error {
 			}
 		}
 	}
-	return nil
+	return tn, nil
 }
 
 // Prove constructs a merkle proof for key. The result contains all encoded nodes
