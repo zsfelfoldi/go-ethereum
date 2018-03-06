@@ -352,7 +352,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 	}
 	for child, paths := range node.children {
 		for _, p := range paths {
-			if err := db.commit(child, batch, writer, append(path, p...)); err != nil {
+			if err := db.commit(child, batch, writer, concat(path, p...)); err != nil {
 				return err
 			}
 		}
