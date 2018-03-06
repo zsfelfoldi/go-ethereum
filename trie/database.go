@@ -18,7 +18,7 @@ package trie
 
 import (
 	"bytes"
-	//"fmt"
+	"fmt"
 	"sync"
 	"time"
 
@@ -150,9 +150,9 @@ func (db *Database) Node(prefix []byte, hash common.Hash) ([]byte, error) {
 	// Content unavailable in memory, attempt to retrieve from disk
 
 	data, err := db.reader.Get(prefix, hash[:])
-	/*if err != nil {
+	if err != nil {
 		fmt.Printf("missing %x at prefix %x + %x\n", hash[:], db.prefix, prefix)
-	}*/
+	}
 	return data, err
 }
 
@@ -240,16 +240,18 @@ func (db *Database) dereference(child common.Hash, parent common.Hash, path []by
 		}
 	}
 	if pos != -1 {
-		paths = append(paths[:pos], paths[pos+1:]...)
+		l := len(paths)
+		if l == 1 {
+			delete(node.children, child)
+		} else {
+			l--
+			paths[pos] = paths[l]
+			node.children[child] = paths[:l]
+		}
 	} else {
 		log.Error("Failed to dereference trie node (unknown path)")
 	}
 
-	if len(paths) == 0 {
-		delete(node.children, child)
-	} else {
-		node.children[child] = paths
-	}
 	// If the node does not exist, it's a previously committed node.
 	node, ok := db.nodes[child]
 	if !ok {
@@ -282,7 +284,7 @@ func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *ha
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
 	// by only uncaching existing data when the database write finalizes.
-	//fmt.Println("Commit")
+	fmt.Println("Commit")
 
 	db.lock.RLock()
 
@@ -355,7 +357,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 			}
 		}
 	}
-	//fmt.Printf("write %x %x\n", hexToHashTreePos(path), hash[:])
+	//fmt.Printf("write %x %x %x\n", hexToHashTreePos(path), hash[:], node.blob)
 
 	if err := writer.Put(hexToHashTreePos(path), hash[:], node.blob); err != nil {
 		return err
