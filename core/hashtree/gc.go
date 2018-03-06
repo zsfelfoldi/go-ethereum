@@ -183,6 +183,8 @@ func (g *GarbageCollector) gcEntry(key []byte, refkeys [][]byte) {
 
 // FullGC iterates through the entire database and removes all garbage
 func (g *GarbageCollector) FullGC(version uint64) {
+	return
+
 	g.gcVersion = version
 	for {
 		g.gcVersionHasData = g.hasData(g.gcVersion)
@@ -216,6 +218,8 @@ func (g *GarbageCollector) FullGC(version uint64) {
 // Note: pause does not guarantee anything but can be used to usually avoid collision between writes and GC deletions
 // and thereby increase the performance of both processes.
 func (g *GarbageCollector) BackgroundGC(currentVersion func() uint64, pause, stop *int32, wg *sync.WaitGroup) {
+	return
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
