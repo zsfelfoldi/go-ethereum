@@ -273,6 +273,11 @@ func (db *Database) dereference(child common.Hash, parent common.Hash, path []by
 //
 // As a side effect, all pre-images accumulated up to this point are also written.
 func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *hashtree.GarbageCollector) error {
+	if gc != nil {
+		gc.LockWrite()
+		defer gc.UnlockWrite()
+	}
+
 	// Create a database batch to flush persistent data out. It is important that
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
@@ -293,14 +298,7 @@ func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *ha
 			return err
 		}
 		if batch.ValueSize() > ethdb.IdealBatchSize {
-			if gc != nil {
-				gc.LockWrite()
-			}
-			err := batch.Write()
-			if gc != nil {
-				gc.UnlockWrite()
-			}
-			if err != nil {
+			if err := batch.Write(); err != nil {
 				return err
 			}
 			batch.Reset()
@@ -308,7 +306,7 @@ func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *ha
 	}
 	// Move the trie itself into the batch, flushing if enough data is accumulated
 	nodes, storage := len(db.nodes), db.nodesSize+db.preimagesSize
-	if err := db.commit(node, batch, writer, nil, gc); err != nil {
+	if err := db.commit(node, batch, writer, nil); err != nil {
 		log.Error("Failed to commit trie from trie database", "err", err)
 		db.lock.RUnlock()
 		return err
@@ -344,7 +342,7 @@ func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *ha
 }
 
 // commit is the private locked version of Commit.
-func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree.Writer, path []byte, gc *hashtree.GarbageCollector) error {
+func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree.Writer, path []byte) error {
 	// If the node does not exist, it's a previously committed node
 	node, ok := db.nodes[hash]
 	if !ok {
@@ -352,7 +350,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 	}
 	for child, paths := range node.children {
 		for _, p := range paths {
-			if err := db.commit(child, batch, writer, append(path, p...), gc); err != nil {
+			if err := db.commit(child, batch, writer, append(path, p...)); err != nil {
 				return err
 			}
 		}
@@ -364,14 +362,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 	}
 	// If we've reached an optimal match size, commit and start over
 	if batch.ValueSize() >= ethdb.IdealBatchSize {
-		if gc != nil {
-			gc.LockWrite()
-		}
-		err := batch.Write()
-		if gc != nil {
-			gc.UnlockWrite()
-		}
-		if err != nil {
+		if err := batch.Write(); err != nil {
 			return err
 		}
 		batch.Reset()
