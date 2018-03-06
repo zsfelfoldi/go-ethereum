@@ -69,7 +69,7 @@ type databaseShared struct {
 // memory database write layer.
 type cachedNode struct {
 	blob     []byte                   // Cached data block of the trie node
-	parents  int                      // Number of live nodes referencing this one
+	parents  map[string]int           // Number of live nodes referencing this one
 	children map[common.Hash][][]byte // Children referenced by this nodes
 }
 
@@ -119,6 +119,7 @@ func (db *Database) insert(hash common.Hash, blob []byte) {
 	}
 	db.nodes[hash] = &cachedNode{
 		blob:     common.CopyBytes(blob),
+		parents:  make(map[string]int),
 		children: make(map[common.Hash][][]byte),
 	}
 	db.nodesSize += common.StorageSize(common.HashLength + len(blob))
@@ -206,7 +207,7 @@ func (db *Database) reference(child common.Hash, parent common.Hash, path []byte
 	if _, ok = db.nodes[parent].children[child]; ok && parent != (common.Hash{}) {
 		return
 	}
-	node.parents++
+	node.parents[string(path)]++
 	db.nodes[parent].children[child] = append(db.nodes[parent].children[child], path)
 }
 
@@ -258,15 +259,18 @@ func (db *Database) dereference(child common.Hash, parent common.Hash, path []by
 		return
 	}
 	// If there are no more references to the child, delete it and cascade
-	node.parents--
-	if node.parents == 0 {
-		for hash, paths := range node.children {
-			for _, path := range paths {
-				db.dereference(hash, child, path)
+	node.parents[string(path)]--
+	if node.parents[string(path)] == 0 {
+		delete(node.parents, string(path))
+		if len(node.parents) == 0 {
+			for hash, paths := range node.children {
+				for _, path := range paths {
+					db.dereference(hash, child, path)
+				}
 			}
+			delete(db.nodes, child)
+			db.nodesSize -= common.StorageSize(common.HashLength + len(node.blob))
 		}
-		delete(db.nodes, child)
-		db.nodesSize -= common.StorageSize(common.HashLength + len(node.blob))
 	}
 }
 
@@ -328,7 +332,7 @@ func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *ha
 	db.preimages = make(map[common.Hash][]byte)
 	db.preimagesSize = 0
 
-	db.uncache(node)
+	db.uncache(node, nil)
 
 	logger := log.Info
 	if !report {
@@ -376,15 +380,24 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 // persisted trie is removed from the cache. The reason behind the two-phase
 // commit is to ensure consistent data availability while moving from memory
 // to disk.
-func (db *Database) uncache(hash common.Hash) {
+func (db *Database) uncache(hash common.Hash, path []byte) {
+	return
+
 	// If the node does not exist, we're done on this path
 	node, ok := db.nodes[hash]
 	if !ok {
 		return
 	}
+	delete(node.parents, string(path))
+	if len(node.parents) != 0 {
+		return
+	}
+
 	// Otherwise uncache the node's subtries and remove the node itself too
-	for child := range node.children {
-		db.uncache(child)
+	for child, paths := range node.children {
+		for _, p := range paths {
+			db.uncache(child, concat(path, p...))
+		}
 	}
 	delete(db.nodes, hash)
 	db.nodesSize -= common.StorageSize(common.HashLength + len(node.blob))
