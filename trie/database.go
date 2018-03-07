@@ -401,16 +401,17 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 	return nil
 }
 
-func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[common.Hash]bool) bool {
+func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[common.Hash][]byte) bool {
 	fmt.Printf("*")
-	if unique, ok := cached[hash]; ok {
+	if p, ok := cached[hash]; ok {
+		unique := bytes.Equal(p, path)
 		fmt.Printf("unique %x %x %v (cached)\n", hash[:], path, unique)
 		return unique
 	}
 	// If the node does not exist, there is no other reference path
 	node, ok := db.nodes[hash]
 	if !ok {
-		cached[hash] = true
+		cached[hash] = common.CopyBytes(path)
 		fmt.Printf("unique %x %x true (missing node)\n", hash[:], path)
 		return true
 	}
@@ -436,7 +437,7 @@ func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[common.
 
 		}
 	}
-	cached[hash] = true
+	cached[hash] = common.CopyBytes(path)
 	fmt.Printf("unique %x %x true\n", hash[:], path)
 	return true
 }
@@ -445,9 +446,9 @@ func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[common.
 // persisted trie is removed from the cache. The reason behind the two-phase
 // commit is to ensure consistent data availability while moving from memory
 // to disk.
-func (db *Database) uncache(hash, parent common.Hash, path []byte, cachedUniquePath map[common.Hash]bool) {
+func (db *Database) uncache(hash, parent common.Hash, path []byte, cachedUniquePath map[common.Hash][]byte) {
 	if cachedUniquePath == nil {
-		cachedUniquePath = make(map[common.Hash]bool)
+		cachedUniquePath = make(map[common.Hash][]byte)
 	}
 
 	// If the node does not exist, we're done on this path
