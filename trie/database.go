@@ -69,7 +69,7 @@ type databaseShared struct {
 // memory database write layer.
 type cachedNode struct {
 	blob     []byte                   // Cached data block of the trie node
-	parents  map[string]int           // Number of live nodes referencing this one
+	parents  map[common.Hash]int      // Number of live nodes referencing this one
 	children map[common.Hash][][]byte // Children referenced by this nodes
 }
 
@@ -119,7 +119,7 @@ func (db *Database) insert(hash common.Hash, blob []byte) {
 	}
 	db.nodes[hash] = &cachedNode{
 		blob:     common.CopyBytes(blob),
-		parents:  make(map[string]int),
+		parents:  make(map[common.Hash]int),
 		children: make(map[common.Hash][][]byte),
 	}
 	db.nodesSize += common.StorageSize(common.HashLength + len(blob))
@@ -207,7 +207,7 @@ func (db *Database) reference(child common.Hash, parent common.Hash, path []byte
 	if _, ok = db.nodes[parent].children[child]; ok && parent != (common.Hash{}) {
 		return
 	}
-	node.parents[string(path)]++
+	node.parents[parent]++
 	db.nodes[parent].children[child] = append(db.nodes[parent].children[child], path)
 }
 
@@ -259,9 +259,9 @@ func (db *Database) dereference(child common.Hash, parent common.Hash, path []by
 		return
 	}
 	// If there are no more references to the child, delete it and cascade
-	node.parents[string(path)]--
-	if node.parents[string(path)] == 0 {
-		delete(node.parents, string(path))
+	node.parents[parent]--
+	if node.parents[parent] == 0 {
+		delete(node.parents, parent)
 		if len(node.parents) == 0 {
 			for hash, paths := range node.children {
 				for _, path := range paths {
@@ -332,7 +332,7 @@ func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *ha
 	db.preimages = make(map[common.Hash][]byte)
 	db.preimagesSize = 0
 
-	db.uncache(node, nil)
+	db.uncache(node, nil, nil)
 
 	logger := log.Info
 	if !report {
@@ -361,7 +361,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 			}
 		}
 	}
-	//fmt.Printf("write %x %x %x\n", hexToHashTreePos(path), hash[:], node.blob)
+	fmt.Printf("write %x %x %x\n", hexToHashTreePos(path), hash[:], node.blob)
 
 	if err := writer.Put(hexToHashTreePos(path), hash[:], node.blob); err != nil {
 		return err
@@ -376,27 +376,82 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 	return nil
 }
 
+func (db *Database) uniquePath(hash common.Hash, path []byte, checked map[common.Hash]bool) bool {
+	fmt.Printf("*")
+	if unique, ok := checked[hash]; ok {
+		fmt.Printf("unique %x %x %v (cached)\n", hash[:], path, unique)
+		return unique
+	}
+	// If the node does not exist, there is no other reference path
+	node, ok := db.nodes[hash]
+	if !ok {
+		checked[hash] = true
+		fmt.Printf("unique %x %x true (missing node)\n", hash[:], path)
+		return true
+	}
+	for parentHash, _ := range node.parents {
+		fmt.Printf("p")
+		if parent, ok := db.nodes[parentHash]; ok {
+			parentPaths := parent.children[hash]
+
+			if len(parentPaths) == 0 {
+				fmt.Printf("0 ")
+			} else {
+				fmt.Printf("%d %x %x | ", len(parentPaths), parentPaths[0], path[len(path)-len(parentPaths[0]):])
+			}
+
+			if len(parentPaths) != 1 ||
+				len(parentPaths[0]) > len(path) ||
+				!bytes.Equal(parentPaths[0], path[len(path)-len(parentPaths[0]):]) ||
+				!db.uniquePath(parentHash, path[:len(path)-len(parentPaths[0])], checked) {
+				checked[hash] = false
+				fmt.Printf("unique %x %x false\n", hash[:], path)
+				return false
+			}
+
+		}
+	}
+	checked[hash] = true
+	fmt.Printf("unique %x %x true\n", hash[:], path)
+	return true
+}
+
 // uncache is the post-processing step of a commit operation where the already
 // persisted trie is removed from the cache. The reason behind the two-phase
 // commit is to ensure consistent data availability while moving from memory
 // to disk.
-func (db *Database) uncache(hash common.Hash, path []byte) {
-	return
+func (db *Database) uncache(hash common.Hash, path []byte, checkedUniquePath map[common.Hash]bool) {
+	if checkedUniquePath == nil {
+		checkedUniquePath = make(map[common.Hash]bool)
+	}
 
 	// If the node does not exist, we're done on this path
 	node, ok := db.nodes[hash]
 	if !ok {
 		return
 	}
-	delete(node.parents, string(path))
-	if len(node.parents) != 0 {
+
+	/*	fmt.Printf("uncache %x %x ", hash[:], path)
+		for parent, _ := range node.parents {
+			fmt.Printf("p %x ", parent[:])
+		}
+		fmt.Println()*/
+
+	if !db.uniquePath(hash, path, checkedUniquePath) {
 		return
 	}
 
 	// Otherwise uncache the node's subtries and remove the node itself too
 	for child, paths := range node.children {
+
+		if c, ok := db.nodes[child]; ok {
+			if c.parents[hash] != len(paths) {
+				fmt.Printf("ref mismatch %x %x %d %d\n", hash, child, len(paths), c.parents[hash])
+			}
+		}
+
 		for _, p := range paths {
-			db.uncache(child, concat(path, p...))
+			db.uncache(child, concat(path, p...), checkedUniquePath)
 		}
 	}
 	delete(db.nodes, hash)
