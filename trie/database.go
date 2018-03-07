@@ -73,6 +73,52 @@ type cachedNode struct {
 	children map[common.Hash][][]byte // Children referenced by this nodes
 }
 
+func (c *cachedNode) addParent(hash common.Hash) {
+	c.parents[hash]++
+}
+
+func (c *cachedNode) removeParent(hash common.Hash) {
+	c.parents[hash]--
+	if c.parents[hash] == 0 {
+		delete(c.parents, hash)
+	}
+}
+
+func (c *cachedNode) addChild(child common.Hash, path []byte) bool {
+	paths := c.children[child]
+	for _, p := range paths {
+		if bytes.Equal(path, p) {
+			return false
+		}
+	}
+	c.children[child] = append(paths, path)
+	return true
+}
+
+func (c *cachedNode) removeChild(child common.Hash, path []byte) bool {
+	paths := c.children[child]
+	pos := -1
+	for i, p := range paths {
+		if bytes.Equal(path, p) {
+			pos = i
+			break
+		}
+	}
+	if pos != -1 {
+		l := len(paths)
+		if l == 1 {
+			delete(c.children, child)
+		} else {
+			l--
+			paths[pos] = paths[l]
+			c.children[child] = paths[:l]
+		}
+		return true
+	}
+	log.Error("Failed to dereference trie node (unknown path)")
+	return false
+}
+
 // NewDatabase creates a new trie database to store ephemeral trie content before
 // its written out to disk or garbage collected.
 func NewDatabase(diskdb ethdb.Database, prefix []byte) *Database {
@@ -203,12 +249,9 @@ func (db *Database) reference(child common.Hash, parent common.Hash, path []byte
 	if !ok {
 		return
 	}
-	// If the reference already exists, only duplicate for roots
-	if _, ok = db.nodes[parent].children[child]; ok && parent != (common.Hash{}) {
-		return
+	if db.nodes[parent].addChild(child, path) {
+		node.addParent(parent)
 	}
-	node.parents[parent]++
-	db.nodes[parent].children[child] = append(db.nodes[parent].children[child], path)
 }
 
 // Dereference removes an existing reference from a parent node to a child node.
@@ -230,47 +273,23 @@ func (db *Database) Dereference(child common.Hash, parent common.Hash, path []by
 // dereference is the private locked version of Dereference.
 func (db *Database) dereference(child common.Hash, parent common.Hash, path []byte) {
 	// Dereference the parent-child
-	node := db.nodes[parent]
-
-	paths := node.children[child]
-	pos := -1
-	for i, p := range paths {
-		if bytes.Equal(path, p) {
-			pos = i
-			break
-		}
-	}
-	if pos != -1 {
-		l := len(paths)
-		if l == 1 {
-			delete(node.children, child)
-		} else {
-			l--
-			paths[pos] = paths[l]
-			node.children[child] = paths[:l]
-		}
-	} else {
-		log.Error("Failed to dereference trie node (unknown path)")
-	}
+	db.nodes[parent].removeChild(child, path)
 
 	// If the node does not exist, it's a previously committed node.
 	node, ok := db.nodes[child]
 	if !ok {
 		return
 	}
+	node.removeParent(parent)
 	// If there are no more references to the child, delete it and cascade
-	node.parents[parent]--
-	if node.parents[parent] == 0 {
-		delete(node.parents, parent)
-		if len(node.parents) == 0 {
-			for hash, paths := range node.children {
-				for _, path := range paths {
-					db.dereference(hash, child, path)
-				}
+	if len(node.parents) == 0 {
+		for hash, paths := range node.children {
+			for _, path := range paths {
+				db.dereference(hash, child, path)
 			}
-			delete(db.nodes, child)
-			db.nodesSize -= common.StorageSize(common.HashLength + len(node.blob))
 		}
+		delete(db.nodes, child)
+		db.nodesSize -= common.StorageSize(common.HashLength + len(node.blob))
 	}
 }
 
@@ -332,7 +351,7 @@ func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *ha
 	db.preimages = make(map[common.Hash][]byte)
 	db.preimagesSize = 0
 
-	db.uncache(node, nil, nil)
+	db.uncache(node, common.Hash{}, nil, nil)
 
 	logger := log.Info
 	if !report {
@@ -376,16 +395,16 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 	return nil
 }
 
-func (db *Database) uniquePath(hash common.Hash, path []byte, checked map[common.Hash]bool) bool {
+func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[common.Hash]bool) bool {
 	fmt.Printf("*")
-	if unique, ok := checked[hash]; ok {
+	if unique, ok := cached[hash]; ok {
 		fmt.Printf("unique %x %x %v (cached)\n", hash[:], path, unique)
 		return unique
 	}
 	// If the node does not exist, there is no other reference path
 	node, ok := db.nodes[hash]
 	if !ok {
-		checked[hash] = true
+		cached[hash] = true
 		fmt.Printf("unique %x %x true (missing node)\n", hash[:], path)
 		return true
 	}
@@ -403,15 +422,15 @@ func (db *Database) uniquePath(hash common.Hash, path []byte, checked map[common
 			if len(parentPaths) != 1 ||
 				len(parentPaths[0]) > len(path) ||
 				!bytes.Equal(parentPaths[0], path[len(path)-len(parentPaths[0]):]) ||
-				!db.uniquePath(parentHash, path[:len(path)-len(parentPaths[0])], checked) {
-				checked[hash] = false
+				!db.uniquePath(parentHash, path[:len(path)-len(parentPaths[0])], cached) {
+				cached[hash] = false
 				fmt.Printf("unique %x %x false\n", hash[:], path)
 				return false
 			}
 
 		}
 	}
-	checked[hash] = true
+	cached[hash] = true
 	fmt.Printf("unique %x %x true\n", hash[:], path)
 	return true
 }
@@ -420,9 +439,9 @@ func (db *Database) uniquePath(hash common.Hash, path []byte, checked map[common
 // persisted trie is removed from the cache. The reason behind the two-phase
 // commit is to ensure consistent data availability while moving from memory
 // to disk.
-func (db *Database) uncache(hash common.Hash, path []byte, checkedUniquePath map[common.Hash]bool) {
-	if checkedUniquePath == nil {
-		checkedUniquePath = make(map[common.Hash]bool)
+func (db *Database) uncache(hash, parent common.Hash, path []byte, cachedUniquePath map[common.Hash]bool) {
+	if cachedUniquePath == nil {
+		cachedUniquePath = make(map[common.Hash]bool)
 	}
 
 	// If the node does not exist, we're done on this path
@@ -437,7 +456,8 @@ func (db *Database) uncache(hash common.Hash, path []byte, checkedUniquePath map
 		}
 		fmt.Println()*/
 
-	if !db.uniquePath(hash, path, checkedUniquePath) {
+	if !db.uniquePath(hash, path, cachedUniquePath) {
+		node.removeParent(parent)
 		return
 	}
 
@@ -451,9 +471,15 @@ func (db *Database) uncache(hash common.Hash, path []byte, checkedUniquePath map
 		}
 
 		for _, p := range paths {
-			db.uncache(child, concat(path, p...), checkedUniquePath)
+			db.uncache(child, hash, concat(path, p...), cachedUniquePath)
 		}
 	}
+
+	// Remove child refs from parents
+	for parent, _ := range node.parents {
+		delete(db.nodes[parent].children, hash)
+	}
+
 	delete(db.nodes, hash)
 	db.nodesSize -= common.StorageSize(common.HashLength + len(node.blob))
 }
