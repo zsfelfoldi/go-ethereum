@@ -18,7 +18,7 @@ package trie
 
 import (
 	"bytes"
-	"fmt"
+	//"fmt"
 	"sync"
 	"time"
 
@@ -197,9 +197,9 @@ func (db *Database) Node(prefix []byte, hash common.Hash) ([]byte, error) {
 	// Content unavailable in memory, attempt to retrieve from disk
 
 	data, err := db.reader.Get(prefix, hash[:])
-	if err != nil {
+	/*if err != nil {
 		fmt.Printf("missing %x at prefix %x + %x\n", hash[:], db.prefix, prefix)
-	}
+	}*/
 	return data, err
 }
 
@@ -245,18 +245,18 @@ func (db *Database) Reference(child common.Hash, parent common.Hash, path []byte
 // reference is the private locked version of Reference.
 func (db *Database) reference(child common.Hash, parent common.Hash, path []byte) {
 	// If the node does not exist, it's a node pulled from disk, skip
-	fmt.Printf("+ref %x %x %x ", parent[:], child[:], path)
+	//fmt.Printf("+ref %x %x %x ", parent[:], child[:], path)
 	node, ok := db.nodes[child]
 	if !ok {
-		fmt.Println("(child missing)")
+		//fmt.Println("(child missing)")
 		return
 	}
 	if db.nodes[parent].addChild(child, path) {
 		node.addParent(parent)
-		fmt.Println("(added)")
-	} else {
+		//fmt.Println("(added)")
+	} /* else {
 		fmt.Println("(already exists)")
-	}
+	}*/
 }
 
 // Dereference removes an existing reference from a parent node to a child node.
@@ -277,7 +277,7 @@ func (db *Database) Dereference(child common.Hash, parent common.Hash, path []by
 
 // dereference is the private locked version of Dereference.
 func (db *Database) dereference(child common.Hash, parent common.Hash, path []byte) {
-	fmt.Printf("-ref %x %x %x\n", parent[:], child[:], path)
+	//fmt.Printf("-ref %x %x %x\n", parent[:], child[:], path)
 	// Dereference the parent-child
 	db.nodes[parent].removeChild(child, path)
 
@@ -313,7 +313,7 @@ func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *ha
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
 	// by only uncaching existing data when the database write finalizes.
-	fmt.Println("Commit")
+	//fmt.Println("Commit")
 
 	db.lock.RLock()
 
@@ -386,7 +386,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 			}
 		}
 	}
-	fmt.Printf("write %x %x %x\n", hexToHashTreePos(path), hash[:], node.blob)
+	//fmt.Printf("write %x %x %x\n", hexToHashTreePos(path), hash[:], node.blob)
 
 	if err := writer.Put(hexToHashTreePos(path), hash[:], node.blob); err != nil {
 		return err
@@ -402,28 +402,28 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 }
 
 func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[common.Hash][]byte) bool {
-	fmt.Printf("*")
+	//fmt.Printf("*")
 	if p, ok := cached[hash]; ok {
 		unique := bytes.Equal(p, path)
-		fmt.Printf("unique %x %x %v (cached)\n", hash[:], path, unique)
+		//fmt.Printf("unique %x %x %v (cached)\n", hash[:], path, unique)
 		return unique
 	}
 	// If the node does not exist, there is no other reference path
 	node, ok := db.nodes[hash]
 	if !ok {
 		cached[hash] = common.CopyBytes(path)
-		fmt.Printf("unique %x %x true (missing node)\n", hash[:], path)
+		//fmt.Printf("unique %x %x true (missing node)\n", hash[:], path)
 		return true
 	}
 	for parentHash, _ := range node.parents {
-		fmt.Printf("p")
+		//fmt.Printf("p")
 		if parent, ok := db.nodes[parentHash]; ok {
 			parentPaths := parent.children[hash]
 
 			if len(parentPaths) == 0 {
-				fmt.Printf("0 ")
+				//fmt.Printf("0 ")
 			} else {
-				fmt.Printf("%d %x %x | ", len(parentPaths), parentPaths[0], path[len(path)-len(parentPaths[0]):])
+				//fmt.Printf("%d %x %x | ", len(parentPaths), parentPaths[0], path[len(path)-len(parentPaths[0]):])
 			}
 
 			if len(parentPaths) != 1 ||
@@ -431,14 +431,14 @@ func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[common.
 				!bytes.Equal(parentPaths[0], path[len(path)-len(parentPaths[0]):]) ||
 				!db.uniquePath(parentHash, path[:len(path)-len(parentPaths[0])], cached) {
 				//cached[hash] = false
-				fmt.Printf("unique %x %x false\n", hash[:], path)
+				//fmt.Printf("unique %x %x false\n", hash[:], path)
 				return false
 			}
 
 		}
 	}
 	cached[hash] = common.CopyBytes(path)
-	fmt.Printf("unique %x %x true\n", hash[:], path)
+	//fmt.Printf("unique %x %x true\n", hash[:], path)
 	return true
 }
 
@@ -457,12 +457,6 @@ func (db *Database) uncache(hash, parent common.Hash, path []byte, cachedUniqueP
 		return
 	}
 
-	/*	fmt.Printf("uncache %x %x ", hash[:], path)
-		for parent, _ := range node.parents {
-			fmt.Printf("p %x ", parent[:])
-		}
-		fmt.Println()*/
-
 	if !db.uniquePath(hash, path, cachedUniquePath) {
 		node.removeParent(parent)
 		return
@@ -473,7 +467,7 @@ func (db *Database) uncache(hash, parent common.Hash, path []byte, cachedUniqueP
 
 		if c, ok := db.nodes[child]; ok {
 			if c.parents[hash] != len(paths) {
-				fmt.Printf("ref mismatch %x %x %d %d\n", hash, child, len(paths), c.parents[hash])
+				//fmt.Printf("ref mismatch %x %x %d %d\n", hash, child, len(paths), c.parents[hash])
 			}
 		}
 
