@@ -245,12 +245,17 @@ func (db *Database) Reference(child common.Hash, parent common.Hash, path []byte
 // reference is the private locked version of Reference.
 func (db *Database) reference(child common.Hash, parent common.Hash, path []byte) {
 	// If the node does not exist, it's a node pulled from disk, skip
+	fmt.Printf("+ref %x %x %x ", parent[:], child[:], path)
 	node, ok := db.nodes[child]
 	if !ok {
+		fmt.Println("(child missing)")
 		return
 	}
 	if db.nodes[parent].addChild(child, path) {
 		node.addParent(parent)
+		fmt.Println("(added)")
+	} else {
+		fmt.Println("(already exists)")
 	}
 }
 
@@ -272,6 +277,7 @@ func (db *Database) Dereference(child common.Hash, parent common.Hash, path []by
 
 // dereference is the private locked version of Dereference.
 func (db *Database) dereference(child common.Hash, parent common.Hash, path []byte) {
+	fmt.Printf("-ref %x %x %x\n", parent[:], child[:], path)
 	// Dereference the parent-child
 	db.nodes[parent].removeChild(child, path)
 
@@ -423,7 +429,7 @@ func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[common.
 				len(parentPaths[0]) > len(path) ||
 				!bytes.Equal(parentPaths[0], path[len(path)-len(parentPaths[0]):]) ||
 				!db.uniquePath(parentHash, path[:len(path)-len(parentPaths[0])], cached) {
-				cached[hash] = false
+				//cached[hash] = false
 				fmt.Printf("unique %x %x false\n", hash[:], path)
 				return false
 			}
