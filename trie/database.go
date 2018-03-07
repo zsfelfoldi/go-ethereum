@@ -24,6 +24,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/hashtree"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 )
@@ -115,7 +116,7 @@ func (c *cachedNode) removeChild(child common.Hash, path []byte) bool {
 		}
 		return true
 	}
-	log.Error("Failed to dereference trie node (unknown path)")
+	//log.Error("Failed to dereference trie node (unknown path)")
 	return false
 }
 
@@ -183,6 +184,8 @@ func (db *Database) insertPreimage(hash common.Hash, preimage []byte) {
 	db.preimagesSize += common.StorageSize(common.HashLength + len(preimage))
 }
 
+var nullHash = crypto.Keccak256Hash(nil)
+
 // Node retrieves a cached trie node from memory. If it cannot be found cached,
 // the method queries the persistent database for the content.
 func (db *Database) Node(prefix []byte, hash common.Hash) ([]byte, error) {
@@ -193,6 +196,10 @@ func (db *Database) Node(prefix []byte, hash common.Hash) ([]byte, error) {
 
 	if node != nil {
 		return node.blob, nil
+	}
+
+	if hash == nullHash {
+		return nil, nil
 	}
 	// Content unavailable in memory, attempt to retrieve from disk
 
