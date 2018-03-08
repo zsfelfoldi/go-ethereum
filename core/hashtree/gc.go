@@ -183,8 +183,6 @@ func (g *GarbageCollector) gcEntry(key []byte, refkeys [][]byte) {
 
 // FullGC iterates through the entire database and removes all garbage
 func (g *GarbageCollector) FullGC(version uint64) {
-	return
-
 	g.gcVersion = version
 	for {
 		g.gcVersionHasData = g.hasData(g.gcVersion)
