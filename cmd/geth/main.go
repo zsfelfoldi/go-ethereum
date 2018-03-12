@@ -156,6 +156,7 @@ func init() {
 		initCommand,
 		importCommand,
 		exportCommand,
+		iterateCommand,
 		copydbCommand,
 		removedbCommand,
 		dumpCommand,
