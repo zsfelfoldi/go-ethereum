@@ -408,17 +408,21 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, writer *hashtree
 	return nil
 }
 
-func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[common.Hash][]byte) bool {
+func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[int]map[common.Hash]struct{}) bool {
 	//fmt.Printf("*")
-	if p, ok := cached[hash]; ok {
-		unique := bytes.Equal(p, path)
-		//fmt.Printf("unique %x %x %v (cached)\n", hash[:], path, unique)
-		return unique
+	if c, ok := cached[len(path)]; ok {
+		if _, ok := c[hash]; ok {
+			//fmt.Printf("unique %x %x %v (cached)\n", hash[:], path, unique)
+			return true
+		}
 	}
 	// If the node does not exist, there is no other reference path
 	node, ok := db.nodes[hash]
 	if !ok {
-		cached[hash] = common.CopyBytes(path)
+		if cached[len(path)] == nil {
+			cached[len(path)] = make(map[common.Hash]struct{})
+		}
+		cached[len(path)][hash] = struct{}{}
 		//fmt.Printf("unique %x %x true (missing node)\n", hash[:], path)
 		return true
 	}
@@ -444,7 +448,10 @@ func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[common.
 
 		}
 	}
-	cached[hash] = common.CopyBytes(path)
+	if cached[len(path)] == nil {
+		cached[len(path)] = make(map[common.Hash]struct{})
+	}
+	cached[len(path)][hash] = struct{}{}
 	//fmt.Printf("unique %x %x true\n", hash[:], path)
 	return true
 }
@@ -453,16 +460,17 @@ func (db *Database) uniquePath(hash common.Hash, path []byte, cached map[common.
 // persisted trie is removed from the cache. The reason behind the two-phase
 // commit is to ensure consistent data availability while moving from memory
 // to disk.
-func (db *Database) uncache(hash, parent common.Hash, path []byte, cachedUniquePath map[common.Hash][]byte) {
-	if cachedUniquePath == nil {
-		cachedUniquePath = make(map[common.Hash][]byte)
-	}
-
+func (db *Database) uncache(hash, parent common.Hash, path []byte, cachedUniquePath map[int]map[common.Hash]struct{}) {
 	// If the node does not exist, we're done on this path
 	node, ok := db.nodes[hash]
 	if !ok {
 		return
 	}
+
+	if cachedUniquePath == nil {
+		cachedUniquePath = make(map[int]map[common.Hash]struct{})
+	}
+	defer delete(cachedUniquePath, len(path))
 
 	if !db.uniquePath(hash, path, cachedUniquePath) {
 		node.removeParent(parent)
