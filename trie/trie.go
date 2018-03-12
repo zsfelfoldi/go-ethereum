@@ -228,7 +228,7 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		// If the whole key matches, keep this short node as is
 		// and only update the value.
 		if matchlen == len(n.Key) {
-			dirty, nn, err := t.insert(n.Val, concat(prefix, key[:matchlen]...), key[matchlen:], value)
+			dirty, nn, err := t.insert(n.Val, append(prefix, key[:matchlen]...), key[matchlen:], value)
 			if !dirty || err != nil {
 				return false, n, err
 			}
@@ -237,11 +237,11 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		// Otherwise branch out at the index where they differ.
 		branch := &fullNode{flags: t.newFlag()}
 		var err error
-		_, branch.Children[n.Key[matchlen]], err = t.insert(nil, concat(prefix, n.Key[:matchlen+1]...), n.Key[matchlen+1:], n.Val)
+		_, branch.Children[n.Key[matchlen]], err = t.insert(nil, append(prefix, n.Key[:matchlen+1]...), n.Key[matchlen+1:], n.Val)
 		if err != nil {
 			return false, nil, err
 		}
-		_, branch.Children[key[matchlen]], err = t.insert(nil, concat(prefix, key[:matchlen+1]...), key[matchlen+1:], value)
+		_, branch.Children[key[matchlen]], err = t.insert(nil, append(prefix, key[:matchlen+1]...), key[matchlen+1:], value)
 		if err != nil {
 			return false, nil, err
 		}
@@ -253,7 +253,7 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		return true, &shortNode{key[:matchlen], branch, t.newFlag()}, nil
 
 	case *fullNode:
-		dirty, nn, err := t.insert(n.Children[key[0]], concat(prefix, key[0]), key[1:], value)
+		dirty, nn, err := t.insert(n.Children[key[0]], append(prefix, key[0]), key[1:], value)
 		if !dirty || err != nil {
 			return false, n, err
 		}
@@ -320,7 +320,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 		// from the subtrie. Child can never be nil here since the
 		// subtrie must contain at least two other values with keys
 		// longer than n.Key.
-		dirty, child, err := t.delete(n.Val, concat(prefix, key[:len(n.Key)]...), key[len(n.Key):])
+		dirty, child, err := t.delete(n.Val, append(prefix, key[:len(n.Key)]...), key[len(n.Key):])
 		if !dirty || err != nil {
 			return false, n, err
 		}
@@ -374,7 +374,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 				// shortNode{..., shortNode{...}}.  Since the entry
 				// might not be loaded yet, resolve it just for this
 				// check.
-				cnode, err := t.resolve(n.Children[pos], concat(prefix, byte(pos)))
+				cnode, err := t.resolve(n.Children[pos], append(prefix, byte(pos)))
 				if err != nil {
 					return false, nil, err
 				}
