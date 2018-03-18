@@ -25,7 +25,23 @@ import (
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 )
 
-const testRequestCost = 1000
+type testLoadPeer struct {
+	fcServer *flowcontrol.ServerNode
+}
+
+func (p *testLoadPeer) waitBefore(maxCost uint64) (time.Duration, float64) {
+	return p.fcServer.CanSend(maxCost)
+}
+
+func (p *testLoadPeer) canQueue() bool {
+	return true
+}
+
+func (p *testLoadPeer) queueSend(f func()) {
+	f()
+}
+
+const testRequestCost = 1000000
 
 func TestLoadBalance(t *testing.T) {
 	quit := make(chan struct{})
@@ -39,8 +55,9 @@ func TestLoadBalance(t *testing.T) {
 
 	fcClient := flowcontrol.NewClientNode(fcManager, params)
 	fcServer := flowcontrol.NewServerNode(params)
-	peers := newPeerSet()
-	dist := newRequestDistributor(peers, quit)
+	dist := newRequestDistributor(nil, quit)
+	peer := &testLoadPeer{fcServer: fcServer}
+	dist.registerTestPeer(peer)
 
 	serveCh := make(chan uint64, 1000)
 	go func() {
@@ -63,7 +80,7 @@ func TestLoadBalance(t *testing.T) {
 
 	expCh := make(chan struct{}, 100)
 	go func() {
-		for cnt := 0; cnt < 5000; {
+		for cnt := 0; cnt < 1000; {
 			select {
 			case expCh <- struct{}{}:
 				reqID := genReqID()
@@ -87,7 +104,7 @@ func TestLoadBalance(t *testing.T) {
 					if <-sentCh != nil {
 						cnt++
 					} else {
-						time.Sleep(time.Millisecond)
+						time.Sleep(time.Microsecond * 100)
 					}
 					<-expCh
 				}()
