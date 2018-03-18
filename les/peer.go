@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
@@ -65,6 +66,10 @@ type peer struct {
 
 	announceChn chan announceData
 	sendQueue   *execQueue
+
+	errCh         chan error
+	responseLock  sync.Mutex
+	responseCount uint64
 
 	poolEntry      *poolEntry
 	hasBlock       func(common.Hash, uint64, bool) bool
@@ -482,7 +487,7 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 			return err
 		}
 		p.fcServerParams = params
-		p.fcServer = flowcontrol.NewServerNode(params)
+		p.fcServer = flowcontrol.NewServerNode(params, &mclock.System{})
 		p.fcCosts = MRC.decode()
 	}
 
