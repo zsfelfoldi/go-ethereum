@@ -18,7 +18,7 @@
 package mclock
 
 import (
-	"runtime"
+	//"runtime"
 	"sync"
 	"time"
 )
@@ -38,15 +38,25 @@ func NewSimulatedClock() *SimulatedClock {
 	s := &SimulatedClock{}
 
 	go func() {
+		lastScheduled := 0
 		for {
-			runtime.Gosched()
+			/*for i := 0; i < 1000; i++ {
+				runtime.Gosched()
+			}*/
+			time.Sleep(time.Microsecond * 10)
 			s.lock.Lock()
-			if len(s.scheduled) > 0 {
+			scheduled := len(s.scheduled)
+			if scheduled > 0 && scheduled == lastScheduled {
 				ev := s.scheduled[0]
-				s.scheduled = s.scheduled[1:]
-				s.now = ev.at
-				ev.do()
+				if ev.at <= s.now+AbsTime(time.Millisecond) {
+					s.scheduled = s.scheduled[1:]
+					s.now = ev.at
+					ev.do()
+				} else {
+					s.now += AbsTime(time.Millisecond)
+				}
 			}
+			lastScheduled = scheduled
 			s.lock.Unlock()
 		}
 	}()
