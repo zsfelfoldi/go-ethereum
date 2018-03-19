@@ -19,9 +19,11 @@
 package les
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 )
 
@@ -44,12 +46,16 @@ func (p *testLoadPeer) queueSend(f func()) {
 const testRequestCost = 1000000
 
 func TestLoadBalance(t *testing.T) {
+	clock := mclock.NewSimulatedClock()
+	flowcontrol.Clock = clock
+	distClock = clock
+
 	quit := make(chan struct{})
 	//defer close(quit)
 
-	fcManager := flowcontrol.NewClientManager(50, 10, 1000000000)
+	fcManager := flowcontrol.NewClientManager(25, 10, 1000000000)
 	params := &flowcontrol.ServerParams{
-		BufLimit:    300000000,
+		BufLimit:    30000000,
 		MinRecharge: 50000,
 	}
 
@@ -69,8 +75,9 @@ func TestLoadBalance(t *testing.T) {
 					recharge := time.Duration((testRequestCost - bufValue) * 1000000 / params.MinRecharge)
 					t.Errorf("Request came too early (%v)", recharge)
 				}
-				time.Sleep(time.Millisecond)
+				clock.Sleep(time.Millisecond)
 				bvAfter, _ := fcClient.RequestProcessed(testRequestCost) // realCost
+				//fmt.Println(bvAfter / 1000000)
 				fcServer.GotReply(reqID, bvAfter)
 			case <-quit:
 				return
@@ -80,7 +87,8 @@ func TestLoadBalance(t *testing.T) {
 
 	expCh := make(chan struct{}, 100)
 	go func() {
-		for cnt := 0; cnt < 1000; {
+		//start := time.Now()
+		for cnt := 0; cnt < 10000; cnt++ {
 			select {
 			case expCh <- struct{}{}:
 				reqID := genReqID()
@@ -99,12 +107,12 @@ func TestLoadBalance(t *testing.T) {
 					},
 				}
 
+				//fmt.Println(cnt, " ", time.Since(start))
 				sentCh := dist.queue(rq)
 				go func() {
 					if <-sentCh != nil {
-						cnt++
 					} else {
-						time.Sleep(time.Microsecond * 100)
+						//time.Sleep(time.Microsecond * 100)
 					}
 					<-expCh
 				}()
@@ -116,4 +124,5 @@ func TestLoadBalance(t *testing.T) {
 	}()
 
 	<-quit
+	fmt.Println(clock.Now())
 }

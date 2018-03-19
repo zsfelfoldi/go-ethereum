@@ -99,7 +99,7 @@ func (self *ClientManager) Stop() {
 }
 
 func (self *ClientManager) addNode(cnode *ClientNode) *cmNode {
-	time := mclock.Now()
+	time := Clock.Now()
 	node := &cmNode{
 		node:           cnode,
 		lastUpdate:     time,
@@ -110,7 +110,7 @@ func (self *ClientManager) addNode(cnode *ClientNode) *cmNode {
 	defer self.lock.Unlock()
 
 	self.nodes[node] = struct{}{}
-	self.update(mclock.Now())
+	self.update(Clock.Now())
 	return node
 }
 
@@ -118,7 +118,7 @@ func (self *ClientManager) removeNode(node *cmNode) {
 	self.lock.Lock()
 	defer self.lock.Unlock()
 
-	time := mclock.Now()
+	time := Clock.Now()
 	self.stop(node, time)
 	delete(self.nodes, node)
 	self.update(time)
@@ -171,9 +171,9 @@ func (self *ClientManager) canStartReq() bool {
 func (self *ClientManager) queueProc() {
 	for rc := range self.resumeQueue {
 		for {
-			time.Sleep(time.Millisecond * 10)
+			Clock.Sleep(time.Millisecond * 10)
 			self.lock.Lock()
-			self.update(mclock.Now())
+			self.update(Clock.Now())
 			cs := self.canStartReq()
 			self.lock.Unlock()
 			if cs {

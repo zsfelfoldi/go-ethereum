@@ -28,3 +28,23 @@ type AbsTime time.Duration // absolute monotonic time
 func Now() AbsTime {
 	return AbsTime(monotime.Now())
 }
+
+type Clock interface {
+	Now() AbsTime
+	Sleep(time.Duration)
+	After(time.Duration) <-chan time.Time
+}
+
+type MonotonicClock struct{}
+
+func (MonotonicClock) Now() AbsTime {
+	return AbsTime(monotime.Now())
+}
+
+func (MonotonicClock) Sleep(d time.Duration) {
+	time.Sleep(d)
+}
+
+func (MonotonicClock) After(d time.Duration) <-chan time.Time {
+	return time.After(d)
+}

@@ -24,6 +24,8 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
+var Clock mclock.Clock = mclock.MonotonicClock{}
+
 const fcTimeConst = time.Millisecond
 
 type ServerParams struct {
@@ -44,7 +46,7 @@ func NewClientNode(cm *ClientManager, params *ServerParams) *ClientNode {
 		cm:       cm,
 		params:   params,
 		bufValue: params.BufLimit,
-		lastTime: mclock.Now(),
+		lastTime: Clock.Now(),
 	}
 	node.cmNode = cm.addNode(node)
 	return node
@@ -70,7 +72,7 @@ func (peer *ClientNode) AcceptRequest() (uint64, bool) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
-	time := mclock.Now()
+	time := Clock.Now()
 	peer.recalcBV(time)
 	return peer.bufValue, peer.cm.accept(peer.cmNode, time)
 }
@@ -79,7 +81,7 @@ func (peer *ClientNode) RequestProcessed(cost uint64) (bv, realCost uint64) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
-	time := mclock.Now()
+	time := Clock.Now()
 	peer.recalcBV(time)
 	peer.bufValue -= cost
 	peer.recalcBV(time)
@@ -105,7 +107,7 @@ type ServerNode struct {
 func NewServerNode(params *ServerParams) *ServerNode {
 	return &ServerNode{
 		bufEstimate: params.BufLimit,
-		lastTime:    mclock.Now(),
+		lastTime:    Clock.Now(),
 		params:      params,
 		pending:     make(map[uint64]uint64),
 	}
@@ -127,7 +129,7 @@ func (peer *ServerNode) recalcBLE(time mclock.AbsTime) {
 const safetyMargin = time.Millisecond
 
 func (peer *ServerNode) canSend(maxCost uint64) (time.Duration, float64) {
-	peer.recalcBLE(mclock.Now())
+	peer.recalcBLE(Clock.Now())
 	maxCost += uint64(safetyMargin) * peer.params.MinRecharge / uint64(fcTimeConst)
 	if maxCost > peer.params.BufLimit {
 		maxCost = peer.params.BufLimit
@@ -180,5 +182,5 @@ func (peer *ServerNode) GotReply(reqID, bv uint64) {
 	if bv > cc {
 		peer.bufEstimate = bv - cc
 	}
-	peer.lastTime = mclock.Now()
+	peer.lastTime = Clock.Now()
 }

@@ -23,7 +23,11 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common/mclock"
 )
+
+var distClock mclock.Clock = mclock.MonotonicClock{}
 
 // ErrNoPeers is returned if no peers capable of serving a queued request are available
 var ErrNoPeers = errors.New("no suitable peers available")
@@ -150,7 +154,7 @@ func (d *requestDistributor) loop() {
 						wait = distMaxWait
 					}
 					go func() {
-						time.Sleep(wait)
+						distClock.Sleep(wait)
 						d.loopChn <- struct{}{}
 					}()
 					break loop
