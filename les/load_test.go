@@ -27,6 +27,8 @@ import (
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 )
 
+var testClock mclock.Clock
+
 type testLoadPeer struct {
 	fcServer *flowcontrol.ServerNode
 }
@@ -43,12 +45,47 @@ func (p *testLoadPeer) queueSend(f func()) {
 	f()
 }
 
+type testLoadTask struct {
+	procTime time.Duration
+	finished chan struct{}
+}
+
+type testLoadServer struct {
+	queue chan testLoadTask
+}
+
+func newTestLoadServer(threads int, quit chan struct{}) *testLoadServer {
+	s := &testLoadServer{
+		queue: make(chan testLoadTask, 10000),
+	}
+	for i := 0; i < threads; i++ {
+		go func() {
+			for {
+				select {
+				case task := <-s.queue:
+					testClock.Sleep(task.procTime)
+					close(task.finished)
+				case <-quit:
+					return
+				}
+			}
+		}()
+	}
+	return s
+}
+
+func (s *testLoadServer) processTask(procTime time.Duration) {
+	finished := make(chan struct{})
+	s.queue <- testLoadTask{procTime: procTime, finished: finished}
+	<-finished
+}
+
 const testRequestCost = 1000000
 
 func TestLoadBalance(t *testing.T) {
-	clock := mclock.NewSimulatedClock()
-	flowcontrol.Clock = clock
-	distClock = clock
+	testClock = mclock.NewSimulatedClock()
+	flowcontrol.Clock = testClock
+	distClock = testClock
 
 	quit := make(chan struct{})
 	//defer close(quit)
@@ -58,6 +95,7 @@ func TestLoadBalance(t *testing.T) {
 		BufLimit:    30000000,
 		MinRecharge: 50000,
 	}
+	server := newTestLoadServer(4, quit)
 
 	fcClient := flowcontrol.NewClientNode(fcManager, params)
 	fcServer := flowcontrol.NewServerNode(params)
@@ -75,7 +113,7 @@ func TestLoadBalance(t *testing.T) {
 					recharge := time.Duration((testRequestCost - bufValue) * 1000000 / params.MinRecharge)
 					t.Errorf("Request came too early (%v)", recharge)
 				}
-				clock.Sleep(time.Microsecond * 500)
+				server.processTask(time.Microsecond * 500)
 				bvAfter, _ := fcClient.RequestProcessed(testRequestCost) // realCost
 				//fmt.Println(bvAfter / 1000000)
 				fcServer.GotReply(reqID, bvAfter)
@@ -124,5 +162,5 @@ func TestLoadBalance(t *testing.T) {
 	}()
 
 	<-quit
-	fmt.Println(clock.Now())
+	fmt.Println(testClock.Now())
 }
