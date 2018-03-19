@@ -53,7 +53,7 @@ func TestLoadBalance(t *testing.T) {
 	quit := make(chan struct{})
 	//defer close(quit)
 
-	fcManager := flowcontrol.NewClientManager(25, 10, 1000000000)
+	fcManager := flowcontrol.NewClientManager(50, 10, 1000000000)
 	params := &flowcontrol.ServerParams{
 		BufLimit:    30000000,
 		MinRecharge: 50000,
@@ -75,7 +75,7 @@ func TestLoadBalance(t *testing.T) {
 					recharge := time.Duration((testRequestCost - bufValue) * 1000000 / params.MinRecharge)
 					t.Errorf("Request came too early (%v)", recharge)
 				}
-				clock.Sleep(time.Millisecond)
+				clock.Sleep(time.Microsecond * 500)
 				bvAfter, _ := fcClient.RequestProcessed(testRequestCost) // realCost
 				//fmt.Println(bvAfter / 1000000)
 				fcServer.GotReply(reqID, bvAfter)
