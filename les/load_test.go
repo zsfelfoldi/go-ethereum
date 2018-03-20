@@ -170,20 +170,21 @@ func (c *testLoadClient) requestsSent() uint64 {
 const testRequestCost = 1000000
 
 const (
-	testClientCount   = 10
-	testServerCount   = 2
-	testServerThreads = 4
+	testClientCount   = 2
+	testServerCount   = 1
+	testServerThreads = 1
 )
 
 func TestLoadBalance(t *testing.T) {
 	quit := make(chan struct{})
 	defer close(quit)
 
+	//testClock = &mclock.MonotonicClock{}
 	testClock = mclock.NewSimulatedClock()
 	flowcontrol.Clock = testClock
 	distClock = testClock
 	params := &flowcontrol.ServerParams{
-		BufLimit:    30000000,
+		BufLimit:    300000000,
 		MinRecharge: 50000,
 	}
 
