@@ -36,6 +36,7 @@ type cmNode struct {
 }
 
 func (node *cmNode) update(time mclock.AbsTime) {
+	//	fmt.Printf("time = %d  node = %v  oldDelta = %d  oldRecharge = %v  ", time, node, node.rcDelta, node.recharging)
 	dt := int64(time - node.lastUpdate)
 	node.rcValue += node.rcDelta * dt / rcConst
 	node.lastUpdate = time
@@ -44,6 +45,7 @@ func (node *cmNode) update(time mclock.AbsTime) {
 		node.rcDelta = 0
 		node.rcValue = 0
 	}
+	//	fmt.Printf("newDelta = %d  newRecharge = %v  value = %d\n", node.rcDelta, node.recharging, node.rcValue)
 }
 
 func (node *cmNode) set(serving bool, simReqCnt, sumWeight uint64) {
@@ -58,10 +60,11 @@ func (node *cmNode) set(serving bool, simReqCnt, sumWeight uint64) {
 	}
 
 	node.rcDelta = 0
+	node.finishRecharge = node.lastUpdate + mclock.AbsTime(time.Second*100000000)
 	if serving {
 		node.rcDelta = int64(rcConst / simReqCnt)
 	}
-	if node.recharging {
+	if node.recharging && simReqCnt == 0 {
 		node.rcDelta = -int64(node.node.cm.rcRecharge * node.rcWeight / sumWeight)
 		node.finishRecharge = node.lastUpdate + mclock.AbsTime(node.rcValue*rcConst/(-node.rcDelta))
 	}

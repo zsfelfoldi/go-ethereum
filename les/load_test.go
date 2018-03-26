@@ -172,7 +172,7 @@ const testRequestCost = 1000000
 const (
 	testClientCount   = 2
 	testServerCount   = 1
-	testServerThreads = 1
+	testServerThreads = 2
 )
 
 func TestLoadBalance(t *testing.T) {
