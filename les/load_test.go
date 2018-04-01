@@ -48,13 +48,13 @@ func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServe
 		for {
 			select {
 			case reqID := <-peer.serveCh:
-				bufValue, _ := peer.fcClient.AcceptRequest()
-				if testRequestCost > bufValue {
-					recharge := time.Duration((testRequestCost - bufValue) * 1000000 / server.params.MinRecharge)
+				ok, bufShort := peer.fcClient.AcceptRequest(testRequestCost)
+				if !ok {
+					recharge := time.Duration(bufShort * 1000000 / server.params.MinRecharge)
 					t.Errorf("Request came too early (%v)", recharge)
 				}
 				server.processTask(time.Microsecond * 500)
-				bvAfter, _ := peer.fcClient.RequestProcessed(testRequestCost)
+				bvAfter, _ := peer.fcClient.RequestProcessed()
 				peer.fcServer.GotReply(reqID, bvAfter)
 			case <-quit:
 				return
@@ -90,7 +90,7 @@ type testLoadServer struct {
 
 func newTestLoadServer(params *flowcontrol.ServerParams, threads int, quit chan struct{}) *testLoadServer {
 	s := &testLoadServer{
-		fcManager: flowcontrol.NewClientManager(50, 10, 1000000000),
+		fcManager: flowcontrol.NewClientManager(16, 4, nil),
 		params:    params,
 		queue:     make(chan testLoadTask, 10000),
 	}

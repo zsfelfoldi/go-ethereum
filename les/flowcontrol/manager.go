@@ -48,8 +48,10 @@ type ClientManager struct {
 
 func NewClientManager(maxParallelReqs int, targetParallelReqs float64, child *ClientManager) *ClientManager {
 	cm := &ClientManager{
-		nodes:              make(map[*ClientNode]struct{}),
-		child:              child,
+		nodes: make(map[*ClientNode]struct{}),
+		child: child,
+		queue: prque.New(),
+
 		maxParallelReqs:    maxParallelReqs,
 		targetParallelReqs: targetParallelReqs,
 		intTimeConst:       1 / float64(time.Second),
