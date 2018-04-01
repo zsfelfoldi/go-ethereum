@@ -97,7 +97,8 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 		BufLimit:    300000000,
 		MinRecharge: 50000,
 	}
-	srv.fcManager = flowcontrol.NewClientManager(uint64(config.LightServ), 10, 1000000000)
+	//srv.fcManager = flowcontrol.NewClientManager(uint64(config.LightServ), 10, 1000000000)
+	srv.fcManager = flowcontrol.NewClientManager(16, 4, nil)
 	srv.fcCostStats = newCostStats(eth.ChainDb())
 	return srv, nil
 }

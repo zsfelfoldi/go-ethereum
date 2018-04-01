@@ -38,7 +38,7 @@ type ClientNode struct {
 	lastTime mclock.AbsTime
 	lock     sync.Mutex
 	cm       *ClientManager
-	cmNode   *cmNode
+	cmNodeFields
 }
 
 func NewClientNode(cm *ClientManager, params *ServerParams) *ClientNode {
@@ -48,12 +48,12 @@ func NewClientNode(cm *ClientManager, params *ServerParams) *ClientNode {
 		bufValue: params.BufLimit,
 		lastTime: Clock.Now(),
 	}
-	node.cmNode = cm.addNode(node)
+	cm.addNode(node)
 	return node
 }
 
 func (peer *ClientNode) Remove(cm *ClientManager) {
-	cm.removeNode(peer.cmNode)
+	cm.removeNode(peer)
 }
 
 func (peer *ClientNode) recalcBV(time mclock.AbsTime) {
@@ -68,30 +68,37 @@ func (peer *ClientNode) recalcBV(time mclock.AbsTime) {
 	peer.lastTime = time
 }
 
-func (peer *ClientNode) AcceptRequest() (uint64, bool) {
+func (peer *ClientNode) AcceptRequest(maxCost uint64) (bool, uint64) {
 	peer.lock.Lock()
-	defer peer.lock.Unlock()
 
 	time := Clock.Now()
 	peer.recalcBV(time)
-	return peer.bufValue, peer.cm.accept(peer.cmNode, time)
-}
+	if maxCost > peer.bufValue {
+		return false, maxCost - peer.bufValue
+	}
+	peer.bufValue -= maxCost
+	ch := peer.cm.accept(peer, maxCost, time)
 
-func (peer *ClientNode) RequestProcessed(cost uint64) (bv, realCost uint64) {
-	peer.lock.Lock()
-	defer peer.lock.Unlock()
-
-	time := Clock.Now()
-	peer.recalcBV(time)
-	peer.bufValue -= cost
-	peer.recalcBV(time)
-	rcValue, rcost := peer.cm.processed(peer.cmNode, time)
-	if rcValue < peer.params.BufLimit {
-		bv := peer.params.BufLimit - rcValue
-		if bv > peer.bufValue {
-			peer.bufValue = bv
+	peer.lock.Unlock()
+	ok := true
+	if ch != nil {
+		ok = <-ch
+		if ok {
+			peer.lock.Lock()
+			peer.cm.started(peer, maxCost, time)
+			peer.lock.Unlock()
 		}
 	}
+	return ok, 0
+}
+
+func (peer *ClientNode) RequestProcessed() (bv, realCost uint64) {
+	peer.lock.Lock()
+	defer peer.lock.Unlock()
+
+	time := Clock.Now()
+	peer.recalcBV(time)
+	rcost := peer.cm.processed(peer, time)
 	return peer.bufValue, rcost
 }
 

@@ -22,206 +22,205 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
+	"gopkg.in/karalabe/cookiejar.v2/collections/prque"
 )
 
-const rcConst = 1000000
-
-type cmNode struct {
-	node                         *ClientNode
-	lastUpdate                   mclock.AbsTime
-	serving, recharging          bool
-	rcWeight                     uint64
-	rcValue, rcDelta, startValue int64
-	finishRecharge               mclock.AbsTime
-}
-
-func (node *cmNode) update(time mclock.AbsTime) {
-	//	fmt.Printf("time = %d  node = %v  oldDelta = %d  oldRecharge = %v  ", time, node, node.rcDelta, node.recharging)
-	dt := int64(time - node.lastUpdate)
-	node.rcValue += node.rcDelta * dt / rcConst
-	node.lastUpdate = time
-	if node.recharging && time >= node.finishRecharge {
-		node.recharging = false
-		node.rcDelta = 0
-		node.rcValue = 0
-	}
-	//	fmt.Printf("newDelta = %d  newRecharge = %v  value = %d\n", node.rcDelta, node.recharging, node.rcValue)
-}
-
-func (node *cmNode) set(serving bool, simReqCnt, sumWeight uint64) {
-	if node.serving && !serving {
-		node.recharging = true
-		sumWeight += node.rcWeight
-	}
-	node.serving = serving
-	if node.recharging && serving {
-		node.recharging = false
-		sumWeight -= node.rcWeight
-	}
-
-	node.rcDelta = 0
-	node.finishRecharge = node.lastUpdate + mclock.AbsTime(time.Second*100000000)
-	if serving {
-		node.rcDelta = int64(rcConst / simReqCnt)
-	}
-	if node.recharging && simReqCnt == 0 {
-		node.rcDelta = -int64(node.node.cm.rcRecharge * node.rcWeight / sumWeight)
-		node.finishRecharge = node.lastUpdate + mclock.AbsTime(node.rcValue*rcConst/(-node.rcDelta))
-	}
+type cmNodeFields struct {
+	servingStarted      mclock.AbsTime
+	servingMaxCost      uint64
+	intValueWhenStarted int64
 }
 
 type ClientManager struct {
-	lock                             sync.Mutex
-	nodes                            map[*cmNode]struct{}
-	simReqCnt, sumWeight, rcSumValue uint64
-	maxSimReq, maxRcSum              uint64
-	rcRecharge                       uint64
-	resumeQueue                      chan chan bool
-	time                             mclock.AbsTime
+	child     *ClientManager
+	lock      sync.RWMutex
+	nodes     map[*ClientNode]struct{}
+	enabledCh chan struct{}
+
+	parallelReqs, maxParallelReqs int
+	targetParallelReqs            float64
+	queue                         *prque.Prque
+
+	intLastUpdate                                 mclock.AbsTime
+	intLimited, intTimeConst, intLimitMax, pConst float64
+	intValue                                      int64
 }
 
-func NewClientManager(rcTarget, maxSimReq, maxRcSum uint64) *ClientManager {
+func NewClientManager(maxParallelReqs int, targetParallelReqs float64, child *ClientManager) *ClientManager {
 	cm := &ClientManager{
-		nodes:       make(map[*cmNode]struct{}),
-		resumeQueue: make(chan chan bool),
-		rcRecharge:  rcConst * rcConst / (100*rcConst/rcTarget - rcConst),
-		maxSimReq:   maxSimReq,
-		maxRcSum:    maxRcSum,
+		nodes:              make(map[*ClientNode]struct{}),
+		child:              child,
+		maxParallelReqs:    maxParallelReqs,
+		targetParallelReqs: targetParallelReqs,
+		intTimeConst:       1 / float64(time.Second),
+		intLimitMax:        5,
+		pConst:             1,
 	}
-	go cm.queueProc()
 	return cm
 }
 
-func (self *ClientManager) Stop() {
-	self.lock.Lock()
-	defer self.lock.Unlock()
-
-	// signal any waiting accept routines to return false
-	self.nodes = make(map[*cmNode]struct{})
-	close(self.resumeQueue)
+func (cm *ClientManager) isEnabled() bool {
+	return cm.enabledCh == nil
 }
 
-func (self *ClientManager) addNode(cnode *ClientNode) *cmNode {
-	time := Clock.Now()
-	node := &cmNode{
-		node:           cnode,
-		lastUpdate:     time,
-		finishRecharge: time,
-		rcWeight:       1,
+func (cm *ClientManager) setEnabled(en bool) {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	if cm.isEnabled() == en {
+		return
 	}
-	self.lock.Lock()
-	defer self.lock.Unlock()
-
-	self.nodes[node] = struct{}{}
-	self.update(Clock.Now())
-	return node
-}
-
-func (self *ClientManager) removeNode(node *cmNode) {
-	self.lock.Lock()
-	defer self.lock.Unlock()
-
-	time := Clock.Now()
-	self.stop(node, time)
-	delete(self.nodes, node)
-	self.update(time)
-}
-
-// recalc sumWeight
-func (self *ClientManager) updateNodes(time mclock.AbsTime) (rce bool) {
-	var sumWeight, rcSum uint64
-	for node := range self.nodes {
-		rc := node.recharging
-		node.update(time)
-		if rc && !node.recharging {
-			rce = true
-		}
-		if node.recharging {
-			sumWeight += node.rcWeight
-		}
-		rcSum += uint64(node.rcValue)
+	if en {
+		close(cm.enabledCh)
+		cm.enabledCh = nil
+	} else {
+		cm.enabledCh = make(chan struct{})
 	}
-	self.sumWeight = sumWeight
-	self.rcSumValue = rcSum
-	return
+	if cm.child != nil && cm.parallelReqs == 0 {
+		cm.child.setEnabled(en)
+	}
 }
 
-func (self *ClientManager) update(time mclock.AbsTime) {
-	for {
-		firstTime := time
-		for node := range self.nodes {
-			if node.recharging && node.finishRecharge < firstTime {
-				firstTime = node.finishRecharge
-			}
+func (cm *ClientManager) setParallelReqs(p int, time mclock.AbsTime) {
+	if p == cm.parallelReqs {
+		return
+	}
+	if cm.child != nil && cm.isEnabled() {
+		if cm.parallelReqs == 0 {
+			cm.child.setEnabled(false)
 		}
-		if self.updateNodes(firstTime) {
-			for node := range self.nodes {
-				if node.recharging {
-					node.set(node.serving, self.simReqCnt, self.sumWeight)
-				}
-			}
-		} else {
-			self.time = time
+		if p == 0 {
+			cm.child.setEnabled(true)
+		}
+	}
+
+	cm.updateIntegrator(time)
+	cm.parallelReqs = p
+}
+
+func (cm *ClientManager) updateIntegrator(time mclock.AbsTime) {
+	dt := time - cm.intLastUpdate
+	a := float64(cm.parallelReqs)/cm.targetParallelReqs - 1
+	adt := a * float64(dt)
+	iOld := cm.intLimited
+	iDiff := adt * cm.intTimeConst
+	iNew := iOld + iDiff
+	cm.intLimited = iNew
+	if cm.intLimited < 0 {
+		cm.intLimited = 0
+	}
+	if cm.intLimited > cm.intLimitMax {
+		cm.intLimited = cm.intLimitMax
+	}
+	triangleCorr := float64(1)
+	if cm.intLimited != iNew && (iDiff > 1e-30 || iDiff < -1e-30) {
+		r := (iNew - cm.intLimited) / iDiff
+		triangleCorr = 1 - r*r
+	}
+	secondInt := (iOld + triangleCorr*iDiff/2) * float64(dt)
+	cm.intValue += int64(secondInt + adt*cm.pConst)
+	cm.intLastUpdate = time
+}
+
+func (cm *ClientManager) waitOrStop(node *ClientNode) bool {
+	cm.lock.RLock()
+	_, ok := cm.nodes[node]
+	stop := !ok
+	ch := cm.enabledCh
+	cm.lock.RUnlock()
+
+	if stop == false && ch != nil {
+		<-ch
+		cm.lock.RLock()
+		_, ok = cm.nodes[node]
+		stop = !ok
+		cm.lock.RUnlock()
+	}
+
+	return stop
+}
+
+func (cm *ClientManager) Stop() {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	cm.nodes = nil
+}
+
+func (cm *ClientManager) addNode(node *ClientNode) {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	if cm.nodes != nil {
+		cm.nodes[node] = struct{}{}
+	}
+}
+
+func (cm *ClientManager) removeNode(node *ClientNode) {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	if cm.nodes != nil {
+		delete(cm.nodes, node)
+	}
+}
+
+func (cm *ClientManager) accept(node *ClientNode, maxCost uint64, time mclock.AbsTime) chan bool {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	if cm.parallelReqs == cm.maxParallelReqs {
+		ch := make(chan bool, 1)
+		start := func() bool {
+			// always called while client manager lock is held
+			_, started := cm.nodes[node]
+			ch <- started
+			return started
+		}
+		cm.queue.Push(start, float32(node.bufValue)/float32(node.params.BufLimit))
+		return ch
+	}
+
+	cm.setParallelReqs(cm.parallelReqs+1, time)
+	node.servingStarted = time
+	node.intValueWhenStarted = cm.intValue
+	node.servingMaxCost = maxCost
+	return nil
+}
+
+func (cm *ClientManager) started(node *ClientNode, maxCost uint64, time mclock.AbsTime) {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	cm.updateIntegrator(time)
+	node.servingStarted = time
+	node.intValueWhenStarted = cm.intValue
+	node.servingMaxCost = maxCost
+}
+
+func (cm *ClientManager) processed(node *ClientNode, time mclock.AbsTime) (realCost uint64) {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	cm.updateIntegrator(time)
+	bvc := cm.intValue - node.intValueWhenStarted
+	if bvc < 0 {
+		bvc = 0
+	}
+	if bvc > int64(node.servingMaxCost) {
+		bvc = int64(node.servingMaxCost)
+	}
+	node.bufValue += uint64(bvc)
+	if node.bufValue > node.params.BufLimit {
+		node.bufValue = node.params.BufLimit
+	}
+
+	realCost = uint64(time - node.servingStarted)
+	for !cm.queue.Empty() {
+		if cm.queue.PopItem().(func() bool)() {
 			return
 		}
 	}
-}
-
-func (self *ClientManager) canStartReq() bool {
-	return self.simReqCnt < self.maxSimReq && self.rcSumValue < self.maxRcSum
-}
-
-func (self *ClientManager) queueProc() {
-	for rc := range self.resumeQueue {
-		for {
-			Clock.Sleep(time.Millisecond * 10)
-			self.lock.Lock()
-			self.update(Clock.Now())
-			cs := self.canStartReq()
-			self.lock.Unlock()
-			if cs {
-				break
-			}
-		}
-		close(rc)
-	}
-}
-
-func (self *ClientManager) accept(node *cmNode, time mclock.AbsTime) bool {
-	self.lock.Lock()
-	defer self.lock.Unlock()
-
-	self.update(time)
-	if !self.canStartReq() {
-		resume := make(chan bool)
-		self.lock.Unlock()
-		self.resumeQueue <- resume
-		<-resume
-		self.lock.Lock()
-		if _, ok := self.nodes[node]; !ok {
-			return false // reject if node has been removed or manager has been stopped
-		}
-	}
-	self.simReqCnt++
-	node.set(true, self.simReqCnt, self.sumWeight)
-	node.startValue = node.rcValue
-	self.update(self.time)
-	return true
-}
-
-func (self *ClientManager) stop(node *cmNode, time mclock.AbsTime) {
-	if node.serving {
-		self.update(time)
-		self.simReqCnt--
-		node.set(false, self.simReqCnt, self.sumWeight)
-		self.update(time)
-	}
-}
-
-func (self *ClientManager) processed(node *cmNode, time mclock.AbsTime) (rcValue, rcCost uint64) {
-	self.lock.Lock()
-	defer self.lock.Unlock()
-
-	self.stop(node, time)
-	return uint64(node.rcValue), uint64(node.rcValue - node.startValue)
+	cm.setParallelReqs(cm.parallelReqs-1, time)
+	return
 }

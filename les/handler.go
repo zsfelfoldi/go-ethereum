@@ -342,18 +342,18 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 	}
 	p.Log().Trace("Light Ethereum message arrived", "code", msg.Code, "bytes", msg.Size)
 
-	costs := p.fcCosts[msg.Code]
 	reject := func(reqCnt, maxCnt uint64) bool {
 		if p.fcClient == nil || reqCnt > maxCnt {
 			return true
 		}
-		bufValue, _ := p.fcClient.AcceptRequest()
+		costs := p.fcCosts[msg.Code]
 		cost := costs.baseCost + reqCnt*costs.reqCost
 		if cost > pm.server.defParams.BufLimit {
 			cost = pm.server.defParams.BufLimit
 		}
-		if cost > bufValue {
-			recharge := time.Duration((cost - bufValue) * 1000000 / pm.server.defParams.MinRecharge)
+
+		if accepted, bufShort := p.fcClient.AcceptRequest(cost); !accepted {
+			recharge := time.Duration(bufShort * 1000000 / pm.server.defParams.MinRecharge)
 			p.Log().Error("Request came too early", "recharge", common.PrettyDuration(recharge))
 			return true
 		}
@@ -476,7 +476,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			}
 		}
 
-		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + query.Amount*costs.reqCost)
+		bv, rcost := p.fcClient.RequestProcessed()
 		pm.server.fcCostStats.update(msg.Code, query.Amount, rcost)
 		return p.SendBlockHeaders(req.ReqID, bv, headers)
 
@@ -533,7 +533,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				bytes += len(data)
 			}
 		}
-		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		bv, rcost := p.fcClient.RequestProcessed()
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
 		return p.SendBlockBodiesRLP(req.ReqID, bv, bodies)
 
@@ -596,7 +596,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 			}
 		}
-		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		bv, rcost := p.fcClient.RequestProcessed()
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
 		return p.SendCode(req.ReqID, bv, data)
 
@@ -659,7 +659,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				bytes += len(encoded)
 			}
 		}
-		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		bv, rcost := p.fcClient.RequestProcessed()
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
 		return p.SendReceiptsRLP(req.ReqID, bv, receipts)
 
@@ -731,7 +731,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 			}
 		}
-		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		bv, rcost := p.fcClient.RequestProcessed()
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
 		return p.SendProofs(req.ReqID, bv, proofs)
 
@@ -791,7 +791,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				break
 			}
 		}
-		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		bv, rcost := p.fcClient.RequestProcessed()
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
 		return p.SendProofsV2(req.ReqID, bv, nodes.NodeList())
 
@@ -878,7 +878,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 			}
 		}
-		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		bv, rcost := p.fcClient.RequestProcessed()
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
 		return p.SendHeaderProofs(req.ReqID, bv, proofs)
 
@@ -939,7 +939,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				break
 			}
 		}
-		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		bv, rcost := p.fcClient.RequestProcessed()
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
 		return p.SendHelperTrieProofs(req.ReqID, bv, HelperTrieResps{Proofs: nodes.NodeList(), AuxData: auxData})
 
@@ -999,7 +999,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		pm.txpool.AddRemotes(txs)
 
-		_, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		_, rcost := p.fcClient.RequestProcessed()
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
 
 	case SendTxV2Msg:
@@ -1034,7 +1034,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			}
 		}
 
-		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		bv, rcost := p.fcClient.RequestProcessed()
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
 
 		return p.SendTxStatus(req.ReqID, bv, stats)
@@ -1055,7 +1055,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if reject(uint64(reqCnt), MaxTxStatus) {
 			return errResp(ErrRequestRejected, "")
 		}
-		bv, rcost := p.fcClient.RequestProcessed(costs.baseCost + uint64(reqCnt)*costs.reqCost)
+		bv, rcost := p.fcClient.RequestProcessed()
 		pm.server.fcCostStats.update(msg.Code, uint64(reqCnt), rcost)
 
 		return p.SendTxStatus(req.ReqID, bv, pm.txStatus(req.Hashes))
