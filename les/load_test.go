@@ -170,9 +170,9 @@ func (c *testLoadClient) requestsSent() uint64 {
 const testRequestCost = 1000000
 
 const (
-	testClientCount   = 2
+	testClientCount   = 4
 	testServerCount   = 1
-	testServerThreads = 2
+	testServerThreads = 10
 )
 
 func TestLoadBalance(t *testing.T) {

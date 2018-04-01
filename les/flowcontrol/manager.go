@@ -212,7 +212,7 @@ func (cm *ClientManager) processed(node *ClientNode, time mclock.AbsTime) (realC
 	if bvc > int64(node.servingMaxCost) {
 		bvc = int64(node.servingMaxCost)
 	}
-	node.bufValue += uint64(bvc)
+	node.bufValue += node.servingMaxCost - uint64(bvc)
 	if node.bufValue > node.params.BufLimit {
 		node.bufValue = node.params.BufLimit
 	}
