@@ -18,6 +18,7 @@
 package flowcontrol
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -41,9 +42,9 @@ type ClientManager struct {
 	targetParallelReqs            float64
 	queue                         *prque.Prque
 
-	intLastUpdate                                 mclock.AbsTime
-	intLimited, intTimeConst, intLimitMax, pConst float64
-	intValue                                      int64
+	intLastUpdate                                      mclock.AbsTime
+	intLog, intTimeConst, intLogMin, intLogMax, pConst float64
+	intValue                                           int64
 }
 
 func NewClientManager(maxParallelReqs int, targetParallelReqs float64, child *ClientManager) *ClientManager {
@@ -54,9 +55,11 @@ func NewClientManager(maxParallelReqs int, targetParallelReqs float64, child *Cl
 
 		maxParallelReqs:    maxParallelReqs,
 		targetParallelReqs: targetParallelReqs,
-		intTimeConst:       1 / float64(time.Second),
-		intLimitMax:        2,
-		pConst:             0.1,
+		intTimeConst:       1 / float64(time.Millisecond*100),
+		intLog:             math.Log(0.01),
+		intLogMin:          math.Log(0.01),
+		intLogMax:          0.5,
+		pConst:             1,
 	}
 	return cm
 }
@@ -101,26 +104,45 @@ func (cm *ClientManager) setParallelReqs(p int, time mclock.AbsTime) {
 }
 
 func (cm *ClientManager) updateIntegrator(time mclock.AbsTime) {
-	dt := time - cm.intLastUpdate
+	dt := float64(time - cm.intLastUpdate)
 	a := float64(cm.parallelReqs)/cm.targetParallelReqs - 1
-	adt := a * float64(dt)
-	iOld := cm.intLimited
-	iDiff := adt * cm.intTimeConst
+	iOld := cm.intLog
+	iDiff := a * dt * cm.intTimeConst
 	iNew := iOld + iDiff
-	cm.intLimited = iNew
-	if cm.intLimited < 0 {
-		cm.intLimited = 0
+	cm.intLog = iNew
+	if cm.intLog < cm.intLogMin {
+		cm.intLog = cm.intLogMin
 	}
-	if cm.intLimited > cm.intLimitMax {
-		cm.intLimited = cm.intLimitMax
+	if cm.intLog > cm.intLogMax {
+		cm.intLog = cm.intLogMax
 	}
-	triangleCorr := float64(1)
-	if cm.intLimited != iNew && (iDiff > 1e-30 || iDiff < -1e-30) {
-		r := (iNew - cm.intLimited) / iDiff
-		triangleCorr = 1 - r*r
+	dtFlat := float64(0)
+	if cm.intLog == iOld {
+		dtFlat = dt
+	} else if cm.intLog != iNew && (iDiff > 1e-30 || iDiff < -1e-30) {
+		dtFlat = (iNew - cm.intLog) * dt / iDiff
 	}
-	secondInt := (iOld + triangleCorr*iDiff/2) * float64(dt)
-	cm.intValue += int64(secondInt + adt*cm.pConst)
+
+	pCorr := a * cm.pConst
+	iOld += pCorr
+	iNew = cm.intLog + pCorr
+	// l(t) goes from iOld to iNew in (dt-dtFlat) time, then has a flat section with the length of dtFlat
+	// we are looking for int(e^l(t))
+	expInt := float64(0)
+	expNew := math.Exp(iNew)
+	iDiff = iNew - iOld
+	if dtFlat != dt {
+		if iDiff > 1e-3 || iDiff < -1e-3 {
+			expInt = (expNew - math.Exp(iOld)) * (dt - dtFlat) / iDiff
+		} else {
+			expInt = (expNew + math.Exp(iOld)) * (dt - dtFlat) / 2
+		}
+	}
+	if dtFlat > 0 {
+		expInt += dtFlat * expNew
+	}
+
+	cm.intValue += int64(expInt)
 	cm.intLastUpdate = time
 }
 
@@ -129,7 +151,7 @@ func (cm *ClientManager) GetIntegratorValues() (float64, int64) {
 	defer cm.lock.Unlock()
 
 	cm.updateIntegrator(Clock.Now())
-	return cm.intLimited, cm.intValue
+	return cm.intLog, cm.intValue
 }
 
 func (cm *ClientManager) waitOrStop(node *ClientNode) bool {

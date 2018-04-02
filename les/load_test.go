@@ -180,8 +180,8 @@ func (c *testLoadClient) requestsSent() uint64 {
 
 const (
 	testRequestCost  = 3000000
-	testClientCount  = 20
-	testServerCount  = 2
+	testClientCount  = 10
+	testServerCount  = 1
 	testMessageDelay = time.Millisecond * 200
 )
 
