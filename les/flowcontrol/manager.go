@@ -55,8 +55,8 @@ func NewClientManager(maxParallelReqs int, targetParallelReqs float64, child *Cl
 		maxParallelReqs:    maxParallelReqs,
 		targetParallelReqs: targetParallelReqs,
 		intTimeConst:       1 / float64(time.Second),
-		intLimitMax:        5,
-		pConst:             1,
+		intLimitMax:        2,
+		pConst:             0.1,
 	}
 	return cm
 }
@@ -122,6 +122,14 @@ func (cm *ClientManager) updateIntegrator(time mclock.AbsTime) {
 	secondInt := (iOld + triangleCorr*iDiff/2) * float64(dt)
 	cm.intValue += int64(secondInt + adt*cm.pConst)
 	cm.intLastUpdate = time
+}
+
+func (cm *ClientManager) GetIntegratorValues() (float64, int64) {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	cm.updateIntegrator(Clock.Now())
+	return cm.intLimited, cm.intValue
 }
 
 func (cm *ClientManager) waitOrStop(node *ClientNode) bool {

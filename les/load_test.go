@@ -20,6 +20,7 @@ package les
 
 import (
 	"fmt"
+	"math/rand"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,7 +45,16 @@ func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServe
 	}
 	client.dist.registerTestPeer(peer)
 
+	type reply struct {
+		time      mclock.AbsTime
+		reqID, bv uint64
+	}
+	replyCh := make(chan reply, 1000)
+
 	go func() {
+		avgServeTime := time.Millisecond
+		randMax := avgServeTime * 2
+
 		for {
 			select {
 			case reqID := <-peer.serveCh:
@@ -53,9 +63,27 @@ func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServe
 					recharge := time.Duration(bufShort * 1000000 / server.params.MinRecharge)
 					t.Errorf("Request came too early (%v)", recharge)
 				}
-				server.processTask(time.Microsecond * 500)
+				//testClock.Sleep(time.Microsecond * 500)
+				serveTime := time.Duration(rand.Int63n(int64(randMax)))
+				randMax += (avgServeTime - serveTime) / 16
+				testClock.Sleep(serveTime)
 				bvAfter, _ := peer.fcClient.RequestProcessed()
-				peer.fcServer.GotReply(reqID, bvAfter)
+				replyCh <- reply{testClock.Now(), reqID, bvAfter}
+			case <-quit:
+				return
+			}
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case reply := <-replyCh:
+				wait := time.Duration(reply.time-testClock.Now()) + testMessageDelay
+				if wait > 0 {
+					testClock.Sleep(wait)
+				}
+				peer.fcServer.GotReply(reply.reqID, reply.bv)
 			case <-quit:
 				return
 			}
@@ -85,35 +113,18 @@ type testLoadTask struct {
 type testLoadServer struct {
 	fcManager *flowcontrol.ClientManager
 	params    *flowcontrol.ServerParams
-	queue     chan testLoadTask
 }
 
-func newTestLoadServer(params *flowcontrol.ServerParams, threads int, quit chan struct{}) *testLoadServer {
+func newTestLoadServer(params *flowcontrol.ServerParams, quit chan struct{}) *testLoadServer {
 	s := &testLoadServer{
 		fcManager: flowcontrol.NewClientManager(16, 4, nil),
 		params:    params,
-		queue:     make(chan testLoadTask, 10000),
 	}
-	for i := 0; i < threads; i++ {
-		go func() {
-			for {
-				select {
-				case task := <-s.queue:
-					testClock.Sleep(task.procTime)
-					close(task.finished)
-				case <-quit:
-					return
-				}
-			}
-		}()
-	}
+	go func() {
+		<-quit
+		s.fcManager.Stop()
+	}()
 	return s
-}
-
-func (s *testLoadServer) processTask(procTime time.Duration) {
-	finished := make(chan struct{})
-	s.queue <- testLoadTask{procTime: procTime, finished: finished}
-	<-finished
 }
 
 type testLoadClient struct {
@@ -167,12 +178,11 @@ func (c *testLoadClient) requestsSent() uint64 {
 	return atomic.LoadUint64(&c.count)
 }
 
-const testRequestCost = 1000000
-
 const (
-	testClientCount   = 4
-	testServerCount   = 1
-	testServerThreads = 10
+	testRequestCost  = 3000000
+	testClientCount  = 20
+	testServerCount  = 2
+	testMessageDelay = time.Millisecond * 200
 )
 
 func TestLoadBalance(t *testing.T) {
@@ -194,8 +204,25 @@ func TestLoadBalance(t *testing.T) {
 	}
 	servers := make([]*testLoadServer, testServerCount)
 	for i, _ := range servers {
-		servers[i] = newTestLoadServer(params, testServerThreads, quit)
+		servers[i] = newTestLoadServer(params, quit)
 	}
+
+	go func() {
+		i := 0
+		lastInt := make([]int64, len(servers))
+		for {
+			fmt.Printf("%d :  ", i)
+			for i, s := range servers {
+				il, iv := s.fcManager.GetIntegratorValues()
+				id := iv - lastInt[i]
+				lastInt[i] = iv
+				fmt.Printf("| %7.4f   %7.4f  ", il, (float64(id)/10000000-il)*40)
+			}
+			fmt.Println()
+			testClock.Sleep(time.Millisecond * 10)
+			i++
+		}
+	}()
 
 	for _, client := range clients {
 		for _, server := range servers {
@@ -212,7 +239,7 @@ func TestLoadBalance(t *testing.T) {
 	for i, client := range clients {
 		s[i] = client.requestsSent()
 	}
-	testClock.Sleep(time.Second * 10)
+	testClock.Sleep(time.Second * 15)
 	for i, client := range clients {
 		diff := client.requestsSent() - s[i]
 		fmt.Println(i, " ", diff)
