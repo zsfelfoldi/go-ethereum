@@ -207,7 +207,7 @@ func TestLoadBalance(t *testing.T) {
 		servers[i] = newTestLoadServer(params, quit)
 	}
 
-	go func() {
+	/*go func() {
 		i := 0
 		lastInt := make([]int64, len(servers))
 		for {
@@ -222,7 +222,7 @@ func TestLoadBalance(t *testing.T) {
 			testClock.Sleep(time.Millisecond * 10)
 			i++
 		}
-	}()
+	}()*/
 
 	for _, client := range clients {
 		for _, server := range servers {

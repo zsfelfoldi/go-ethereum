@@ -18,18 +18,21 @@
 package flowcontrol
 
 import (
-	"math"
+	//	"fmt"
 	"sync"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
-	"gopkg.in/karalabe/cookiejar.v2/collections/prque"
+	"github.com/ethereum/go-ethereum/les/flowcontrol/prque"
 )
 
 type cmNodeFields struct {
-	servingStarted      mclock.AbsTime
-	servingMaxCost      uint64
-	intValueWhenStarted int64
+	servingStarted mclock.AbsTime
+	servingMaxCost uint64
+
+	cmLock         sync.Mutex
+	corrBufValue   int64
+	rcLastUpdate   mclock.AbsTime
+	rcLastIntValue int64
 }
 
 type ClientManager struct {
@@ -40,26 +43,24 @@ type ClientManager struct {
 
 	parallelReqs, maxParallelReqs int
 	targetParallelReqs            float64
-	queue                         *prque.Prque
+	servingQueue                  *prque.Prque
 
-	intLastUpdate                                      mclock.AbsTime
-	intLog, intTimeConst, intLogMin, intLogMax, pConst float64
-	intValue                                           int64
+	totalRecharge, sumRecharge uint64
+	rcLastUpdate               mclock.AbsTime
+	rcLastIntValue             int64 // normalized to MRR=1000000
+	rcQueue                    *prque.Prque
 }
 
 func NewClientManager(maxParallelReqs int, targetParallelReqs float64, child *ClientManager) *ClientManager {
 	cm := &ClientManager{
-		nodes: make(map[*ClientNode]struct{}),
-		child: child,
-		queue: prque.New(),
+		nodes:        make(map[*ClientNode]struct{}),
+		child:        child,
+		servingQueue: prque.New(),
+		rcQueue:      prque.New(),
 
 		maxParallelReqs:    maxParallelReqs,
 		targetParallelReqs: targetParallelReqs,
-		intTimeConst:       1 / float64(time.Millisecond*100),
-		intLog:             math.Log(0.01),
-		intLogMin:          math.Log(0.01),
-		intLogMax:          0.5,
-		pConst:             1,
+		totalRecharge:      uint64(targetParallelReqs * 1000000),
 	}
 	return cm
 }
@@ -98,60 +99,88 @@ func (cm *ClientManager) setParallelReqs(p int, time mclock.AbsTime) {
 			cm.child.setEnabled(true)
 		}
 	}
-
-	cm.updateIntegrator(time)
 	cm.parallelReqs = p
 }
 
-func (cm *ClientManager) updateIntegrator(time mclock.AbsTime) {
-	dt := float64(time - cm.intLastUpdate)
-	a := float64(cm.parallelReqs)/cm.targetParallelReqs - 1
-	iOld := cm.intLog
-	iDiff := a * dt * cm.intTimeConst
-	iNew := iOld + iDiff
-	cm.intLog = iNew
-	if cm.intLog < cm.intLogMin {
-		cm.intLog = cm.intLogMin
-	}
-	if cm.intLog > cm.intLogMax {
-		cm.intLog = cm.intLogMax
-	}
-	dtFlat := float64(0)
-	if cm.intLog == iOld {
-		dtFlat = dt
-	} else if cm.intLog != iNew && (iDiff > 1e-30 || iDiff < -1e-30) {
-		dtFlat = (iNew - cm.intLog) * dt / iDiff
-	}
-
-	pCorr := a * cm.pConst
-	iOld += pCorr
-	iNew = cm.intLog + pCorr
-	// l(t) goes from iOld to iNew in (dt-dtFlat) time, then has a flat section with the length of dtFlat
-	// we are looking for int(e^l(t))
-	expInt := float64(0)
-	expNew := math.Exp(iNew)
-	iDiff = iNew - iOld
-	if dtFlat != dt {
-		if iDiff > 1e-3 || iDiff < -1e-3 {
-			expInt = (expNew - math.Exp(iOld)) * (dt - dtFlat) / iDiff
-		} else {
-			expInt = (expNew + math.Exp(iOld)) * (dt - dtFlat) / 2
+func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
+	//fmt.Println("update", cm.sumRecharge, "int", cm.rcLastIntValue)
+	for cm.sumRecharge > 0 {
+		slope := float64(cm.totalRecharge) / float64(cm.sumRecharge)
+		dt := time - cm.rcLastUpdate
+		//fmt.Println("time", time, "dt", dt, "slope", slope)
+		n, nextIntValue := cm.rcQueue.Pop()
+		nextIntValue = -nextIntValue
+		dtNext := mclock.AbsTime(float64(nextIntValue-cm.rcLastIntValue) / slope)
+		if n == nil || dt < dtNext {
+			if n != nil {
+				cm.rcQueue.Push(n, -nextIntValue)
+			}
+			cm.rcLastIntValue += int64(slope * float64(dt))
+			cm.rcLastUpdate = time
+			return
 		}
+		node := n.(*ClientNode)
+		node.cmLock.Lock()
+		i := node.rcLastIntValue + (int64(node.params.BufLimit)-node.corrBufValue)*1000000/int64(node.params.MinRecharge)
+		//fmt.Println(nextIntValue, i)
+		if i != nextIntValue {
+			cm.rcQueue.Push(n, -i)
+			node.cmLock.Unlock()
+			continue
+		}
+		if node.corrBufValue < int64(node.params.BufLimit) {
+			node.corrBufValue = int64(node.params.BufLimit)
+			cm.sumRecharge -= node.params.MinRecharge
+		}
+		cm.rcLastUpdate += dtNext
+		cm.rcLastIntValue = nextIntValue
+		node.cmLock.Unlock()
 	}
-	if dtFlat > 0 {
-		expInt += dtFlat * expNew
-	}
+}
 
-	cm.intValue += int64(expInt)
-	cm.intLastUpdate = time
+func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, time mclock.AbsTime) {
+	cm.updateRecharge(time)
+
+	node.cmLock.Lock()
+	defer node.cmLock.Unlock()
+
+	//fmt.Println("time", time, "bv", node.corrBufValue)
+	wasFull := true
+	if node.corrBufValue != int64(node.params.BufLimit) {
+		wasFull = false
+		node.corrBufValue += (cm.rcLastIntValue - node.rcLastIntValue) * int64(node.params.MinRecharge) / 1000000
+		if node.corrBufValue > int64(node.params.BufLimit) {
+			node.corrBufValue = int64(node.params.BufLimit)
+		}
+		node.rcLastIntValue = cm.rcLastIntValue
+		//fmt.Println("rc", node.corrBufValue)
+	}
+	node.corrBufValue += bvc
+	if node.corrBufValue < 0 {
+		node.corrBufValue = 0
+	}
+	isFull := false
+	if node.corrBufValue >= int64(node.params.BufLimit) {
+		node.corrBufValue = int64(node.params.BufLimit)
+		isFull = true
+	}
+	//fmt.Println("bvc", bvc, node.corrBufValue)
+	if wasFull && !isFull {
+		cm.sumRecharge += node.params.MinRecharge
+		node.rcLastIntValue = cm.rcLastIntValue
+		nextIntValue := cm.rcLastIntValue + (int64(node.params.BufLimit)-node.corrBufValue)*1000000/int64(node.params.MinRecharge)
+		cm.rcQueue.Push(node, -nextIntValue)
+	}
+	if !wasFull && isFull {
+		cm.sumRecharge -= node.params.MinRecharge
+	}
 }
 
 func (cm *ClientManager) GetIntegratorValues() (float64, int64) {
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
-	cm.updateIntegrator(Clock.Now())
-	return cm.intLog, cm.intValue
+	return 0, 0
 }
 
 func (cm *ClientManager) waitOrStop(node *ClientNode) bool {
@@ -183,6 +212,11 @@ func (cm *ClientManager) addNode(node *ClientNode) {
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
+	node.cmLock.Lock()
+	node.corrBufValue = int64(node.params.BufLimit)
+	node.rcLastIntValue = cm.rcLastIntValue
+	node.cmLock.Unlock()
+
 	if cm.nodes != nil {
 		cm.nodes[node] = struct{}{}
 	}
@@ -209,14 +243,14 @@ func (cm *ClientManager) accept(node *ClientNode, maxCost uint64, time mclock.Ab
 			ch <- started
 			return started
 		}
-		cm.queue.Push(start, float32(node.bufValue)/float32(node.params.BufLimit))
+		cm.servingQueue.Push(start, int64(1000000000*float64(node.bufValue)/float64(node.params.BufLimit)))
 		return ch
 	}
 
 	cm.setParallelReqs(cm.parallelReqs+1, time)
 	node.servingStarted = time
-	node.intValueWhenStarted = cm.intValue
 	node.servingMaxCost = maxCost
+	cm.updateNodeRc(node, -int64(maxCost), time)
 	return nil
 }
 
@@ -224,32 +258,28 @@ func (cm *ClientManager) started(node *ClientNode, maxCost uint64, time mclock.A
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
-	cm.updateIntegrator(time)
 	node.servingStarted = time
-	node.intValueWhenStarted = cm.intValue
 	node.servingMaxCost = maxCost
+	cm.updateNodeRc(node, -int64(maxCost), time)
 }
 
 func (cm *ClientManager) processed(node *ClientNode, time mclock.AbsTime) (realCost uint64) {
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
-	cm.updateIntegrator(time)
-	bvc := cm.intValue - node.intValueWhenStarted
-	if bvc < 0 {
-		bvc = 0
-	}
-	if bvc > int64(node.servingMaxCost) {
-		bvc = int64(node.servingMaxCost)
-	}
-	node.bufValue += node.servingMaxCost - uint64(bvc)
-	if node.bufValue > node.params.BufLimit {
-		node.bufValue = node.params.BufLimit
-	}
-
 	realCost = uint64(time - node.servingStarted)
-	for !cm.queue.Empty() {
-		if cm.queue.PopItem().(func() bool)() {
+	if realCost > node.servingMaxCost {
+		realCost = node.servingMaxCost
+	}
+	cm.updateNodeRc(node, int64(node.servingMaxCost-realCost), time)
+	node.cmLock.Lock()
+	if uint64(node.corrBufValue) > node.bufValue {
+		node.bufValue = uint64(node.corrBufValue)
+	}
+	node.cmLock.Unlock()
+
+	for !cm.servingQueue.Empty() {
+		if cm.servingQueue.PopItem().(func() bool)() {
 			return
 		}
 	}
