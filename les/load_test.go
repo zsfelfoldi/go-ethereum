@@ -37,10 +37,10 @@ type testLoadPeer struct {
 	serveCh  chan uint64
 }
 
-func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServer, quit chan struct{}) *testLoadPeer {
+func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServer, params *flowcontrol.ServerParams, quit chan struct{}) *testLoadPeer {
 	peer := &testLoadPeer{
-		fcClient: flowcontrol.NewClientNode(server.fcManager, server.params),
-		fcServer: flowcontrol.NewServerNode(server.params),
+		fcClient: flowcontrol.NewClientNode(server.fcManager, params),
+		fcServer: flowcontrol.NewServerNode(params),
 		serveCh:  make(chan uint64, 1000),
 	}
 	client.dist.registerTestPeer(peer)
@@ -115,10 +115,9 @@ type testLoadServer struct {
 	params    *flowcontrol.ServerParams
 }
 
-func newTestLoadServer(params *flowcontrol.ServerParams, quit chan struct{}) *testLoadServer {
+func newTestLoadServer(quit chan struct{}) *testLoadServer {
 	s := &testLoadServer{
 		fcManager: flowcontrol.NewClientManager(16, 4, nil),
-		params:    params,
 	}
 	go func() {
 		<-quit
@@ -180,8 +179,8 @@ func (c *testLoadClient) requestsSent() uint64 {
 
 const (
 	testRequestCost  = 3000000
-	testClientCount  = 10
-	testServerCount  = 1
+	testClientCount  = 2
+	testServerCount  = 2
 	testMessageDelay = time.Millisecond * 200
 )
 
@@ -193,10 +192,6 @@ func TestLoadBalance(t *testing.T) {
 	testClock = mclock.NewSimulatedClock()
 	flowcontrol.Clock = testClock
 	distClock = testClock
-	params := &flowcontrol.ServerParams{
-		BufLimit:    300000000,
-		MinRecharge: 50000,
-	}
 
 	clients := make([]*testLoadClient, testClientCount)
 	for i, _ := range clients {
@@ -204,7 +199,7 @@ func TestLoadBalance(t *testing.T) {
 	}
 	servers := make([]*testLoadServer, testServerCount)
 	for i, _ := range servers {
-		servers[i] = newTestLoadServer(params, quit)
+		servers[i] = newTestLoadServer(quit)
 	}
 
 	/*go func() {
@@ -224,9 +219,14 @@ func TestLoadBalance(t *testing.T) {
 		}
 	}()*/
 
-	for _, client := range clients {
+	for c, client := range clients {
 		for _, server := range servers {
-			newTestLoadPeer(t, client, server, quit)
+			w := uint64(c + c + 1)
+			params := &flowcontrol.ServerParams{
+				BufLimit:    30000000 * w,
+				MinRecharge: 5000 * w,
+			}
+			newTestLoadPeer(t, client, server, params, quit)
 		}
 	}
 
@@ -235,11 +235,11 @@ func TestLoadBalance(t *testing.T) {
 	}
 
 	s := make([]uint64, testClientCount)
-	testClock.Sleep(time.Second * 5)
+	testClock.Sleep(time.Second * 1)
 	for i, client := range clients {
 		s[i] = client.requestsSent()
 	}
-	testClock.Sleep(time.Second * 15)
+	testClock.Sleep(time.Second * 5)
 	for i, client := range clients {
 		diff := client.requestsSent() - s[i]
 		fmt.Println(i, " ", diff)

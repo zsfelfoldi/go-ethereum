@@ -25,6 +25,12 @@ import (
 	"github.com/ethereum/go-ethereum/les/flowcontrol/prque"
 )
 
+const (
+	cmDisabled = iota
+	cmNormal
+	cmBlockProcessing
+)
+
 type cmNodeFields struct {
 	servingStarted mclock.AbsTime
 	servingMaxCost uint64
@@ -45,10 +51,14 @@ type ClientManager struct {
 	targetParallelReqs            float64
 	servingQueue                  *prque.Prque
 
-	totalRecharge, sumRecharge uint64
-	rcLastUpdate               mclock.AbsTime
-	rcLastIntValue             int64 // normalized to MRR=1000000
-	rcQueue                    *prque.Prque
+	mode                             int
+	totalRecharge                    float64
+	forceMinRecharge, bufCorrEnabled bool
+
+	sumRecharge    uint64
+	rcLastUpdate   mclock.AbsTime
+	rcLastIntValue int64 // normalized to MRR=1000000
+	rcQueue        *prque.Prque
 }
 
 func NewClientManager(maxParallelReqs int, targetParallelReqs float64, child *ClientManager) *ClientManager {
@@ -60,30 +70,51 @@ func NewClientManager(maxParallelReqs int, targetParallelReqs float64, child *Cl
 
 		maxParallelReqs:    maxParallelReqs,
 		targetParallelReqs: targetParallelReqs,
-		totalRecharge:      uint64(targetParallelReqs * 1000000),
 	}
+	cm.SetMode(cmNormal)
 	return cm
 }
 
-func (cm *ClientManager) isEnabled() bool {
-	return cm.enabledCh == nil
-}
-
-func (cm *ClientManager) setEnabled(en bool) {
+func (cm *ClientManager) SetMode(newMode int) {
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
-	if cm.isEnabled() == en {
+	if newMode == cm.mode {
 		return
 	}
-	if en {
+	cm.updateRecharge(Clock.Now())
+
+	enabled := cm.mode != cmDisabled
+	newEnabled := cm.mode != cmDisabled
+	if !enabled && newEnabled && cm.enabledCh != nil {
 		close(cm.enabledCh)
 		cm.enabledCh = nil
-	} else {
+	}
+	if enabled && !newEnabled {
 		cm.enabledCh = make(chan struct{})
 	}
-	if cm.child != nil && cm.parallelReqs == 0 {
-		cm.child.setEnabled(en)
+
+	switch newMode {
+	case cmDisabled:
+		cm.totalRecharge = 0
+		cm.bufCorrEnabled = false
+		cm.forceMinRecharge = false
+	case cmNormal:
+		cm.totalRecharge = cm.targetParallelReqs * 1000000
+		cm.bufCorrEnabled = true
+		cm.forceMinRecharge = false
+	case cmBlockProcessing:
+		cm.totalRecharge = 0
+		cm.bufCorrEnabled = false
+		cm.forceMinRecharge = true
+	}
+
+	if cm.child != nil {
+		if cm.parallelReqs == 0 {
+			cm.child.SetMode(newMode)
+		} else {
+			cm.child.SetMode(cmDisabled)
+		}
 	}
 }
 
@@ -91,12 +122,12 @@ func (cm *ClientManager) setParallelReqs(p int, time mclock.AbsTime) {
 	if p == cm.parallelReqs {
 		return
 	}
-	if cm.child != nil && cm.isEnabled() {
+	if cm.child != nil && cm.mode != cmDisabled {
 		if cm.parallelReqs == 0 {
-			cm.child.setEnabled(false)
+			cm.child.SetMode(cmDisabled)
 		}
 		if p == 0 {
-			cm.child.setEnabled(true)
+			cm.child.SetMode(cm.mode)
 		}
 	}
 	cm.parallelReqs = p
@@ -104,19 +135,28 @@ func (cm *ClientManager) setParallelReqs(p int, time mclock.AbsTime) {
 
 func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 	//fmt.Println("update", cm.sumRecharge, "int", cm.rcLastIntValue)
+	lastUpdate := cm.rcLastUpdate
+	cm.rcLastUpdate = time
+	if cm.totalRecharge == 0 {
+		return
+	}
 	for cm.sumRecharge > 0 {
-		slope := float64(cm.totalRecharge) / float64(cm.sumRecharge)
-		dt := time - cm.rcLastUpdate
+		var slope float64
+		if cm.forceMinRecharge {
+			slope = 1
+		} else {
+			slope = cm.totalRecharge / float64(cm.sumRecharge)
+		}
+		dt := time - lastUpdate
 		//fmt.Println("time", time, "dt", dt, "slope", slope)
-		n, nextIntValue := cm.rcQueue.Pop()
-		nextIntValue = -nextIntValue
+		n, ni := cm.rcQueue.Pop()
+		nextIntValue := -ni
 		dtNext := mclock.AbsTime(float64(nextIntValue-cm.rcLastIntValue) / slope)
 		if n == nil || dt < dtNext {
 			if n != nil {
 				cm.rcQueue.Push(n, -nextIntValue)
 			}
 			cm.rcLastIntValue += int64(slope * float64(dt))
-			cm.rcLastUpdate = time
 			return
 		}
 		node := n.(*ClientNode)
@@ -132,7 +172,7 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 			node.corrBufValue = int64(node.params.BufLimit)
 			cm.sumRecharge -= node.params.MinRecharge
 		}
-		cm.rcLastUpdate += dtNext
+		lastUpdate += dtNext
 		cm.rcLastIntValue = nextIntValue
 		node.cmLock.Unlock()
 	}
@@ -271,12 +311,16 @@ func (cm *ClientManager) processed(node *ClientNode, time mclock.AbsTime) (realC
 	if realCost > node.servingMaxCost {
 		realCost = node.servingMaxCost
 	}
-	cm.updateNodeRc(node, int64(node.servingMaxCost-realCost), time)
-	node.cmLock.Lock()
-	if uint64(node.corrBufValue) > node.bufValue {
-		node.bufValue = uint64(node.corrBufValue)
+	if !cm.forceMinRecharge {
+		cm.updateNodeRc(node, int64(node.servingMaxCost-realCost), time)
 	}
-	node.cmLock.Unlock()
+	if cm.bufCorrEnabled {
+		node.cmLock.Lock()
+		if uint64(node.corrBufValue) > node.bufValue {
+			node.bufValue = uint64(node.corrBufValue)
+		}
+		node.cmLock.Unlock()
+	}
 
 	for !cm.servingQueue.Empty() {
 		if cm.servingQueue.PopItem().(func() bool)() {
