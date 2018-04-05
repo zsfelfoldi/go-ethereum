@@ -216,13 +216,6 @@ func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, time mclock.A
 	}
 }
 
-func (cm *ClientManager) GetIntegratorValues() (float64, int64) {
-	cm.lock.Lock()
-	defer cm.lock.Unlock()
-
-	return 0, 0
-}
-
 func (cm *ClientManager) waitOrStop(node *ClientNode) bool {
 	cm.lock.RLock()
 	_, ok := cm.nodes[node]

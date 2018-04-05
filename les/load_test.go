@@ -19,8 +19,8 @@
 package les
 
 import (
-	"fmt"
 	"math/rand"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,9 +37,14 @@ type testLoadPeer struct {
 	serveCh  chan uint64
 }
 
-func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServer, params *flowcontrol.ServerParams, quit chan struct{}) *testLoadPeer {
+func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServer, params *flowcontrol.ServerParams, free bool, quit chan struct{}) *testLoadPeer {
+	cm := server.fcManager
+	if free {
+		cm = server.fcManagerFree
+	}
+
 	peer := &testLoadPeer{
-		fcClient: flowcontrol.NewClientNode(server.fcManager, params),
+		fcClient: flowcontrol.NewClientNode(cm, params),
 		fcServer: flowcontrol.NewServerNode(params),
 		serveCh:  make(chan uint64, 1000),
 	}
@@ -60,7 +65,7 @@ func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServe
 			case reqID := <-peer.serveCh:
 				ok, bufShort := peer.fcClient.AcceptRequest(testRequestCost)
 				if !ok {
-					recharge := time.Duration(bufShort * 1000000 / server.params.MinRecharge)
+					recharge := time.Duration(bufShort * 1000000 / params.MinRecharge)
 					t.Errorf("Request came too early (%v)", recharge)
 				}
 				//testClock.Sleep(time.Microsecond * 500)
@@ -69,6 +74,7 @@ func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServe
 				testClock.Sleep(serveTime)
 				bvAfter, _ := peer.fcClient.RequestProcessed()
 				replyCh <- reply{testClock.Now(), reqID, bvAfter}
+				atomic.AddUint64(&server.count, 1)
 			case <-quit:
 				return
 			}
@@ -111,19 +117,26 @@ type testLoadTask struct {
 }
 
 type testLoadServer struct {
-	fcManager *flowcontrol.ClientManager
-	params    *flowcontrol.ServerParams
+	fcManager, fcManagerFree *flowcontrol.ClientManager
+	count                    uint64
 }
 
-func newTestLoadServer(quit chan struct{}) *testLoadServer {
+func newTestLoadServer(capacity int, quit chan struct{}) *testLoadServer {
+	f := flowcontrol.NewClientManager(16, float64(capacity)/1000, nil)
 	s := &testLoadServer{
-		fcManager: flowcontrol.NewClientManager(16, 4, nil),
+		fcManager:     flowcontrol.NewClientManager(16, float64(capacity)/1000, f),
+		fcManagerFree: f,
 	}
 	go func() {
 		<-quit
 		s.fcManager.Stop()
+		s.fcManagerFree.Stop()
 	}()
 	return s
+}
+
+func (s *testLoadServer) requestsProcessed() uint64 {
+	return atomic.LoadUint64(&s.count)
 }
 
 type testLoadClient struct {
@@ -139,37 +152,46 @@ func newTestLoadClient(quit chan struct{}) *testLoadClient {
 	}
 }
 
-func (c *testLoadClient) sendRequests() {
+func (c *testLoadClient) sendRequests(send bool, sw chan bool) {
 	expCh := make(chan struct{}, 100)
 	for {
-		select {
-		case expCh <- struct{}{}:
-			reqID := genReqID()
-			rq := &distReq{
-				getCost: func(dp distPeer) uint64 {
-					return testRequestCost
-				},
-				canSend: func(dp distPeer) bool {
-					return true
-				},
-				request: func(dp distPeer) func() {
-					peer := dp.(*testLoadPeer)
-					peer.fcServer.QueueRequest(reqID, testRequestCost)
-					return func() {
-						peer.serveCh <- reqID
-					}
-				},
-			}
+		if send {
+			select {
+			case send = <-sw:
+			case expCh <- struct{}{}:
+				reqID := genReqID()
+				rq := &distReq{
+					getCost: func(dp distPeer) uint64 {
+						return testRequestCost
+					},
+					canSend: func(dp distPeer) bool {
+						return true
+					},
+					request: func(dp distPeer) func() {
+						peer := dp.(*testLoadPeer)
+						peer.fcServer.QueueRequest(reqID, testRequestCost)
+						return func() {
+							peer.serveCh <- reqID
+						}
+					},
+				}
 
-			sentCh := c.dist.queue(rq)
-			go func() {
-				<-sentCh
-				<-expCh
-			}()
-		case <-c.quit:
-			return
+				sentCh := c.dist.queue(rq)
+				go func() {
+					<-sentCh
+					atomic.AddUint64(&c.count, 1)
+					<-expCh
+				}()
+			case <-c.quit:
+				return
+			}
+		} else {
+			select {
+			case send = <-sw:
+			case <-c.quit:
+				return
+			}
 		}
-		atomic.AddUint64(&c.count, 1)
 	}
 }
 
@@ -178,13 +200,13 @@ func (c *testLoadClient) requestsSent() uint64 {
 }
 
 const (
-	testRequestCost  = 3000000
-	testClientCount  = 2
-	testServerCount  = 2
+	testRequestCost = 3000000
+	/*testClientCount  = 2
+	testServerCount  = 2*/
 	testMessageDelay = time.Millisecond * 200
 )
 
-func TestLoadBalance(t *testing.T) {
+/*func TestLoadBalance(t *testing.T) {
 	quit := make(chan struct{})
 	defer close(quit)
 
@@ -201,23 +223,6 @@ func TestLoadBalance(t *testing.T) {
 	for i, _ := range servers {
 		servers[i] = newTestLoadServer(quit)
 	}
-
-	/*go func() {
-		i := 0
-		lastInt := make([]int64, len(servers))
-		for {
-			fmt.Printf("%d :  ", i)
-			for i, s := range servers {
-				il, iv := s.fcManager.GetIntegratorValues()
-				id := iv - lastInt[i]
-				lastInt[i] = iv
-				fmt.Printf("| %7.4f   %7.4f  ", il, (float64(id)/10000000-il)*40)
-			}
-			fmt.Println()
-			testClock.Sleep(time.Millisecond * 10)
-			i++
-		}
-	}()*/
 
 	for c, client := range clients {
 		for _, server := range servers {
@@ -244,4 +249,105 @@ func TestLoadBalance(t *testing.T) {
 		diff := client.requestsSent() - s[i]
 		fmt.Println(i, " ", diff)
 	}
+}*/
+
+type testServerPeriod struct {
+	measureOff, measureOn int // duration in milliseconds
+	mode                  int
+	expResult             uint64
+}
+
+type testConnection struct {
+	capacity int // request per second
+	free     bool
+}
+
+type testServerParams struct {
+	capacity int // processing request per second
+	periods  []testServerPeriod
+}
+
+type testClientPeriod struct {
+	sendOff, measureOff, measureOn int // duration in milliseconds
+	expResult                      uint64
+}
+
+type testClientParams struct {
+	periods []testClientPeriod
+	servers []testConnection
+}
+
+func testLoad(t *testing.T, serverParams []testServerParams, clientParams []testClientParams) {
+	quit := make(chan struct{})
+	defer close(quit)
+
+	//testClock = &mclock.MonotonicClock{}
+	testClock = mclock.NewSimulatedClock()
+	flowcontrol.Clock = testClock
+	distClock = testClock
+
+	var wg sync.WaitGroup
+
+	servers := make([]*testLoadServer, len(serverParams))
+	for i, params := range serverParams {
+		servers[i] = newTestLoadServer(params.capacity, quit)
+		wg.Add(1)
+		go func() {
+			for k, p := range params.periods {
+				servers[i].fcManager.SetMode(p.mode)
+				testClock.Sleep(time.Millisecond * time.Duration(p.measureOff))
+				start := servers[i].requestsProcessed()
+				testClock.Sleep(time.Millisecond * time.Duration(p.measureOn))
+				result := servers[i].requestsProcessed() - start
+				percent := result * 100 / p.expResult
+				if percent < 90 || percent > 110 {
+					t.Errorf("servers[%d].periods[%d] processed count mismatch (sent %d, expected %d)", i, k, result, p.expResult)
+				}
+			}
+			wg.Done()
+		}()
+	}
+
+	clients := make([]*testLoadClient, len(clientParams))
+	for i, params := range clientParams {
+		clients[i] = newTestLoadClient(quit)
+		for j, conn := range params.servers {
+			params := &flowcontrol.ServerParams{
+				BufLimit:    60000 * uint64(conn.capacity),
+				MinRecharge: 100 * uint64(conn.capacity),
+			}
+			newTestLoadPeer(t, clients[i], servers[j], params, conn.free, quit)
+		}
+		sw := make(chan bool)
+		clients[i].sendRequests(false, sw)
+		wg.Add(1)
+		go func() {
+			for k, p := range params.periods {
+				testClock.Sleep(time.Millisecond * time.Duration(p.sendOff))
+				sw <- true
+				testClock.Sleep(time.Millisecond * time.Duration(p.measureOff))
+				start := clients[i].requestsSent()
+				testClock.Sleep(time.Millisecond * time.Duration(p.measureOn))
+				result := clients[i].requestsSent() - start
+				percent := result * 100 / p.expResult
+				if percent < 90 || percent > 110 {
+					t.Errorf("clients[%d].periods[%d] sent count mismatch (sent %d, expected %d)", i, k, result, p.expResult)
+				}
+				sw <- false
+			}
+			wg.Done()
+		}()
+	}
+
+	wg.Wait()
+}
+
+func TestLoadBalance(t *testing.T) {
+	testLoad(t,
+		[]testServerParams{
+			{1000, []testServerPeriod{}},
+		},
+		[]testClientParams{
+			{[]testClientPeriod{}, []testConnection{{2000, false}}},
+		})
 }
