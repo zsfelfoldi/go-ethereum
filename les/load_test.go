@@ -290,6 +290,7 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 
 	servers := make([]*testLoadServer, len(serverParams))
 	for i, params := range serverParams {
+		i, params := i, params
 		servers[i] = newTestLoadServer(params.capacity, quit)
 		wg.Add(1)
 		go func() {
@@ -310,10 +311,11 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 
 	clients := make([]*testLoadClient, len(clientParams))
 	for i, params := range clientParams {
+		i, params := i, params
 		clients[i] = newTestLoadClient(quit)
 		for j, conn := range params.servers {
 			params := &flowcontrol.ServerParams{
-				BufLimit:    60000 * uint64(conn.capacity),
+				BufLimit:    600000 * uint64(conn.capacity),
 				MinRecharge: 100 * uint64(conn.capacity),
 			}
 			newTestLoadPeer(t, clients[i], servers[j], params, conn.free, quit)
@@ -330,7 +332,7 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 				testClock.Sleep(time.Millisecond * time.Duration(p.measureOn))
 				result := clients[i].requestsSent() - start
 				percent := result * 100 / p.expResult
-				if percent < 90 || percent > 110 {
+				if percent < 95 || percent > 105 {
 					t.Errorf("clients[%d].periods[%d] sent count mismatch (sent %d, expected %d)", i, k, result, p.expResult)
 				}
 				sw <- false
@@ -345,9 +347,12 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 func TestLoadBalance(t *testing.T) {
 	testLoad(t,
 		[]testServerParams{
-			{4000, []testServerPeriod{{2, 1000, 5000, 5000}}},
+			{1000, []testServerPeriod{{1, 5000, 5000, 5000}}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{{500, 500, 5000, 5000}}, []testConnection{{1000, false}}},
+			{[]testClientPeriod{{500, 4500, 5000, 1000}}, []testConnection{{1000, false}}},
+			{[]testClientPeriod{{500, 4500, 5000, 1000}}, []testConnection{{1000, false}}},
+			{[]testClientPeriod{{500, 4500, 5000, 1000}}, []testConnection{{1000, false}}},
+			{[]testClientPeriod{{500, 4500, 5000, 2000}}, []testConnection{{2000, false}}},
 		})
 }
