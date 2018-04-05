@@ -109,6 +109,8 @@ func (cm *ClientManager) SetMode(newMode int) {
 		cm.forceMinRecharge = true
 	}
 
+	cm.mode = newMode
+
 	if cm.child != nil {
 		if cm.parallelReqs == 0 {
 			cm.child.SetMode(newMode)

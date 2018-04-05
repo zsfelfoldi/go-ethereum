@@ -252,8 +252,8 @@ const (
 }*/
 
 type testServerPeriod struct {
-	measureOff, measureOn int // duration in milliseconds
 	mode                  int
+	measureOff, measureOn int // duration in milliseconds
 	expResult             uint64
 }
 
@@ -301,7 +301,7 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 				result := servers[i].requestsProcessed() - start
 				percent := result * 100 / p.expResult
 				if percent < 90 || percent > 110 {
-					t.Errorf("servers[%d].periods[%d] processed count mismatch (sent %d, expected %d)", i, k, result, p.expResult)
+					t.Errorf("servers[%d].periods[%d] processed count mismatch (processed %d, expected %d)", i, k, result, p.expResult)
 				}
 			}
 			wg.Done()
@@ -319,7 +319,7 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 			newTestLoadPeer(t, clients[i], servers[j], params, conn.free, quit)
 		}
 		sw := make(chan bool)
-		clients[i].sendRequests(false, sw)
+		go clients[i].sendRequests(false, sw)
 		wg.Add(1)
 		go func() {
 			for k, p := range params.periods {
@@ -345,9 +345,9 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 func TestLoadBalance(t *testing.T) {
 	testLoad(t,
 		[]testServerParams{
-			{1000, []testServerPeriod{}},
+			{4000, []testServerPeriod{{2, 1000, 5000, 5000}}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{}, []testConnection{{2000, false}}},
+			{[]testClientPeriod{{500, 500, 5000, 5000}}, []testConnection{{1000, false}}},
 		})
 }
