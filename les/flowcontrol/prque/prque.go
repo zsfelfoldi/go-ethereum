@@ -34,20 +34,14 @@ func New() *Prque {
 }
 
 // Pushes a value with a given priority into the queue, expanding if necessary.
-func (p *Prque) Push(data interface{}, priority int64) {
-	heap.Push(p.cont, &item{data, priority})
+func (p *Prque) Push(i item) {
+	heap.Push(p.cont, i)
 }
 
 // Pops the value with the greates priority off the stack and returns it.
 // Currently no shrinking is done.
-func (p *Prque) Pop() (interface{}, int64) {
-	item := heap.Pop(p.cont).(*item)
-	return item.value, item.priority
-}
-
-// Pops only the item from the queue, dropping the associated priority value.
-func (p *Prque) PopItem() interface{} {
-	return heap.Pop(p.cont).(*item).value
+func (p *Prque) Pop() item {
+	return heap.Pop(p.cont).(item)
 }
 
 // Checks whether the priority queue is empty.

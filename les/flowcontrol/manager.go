@@ -32,13 +32,34 @@ const (
 )
 
 type cmNodeFields struct {
-	servingStarted mclock.AbsTime
-	servingMaxCost uint64
+	servingStarted                 mclock.AbsTime
+	servingMaxCost                 uint64
+	corrBufValue                   int64
+	rcLastUpdate                   mclock.AbsTime
+	rcLastIntValue, rcNextIntValue int64
+}
 
-	cmLock         sync.Mutex
-	corrBufValue   int64
-	rcLastUpdate   mclock.AbsTime
-	rcLastIntValue int64
+type rcQueueItem struct {
+	node     *ClientNode
+	intValue int64
+}
+
+func (rcq rcQueueItem) Before(j interface{}) bool {
+	return (j.(rcQueueItem).intValue - rcq.intValue) > 0
+}
+
+// Note: valid is called under client manager mutex lock
+func (rcq rcQueueItem) valid() bool {
+	return rcq.intValue == rcq.node.rcNextIntValue
+}
+
+type servingQueueItem struct {
+	start    func() bool
+	priority float64
+}
+
+func (sq servingQueueItem) Before(j interface{}) bool {
+	return sq.priority > j.(servingQueueItem).priority
 }
 
 type ClientManager struct {
@@ -151,41 +172,32 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 		}
 		dt := time - lastUpdate
 		//fmt.Println("time", time, "dt", dt, "slope", slope)
-		n, ni := cm.rcQueue.Pop()
-		nextIntValue := -ni
-		dtNext := mclock.AbsTime(float64(nextIntValue-cm.rcLastIntValue) / slope)
-		if n == nil || dt < dtNext {
-			if n != nil {
-				cm.rcQueue.Push(n, -nextIntValue)
-			}
+		q := cm.rcQueue.Pop()
+		for q != nil && !q.(rcQueueItem).valid() {
+			q = cm.rcQueue.Pop()
+		}
+		if q == nil {
 			cm.rcLastIntValue += int64(slope * float64(dt))
 			return
 		}
-		node := n.(*ClientNode)
-		node.cmLock.Lock()
-		i := node.rcLastIntValue + (int64(node.params.BufLimit)-node.corrBufValue)*1000000/int64(node.params.MinRecharge)
-		//fmt.Println(nextIntValue, i)
-		if i != nextIntValue {
-			cm.rcQueue.Push(n, -i)
-			node.cmLock.Unlock()
-			continue
+		rcqItem := q.(rcQueueItem)
+		dtNext := mclock.AbsTime(float64(rcqItem.intValue-cm.rcLastIntValue) / slope)
+		if dt < dtNext {
+			cm.rcQueue.Push(q)
+			cm.rcLastIntValue += int64(slope * float64(dt))
+			return
 		}
-		if node.corrBufValue < int64(node.params.BufLimit) {
-			node.corrBufValue = int64(node.params.BufLimit)
-			cm.sumRecharge -= node.params.MinRecharge
+		if rcqItem.node.corrBufValue < int64(rcqItem.node.params.BufLimit) {
+			rcqItem.node.corrBufValue = int64(rcqItem.node.params.BufLimit)
+			cm.sumRecharge -= rcqItem.node.params.MinRecharge
 		}
 		lastUpdate += dtNext
-		cm.rcLastIntValue = nextIntValue
-		node.cmLock.Unlock()
+		cm.rcLastIntValue = rcqItem.intValue
 	}
 }
 
 func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, time mclock.AbsTime) {
 	cm.updateRecharge(time)
-
-	node.cmLock.Lock()
-	defer node.cmLock.Unlock()
-
 	//fmt.Println("time", time, "bv", node.corrBufValue)
 	wasFull := true
 	if node.corrBufValue != int64(node.params.BufLimit) {
@@ -210,8 +222,8 @@ func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, time mclock.A
 	if wasFull && !isFull {
 		cm.sumRecharge += node.params.MinRecharge
 		node.rcLastIntValue = cm.rcLastIntValue
-		nextIntValue := cm.rcLastIntValue + (int64(node.params.BufLimit)-node.corrBufValue)*1000000/int64(node.params.MinRecharge)
-		cm.rcQueue.Push(node, -nextIntValue)
+		node.rcNextIntValue = cm.rcLastIntValue + (int64(node.params.BufLimit)-node.corrBufValue)*1000000/int64(node.params.MinRecharge)
+		cm.rcQueue.Push(rcQueueItem{node: node, intValue: node.rcNextIntValue})
 	}
 	if !wasFull && isFull {
 		cm.sumRecharge -= node.params.MinRecharge
@@ -247,10 +259,8 @@ func (cm *ClientManager) addNode(node *ClientNode) {
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
-	node.cmLock.Lock()
 	node.corrBufValue = int64(node.params.BufLimit)
 	node.rcLastIntValue = cm.rcLastIntValue
-	node.cmLock.Unlock()
 
 	if cm.nodes != nil {
 		cm.nodes[node] = struct{}{}
@@ -278,7 +288,7 @@ func (cm *ClientManager) accept(node *ClientNode, maxCost uint64, time mclock.Ab
 			ch <- started
 			return started
 		}
-		cm.servingQueue.Push(start, int64(1000000000*float64(node.bufValue)/float64(node.params.BufLimit)))
+		cm.servingQueue.Push(servingQueueItem{start, float64(node.bufValue) / float64(node.params.BufLimit)})
 		return ch
 	}
 
@@ -310,15 +320,13 @@ func (cm *ClientManager) processed(node *ClientNode, time mclock.AbsTime) (realC
 		cm.updateNodeRc(node, int64(node.servingMaxCost-realCost), time)
 	}
 	if cm.bufCorrEnabled {
-		node.cmLock.Lock()
 		if uint64(node.corrBufValue) > node.bufValue {
 			node.bufValue = uint64(node.corrBufValue)
 		}
-		node.cmLock.Unlock()
 	}
 
 	for !cm.servingQueue.Empty() {
-		if cm.servingQueue.PopItem().(func() bool)() {
+		if cm.servingQueue.Pop().(servingQueueItem).start() {
 			return
 		}
 	}

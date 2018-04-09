@@ -357,23 +357,33 @@ func TestLoadBalance(t *testing.T) {
 		})
 }
 
-func TestLoadSingle(t *testing.T) {
+func TestLoadSingle1(t *testing.T) {
 	testLoad(t,
 		[]testServerParams{
 			{capacity: 2000, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 5000}}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 5000}}, []testConnection{{capacity: 1000, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 5000}}, []testConnection{{capacity: 1010, free: false}}},
 		})
 }
 
 func TestLoadSingle2(t *testing.T) {
 	testLoad(t,
 		[]testServerParams{
-			{capacity: 2000, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 10000}}},
+			{capacity: 2000, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 5000}}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 10000}}, []testConnection{{capacity: 3000, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 5000}}, []testConnection{{capacity: 3000, free: false}}},
+		})
+}
+
+func TestLoadSingle3(t *testing.T) {
+	testLoad(t,
+		[]testServerParams{
+			{capacity: 500, periods: []testServerPeriod{{mode: 1, measureOff: 13000, measureOn: 5000, expResult: 2500}}},
+		},
+		[]testClientParams{
+			{[]testClientPeriod{{sendOff: 0, measureOff: 13000, measureOn: 5000, expResult: 2500}}, []testConnection{{capacity: 1000, free: false}}},
 		})
 }
 

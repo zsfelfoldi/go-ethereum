@@ -12,9 +12,8 @@ package prque
 const blockSize = 4096
 
 // A prioritized item in the sorted stack.
-type item struct {
-	value    interface{}
-	priority int64
+type item interface {
+	Before(interface{}) bool
 }
 
 // Internal sortable stack data structure. Implements the Push and Pop ops for
@@ -25,15 +24,15 @@ type sstack struct {
 	capacity int
 	offset   int
 
-	blocks [][]*item
-	active []*item
+	blocks [][]item
+	active []item
 }
 
 // Creates a new, empty stack.
 func newSstack() *sstack {
 	result := new(sstack)
-	result.active = make([]*item, blockSize)
-	result.blocks = [][]*item{result.active}
+	result.active = make([]item, blockSize)
+	result.blocks = [][]item{result.active}
 	result.capacity = blockSize
 	return result
 }
@@ -42,7 +41,7 @@ func newSstack() *sstack {
 // heap.Interface.
 func (s *sstack) Push(data interface{}) {
 	if s.size == s.capacity {
-		s.active = make([]*item, blockSize)
+		s.active = make([]item, blockSize)
 		s.blocks = append(s.blocks, s.active)
 		s.capacity += blockSize
 		s.offset = 0
@@ -50,7 +49,7 @@ func (s *sstack) Push(data interface{}) {
 		s.active = s.blocks[s.size/blockSize]
 		s.offset = 0
 	}
-	s.active[s.offset] = data.(*item)
+	s.active[s.offset] = data.(item)
 	s.offset++
 	s.size++
 }
@@ -76,7 +75,7 @@ func (s *sstack) Len() int {
 // Compares the priority of two elements of the stack (higher is first).
 // Required by sort.Interface.
 func (s *sstack) Less(i, j int) bool {
-	return (s.blocks[i/blockSize][i%blockSize].priority - s.blocks[j/blockSize][j%blockSize].priority) > 0
+	return (s.blocks[i/blockSize][i%blockSize].Before(s.blocks[j/blockSize][j%blockSize]))
 }
 
 // Swaps two elements in the stack. Required by sort.Interface.
