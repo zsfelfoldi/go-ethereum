@@ -332,7 +332,7 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 				testClock.Sleep(time.Millisecond * time.Duration(p.measureOn))
 				result := clients[i].requestsSent() - start
 				percent := result * 100 / p.expResult
-				if percent < 95 || percent > 105 {
+				if percent < 98 || percent > 102 {
 					t.Errorf("clients[%d].periods[%d] sent count mismatch (sent %d, expected %d)", i, k, result, p.expResult)
 				}
 				sw <- false
@@ -363,7 +363,7 @@ func TestLoadSingle1(t *testing.T) {
 			{capacity: 2000, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 5000}}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 5000}}, []testConnection{{capacity: 1010, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 5000}}, []testConnection{{capacity: 1000, free: false}}},
 		})
 }
 

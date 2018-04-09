@@ -18,7 +18,7 @@
 package flowcontrol
 
 import (
-	//	"fmt"
+	//"fmt"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -174,10 +174,12 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 		//fmt.Println("time", time, "dt", dt, "slope", slope)
 		q := cm.rcQueue.Pop()
 		for q != nil && !q.(rcQueueItem).valid() {
+			//fmt.Println("pop invalid")
 			q = cm.rcQueue.Pop()
 		}
 		if q == nil {
 			cm.rcLastIntValue += int64(slope * float64(dt))
+			//fmt.Println("pop nil  int", cm.rcLastIntValue)
 			return
 		}
 		rcqItem := q.(rcQueueItem)
@@ -185,6 +187,7 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 		if dt < dtNext {
 			cm.rcQueue.Push(q)
 			cm.rcLastIntValue += int64(slope * float64(dt))
+			//fmt.Println("pop future  int", cm.rcLastIntValue)
 			return
 		}
 		if rcqItem.node.corrBufValue < int64(rcqItem.node.params.BufLimit) {
@@ -193,6 +196,7 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 		}
 		lastUpdate += dtNext
 		cm.rcLastIntValue = rcqItem.intValue
+		//fmt.Println("pop finished  int", cm.rcLastIntValue)
 	}
 }
 
@@ -221,12 +225,14 @@ func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, time mclock.A
 	//fmt.Println("bvc", bvc, node.corrBufValue)
 	if wasFull && !isFull {
 		cm.sumRecharge += node.params.MinRecharge
-		node.rcLastIntValue = cm.rcLastIntValue
-		node.rcNextIntValue = cm.rcLastIntValue + (int64(node.params.BufLimit)-node.corrBufValue)*1000000/int64(node.params.MinRecharge)
-		cm.rcQueue.Push(rcQueueItem{node: node, intValue: node.rcNextIntValue})
 	}
 	if !wasFull && isFull {
 		cm.sumRecharge -= node.params.MinRecharge
+	}
+	if !isFull {
+		node.rcLastIntValue = cm.rcLastIntValue
+		node.rcNextIntValue = cm.rcLastIntValue + (int64(node.params.BufLimit)-node.corrBufValue)*1000000/int64(node.params.MinRecharge)
+		cm.rcQueue.Push(rcQueueItem{node: node, intValue: node.rcNextIntValue})
 	}
 }
 
