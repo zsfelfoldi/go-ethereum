@@ -204,62 +204,18 @@ const (
 	/*testClientCount  = 2
 	testServerCount  = 2*/
 	testMessageDelay = time.Millisecond * 200
+	defaultTolerance = 5 // percent
 )
-
-/*func TestLoadBalance(t *testing.T) {
-	quit := make(chan struct{})
-	defer close(quit)
-
-	//testClock = &mclock.MonotonicClock{}
-	testClock = mclock.NewSimulatedClock()
-	flowcontrol.Clock = testClock
-	distClock = testClock
-
-	clients := make([]*testLoadClient, testClientCount)
-	for i, _ := range clients {
-		clients[i] = newTestLoadClient(quit)
-	}
-	servers := make([]*testLoadServer, testServerCount)
-	for i, _ := range servers {
-		servers[i] = newTestLoadServer(quit)
-	}
-
-	for c, client := range clients {
-		for _, server := range servers {
-			w := uint64(c + c + 1)
-			params := &flowcontrol.ServerParams{
-				BufLimit:    30000000 * w,
-				MinRecharge: 5000 * w,
-			}
-			newTestLoadPeer(t, client, server, params, quit)
-		}
-	}
-
-	for _, client := range clients {
-		go client.sendRequests()
-	}
-
-	s := make([]uint64, testClientCount)
-	testClock.Sleep(time.Second * 1)
-	for i, client := range clients {
-		s[i] = client.requestsSent()
-	}
-	testClock.Sleep(time.Second * 5)
-	for i, client := range clients {
-		diff := client.requestsSent() - s[i]
-		fmt.Println(i, " ", diff)
-	}
-}*/
 
 type testServerPeriod struct {
 	mode                  int
 	measureOff, measureOn int // duration in milliseconds
-	expResult             uint64
+	expResult, tolerance  uint64
 }
 
 type testConnection struct {
-	capacity int // request per second
-	free     bool
+	minCapacity int // request per second guaranteed by MRR
+	free        bool
 }
 
 type testServerParams struct {
@@ -269,7 +225,7 @@ type testServerParams struct {
 
 type testClientPeriod struct {
 	sendOff, measureOff, measureOn int // duration in milliseconds
-	expResult                      uint64
+	expResult, tolerance           uint64
 }
 
 type testClientParams struct {
@@ -300,9 +256,15 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 				start := servers[i].requestsProcessed()
 				testClock.Sleep(time.Millisecond * time.Duration(p.measureOn))
 				result := servers[i].requestsProcessed() - start
-				percent := result * 100 / p.expResult
-				if percent < 90 || percent > 110 {
-					t.Errorf("servers[%d].periods[%d] processed count mismatch (processed %d, expected %d)", i, k, result, p.expResult)
+				relTol := p.tolerance
+				if relTol == 0 {
+					relTol = defaultTolerance
+				}
+				tolerance := p.expResult * relTol / 100
+				expMin := p.expResult - tolerance
+				expMax := p.expResult + tolerance
+				if result < expMin || result > expMax {
+					t.Errorf("servers[%d].periods[%d] processed count mismatch (processed %d, expected between %d and %d)", i, k, result, expMin, expMax)
 				}
 			}
 			wg.Done()
@@ -315,8 +277,8 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 		clients[i] = newTestLoadClient(quit)
 		for j, conn := range params.servers {
 			params := &flowcontrol.ServerParams{
-				BufLimit:    600000 * uint64(conn.capacity),
-				MinRecharge: 100 * uint64(conn.capacity),
+				BufLimit:    18000000 * uint64(conn.minCapacity),
+				MinRecharge: 3000 * uint64(conn.minCapacity),
 			}
 			newTestLoadPeer(t, clients[i], servers[j], params, conn.free, quit)
 		}
@@ -331,9 +293,15 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 				start := clients[i].requestsSent()
 				testClock.Sleep(time.Millisecond * time.Duration(p.measureOn))
 				result := clients[i].requestsSent() - start
-				percent := result * 100 / p.expResult
-				if percent < 98 || percent > 102 {
-					t.Errorf("clients[%d].periods[%d] sent count mismatch (sent %d, expected %d)", i, k, result, p.expResult)
+				relTol := p.tolerance
+				if relTol == 0 {
+					relTol = defaultTolerance
+				}
+				tolerance := p.expResult * relTol / 100
+				expMin := p.expResult - tolerance
+				expMax := p.expResult + tolerance
+				if result < expMin || result > expMax {
+					t.Errorf("clients[%d].periods[%d] sent count mismatch (sent %d, expected between %d and %d)", i, k, result, expMin, expMax)
 				}
 				sw <- false
 			}
@@ -350,10 +318,10 @@ func TestLoadBalance(t *testing.T) {
 			{capacity: 1000, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 5000}}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{capacity: 1000, free: false}}},
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{capacity: 1000, free: false}}},
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{capacity: 1000, free: false}}},
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 2000}}, []testConnection{{capacity: 2000, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{minCapacity: 100, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{minCapacity: 100, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{minCapacity: 100, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 2000}}, []testConnection{{minCapacity: 200, free: false}}},
 		})
 }
 
@@ -363,7 +331,7 @@ func TestLoadSingle1(t *testing.T) {
 			{capacity: 2000, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 5000}}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 5000}}, []testConnection{{capacity: 1000, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 5000}}, []testConnection{{minCapacity: 30, free: false}}},
 		})
 }
 
@@ -373,27 +341,41 @@ func TestLoadSingle2(t *testing.T) {
 			{capacity: 2000, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 5000}}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 5000}}, []testConnection{{capacity: 3000, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 5000}}, []testConnection{{minCapacity: 100, free: false}}},
 		})
 }
 
 func TestLoadSingle3(t *testing.T) {
 	testLoad(t,
 		[]testServerParams{
-			{capacity: 500, periods: []testServerPeriod{{mode: 1, measureOff: 13000, measureOn: 5000, expResult: 2500}}},
+			{capacity: 500, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 2500}}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{{sendOff: 0, measureOff: 13000, measureOn: 5000, expResult: 2500}}, []testConnection{{capacity: 1000, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 2500}}, []testConnection{{minCapacity: 30, free: false}}},
 		})
 }
 
 func TestLoadPriority(t *testing.T) {
 	testLoad(t,
 		[]testServerParams{
-			{capacity: 2000, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 2500}}},
+			{capacity: 500, periods: []testServerPeriod{
+				{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 2500},
+				{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 2500},
+				{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 3750},
+				{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 2500},
+			}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 2500}}, []testConnection{{capacity: 1000, free: false}}},
-			//			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{capacity: 1000, free: false}}},
+			// paying client
+			{[]testClientPeriod{
+				{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 2500},
+				{sendOff: 8000, measureOff: 3000, measureOn: 5000, expResult: 2500},
+			}, []testConnection{{minCapacity: 30, free: false}}},
+			// free client
+			{[]testClientPeriod{
+				{sendOff: 8000, measureOff: 3000, measureOn: 5000, expResult: 2500},
+				{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1250},
+				{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 2500},
+			}, []testConnection{{minCapacity: 30, free: true}}},
 		})
 }
