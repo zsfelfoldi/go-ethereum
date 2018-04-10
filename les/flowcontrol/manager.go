@@ -63,6 +63,7 @@ func (sq servingQueueItem) Before(j interface{}) bool {
 }
 
 type ClientManager struct {
+	clock     mclock.Clock
 	child     *ClientManager
 	lock      sync.RWMutex
 	nodes     map[*ClientNode]struct{}
@@ -82,8 +83,9 @@ type ClientManager struct {
 	rcQueue        *prque.Prque
 }
 
-func NewClientManager(maxParallelReqs int, targetParallelReqs float64, child *ClientManager) *ClientManager {
+func NewClientManager(maxParallelReqs int, targetParallelReqs float64, clock mclock.Clock, child *ClientManager) *ClientManager {
 	cm := &ClientManager{
+		clock:        clock,
 		nodes:        make(map[*ClientNode]struct{}),
 		child:        child,
 		servingQueue: prque.New(),
@@ -103,7 +105,7 @@ func (cm *ClientManager) SetMode(newMode int) {
 	if newMode == cm.mode {
 		return
 	}
-	cm.updateRecharge(Clock.Now())
+	cm.updateRecharge(cm.clock.Now())
 
 	enabled := cm.mode != cmDisabled
 	newEnabled := cm.mode != cmDisabled

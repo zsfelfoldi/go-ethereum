@@ -25,6 +25,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -158,7 +159,7 @@ func odrContractCall(ctx context.Context, db ethdb.Database, config *params.Chai
 func testOdr(t *testing.T, protocol int, expFail uint64, fn odrTestFn) {
 	// Assemble the test environment
 	peers := newPeerSet()
-	dist := newRequestDistributor(peers, make(chan struct{}))
+	dist := newRequestDistributor(peers, make(chan struct{}), &mclock.MonotonicClock{})
 	rm := newRetrieveManager(peers, dist, nil)
 	db, _ := ethdb.NewMemDatabase()
 	ldb, _ := ethdb.NewMemDatabase()

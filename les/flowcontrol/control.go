@@ -24,8 +24,6 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
-var Clock mclock.Clock = mclock.MonotonicClock{}
-
 const fcTimeConst = time.Millisecond
 
 type ServerParams struct {
@@ -46,7 +44,7 @@ func NewClientNode(cm *ClientManager, params *ServerParams) *ClientNode {
 		cm:       cm,
 		params:   params,
 		bufValue: params.BufLimit,
-		lastTime: Clock.Now(),
+		lastTime: cm.clock.Now(),
 	}
 	cm.addNode(node)
 	return node
@@ -71,7 +69,7 @@ func (peer *ClientNode) recalcBV(time mclock.AbsTime) {
 func (peer *ClientNode) AcceptRequest(maxCost uint64) (bool, uint64) {
 	peer.lock.Lock()
 
-	time := Clock.Now()
+	time := peer.cm.clock.Now()
 	peer.recalcBV(time)
 	if maxCost > peer.bufValue {
 		return false, maxCost - peer.bufValue
@@ -96,13 +94,14 @@ func (peer *ClientNode) RequestProcessed() (bv, realCost uint64) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
-	time := Clock.Now()
+	time := peer.cm.clock.Now()
 	peer.recalcBV(time)
 	rcost := peer.cm.processed(peer, time)
 	return peer.bufValue, rcost
 }
 
 type ServerNode struct {
+	clock       mclock.Clock
 	bufEstimate uint64
 	lastTime    mclock.AbsTime
 	params      *ServerParams
@@ -111,10 +110,11 @@ type ServerNode struct {
 	lock        sync.RWMutex
 }
 
-func NewServerNode(params *ServerParams) *ServerNode {
+func NewServerNode(params *ServerParams, clock mclock.Clock) *ServerNode {
 	return &ServerNode{
+		clock:       clock,
 		bufEstimate: params.BufLimit,
-		lastTime:    Clock.Now(),
+		lastTime:    clock.Now(),
 		params:      params,
 		pending:     make(map[uint64]uint64),
 	}
@@ -136,7 +136,7 @@ func (peer *ServerNode) recalcBLE(time mclock.AbsTime) {
 const safetyMargin = time.Millisecond
 
 func (peer *ServerNode) canSend(maxCost uint64) (time.Duration, float64) {
-	peer.recalcBLE(Clock.Now())
+	peer.recalcBLE(peer.clock.Now())
 	maxCost += uint64(safetyMargin) * peer.params.MinRecharge / uint64(fcTimeConst)
 	if maxCost > peer.params.BufLimit {
 		maxCost = peer.params.BufLimit
@@ -189,5 +189,5 @@ func (peer *ServerNode) GotReply(reqID, bv uint64) {
 	if bv > cc {
 		peer.bufEstimate = bv - cc
 	}
-	peer.lastTime = Clock.Now()
+	peer.lastTime = peer.clock.Now()
 }

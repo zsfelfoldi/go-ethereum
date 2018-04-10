@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth"
@@ -78,7 +79,7 @@ func tfCodeAccess(db ethdb.Database, bhash common.Hash, number uint64) light.Odr
 func testAccess(t *testing.T, protocol int, fn accessTestFn) {
 	// Assemble the test environment
 	peers := newPeerSet()
-	dist := newRequestDistributor(peers, make(chan struct{}))
+	dist := newRequestDistributor(peers, make(chan struct{}), &mclock.MonotonicClock{})
 	rm := newRetrieveManager(peers, dist, nil)
 	db, _ := ethdb.NewMemDatabase()
 	ldb, _ := ethdb.NewMemDatabase()

@@ -29,15 +29,13 @@ import (
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 )
 
-var testClock mclock.Clock
-
 type testLoadPeer struct {
 	fcClient *flowcontrol.ClientNode
 	fcServer *flowcontrol.ServerNode
 	serveCh  chan uint64
 }
 
-func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServer, params *flowcontrol.ServerParams, free bool, quit chan struct{}) *testLoadPeer {
+func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServer, params *flowcontrol.ServerParams, free bool, quit chan struct{}, clock mclock.Clock) *testLoadPeer {
 	cm := server.fcManager
 	if free {
 		cm = server.fcManagerFree
@@ -45,7 +43,7 @@ func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServe
 
 	peer := &testLoadPeer{
 		fcClient: flowcontrol.NewClientNode(cm, params),
-		fcServer: flowcontrol.NewServerNode(params),
+		fcServer: flowcontrol.NewServerNode(params, clock),
 		serveCh:  make(chan uint64, 1000),
 	}
 	client.dist.registerTestPeer(peer)
@@ -71,9 +69,9 @@ func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServe
 				//testClock.Sleep(time.Microsecond * 500)
 				serveTime := time.Duration(rand.Int63n(int64(randMax)))
 				randMax += (avgServeTime - serveTime) / 16
-				testClock.Sleep(serveTime)
+				clock.Sleep(serveTime)
 				bvAfter, _ := peer.fcClient.RequestProcessed()
-				replyCh <- reply{testClock.Now(), reqID, bvAfter}
+				replyCh <- reply{clock.Now(), reqID, bvAfter}
 				atomic.AddUint64(&server.count, 1)
 			case <-quit:
 				return
@@ -85,9 +83,9 @@ func newTestLoadPeer(t *testing.T, client *testLoadClient, server *testLoadServe
 		for {
 			select {
 			case reply := <-replyCh:
-				wait := time.Duration(reply.time-testClock.Now()) + testMessageDelay
+				wait := time.Duration(reply.time-clock.Now()) + testMessageDelay
 				if wait > 0 {
-					testClock.Sleep(wait)
+					clock.Sleep(wait)
 				}
 				peer.fcServer.GotReply(reply.reqID, reply.bv)
 			case <-quit:
@@ -121,10 +119,10 @@ type testLoadServer struct {
 	count                    uint64
 }
 
-func newTestLoadServer(capacity int, quit chan struct{}) *testLoadServer {
-	f := flowcontrol.NewClientManager(16, float64(capacity)/1000, nil)
+func newTestLoadServer(capacity int, quit chan struct{}, clock mclock.Clock) *testLoadServer {
+	f := flowcontrol.NewClientManager(16, float64(capacity)/1000, clock, nil)
 	s := &testLoadServer{
-		fcManager:     flowcontrol.NewClientManager(16, float64(capacity)/1000, f),
+		fcManager:     flowcontrol.NewClientManager(16, float64(capacity)/1000, clock, f),
 		fcManagerFree: f,
 	}
 	go func() {
@@ -145,9 +143,9 @@ type testLoadClient struct {
 	count uint64
 }
 
-func newTestLoadClient(quit chan struct{}) *testLoadClient {
+func newTestLoadClient(quit chan struct{}, clock mclock.Clock) *testLoadClient {
 	return &testLoadClient{
-		dist: newRequestDistributor(nil, quit),
+		dist: newRequestDistributor(nil, quit, clock),
 		quit: quit,
 	}
 }
@@ -237,24 +235,23 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 	quit := make(chan struct{})
 	defer close(quit)
 
-	//testClock = &mclock.MonotonicClock{}
-	testClock = mclock.NewSimulatedClock()
-	flowcontrol.Clock = testClock
-	distClock = testClock
+	//clock := &mclock.MonotonicClock{}
+	clock := mclock.NewSimulatedClock()
+	defer clock.Stop()
 
 	var wg sync.WaitGroup
 
 	servers := make([]*testLoadServer, len(serverParams))
 	for i, params := range serverParams {
 		i, params := i, params
-		servers[i] = newTestLoadServer(params.capacity, quit)
+		servers[i] = newTestLoadServer(params.capacity, quit, clock)
 		wg.Add(1)
 		go func() {
 			for k, p := range params.periods {
 				servers[i].fcManager.SetMode(p.mode)
-				testClock.Sleep(time.Millisecond * time.Duration(p.measureOff))
+				clock.Sleep(time.Millisecond * time.Duration(p.measureOff))
 				start := servers[i].requestsProcessed()
-				testClock.Sleep(time.Millisecond * time.Duration(p.measureOn))
+				clock.Sleep(time.Millisecond * time.Duration(p.measureOn))
 				result := servers[i].requestsProcessed() - start
 				relTol := p.tolerance
 				if relTol == 0 {
@@ -274,24 +271,24 @@ func testLoad(t *testing.T, serverParams []testServerParams, clientParams []test
 	clients := make([]*testLoadClient, len(clientParams))
 	for i, params := range clientParams {
 		i, params := i, params
-		clients[i] = newTestLoadClient(quit)
+		clients[i] = newTestLoadClient(quit, clock)
 		for j, conn := range params.servers {
 			params := &flowcontrol.ServerParams{
 				BufLimit:    18000000 * uint64(conn.minCapacity),
 				MinRecharge: 3000 * uint64(conn.minCapacity),
 			}
-			newTestLoadPeer(t, clients[i], servers[j], params, conn.free, quit)
+			newTestLoadPeer(t, clients[i], servers[j], params, conn.free, quit, clock)
 		}
 		sw := make(chan bool)
 		go clients[i].sendRequests(false, sw)
 		wg.Add(1)
 		go func() {
 			for k, p := range params.periods {
-				testClock.Sleep(time.Millisecond * time.Duration(p.sendOff))
+				clock.Sleep(time.Millisecond * time.Duration(p.sendOff))
 				sw <- true
-				testClock.Sleep(time.Millisecond * time.Duration(p.measureOff))
+				clock.Sleep(time.Millisecond * time.Duration(p.measureOff))
 				start := clients[i].requestsSent()
-				testClock.Sleep(time.Millisecond * time.Duration(p.measureOn))
+				clock.Sleep(time.Millisecond * time.Duration(p.measureOn))
 				result := clients[i].requestsSent() - start
 				relTol := p.tolerance
 				if relTol == 0 {
@@ -318,20 +315,20 @@ func TestLoadBalance(t *testing.T) {
 			{capacity: 1000, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 5000}}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{minCapacity: 100, free: false}}},
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{minCapacity: 100, free: false}}},
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{minCapacity: 100, free: false}}},
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 2000}}, []testConnection{{minCapacity: 200, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{minCapacity: 30, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{minCapacity: 30, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 1000}}, []testConnection{{minCapacity: 30, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 2000}}, []testConnection{{minCapacity: 60, free: false}}},
 		})
 }
 
 func TestLoadSingle1(t *testing.T) {
 	testLoad(t,
 		[]testServerParams{
-			{capacity: 2000, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 5000}}},
+			{capacity: 2000, periods: []testServerPeriod{{mode: 1, measureOff: 3000, measureOn: 5000, expResult: 4500, tolerance: 20}}},
 		},
 		[]testClientParams{
-			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 5000}}, []testConnection{{minCapacity: 30, free: false}}},
+			{[]testClientPeriod{{sendOff: 0, measureOff: 3000, measureOn: 5000, expResult: 4500, tolerance: 20}}, []testConnection{{minCapacity: 30, free: false}}},
 		})
 }
 

@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
@@ -98,7 +99,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 		MinRecharge: 50000,
 	}
 	//srv.fcManager = flowcontrol.NewClientManager(uint64(config.LightServ), 10, 1000000000)
-	srv.fcManager = flowcontrol.NewClientManager(16, 4, nil)
+	srv.fcManager = flowcontrol.NewClientManager(16, 4, &mclock.MonotonicClock{}, nil)
 	srv.fcCostStats = newCostStats(eth.ChainDb())
 	return srv, nil
 }

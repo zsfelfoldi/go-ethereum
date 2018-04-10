@@ -18,7 +18,7 @@
 package mclock
 
 import (
-	//"runtime"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -31,8 +31,14 @@ type event struct {
 type SimulatedClock struct {
 	now       AbsTime
 	scheduled []event
+	stop      bool
 	lock      sync.RWMutex
 }
+
+const (
+	maxStep      = time.Microsecond * 10
+	goSchedCount = 10
+)
 
 func NewSimulatedClock() *SimulatedClock {
 	s := &SimulatedClock{}
@@ -40,20 +46,24 @@ func NewSimulatedClock() *SimulatedClock {
 	go func() {
 		lastScheduled := 0
 		for {
-			/*for i := 0; i < 1000; i++ {
+			for i := 0; i < goSchedCount; i++ {
 				runtime.Gosched()
-			}*/
-			time.Sleep(time.Microsecond * 10)
+			}
+			//time.Sleep(time.Microsecond * 10)
 			s.lock.Lock()
+			if s.stop {
+				s.lock.Unlock()
+				return
+			}
 			scheduled := len(s.scheduled)
 			if scheduled > 0 && scheduled == lastScheduled {
 				ev := s.scheduled[0]
-				if ev.at <= s.now+AbsTime(time.Millisecond) {
+				if ev.at <= s.now+AbsTime(maxStep) {
 					s.scheduled = s.scheduled[1:]
 					s.now = ev.at
 					ev.do()
 				} else {
-					s.now += AbsTime(time.Millisecond)
+					s.now += AbsTime(maxStep)
 				}
 			}
 			lastScheduled = scheduled
@@ -62,6 +72,12 @@ func NewSimulatedClock() *SimulatedClock {
 	}()
 
 	return s
+}
+
+func (s *SimulatedClock) Stop() {
+	s.lock.Lock()
+	s.stop = true
+	s.lock.Unlock()
 }
 
 func (s *SimulatedClock) Now() AbsTime {

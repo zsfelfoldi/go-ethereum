@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/consensus/ethash"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -192,7 +193,7 @@ func newTestProtocolManager(lightSync bool, blocks int, generator func(int, *cor
 		}
 
 		//srv.fcManager = flowcontrol.NewClientManager(50, 10, 1000000000)
-		srv.fcManager = flowcontrol.NewClientManager(16, 4, nil)
+		srv.fcManager = flowcontrol.NewClientManager(16, 4, &mclock.MonotonicClock{}, nil)
 		srv.fcCostStats = newCostStats(nil)
 	}
 	pm.Start(1000)
