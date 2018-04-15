@@ -51,7 +51,7 @@ func TestGetBlockHeadersLes2(t *testing.T) { testGetBlockHeaders(t, 2) }
 
 func testGetBlockHeaders(t *testing.T, protocol int) {
 	db, _ := ethdb.NewMemDatabase()
-	pm := newTestProtocolManagerMust(t, false, downloader.MaxHashFetch+15, nil, nil, nil, db)
+	pm := newTestProtocolManagerMust(t, false, downloader.MaxHashFetch+15, 0, nil, nil, nil, db)
 	bc := pm.blockchain.(*core.BlockChain)
 	peer, _ := newTestPeer(t, "peer", protocol, pm, true)
 	defer peer.close()
@@ -181,7 +181,7 @@ func TestGetBlockBodiesLes2(t *testing.T) { testGetBlockBodies(t, 2) }
 
 func testGetBlockBodies(t *testing.T, protocol int) {
 	db, _ := ethdb.NewMemDatabase()
-	pm := newTestProtocolManagerMust(t, false, downloader.MaxBlockFetch+15, nil, nil, nil, db)
+	pm := newTestProtocolManagerMust(t, false, downloader.MaxBlockFetch+15, 0, nil, nil, nil, db)
 	bc := pm.blockchain.(*core.BlockChain)
 	peer, _ := newTestPeer(t, "peer", protocol, pm, true)
 	defer peer.close()
@@ -259,7 +259,7 @@ func TestGetCodeLes2(t *testing.T) { testGetCode(t, 2) }
 func testGetCode(t *testing.T, protocol int) {
 	// Assemble the test environment
 	db, _ := ethdb.NewMemDatabase()
-	pm := newTestProtocolManagerMust(t, false, 4, testChainGen, nil, nil, db)
+	pm := newTestProtocolManagerMust(t, false, 4, 0, testChainGen, nil, nil, db)
 	bc := pm.blockchain.(*core.BlockChain)
 	peer, _ := newTestPeer(t, "peer", protocol, pm, true)
 	defer peer.close()
@@ -293,7 +293,7 @@ func TestGetReceiptLes2(t *testing.T) { testGetReceipt(t, 2) }
 func testGetReceipt(t *testing.T, protocol int) {
 	// Assemble the test environment
 	db, _ := ethdb.NewMemDatabase()
-	pm := newTestProtocolManagerMust(t, false, 4, testChainGen, nil, nil, db)
+	pm := newTestProtocolManagerMust(t, false, 4, 0, testChainGen, nil, nil, db)
 	bc := pm.blockchain.(*core.BlockChain)
 	peer, _ := newTestPeer(t, "peer", protocol, pm, true)
 	defer peer.close()
@@ -321,7 +321,7 @@ func TestGetProofsLes2(t *testing.T) { testGetProofs(t, 2) }
 func testGetProofs(t *testing.T, protocol int) {
 	// Assemble the test environment
 	db, _ := ethdb.NewMemDatabase()
-	pm := newTestProtocolManagerMust(t, false, 4, testChainGen, nil, nil, db)
+	pm := newTestProtocolManagerMust(t, false, 4, 0, testChainGen, nil, nil, db)
 	bc := pm.blockchain.(*core.BlockChain)
 	peer, _ := newTestPeer(t, "peer", protocol, pm, true)
 	defer peer.close()
@@ -384,14 +384,10 @@ func testGetCHTProofs(t *testing.T, protocol int) {
 	}
 	// Assemble the test environment
 	db, _ := ethdb.NewMemDatabase()
-	pm := newTestProtocolManagerMust(t, false, int(frequency)+light.HelperTrieProcessConfirmations, testChainGen, nil, nil, db)
+	pm := newTestProtocolManagerMust(t, false, int(frequency)+light.HelperTrieProcessConfirmations, 1, testChainGen, nil, nil, db)
 	bc := pm.blockchain.(*core.BlockChain)
 	peer, _ := newTestPeer(t, "peer", protocol, pm, true)
 	defer peer.close()
-
-	// Wait a while for the CHT indexer to process the new headers
-	time.Sleep(100 * time.Millisecond * time.Duration(frequency/light.CHTFrequencyServer)) // Chain indexer throttling
-	time.Sleep(250 * time.Millisecond)                                                     // CI tester slack
 
 	// Assemble the proofs from the different protocols
 	header := bc.GetHeaderByNumber(frequency)
@@ -452,14 +448,10 @@ func testGetCHTProofs(t *testing.T, protocol int) {
 func TestGetBloombitsProofs(t *testing.T) {
 	// Assemble the test environment
 	db, _ := ethdb.NewMemDatabase()
-	pm := newTestProtocolManagerMust(t, false, light.BloomTrieFrequency+256, testChainGen, nil, nil, db)
+	pm := newTestProtocolManagerMust(t, false, light.BloomTrieFrequency+256, 1, testChainGen, nil, nil, db)
 	bc := pm.blockchain.(*core.BlockChain)
 	peer, _ := newTestPeer(t, "peer", 2, pm, true)
 	defer peer.close()
-
-	// Wait a while for the bloombits indexer to process the new headers
-	time.Sleep(100 * time.Millisecond * time.Duration(light.BloomTrieFrequency/4096)) // Chain indexer throttling
-	time.Sleep(250 * time.Millisecond)                                                // CI tester slack
 
 	// Request and verify each bit of the bloom bits proofs
 	for bit := 0; bit < 2048; bit++ {
@@ -491,7 +483,7 @@ func TestGetBloombitsProofs(t *testing.T) {
 
 func TestTransactionStatusLes2(t *testing.T) {
 	db, _ := ethdb.NewMemDatabase()
-	pm := newTestProtocolManagerMust(t, false, 0, nil, nil, nil, db)
+	pm := newTestProtocolManagerMust(t, false, 0, 0, nil, nil, nil, db)
 	chain := pm.blockchain.(*core.BlockChain)
 	config := core.DefaultTxPoolConfig
 	config.Journal = ""
