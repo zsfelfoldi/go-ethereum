@@ -194,12 +194,12 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 		}
 	}
 
-	bc.gc = hashtree.NewGarbageCollector(db, []byte(state.DbPrefix), bc.hasDataCallback)
+	/*bc.gc = hashtree.NewGarbageCollector(db, []byte(state.DbPrefix), bc.hasDataCallback)
 
 	currentVersion := func() uint64 {
 		return bc.CurrentBlock().NumberU64()
 	}
-	bc.gc.BackgroundGC(currentVersion, &bc.processing, &bc.procInterrupt, &bc.wg)
+	bc.gc.BackgroundGC(currentVersion, &bc.processing, &bc.procInterrupt, &bc.wg)*/
 
 	// Take ownership of this particular state
 	go bc.update()

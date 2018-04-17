@@ -132,7 +132,8 @@ func (w *Writer) Put(position, hash, data []byte) error {
 	if err := w.db.Put(key[:w.lpf+lp+lh+1], data); err != nil {
 		return err
 	}
-	copy(key[w.lpf+lp+lh:w.lpf+lp+lh+8], w.versionEnc[:])
+	/*copy(key[w.lpf+lp+lh:w.lpf+lp+lh+8], w.versionEnc[:])
 	key[w.lpf+lp+lh+8] = 1
-	return w.db.Put(key, nil)
+	return w.db.Put(key, nil)*/
+	return nil
 }
