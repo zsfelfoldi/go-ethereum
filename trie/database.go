@@ -46,8 +46,8 @@ type DatabaseReader interface {
 // periodically flush a couple tries to disk, garbage collecting the remainder.
 type Database struct {
 	*databaseShared
-	prefix []byte
-	reader *hashtree.Reader
+	dbPrefix, pathPrefix []byte
+	reader               *hashtree.Reader
 }
 
 type databaseShared struct {
@@ -124,8 +124,8 @@ func (c *cachedNode) removeChild(child common.Hash, path []byte) bool {
 // its written out to disk or garbage collected.
 func NewDatabase(diskdb ethdb.Database, prefix []byte) *Database {
 	return &Database{
-		prefix: prefix,
-		reader: hashtree.NewReader(diskdb, string(prefix)),
+		dbPrefix: prefix,
+		reader:   hashtree.NewReader(diskdb, string(prefix), ""),
 		databaseShared: &databaseShared{
 			diskdb: diskdb,
 			nodes: map[common.Hash]*cachedNode{
@@ -137,10 +137,11 @@ func NewDatabase(diskdb ethdb.Database, prefix []byte) *Database {
 }
 
 func (db *Database) ChildDatabase(path []byte) *Database {
-	prefix := append(db.prefix, path...)
+	pathPrefix := append(db.pathPrefix, path...)
 	return &Database{
-		prefix:         prefix,
-		reader:         hashtree.NewReader(db.diskdb, string(prefix)),
+		dbPrefix:       db.dbPrefix,
+		pathPrefix:     pathPrefix,
+		reader:         hashtree.NewReader(db.diskdb, string(db.dbPrefix), string(pathPrefix)),
 		databaseShared: db.databaseShared,
 	}
 }
@@ -326,7 +327,7 @@ func (db *Database) Commit(node common.Hash, report bool, version uint64, gc *ha
 
 	start := time.Now()
 	batch := db.diskdb.NewBatch()
-	writer := hashtree.NewWriter(batch, string(db.prefix), version, gc)
+	writer := hashtree.NewWriter(batch, string(db.dbPrefix), string(db.pathPrefix), version, gc)
 
 	// Move all of the accumulated preimages into a write batch
 	for hash, preimage := range db.preimages {

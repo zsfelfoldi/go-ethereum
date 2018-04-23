@@ -61,24 +61,31 @@ type DatabaseWriter interface {
 
 // Reader provides read access to the hash tree storage
 type Reader struct {
-	db     DatabaseReader
-	prefix []byte
-	lpf    int
+	db                   DatabaseReader
+	dbPrefix, pathPrefix []byte
+	lpf, ppf             int
 }
 
-func NewReader(db DatabaseReader, prefix string) *Reader {
-	return &Reader{db, []byte(prefix), len(prefix)}
+func NewReader(db DatabaseReader, dbPrefix, pathPrefix string) *Reader {
+	return &Reader{db, []byte(dbPrefix), []byte(pathPrefix), len(dbPrefix), len(pathPrefix)}
 }
 
 // Get returns elements by position and hash
 func (h *Reader) Get(position, hash []byte) ([]byte, error) {
-	lp, lh := len(position), len(hash)
+	lp, lh := h.ppf+len(position), len(hash)
 	if lp > maxPosLength {
 		lp = maxPosLength
 	}
 	key := make([]byte, h.lpf+lp+lh+1)
-	copy(key[:h.lpf], h.prefix)
-	copy(key[h.lpf:h.lpf+lp], position[:lp])
+	copy(key[:h.lpf], h.dbPrefix)
+	if h.ppf >= lp {
+		copy(key[h.lpf:h.lpf+lp], h.pathPrefix[:lp])
+	} else {
+		if h.ppf != 0 {
+			copy(key[h.lpf:h.lpf+h.ppf], h.pathPrefix)
+		}
+		copy(key[h.lpf+h.ppf:h.lpf+lp], position[:lp-h.ppf])
+	}
 	copy(key[h.lpf+lp:h.lpf+lp+lh], hash)
 	data, err := h.db.Get(key)
 	if err != nil {
@@ -89,13 +96,20 @@ func (h *Reader) Get(position, hash []byte) ([]byte, error) {
 }
 
 func (h *Reader) Has(position, hash []byte) (bool, error) {
-	lp, lh := len(position), len(hash)
+	lp, lh := h.ppf+len(position), len(hash)
 	if lp > maxPosLength {
 		lp = maxPosLength
 	}
 	key := make([]byte, h.lpf+lp+lh+1)
-	copy(key[:h.lpf], h.prefix)
-	copy(key[h.lpf:h.lpf+lp], position[:lp])
+	copy(key[:h.lpf], h.dbPrefix)
+	if h.ppf >= lp {
+		copy(key[h.lpf:h.lpf+lp], h.pathPrefix[:lp])
+	} else {
+		if h.ppf != 0 {
+			copy(key[h.lpf:h.lpf+h.ppf], h.pathPrefix)
+		}
+		copy(key[h.lpf+h.ppf:h.lpf+lp], position[:lp-h.ppf])
+	}
 	copy(key[h.lpf+lp:h.lpf+lp+lh], hash)
 	return h.db.Has(key)
 }
@@ -107,21 +121,23 @@ func (h *Reader) Put(position, hash, data []byte) error {
 
 // Writer provides write access to the hash tree storage. A new writer is required for each new version.
 type Writer struct {
-	db         DatabaseWriter
-	prefix     []byte
-	lpf        int
-	version    uint64
-	versionEnc [8]byte
-	gc         *GarbageCollector
+	db                   DatabaseWriter
+	dbPrefix, pathPrefix []byte
+	lpf, ppf             int
+	version              uint64
+	versionEnc           [8]byte
+	gc                   *GarbageCollector
 }
 
-func NewWriter(db DatabaseWriter, prefix string, version uint64, gc *GarbageCollector) *Writer {
+func NewWriter(db DatabaseWriter, dbPrefix, pathPrefix string, version uint64, gc *GarbageCollector) *Writer {
 	w := &Writer{
-		db:      db,
-		prefix:  []byte(prefix),
-		lpf:     len(prefix),
-		version: version,
-		gc:      gc,
+		db:         db,
+		dbPrefix:   []byte(dbPrefix),
+		pathPrefix: []byte(pathPrefix),
+		lpf:        len(dbPrefix),
+		ppf:        len(pathPrefix),
+		version:    version,
+		gc:         gc,
 	}
 	binary.BigEndian.PutUint64(w.versionEnc[:], version)
 	return w
@@ -132,13 +148,20 @@ func (w *Writer) Put(position, hash, data []byte) error {
 	if w.gc != nil {
 		atomic.AddUint64(&w.gc.writeCounter, 1)
 	}
-	lp, lh := len(position), len(hash)
+	lp, lh := w.ppf+len(position), len(hash)
 	if lp > maxPosLength {
 		lp = maxPosLength
 	}
-	key := make([]byte, w.lpf+lp+lh+9)
-	copy(key[:w.lpf], w.prefix)
-	copy(key[w.lpf:w.lpf+lp], position[:lp])
+	key := make([]byte, w.lpf+lp+lh+1)
+	copy(key[:w.lpf], w.dbPrefix)
+	if w.ppf >= lp {
+		copy(key[w.lpf:w.lpf+lp], w.pathPrefix[:lp])
+	} else {
+		if w.ppf != 0 {
+			copy(key[w.lpf:w.lpf+w.ppf], w.pathPrefix)
+		}
+		copy(key[w.lpf+w.ppf:w.lpf+lp], position[:lp-w.ppf])
+	}
 	copy(key[w.lpf+lp:w.lpf+lp+lh], hash)
 	if err := w.db.Put(key[:w.lpf+lp+lh+1], data); err != nil {
 		return err
