@@ -48,6 +48,8 @@ import (
 	//	"fmt"
 )
 
+const maxPosLength = 3
+
 type DatabaseReader interface {
 	Get([]byte) ([]byte, error)
 	Has([]byte) (bool, error)
@@ -71,9 +73,12 @@ func NewReader(db DatabaseReader, prefix string) *Reader {
 // Get returns elements by position and hash
 func (h *Reader) Get(position, hash []byte) ([]byte, error) {
 	lp, lh := len(position), len(hash)
+	if lp > maxPosLength {
+		lp = maxPosLength
+	}
 	key := make([]byte, h.lpf+lp+lh+1)
 	copy(key[:h.lpf], h.prefix)
-	copy(key[h.lpf:h.lpf+lp], position)
+	copy(key[h.lpf:h.lpf+lp], position[:lp])
 	copy(key[h.lpf+lp:h.lpf+lp+lh], hash)
 	data, err := h.db.Get(key)
 	if err != nil {
@@ -85,9 +90,12 @@ func (h *Reader) Get(position, hash []byte) ([]byte, error) {
 
 func (h *Reader) Has(position, hash []byte) (bool, error) {
 	lp, lh := len(position), len(hash)
+	if lp > maxPosLength {
+		lp = maxPosLength
+	}
 	key := make([]byte, h.lpf+lp+lh+1)
 	copy(key[:h.lpf], h.prefix)
-	copy(key[h.lpf:h.lpf+lp], position)
+	copy(key[h.lpf:h.lpf+lp], position[:lp])
 	copy(key[h.lpf+lp:h.lpf+lp+lh], hash)
 	return h.db.Has(key)
 }
@@ -125,9 +133,12 @@ func (w *Writer) Put(position, hash, data []byte) error {
 		atomic.AddUint64(&w.gc.writeCounter, 1)
 	}
 	lp, lh := len(position), len(hash)
+	if lp > maxPosLength {
+		lp = maxPosLength
+	}
 	key := make([]byte, w.lpf+lp+lh+9)
 	copy(key[:w.lpf], w.prefix)
-	copy(key[w.lpf:w.lpf+lp], position)
+	copy(key[w.lpf:w.lpf+lp], position[:lp])
 	copy(key[w.lpf+lp:w.lpf+lp+lh], hash)
 	if err := w.db.Put(key[:w.lpf+lp+lh+1], data); err != nil {
 		return err
