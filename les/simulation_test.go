@@ -20,18 +20,22 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io/ioutil"
-	"testing"
 	"os"
+	"testing"
 	"time"
-	
+
+	"github.com/ethereum/go-ethereum/consensus/ethash"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/p2p/discover"
 	"github.com/ethereum/go-ethereum/node"
+	"github.com/ethereum/go-ethereum/p2p/discover"
 	"github.com/ethereum/go-ethereum/p2p/simulations"
 	"github.com/ethereum/go-ethereum/p2p/simulations/adapters"
+	"github.com/ethereum/go-ethereum/params"
 	colorable "github.com/mattn/go-colorable"
 )
 
@@ -46,9 +50,9 @@ func init() {
 }
 
 var (
-	adapter    = flag.String("adapter", "sim", "type of simulation: sim|socket|exec|docker")
-	loglevel   = flag.Int("loglevel", 2, "verbosity of logs")
-	nodes      = flag.Int("nodes", 0, "number of nodes")
+	adapter  = flag.String("adapter", "sim", "type of simulation: sim|socket|exec|docker")
+	loglevel = flag.Int("loglevel", 2, "verbosity of logs")
+	nodes    = flag.Int("nodes", 0, "number of nodes")
 )
 
 var services = adapters.Services{
@@ -61,8 +65,8 @@ func NewAdapter(adapterType string, services adapters.Services) (adapter adapter
 	switch adapterType {
 	case "sim":
 		adapter = adapters.NewSimAdapter(services)
-//	case "socket":
-//		adapter = adapters.NewSocketAdapter(services)
+		//	case "socket":
+		//		adapter = adapters.NewSocketAdapter(services)
 	case "exec":
 		baseDir, err0 := ioutil.TempDir("", "les-test")
 		if err0 != nil {
@@ -87,7 +91,7 @@ func TestSim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create network: %v", err)
 	}
-	
+
 	clientconf := adapters.RandomNodeConfig()
 	clientconf.Services = []string{"lesclient"}
 	client, err := net.NewNodeWithConfig(clientconf)
@@ -104,33 +108,71 @@ func TestSim(t *testing.T) {
 	}
 	net.Connect(client.ID(), server.ID())
 
-	sim := simulations.NewSimulation(net)	
+	sim := simulations.NewSimulation(net)
 
 	action := func(ctx context.Context) error {
 		return nil
 	}
-	
+
 	check := func(ctx context.Context, id discover.NodeID) (bool, error) {
-		return true, nil
+		fmt.Println(id, "*****")
+		// check we haven't run out of time
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		default:
+		}
+
+		// get the node
+		node := net.GetNode(id)
+		if node == nil {
+			return false, fmt.Errorf("unknown node: %s", id)
+		}
+		client, err := node.Client()
+		if err != nil {
+			return false, err
+		}
+		var s string
+		if err := client.CallContext(ctx, &s, "eth_blockNumber"); err != nil {
+			return false, err
+		}
+
+		fmt.Println(id, s)
+		return s == "0x3e8", nil
 	}
+
+	timeout := 300 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
 	trigger := make(chan discover.NodeID)
 	go func() {
-		trigger <- client.ID()
+		for {
+			select {
+			case trigger <- client.ID():
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case trigger <- server.ID():
+			case <-ctx.Done():
+				return
+			}
+			time.Sleep(time.Millisecond * 100)
+		}
+		//		trigger <- client.ID()
+		//		trigger <- server.ID()
 	}()
-	
+
 	step := &simulations.Step{
 		Action:  action,
 		Trigger: trigger,
 		Expect: &simulations.Expectation{
-			Nodes: []discover.NodeID{client.ID()},
+			Nodes: []discover.NodeID{server.ID(), client.ID()},
 			Check: check,
 		},
 	}
-	
-	timeout := 300 * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+
 	result := sim.Run(ctx, step)
 	if result.Error != nil {
 		t.Fatalf("Simulation failed: %s", result.Error)
@@ -159,6 +201,8 @@ func newLesClientService(ctx *adapters.ServiceContext) (node.Service, error) {
 	config := eth.DefaultConfig
 	config.NetworkId = 12345
 	config.SyncMode = downloader.LightSync
+	config.Ethash.PowMode = ethash.ModeFake
+	config.Genesis = &core.Genesis{Config: params.TestChainConfig}
 	return New(ctx.NodeContext, &config)
 }
 
@@ -166,9 +210,23 @@ func newLesServerService(ctx *adapters.ServiceContext) (node.Service, error) {
 	config := eth.DefaultConfig
 	config.NetworkId = 12345
 	config.SyncMode = downloader.FullSync
+	config.LightServ = 50
+	config.Ethash.PowMode = ethash.ModeFake
+	config.Genesis = &core.Genesis{Config: params.TestChainConfig}
 	ethereum, err := eth.New(ctx.NodeContext, &config)
 	if err != nil {
 		return nil, err
+	}
+
+	db := ethereum.ChainDb()
+	chain := ethereum.BlockChain()
+	genesis := chain.GetBlockByNumber(0)
+	if genesis == nil {
+		return nil, fmt.Errorf("no genesis block")
+	}
+	blocks, _ := core.GenerateChain(params.TestChainConfig, genesis, ethash.NewFaker(), db, 1000, nil)
+	if i, err := chain.InsertChain(blocks); err != nil {
+		return nil, fmt.Errorf("error at inserting block #%d: %v", i, err)
 	}
 	server, err := NewLesServer(ethereum, &config)
 	if err != nil {
