@@ -83,6 +83,7 @@ type Ethereum struct {
 	bloomRequests chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bloomIndexer  *core.ChainIndexer             // Bloom indexer operating during block imports
 
+	extraAPIs  []rpc.API
 	APIBackend *EthAPIBackend
 
 	miner     *miner.Miner
@@ -98,6 +99,10 @@ type Ethereum struct {
 func (s *Ethereum) AddLesServer(ls LesServer) {
 	s.lesServer = ls
 	ls.SetBloomBitsIndexer(s.bloomIndexer)
+}
+
+func (s *Ethereum) AddExtraAPIs(extraAPIs []rpc.API) {
+	s.extraAPIs = append(s.extraAPIs, extraAPIs...)
 }
 
 // New creates a new Ethereum object (including the
@@ -254,7 +259,7 @@ func CreateConsensusEngine(ctx *node.ServiceContext, chainConfig *params.ChainCo
 // APIs return the collection of RPC services the ethereum package offers.
 // NOTE, some of these services probably need to be moved to somewhere else.
 func (s *Ethereum) APIs() []rpc.API {
-	apis := ethapi.GetAPIs(s.APIBackend)
+	apis := append(s.extraAPIs, ethapi.GetAPIs(s.APIBackend)...)
 
 	// Append any APIs exposed explicitly by the les server
 	if s.lesServer != nil {

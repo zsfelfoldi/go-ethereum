@@ -37,6 +37,7 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/simulations"
 	"github.com/ethereum/go-ethereum/p2p/simulations/adapters"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rpc"
 	colorable "github.com/mattn/go-colorable"
 )
 
@@ -46,7 +47,9 @@ func init() {
 	flag.Parse()
 	// register the Delivery service which will run as a devp2p
 	// protocol when using the exec adapter
+	fmt.Println("register start")
 	adapters.RegisterServices(services)
+	fmt.Println("register end")
 
 	log.PrintOrigins(true)
 	log.Root().SetHandler(log.LvlFilterHandler(log.Lvl(*loglevel), log.StreamHandler(colorable.NewColorableStderr(), log.TerminalFormat(true))))
@@ -89,11 +92,17 @@ func NewAdapter(adapterType string, services adapters.Services) (adapter adapter
 }
 
 func TestSim(t *testing.T) {
+	fmt.Println("test start")
 	net, teardown, err := NewNetwork()
 	defer teardown()
 	if err != nil {
 		t.Fatalf("Failed to create network: %v", err)
 	}
+	fmt.Println("1")
+
+	timeout := 300 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
 	clientconf := adapters.RandomNodeConfig()
 	clientconf.Services = []string{"lesclient"}
@@ -103,12 +112,27 @@ func TestSim(t *testing.T) {
 	serverconf.Services = []string{"lesserver"}
 	server, err := net.NewNodeWithConfig(serverconf)
 
+	fmt.Println("2")
+
 	if err := net.Start(client.ID()); err != nil {
 		t.Fatalf("Failed to start client node: %v", err)
 	}
 	if err := net.Start(server.ID()); err != nil {
 		t.Fatalf("Failed to start server node: %v", err)
 	}
+	fmt.Println("3")
+
+	var headNum uint64
+	serverClient, err := server.Client()
+	if err != nil {
+		t.Fatalf("Failed to obtain server.Client(): %v", err)
+	}
+	if err := serverClient.CallContext(ctx, &headNum, "test_generateChain", simTestBlockCount); err != nil {
+		t.Fatalf("Failed to call test_generateChain: %v", err)
+	}
+
+	fmt.Println("3x")
+
 	net.Connect(client.ID(), server.ID())
 
 	sim := simulations.NewSimulation(net)
@@ -147,10 +171,6 @@ func TestSim(t *testing.T) {
 		}
 		return head == simTestBlockCount, nil
 	}
-
-	timeout := 300 * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 
 	trigger := make(chan discover.NodeID)
 	go func() {
@@ -214,6 +234,8 @@ func newLesClientService(ctx *adapters.ServiceContext) (node.Service, error) {
 }
 
 func newLesServerService(ctx *adapters.ServiceContext) (node.Service, error) {
+	fmt.Println("server init start")
+	defer fmt.Println("server init end")
 	config := eth.DefaultConfig
 	config.NetworkId = 12345
 	config.SyncMode = downloader.FullSync
@@ -225,20 +247,34 @@ func newLesServerService(ctx *adapters.ServiceContext) (node.Service, error) {
 		return nil, err
 	}
 
-	db := ethereum.ChainDb()
-	chain := ethereum.BlockChain()
-	genesis := chain.GetBlockByNumber(0)
-	if genesis == nil {
-		return nil, fmt.Errorf("no genesis block")
-	}
-	blocks, _ := core.GenerateChain(params.TestChainConfig, genesis, ethash.NewFaker(), db, simTestBlockCount, nil)
-	if i, err := chain.InsertChain(blocks); err != nil {
-		return nil, fmt.Errorf("error at inserting block #%d: %v", i, err)
-	}
 	server, err := NewLesServer(ethereum, &config)
 	if err != nil {
 		return nil, err
 	}
 	ethereum.AddLesServer(server)
+	ethereum.AddExtraAPIs([]rpc.API{{
+		Namespace: "test",
+		Version:   "1.0",
+		Service:   &SimTestAPI{ethereum},
+	}})
 	return ethereum, nil
+}
+
+type SimTestAPI struct {
+	ethereum *eth.Ethereum
+}
+
+func (s *SimTestAPI) GenerateChain(headNum uint64) (uint64, error) {
+	db := s.ethereum.ChainDb()
+	chain := s.ethereum.BlockChain()
+	lastBlock := chain.CurrentBlock()
+	lastNum := lastBlock.NumberU64()
+	if headNum > lastNum {
+		blocks, _ := core.GenerateChain(params.TestChainConfig, lastBlock, ethash.NewFaker(), db, int(headNum-lastNum), nil)
+		if i, err := chain.InsertChain(blocks); err != nil {
+			return chain.CurrentBlock().NumberU64(), fmt.Errorf("error at inserting block #%d: %v", i, err)
+		}
+		return chain.CurrentBlock().NumberU64(), nil
+	}
+	return headNum, nil
 }
