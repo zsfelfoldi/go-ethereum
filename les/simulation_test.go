@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/consensus/ethash"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/eth"
@@ -39,6 +40,8 @@ import (
 	colorable "github.com/mattn/go-colorable"
 )
 
+const simTestBlockCount = 1000
+
 func init() {
 	flag.Parse()
 	// register the Delivery service which will run as a devp2p
@@ -51,7 +54,7 @@ func init() {
 
 var (
 	adapter  = flag.String("adapter", "sim", "type of simulation: sim|socket|exec|docker")
-	loglevel = flag.Int("loglevel", 2, "verbosity of logs")
+	loglevel = flag.Int("loglevel", 0, "verbosity of logs")
 	nodes    = flag.Int("nodes", 0, "number of nodes")
 )
 
@@ -138,7 +141,11 @@ func TestSim(t *testing.T) {
 		}
 
 		fmt.Println(id, s)
-		return s == "0x3e8", nil
+		head, err := hexutil.DecodeUint64(s)
+		if err != nil {
+			return false, err
+		}
+		return head == simTestBlockCount, nil
 	}
 
 	timeout := 300 * time.Second
@@ -224,7 +231,7 @@ func newLesServerService(ctx *adapters.ServiceContext) (node.Service, error) {
 	if genesis == nil {
 		return nil, fmt.Errorf("no genesis block")
 	}
-	blocks, _ := core.GenerateChain(params.TestChainConfig, genesis, ethash.NewFaker(), db, 1000, nil)
+	blocks, _ := core.GenerateChain(params.TestChainConfig, genesis, ethash.NewFaker(), db, simTestBlockCount, nil)
 	if i, err := chain.InsertChain(blocks); err != nil {
 		return nil, fmt.Errorf("error at inserting block #%d: %v", i, err)
 	}
