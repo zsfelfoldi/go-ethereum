@@ -91,7 +91,7 @@ func NewAdapter(adapterType string, services adapters.Services) (adapter adapter
 	return adapter, teardown, nil
 }
 
-func TestSim(t *testing.T) {
+func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node)) {
 	fmt.Println("test start")
 	net, teardown, err := NewNetwork()
 	defer teardown()
@@ -104,106 +104,136 @@ func TestSim(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	servers := make([]*simulations.Node, serverCount)
+	clients := make([]*simulations.Node, clientCount)
+
 	clientconf := adapters.RandomNodeConfig()
 	clientconf.Services = []string{"lesclient"}
-	client, err := net.NewNodeWithConfig(clientconf)
+	for i, _ := range clients {
+		client, err := net.NewNodeWithConfig(clientconf)
+		if err != nil {
+			t.Fatalf("Failed to create client: %v", err)
+		}
+		clients[i] = client
+	}
 
 	serverconf := adapters.RandomNodeConfig()
 	serverconf.Services = []string{"lesserver"}
-	server, err := net.NewNodeWithConfig(serverconf)
+	for i, _ := range servers {
+		server, err := net.NewNodeWithConfig(serverconf)
+		if err != nil {
+			t.Fatalf("Failed to create server: %v", err)
+		}
+		servers[i] = server
+	}
 
 	fmt.Println("2")
 
-	if err := net.Start(client.ID()); err != nil {
-		t.Fatalf("Failed to start client node: %v", err)
+	for _, client := range clients {
+		if err := net.Start(client.ID()); err != nil {
+			t.Fatalf("Failed to start client node: %v", err)
+		}
 	}
-	if err := net.Start(server.ID()); err != nil {
-		t.Fatalf("Failed to start server node: %v", err)
+	for _, server := range servers {
+		if err := net.Start(server.ID()); err != nil {
+			t.Fatalf("Failed to start server node: %v", err)
+		}
 	}
 	fmt.Println("3")
 
-	var headNum uint64
-	serverClient, err := server.Client()
-	if err != nil {
-		t.Fatalf("Failed to obtain server.Client(): %v", err)
-	}
-	if err := serverClient.CallContext(ctx, &headNum, "test_generateChain", simTestBlockCount); err != nil {
-		t.Fatalf("Failed to call test_generateChain: %v", err)
-	}
+	test(ctx, net, servers, clients)
+}
 
-	fmt.Println("3x")
+func testSimGenerateChain(node *simulations.Node, targetHead uint64) {
 
-	net.Connect(client.ID(), server.ID())
+}
 
-	sim := simulations.NewSimulation(net)
+func TestSim(t *testing.T) {
+	testSim(t, 1, 1, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
 
-	action := func(ctx context.Context) error {
-		return nil
-	}
-
-	check := func(ctx context.Context, id discover.NodeID) (bool, error) {
-		fmt.Println(id, "*****")
-		// check we haven't run out of time
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		default:
-		}
-
-		// get the node
-		node := net.GetNode(id)
-		if node == nil {
-			return false, fmt.Errorf("unknown node: %s", id)
-		}
-		client, err := node.Client()
+		var headNum uint64
+		serverClient, err := server.Client()
 		if err != nil {
-			return false, err
+			t.Fatalf("Failed to obtain server.Client(): %v", err)
 		}
-		var s string
-		if err := client.CallContext(ctx, &s, "eth_blockNumber"); err != nil {
-			return false, err
+		if err := serverClient.CallContext(ctx, &headNum, "test_generateChain", simTestBlockCount); err != nil {
+			t.Fatalf("Failed to call test_generateChain: %v", err)
 		}
 
-		fmt.Println(id, s)
-		head, err := hexutil.DecodeUint64(s)
-		if err != nil {
-			return false, err
-		}
-		return head == simTestBlockCount, nil
-	}
+		fmt.Println("3x")
 
-	trigger := make(chan discover.NodeID)
-	go func() {
-		for {
+		net.Connect(client.ID(), server.ID())
+
+		sim := simulations.NewSimulation(net)
+
+		action := func(ctx context.Context) error {
+			return nil
+		}
+
+		check := func(ctx context.Context, id discover.NodeID) (bool, error) {
+			fmt.Println(id, "*****")
+			// check we haven't run out of time
 			select {
-			case trigger <- client.ID():
 			case <-ctx.Done():
-				return
+				return false, ctx.Err()
+			default:
 			}
-			select {
-			case trigger <- server.ID():
-			case <-ctx.Done():
-				return
+
+			// get the node
+			node := net.GetNode(id)
+			if node == nil {
+				return false, fmt.Errorf("unknown node: %s", id)
 			}
-			time.Sleep(time.Millisecond * 100)
+			client, err := node.Client()
+			if err != nil {
+				return false, err
+			}
+			var s string
+			if err := client.CallContext(ctx, &s, "eth_blockNumber"); err != nil {
+				return false, err
+			}
+
+			fmt.Println(id, s)
+			head, err := hexutil.DecodeUint64(s)
+			if err != nil {
+				return false, err
+			}
+			return head == simTestBlockCount, nil
 		}
-		//		trigger <- client.ID()
-		//		trigger <- server.ID()
-	}()
 
-	step := &simulations.Step{
-		Action:  action,
-		Trigger: trigger,
-		Expect: &simulations.Expectation{
-			Nodes: []discover.NodeID{server.ID(), client.ID()},
-			Check: check,
-		},
-	}
+		trigger := make(chan discover.NodeID)
+		go func() {
+			for {
+				select {
+				case trigger <- client.ID():
+				case <-ctx.Done():
+					return
+				}
+				select {
+				case trigger <- server.ID():
+				case <-ctx.Done():
+					return
+				}
+				time.Sleep(time.Millisecond * 100)
+			}
+			//		trigger <- client.ID()
+			//		trigger <- server.ID()
+		}()
 
-	result := sim.Run(ctx, step)
-	if result.Error != nil {
-		t.Fatalf("Simulation failed: %s", result.Error)
-	}
+		step := &simulations.Step{
+			Action:  action,
+			Trigger: trigger,
+			Expect: &simulations.Expectation{
+				Nodes: []discover.NodeID{server.ID(), client.ID()},
+				Check: check,
+			},
+		}
+
+		result := sim.Run(ctx, step)
+		if result.Error != nil {
+			t.Fatalf("Simulation failed: %s", result.Error)
+		}
+	})
 }
 
 func NewNetwork() (*simulations.Network, func(), error) {
