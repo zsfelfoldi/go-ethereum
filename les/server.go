@@ -37,6 +37,7 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/discv5"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 type LesServer struct {
@@ -127,6 +128,23 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	srv.blockProcLoop(pm)
 	srv.fcCostStats = newCostStats(eth.ChainDb())
 	return srv, nil
+}
+
+func (s *LesServer) APIs() []rpc.API {
+	return []rpc.API{
+		{
+			Namespace: "les",
+			Version:   "1.0",
+			Service:   NewPublicLesServerAPI(s),
+			Public:    true,
+		},
+		{
+			Namespace: "les",
+			Version:   "1.0",
+			Service:   s.protocolManager.messageApi,
+			Public:    true,
+		},
+	}
 }
 
 func (s *LesServer) blockProcLoop(pm *ProtocolManager) {

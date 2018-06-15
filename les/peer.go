@@ -42,7 +42,7 @@ var (
 	errInvalidHelpTrieReq = errors.New("invalid help trie request")
 )
 
-const maxResponseErrors = 50 // number of invalid responses tolerated (makes the protocol less brittle but still avoids spam)
+const maxProtocolErrors = 50 // number of protocol errors tolerated (makes the protocol less brittle but still avoids spam)
 
 const (
 	announceTypeNone = iota
@@ -61,6 +61,8 @@ type peer struct {
 
 	announceType, requestAnnounceType uint64
 
+	messageFilter PrefixSet
+
 	id string
 
 	headInfo *announceData
@@ -75,7 +77,7 @@ type peer struct {
 
 	poolEntry      *poolEntry
 	hasBlock       func(common.Hash, uint64) bool
-	responseErrors int
+	protocolErrors int
 
 	fcClient       *flowcontrol.ClientNode // nil if the peer is server only
 	fcServer       *flowcontrol.ServerNode // nil if the peer is client only
@@ -96,6 +98,12 @@ func newPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *pe
 		id:          fmt.Sprintf("%x", id[:8]),
 		announceChn: make(chan announceData, 20),
 	}
+}
+
+// failOnError returns true if the protocol handler should actually fail on a protocol error
+func (p *peer) failOnError() bool {
+	p.protocolErrors++
+	return p.protocolErrors > maxProtocolErrors
 }
 
 func (p *peer) canQueue() bool {
@@ -185,6 +193,11 @@ func (p *peer) HasBlock(hash common.Hash, number uint64) bool {
 	hasBlock := p.hasBlock
 	p.lock.RUnlock()
 	return hasBlock != nil && hasBlock(hash, number)
+}
+
+// SendApiMessage sends a message to message API listeners on the other side
+func (p *peer) SendApiMessage(message string) error {
+	return p2p.Send(p.rw, ApiMsg, message)
 }
 
 // SendAnnounce announces the availability of a number of blocks through
@@ -398,7 +411,7 @@ func (p *peer) sendReceiveHandshake(sendList keyValueList) (keyValueList, error)
 
 // Handshake executes the les protocol handshake, negotiating version number,
 // network IDs, difficulties, head and genesis blocks.
-func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis common.Hash, server *LesServer) error {
+func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis common.Hash, server *LesServer, messageFilter PrefixSet) error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
@@ -409,6 +422,9 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 	send = send.add("headHash", head)
 	send = send.add("headNum", headNum)
 	send = send.add("genesisHash", genesis)
+	if messageFilter != nil {
+		send = send.add("messageFilter", messageFilter)
+	}
 	if server != nil {
 		send = send.add("serveHeaders", nil)
 		send = send.add("serveChainSince", uint64(0))
@@ -450,6 +466,11 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 	}
 	if err := recv.get("genesisHash", &rGenesis); err != nil {
 		return err
+	}
+	if recv.get("messageFilter", p.messageFilter) != nil {
+		p.messageFilter = nil
+	} else {
+		p.messageFilter = p.messageFilter.SortAndFilter()
 	}
 
 	if rGenesis != genesis {

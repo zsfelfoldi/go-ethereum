@@ -111,6 +111,8 @@ type ProtocolManager struct {
 	peers      *peerSet
 	maxPeers   int
 
+	messageApi *PublicLesMessageAPI
+
 	eventMux *event.TypeMux
 
 	// channels for fetcher, syncer, txsyncLoop
@@ -260,7 +262,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		number  = head.Number.Uint64()
 		td      = pm.blockchain.GetTd(hash, number)
 	)
-	if err := p.Handshake(td, hash, number, genesis.Hash(), pm.server); err != nil {
+	if err := p.Handshake(td, hash, number, genesis.Hash(), pm.server, nil); err != nil {
 		p.Log().Debug("Light Ethereum handshake failed", "err", err)
 		return err
 	}
@@ -285,7 +287,15 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		p.Log().Error("Light Ethereum peer registration failed", "err", err)
 		return err
 	}
+
+	if pm.server != nil {
+		pm.messageApi.received(p.id, "@connect")
+	}
+
 	defer func() {
+		if pm.server != nil {
+			pm.messageApi.received(p.id, "@disconnect")
+		}
 		pm.removePeer(p.id)
 	}()
 	// Register the peer in the downloader. If the downloader considers it banned, we disconnect
@@ -405,6 +415,16 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		p.Log().Trace("Received status message")
 		// Status messages should never arrive after the handshake
 		return errResp(ErrExtraStatusMsg, "uncontrolled status message")
+
+	case ApiMsg:
+		p.Log().Trace("Received API message")
+		var apiMessage string
+		if err := msg.Decode(&apiMessage); err != nil {
+			return errResp(ErrDecode, "%v: %v", msg, err)
+		}
+		if pm.messageApi.received(p.id, "/"+apiMessage) != nil {
+			// ***handle error
+		}
 
 	// Block header query, collect the requested headers and reply
 	case AnnounceMsg:
@@ -1207,14 +1227,25 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 
 	if deliverMsg != nil {
 		err := pm.retriever.deliver(p, deliverMsg)
-		if err != nil {
-			p.responseErrors++
-			if p.responseErrors > maxResponseErrors {
-				return err
-			}
+		if err != nil && p.failOnError() {
+			return err
 		}
 	}
 	return nil
+}
+
+// sendApiMessage sends a message through LES to message API listeners on the other side
+func (pm *ProtocolManager) sendApiMessage(to, message string) error {
+	if peer := pm.peers.Peer(to); peer != nil {
+		if len(message) < 1 || message[0] != '/' ||
+			peer.messageFilter == nil || !peer.messageFilter.Match(message) {
+			return ErrApiMessageUnwanted
+		}
+		if peer.SendApiMessage(message[1:]) == nil {
+			return nil
+		}
+	}
+	return ErrApiMessageSend
 }
 
 // getAccount retrieves an account from the state based at root.

@@ -250,7 +250,7 @@ func newTestPeer(t *testing.T, name string, version int, pm *ProtocolManager, sh
 			head    = pm.blockchain.CurrentHeader()
 			td      = pm.blockchain.GetTd(head.Hash(), head.Number.Uint64())
 		)
-		tp.handshake(t, td, head.Hash(), head.Number.Uint64(), genesis.Hash())
+		tp.handshake(t, td, head.Hash(), head.Number.Uint64(), genesis.Hash(), nil)
 	}
 	return tp, errc
 }
