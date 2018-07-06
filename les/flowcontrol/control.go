@@ -66,22 +66,28 @@ func (peer *ClientNode) recalcBV(time mclock.AbsTime) {
 	peer.lastTime = time
 }
 
-func (peer *ClientNode) AcceptRequest() (uint64, bool) {
+// AcceptRequest returns whether a new request can be accepted and the missing
+// buffer amount if it was rejected due to a buffer underrun. If accepted, maxCost
+// is deducted from the flow control buffer.
+func (peer *ClientNode) AcceptRequest(maxCost uint64) (bool, uint64) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
 	time := mclock.Now()
 	peer.recalcBV(time)
-	return peer.bufValue, peer.cm.accept(peer.cmNode, time)
+	if maxCost > peer.bufValue {
+		return false, maxCost - peer.bufValue
+	}
+	peer.bufValue -= maxCost
+	return peer.cm.accept(peer.cmNode, time), 0
 }
 
-func (peer *ClientNode) RequestProcessed(cost uint64) (bv, realCost uint64) {
+// RequestProcessed should be called when the request has been processed
+func (peer *ClientNode) RequestProcessed() (bv, realCost uint64) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
 	time := mclock.Now()
-	peer.recalcBV(time)
-	peer.bufValue -= cost
 	peer.recalcBV(time)
 	rcValue, rcost := peer.cm.processed(peer.cmNode, time)
 	if rcValue < peer.params.BufLimit {
@@ -160,9 +166,9 @@ func (peer *ServerNode) QueueRequest(reqID, maxCost uint64) {
 	peer.pending[reqID] = peer.sumCost
 }
 
-// GotReply adjusts estimated buffer value according to the value included in
+// ReceivedReply adjusts estimated buffer value according to the value included in
 // the latest request reply.
-func (peer *ServerNode) GotReply(reqID, bv uint64) {
+func (peer *ServerNode) ReceivedReply(reqID, bv uint64) {
 
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
