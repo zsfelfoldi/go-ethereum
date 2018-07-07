@@ -38,6 +38,10 @@ type cmNodeFields struct {
 	corrBufValue                   int64
 	rcLastUpdate                   mclock.AbsTime
 	rcLastIntValue, rcNextIntValue int64
+	rechargeWeight                 uint64
+
+	expWindowCost  float64
+	costLastUpdate mclock.AbsTime
 }
 
 // rcQueueItem represents an integrator threshold value where a certain client's buffer is recharged
@@ -90,10 +94,10 @@ type ClientManager struct {
 	totalRecharge                    float64
 	forceMinRecharge, bufCorrEnabled bool
 
-	sumRecharge    uint64
-	rcLastUpdate   mclock.AbsTime
-	rcLastIntValue int64 // normalized to MRR=1000000
-	rcQueue        *prque.Prque
+	sumRechargeWeight uint64
+	rcLastUpdate      mclock.AbsTime
+	rcLastIntValue    int64 // normalized to MRR=1000000
+	rcQueue           *prque.Prque
 }
 
 // NewClientManager returns a new client manager. Multiple client managers can
@@ -184,12 +188,12 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 	if cm.totalRecharge == 0 {
 		return
 	}
-	for cm.sumRecharge > 0 {
+	for cm.sumRechargeWeight > 0 {
 		var slope float64
 		if cm.forceMinRecharge {
 			slope = 1
 		} else {
-			slope = cm.totalRecharge / float64(cm.sumRecharge)
+			slope = cm.totalRecharge / float64(cm.sumRechargeWeight)
 		}
 		dt := time - lastUpdate
 		q := cm.rcQueue.Pop()
@@ -209,7 +213,7 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 		}
 		if rcqItem.node.corrBufValue < int64(rcqItem.node.params.BufLimit) {
 			rcqItem.node.corrBufValue = int64(rcqItem.node.params.BufLimit)
-			cm.sumRecharge -= rcqItem.node.params.MinRecharge
+			cm.sumRechargeWeight -= rcqItem.node.rechargeWeight
 		}
 		lastUpdate += dtNext
 		cm.rcLastIntValue = rcqItem.intValue
@@ -218,33 +222,33 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 
 func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, time mclock.AbsTime) {
 	cm.updateRecharge(time)
-	wasFull := true
 	if node.corrBufValue != int64(node.params.BufLimit) {
-		wasFull = false
-		node.corrBufValue += (cm.rcLastIntValue - node.rcLastIntValue) * int64(node.params.MinRecharge) / 1000000
+		// node's buffer wasn't full, rechargeWeigth was included in sumRechargeWeight
+		// we always subtract it and add it back after updating if necessary
+		cm.sumRechargeWeight -= node.rechargeWeight
+		node.corrBufValue += (cm.rcLastIntValue - node.rcLastIntValue) * int64(node.rechargeWeight) / 1000000
 		if node.corrBufValue > int64(node.params.BufLimit) {
 			node.corrBufValue = int64(node.params.BufLimit)
 		}
 		node.rcLastIntValue = cm.rcLastIntValue
 	}
+
+	// now that rechargeWeigth is not included in sumRechargeWeight, update it
+	node.rechargeWeight = node.calculateRechargeWeight(time)
+
 	node.corrBufValue += bvc
 	if node.corrBufValue < 0 {
 		node.corrBufValue = 0
 	}
-	isFull := false
 	if node.corrBufValue >= int64(node.params.BufLimit) {
+		// node's buffer is full, apply upper limit
 		node.corrBufValue = int64(node.params.BufLimit)
-		isFull = true
-	}
-	if wasFull && !isFull {
-		cm.sumRecharge += node.params.MinRecharge
-	}
-	if !wasFull && isFull {
-		cm.sumRecharge -= node.params.MinRecharge
-	}
-	if !isFull {
+	} else {
+		// node's buffer is not full, add updated rechargeWeight
+		cm.sumRechargeWeight += node.rechargeWeight
+		// update integrator and rc queue values
 		node.rcLastIntValue = cm.rcLastIntValue
-		node.rcNextIntValue = cm.rcLastIntValue + (int64(node.params.BufLimit)-node.corrBufValue)*1000000/int64(node.params.MinRecharge)
+		node.rcNextIntValue = cm.rcLastIntValue + (int64(node.params.BufLimit)-node.corrBufValue)*1000000/int64(node.rechargeWeight)
 		cm.rcQueue.Push(rcQueueItem{node: node, intValue: node.rcNextIntValue})
 	}
 }
@@ -337,6 +341,7 @@ func (cm *ClientManager) processed(node *ClientNode, time mclock.AbsTime) (realC
 	if realCost > node.servingMaxCost {
 		realCost = node.servingMaxCost
 	}
+	cm.updateExpWindowCost(node, float64(realCost), time)	
 	if !cm.forceMinRecharge {
 		cm.updateNodeRc(node, int64(node.servingMaxCost-realCost), time)
 	}
@@ -353,4 +358,16 @@ func (cm *ClientManager) processed(node *ClientNode, time mclock.AbsTime) (realC
 	}
 	cm.setParallelReqs(cm.parallelReqs-1, time)
 	return
+}
+
+func (cm *ClientManager) updateExpWindowCost(node *ClientNode, add float64, time mclock.AbsTime) float64 {
+	dt := time - node.costLastUpdate
+	node.costLastUpdate = time
+	node.expWindowCost = node.expWindowCost*math.Exp(-float64(dt)/float64(cm.expWindowTC)) + add
+	return node.expWindowCost
+}
+
+func (cm *ClientManager) calculateRechargeWeight(node *ClientNode, time mclock.AbsTime) uint64 {
+	ewc := cm.updateExpWindowCost(node, 0, time) / float64(node.params.MinRecharge) * 1000000 / float64(cm.expWindowTC)
+	return uint64(float64(node.params.MinRecharge) * math.Exp(-ewc*cm.weightPenaltyFactor))
 }
