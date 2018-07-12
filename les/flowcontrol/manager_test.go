@@ -42,7 +42,7 @@ func (n *testNode) send(t *testing.T, now mclock.AbsTime) bool {
 		return false
 	}
 	n.index++
-	if ok, _ := n.node.AcceptRequest(n.index, testMaxCost); !ok {
+	if ok, _, _ := n.node.AcceptRequest(n.index, testMaxCost); !ok {
 		t.Fatalf("Rejected request after expected waiting time has passed")
 	}
 	rcost := uint64(rand.Int63n(testMaxCost))

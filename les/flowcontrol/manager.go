@@ -93,7 +93,7 @@ func (pwl PieceWiseLinear) Valid() bool {
 // to be returned with each reply.
 type ClientManager struct {
 	clock     mclock.Clock
-	lock      sync.RWMutex
+	lock      sync.Mutex
 	nodes     map[*ClientNode]struct{}
 	enabledCh chan struct{}
 
@@ -200,15 +200,17 @@ func (cm *ClientManager) init(node *ClientNode) {
 	node.rcLastIntValue = cm.rcLastIntValue
 }
 
-func (cm *ClientManager) accepted(node *ClientNode, maxCost uint64, time mclock.AbsTime) {
+func (cm *ClientManager) accepted(node *ClientNode, maxCost uint64, now mclock.AbsTime) (priority int64) {
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
-	cm.updateNodeRc(node, -int64(maxCost), time)
+	cm.updateNodeRc(node, -int64(maxCost), now)
+	rcTime := (node.params.BufLimit - uint64(node.corrBufValue)) * FixedPointMultiplier / node.params.MinRecharge
+	return -int64(now) - int64(rcTime)
 }
 
 // Note: processed should always be called for all accepted requests
-func (cm *ClientManager) processed(node *ClientNode, maxCost, servingTime uint64, time mclock.AbsTime) (realCost uint64) {
+func (cm *ClientManager) processed(node *ClientNode, maxCost, servingTime uint64, now mclock.AbsTime) (realCost uint64) {
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
@@ -216,19 +218,9 @@ func (cm *ClientManager) processed(node *ClientNode, maxCost, servingTime uint64
 	if realCost > maxCost {
 		realCost = maxCost
 	}
-	cm.updateNodeRc(node, int64(maxCost-realCost), time)
+	cm.updateNodeRc(node, int64(maxCost-realCost), now)
 	if uint64(node.corrBufValue) > node.bufValue {
 		node.bufValue = uint64(node.corrBufValue)
 	}
 	return
-}
-
-func (cm *ClientManager) ServingPriority(node *ClientNode) int64 {
-	cm.lock.RLock()
-	defer cm.lock.RUnlock()
-
-	now := cm.clock.Now()
-	cm.updateNodeRc(node, 0, now)
-	rcTime := (node.params.BufLimit - uint64(node.corrBufValue)) * FixedPointMultiplier / node.params.MinRecharge
-	return -int64(now) - int64(rcTime)
 }

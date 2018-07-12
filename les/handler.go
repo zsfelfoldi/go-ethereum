@@ -365,13 +365,14 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			maxCost = pm.server.defParams.BufLimit
 		}
 
-		if accepted, bufShort := p.fcClient.AcceptRequest(responseCount, maxCost); !accepted {
+		if accepted, bufShort, servingPriority := p.fcClient.AcceptRequest(responseCount, maxCost); !accepted {
 			if bufShort > 0 {
 				p.Log().Error("Request came too early", "remaining", common.PrettyDuration(time.Duration(bufShort*1000000/pm.server.defParams.MinRecharge)))
 			}
 			return true
+		} else {
+			priority = servingPriority
 		}
-		priority = pm.server.fcManager.ServingPriority(p.fcClient)
 		return false
 	}
 

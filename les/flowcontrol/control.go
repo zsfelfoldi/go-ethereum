@@ -77,20 +77,19 @@ func (peer *ClientNode) recalcBV(time mclock.AbsTime) {
 // AcceptRequest returns whether a new request can be accepted and the missing
 // buffer amount if it was rejected due to a buffer underrun. If accepted, maxCost
 // is deducted from the flow control buffer.
-func (peer *ClientNode) AcceptRequest(index, maxCost uint64) (bool, uint64) {
+func (peer *ClientNode) AcceptRequest(index, maxCost uint64) (accepted bool, bufShort uint64, priority int64) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
 	time := peer.cm.clock.Now()
 	peer.recalcBV(time)
 	if maxCost > peer.bufValue {
-		return false, maxCost - peer.bufValue
+		return false, maxCost - peer.bufValue, 0
 	}
 	peer.bufValue -= maxCost
 	peer.sumCost += maxCost
 	peer.accepted[index] = peer.sumCost
-	peer.cm.accepted(peer, maxCost, time)
-	return true, 0
+	return true, 0, peer.cm.accepted(peer, maxCost, time)
 }
 
 // RequestProcessed should be called when the request has been processed
