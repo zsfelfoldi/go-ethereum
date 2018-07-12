@@ -27,20 +27,10 @@ import (
 // cmNodeFields are ClientNode fields used by the client manager
 // Note: these fields are locked by the client manager's mutex
 type cmNodeFields struct {
-	corrBufValue                   int64
-	rcLastUpdate                   mclock.AbsTime
-	rcLastIntValue, rcNextIntValue int64
-}
-
-// rcQueueItem represents an integrator threshold value where a certain client's buffer is recharged
-type rcQueueItem struct {
-	node     *ClientNode
-	intValue int64
-}
-
-// Note: valid is called under client manager mutex lock
-func (rcq rcQueueItem) valid() bool {
-	return rcq.intValue == rcq.node.rcNextIntValue
+	corrBufValue   int64
+	rcLastIntValue int64
+	rcFullIntValue int64
+	queueIndex     int // -1 if not queued
 }
 
 const FixedPointMultiplier = 1000000
@@ -112,7 +102,7 @@ func NewClientManager(curve PieceWiseLinear, clock mclock.Clock) *ClientManager 
 	cm := &ClientManager{
 		clock:   clock,
 		nodes:   make(map[*ClientNode]struct{}),
-		rcQueue: prque.New(nil),
+		rcQueue: prque.New(func(a interface{}, i int) { a.(*ClientNode).queueIndex = i }),
 		curve:   curve,
 	}
 	return cm
@@ -136,26 +126,23 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 		}
 		dt := time - lastUpdate
 		q := cm.rcQueue.PopItem()
-		for q != nil && !q.(rcQueueItem).valid() {
-			q = cm.rcQueue.PopItem()
-		}
 		if q == nil {
 			cm.rcLastIntValue += int64(slope * float64(dt))
 			return
 		}
-		rcqItem := q.(rcQueueItem)
-		dtNext := mclock.AbsTime(float64(rcqItem.intValue-cm.rcLastIntValue) / slope)
+		rcqNode := q.(*ClientNode)
+		dtNext := mclock.AbsTime(float64(rcqNode.rcFullIntValue-cm.rcLastIntValue) / slope)
 		if dt < dtNext {
-			cm.rcQueue.Push(rcqItem, -rcqItem.intValue)
+			cm.rcQueue.Push(rcqNode, -rcqNode.rcFullIntValue)
 			cm.rcLastIntValue += int64(slope * float64(dt))
 			return
 		}
-		if rcqItem.node.corrBufValue < int64(rcqItem.node.params.BufLimit) {
-			rcqItem.node.corrBufValue = int64(rcqItem.node.params.BufLimit)
-			cm.sumRecharge -= rcqItem.node.params.MinRecharge
+		if rcqNode.corrBufValue < int64(rcqNode.params.BufLimit) {
+			rcqNode.corrBufValue = int64(rcqNode.params.BufLimit)
+			cm.sumRecharge -= rcqNode.params.MinRecharge
 		}
 		lastUpdate += dtNext
-		cm.rcLastIntValue = rcqItem.intValue
+		cm.rcLastIntValue = rcqNode.rcFullIntValue
 	}
 }
 
@@ -186,9 +173,12 @@ func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, time mclock.A
 		cm.sumRecharge -= node.params.MinRecharge
 	}
 	if !isFull {
+		if node.queueIndex != -1 {
+			cm.rcQueue.Remove(node.queueIndex)
+		}
 		node.rcLastIntValue = cm.rcLastIntValue
-		node.rcNextIntValue = cm.rcLastIntValue + (int64(node.params.BufLimit)-node.corrBufValue)*FixedPointMultiplier/int64(node.params.MinRecharge)
-		cm.rcQueue.Push(rcQueueItem{node: node, intValue: node.rcNextIntValue}, -node.rcNextIntValue)
+		node.rcFullIntValue = cm.rcLastIntValue + (int64(node.params.BufLimit)-node.corrBufValue)*FixedPointMultiplier/int64(node.params.MinRecharge)
+		cm.rcQueue.Push(node, -node.rcFullIntValue)
 	}
 }
 
@@ -198,6 +188,7 @@ func (cm *ClientManager) init(node *ClientNode) {
 
 	node.corrBufValue = int64(node.params.BufLimit)
 	node.rcLastIntValue = cm.rcLastIntValue
+	node.queueIndex = -1
 }
 
 func (cm *ClientManager) accepted(node *ClientNode, maxCost uint64, now mclock.AbsTime) (priority int64) {
