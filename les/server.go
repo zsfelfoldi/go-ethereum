@@ -129,10 +129,10 @@ func (s *LesServer) blockProcLoop(pm *ProtocolManager) {
 			case processing := <-procFeedback:
 				if processing {
 					pm.servingQueue.setThreads(s.thcBlockProcessing)
-					s.fcManager.SetBandwidthCurve(s.bwcBlockProcessing)
+					s.fcManager.SetRechargeCurve(s.bwcBlockProcessing)
 				} else {
 					pm.servingQueue.setThreads(s.thcNormal)
-					s.fcManager.SetBandwidthCurve(s.bwcNormal)
+					s.fcManager.SetRechargeCurve(s.bwcNormal)
 				}
 			case <-pm.quitSync:
 				pm.wg.Done()
