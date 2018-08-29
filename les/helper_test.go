@@ -378,7 +378,7 @@ func newClientServerEnv(t *testing.T, blocks int, protocol int, waitIndexers fun
 	db, ldb := ethdb.NewMemDatabase(), ethdb.NewMemDatabase()
 	peers, lPeers := newPeerSet(), newPeerSet()
 
-	dist := newRequestDistributor(lPeers, make(chan struct{}))
+	dist := newRequestDistributor(lPeers, make(chan struct{}), &mclock.System{})
 	rm := newRetrieveManager(lPeers, dist, nil)
 	odr := NewLesOdr(ldb, light.TestClientIndexerConfig, rm)
 
