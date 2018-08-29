@@ -381,6 +381,8 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return
 			}
 
+			// responseLock ensures that responses are queued in the same order as
+			// RequestProcessed is called
 			p.responseLock.Lock()
 			defer p.responseLock.Unlock()
 

@@ -108,12 +108,18 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	}
 	bwNormal := uint64(config.LightServ) * flowcontrol.FixedPointMultiplier / 100
 	srv.bwcNormal = flowcontrol.PieceWiseLinear{{0, 0}, {bwNormal / 10, bwNormal}, {bwNormal, bwNormal}}
+	// limit the serving thread count to at least 4 times the targeted average
+	// bandwidth, allowing more paralellization in short-term load spikes but
+	// still limiting the total thread count at a reasonable level
 	srv.thcNormal = int(bwNormal * 4 / flowcontrol.FixedPointMultiplier)
 	if srv.thcNormal < 4 {
 		srv.thcNormal = 4
 	}
+	// while processing blocks use half of the normal target bandwidth
 	bwBlockProcessing := bwNormal / 2
 	srv.bwcBlockProcessing = flowcontrol.PieceWiseLinear{{0, 0}, {bwBlockProcessing / 10, bwBlockProcessing}, {bwBlockProcessing, bwBlockProcessing}}
+	// limit the serving thread count just above the targeted average bandwidth,
+	// ensuring that block processing is minimally hindered
 	srv.thcBlockProcessing = int(bwBlockProcessing/flowcontrol.FixedPointMultiplier) + 1
 
 	pm.servingQueue.setThreads(srv.thcNormal)
