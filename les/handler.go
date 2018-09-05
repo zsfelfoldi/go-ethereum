@@ -111,7 +111,7 @@ type ProtocolManager struct {
 	peers      *peerSet
 	maxPeers   int
 
-	messageApi *PublicLesMessageAPI
+	commonApi *PublicLesCommonAPI
 
 	eventMux *event.TypeMux
 
@@ -289,12 +289,12 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	}
 
 	if pm.server != nil {
-		pm.messageApi.received(p.id, "@connect")
+		pm.commonApi.systemBroadcast(ApiMessageFrom{Peer: p.id, Msg: "connect"})
 	}
 
 	defer func() {
 		if pm.server != nil {
-			pm.messageApi.received(p.id, "@disconnect")
+			pm.commonApi.systemBroadcast(ApiMessageFrom{Peer: p.id, Msg: "disconnect"})
 		}
 		pm.removePeer(p.id)
 	}()
@@ -418,11 +418,11 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 
 	case ApiMsg:
 		p.Log().Trace("Received API message")
-		var apiMessage string
+		var apiMessage ApiMessage
 		if err := msg.Decode(&apiMessage); err != nil {
 			return errResp(ErrDecode, "%v: %v", msg, err)
 		}
-		if pm.messageApi.received(p.id, "/"+apiMessage) != nil {
+		if pm.commonApi.receivedRemote(ApiMessageFrom{Peer: p.id, Msg: apiMessage.Msg, Data: apiMessage.Data}) != nil {
 			// ***handle error
 		}
 

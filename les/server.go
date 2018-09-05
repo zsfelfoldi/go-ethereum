@@ -131,17 +131,24 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 }
 
 func (s *LesServer) APIs() []rpc.API {
+	serverAPI := NewLesServerAPI(s, s.protocolManager.commonApi)
 	return []rpc.API{
 		{
 			Namespace: "les",
 			Version:   "1.0",
-			Service:   NewPublicLesServerAPI(s),
+			Service:   PrivateLesServerAPI{serverAPI},
+			Public:    false,
+		},
+		{
+			Namespace: "les",
+			Version:   "1.0",
+			Service:   PublicLesServerAPI{serverAPI},
 			Public:    true,
 		},
 		{
 			Namespace: "les",
 			Version:   "1.0",
-			Service:   s.protocolManager.messageApi,
+			Service:   s.protocolManager.commonApi,
 			Public:    true,
 		},
 	}

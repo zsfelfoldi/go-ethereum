@@ -27,44 +27,142 @@ import (
 )
 
 var (
+	ErrInvalidID          = errors.New("extension ID invalid or already in use")
+	ErrAuthFailed         = errors.New("extension authentication failed")
+	ErrNotMaster          = errors.New("master privilege required")
 	ErrApiMessageSend     = errors.New("could not send API message")
 	ErrApiMessageUnwanted = errors.New("unwanted API message")
 )
 
-// PublicLesServerAPI  provides an API to access the les server.
-// It offers only methods that operate on public data that is freely available to anyone.
-type PublicLesServerAPI struct {
-	server *LesServer
+type clientInfo struct {
+	owner         string // extensionID
+	weight        uint64
+	offeredWeight map[string]uint64 // extensionID -> weight
+}
+
+type serverExtension struct {
+	master             bool
+	totalWeight, limit uint64
+	clients            map[string]*clientInfo
+}
+
+type serverAPI struct {
+	*PublicLesCommonAPI
+	server     *LesServer
+	extensions map[string]*serverExtension
+	clients    map[string]*clientInfo
 }
 
 // NewPublicLesServerAPI creates a new les server API.
-func NewPublicLesServerAPI(server *LesServer) *PublicLesServerAPI {
-	return &PublicLesServerAPI{
-		server: server,
+func NewLesServerAPI(server *LesServer, commonAPI *PublicLesCommonAPI) *serverAPI {
+	return &serverAPI{
+		PublicLesCommonAPI: commonAPI,
+		server:             server,
+		extensions:         make(map[string]*serverExtension),
+		clients:            make(map[string]*clientInfo),
 	}
 }
 
-type ApiMessage struct {
-	Id  string `json:"id"`
-	Msg string `json:"msg"`
+func (api *serverAPI) getOrNewExtension(id string) *serverExtension {
+	if res, ok := api.extensions[id]; ok {
+		return res
+	} else {
+		res = &serverExtension{clients: make(map[string]*clientInfo)}
+		api.extensions[id] = res
+		return res
+	}
 }
 
-type PublicLesMessageAPI struct {
-	send       func(to, message string) error
-	subs       map[chan ApiMessage]PrefixSet
+type (
+	PrivateLesServerAPI struct{ *serverAPI }
+	PublicLesServerAPI  struct{ *serverAPI }
+)
+
+func (api PrivateLesServerAPI) SetMaster(extension string) {
+	api.lock.Lock()
+	defer api.lock.Unlock()
+
+	api.getOrNewExtension(extension).master = true
+}
+
+func (api PublicLesServerAPI) SetLimit(master, masterKey, target string, newLimit uint64) error {
+	api.lock.Lock()
+	defer api.lock.Unlock()
+
+	if err := api.authenticate(master, masterKey); err != nil {
+		return err
+	}
+	if m, ok := api.extensions[master]; !ok || !m.master {
+		return ErrNotMaster
+	}
+	o := api.getOrNewExtension(target)
+	if newLimit < o.totalWeight {
+
+	}
+	o.limit = newLimit
+	data := make(map[string]interface{})
+	data["id"] = target
+	data["limit"] = newLimit
+	api.broadcast(ApiMessageFrom{Msg: "system/limitChanged", Data: data})
+	return nil
+}
+
+//------------------------------------------------------------
+//------------------------------------------------------------
+//------------------------------------------------------------
+//------------------------------------------------------------
+//------------------------------------------------------------
+
+type ApiMessage struct {
+	Msg  string                 `json:"msg"`
+	Data map[string]interface{} `json:"data"`
+}
+
+type ApiMessageFrom struct {
+	Msg  string                 `json:"msg"`
+	Data map[string]interface{} `json:"data"`
+	Peer string                 `json:"peer"`
+}
+
+type PublicLesCommonAPI struct {
 	lock       sync.RWMutex
+	keys       map[string]string
+	sendRemote func(to string, msg ApiMessage) error
+	subs       map[chan ApiMessageFrom]PrefixSet
 	allFilters PrefixSet
 }
 
 // NewPublicLesServerAPI creates a new les server API.
-func NewPublicLesMessageAPI(send func(to, message string) error) *PublicLesMessageAPI {
-	return &PublicLesMessageAPI{
-		send: send,
-		subs: make(map[chan ApiMessage]PrefixSet),
+func NewPublicLesCommonAPI(sendRemote func(to string, msg ApiMessage) error) *PublicLesCommonAPI {
+	return &PublicLesCommonAPI{
+		sendRemote: sendRemote,
+		keys:       make(map[string]string),
+		subs:       make(map[chan ApiMessageFrom]PrefixSet),
 	}
 }
 
-func (api *PublicLesMessageAPI) getAllFilters() PrefixSet {
+func (api *PublicLesCommonAPI) RegisterExtension(id, key string) error {
+	api.lock.Lock()
+	defer api.lock.Unlock()
+
+	if len(id) == 0 || strings.Contains(id, "/") {
+		return ErrInvalidID
+	}
+	if _, ok := api.keys[id]; ok {
+		return ErrInvalidID
+	}
+	api.keys[id] = key
+	return nil
+}
+
+func (api *PublicLesCommonAPI) authenticate(id, key string) error {
+	if api.keys[id] != key {
+		return ErrAuthFailed
+	}
+	return nil
+}
+
+func (api *PublicLesCommonAPI) getAllFilters() PrefixSet {
 	api.lock.RLock()
 	defer api.lock.RUnlock()
 
@@ -80,14 +178,27 @@ func (api *PublicLesMessageAPI) getAllFilters() PrefixSet {
 	return api.allFilters
 }
 
-func (api *PublicLesMessageAPI) received(from, message string) error {
+func (api *PublicLesCommonAPI) receivedRemote(msg ApiMessageFrom) error {
 	api.lock.RLock()
 	defer api.lock.RUnlock()
 
-	msg := ApiMessage{from, message}
+	msg.Msg = "remote/" + msg.Msg
+	return api.broadcast(msg)
+}
+
+func (api *PublicLesCommonAPI) systemBroadcast(msg ApiMessageFrom) error {
+	api.lock.RLock()
+	defer api.lock.RUnlock()
+
+	msg.Msg = "system/" + msg.Msg
+	return api.broadcast(msg)
+}
+
+// internal
+func (api *PublicLesCommonAPI) broadcast(msg ApiMessageFrom) error {
 	var match bool
 	for ch, filter := range api.subs {
-		if filter.Match(message) {
+		if filter.Match(msg.Msg) {
 			match = true
 			select {
 			case ch <- msg:
@@ -102,7 +213,7 @@ func (api *PublicLesMessageAPI) received(from, message string) error {
 	}
 }
 
-func (api *PublicLesMessageAPI) subscribe(filter PrefixSet, messages chan ApiMessage) func() {
+func (api *PublicLesCommonAPI) subscribe(filter PrefixSet, messages chan ApiMessageFrom) func() {
 	api.lock.Lock()
 	defer api.lock.Unlock()
 
@@ -119,7 +230,7 @@ func (api *PublicLesMessageAPI) subscribe(filter PrefixSet, messages chan ApiMes
 	}
 }
 
-func (api *PublicLesMessageAPI) Receive(ctx context.Context, filter PrefixSet) (*rpc.Subscription, error) {
+func (api *PublicLesCommonAPI) ReceiveMessages(ctx context.Context, filter PrefixSet) (*rpc.Subscription, error) {
 	notifier, supported := rpc.NotifierFromContext(ctx)
 	if !supported {
 		return &rpc.Subscription{}, rpc.ErrNotificationsUnsupported
@@ -128,7 +239,7 @@ func (api *PublicLesMessageAPI) Receive(ctx context.Context, filter PrefixSet) (
 	rpcSub := notifier.CreateSubscription()
 
 	go func() {
-		messages := make(chan ApiMessage, 100)
+		messages := make(chan ApiMessageFrom, 100)
 		unsubscribe := api.subscribe(filter, messages)
 
 		for {
@@ -148,8 +259,15 @@ func (api *PublicLesMessageAPI) Receive(ctx context.Context, filter PrefixSet) (
 	return rpcSub, nil
 }
 
-func (api *PublicLesMessageAPI) Send(to, message string) error {
-	return api.send(to, message)
+func (api *PublicLesCommonAPI) SendMessage(from, key, to string, remote bool, message ApiMessage) error {
+	if err := api.authenticate(from, key); err != nil {
+		return err
+	}
+	if remote {
+		return api.sendRemote(to, ApiMessage{Msg: from + "/" + message.Msg, Data: message.Data})
+	} else {
+		return api.broadcast(ApiMessageFrom{Msg: "local/" + from + "/" + message.Msg, Data: message.Data})
+	}
 }
 
 // Note: empty list means "match none", list containing an empty string means "match all".
