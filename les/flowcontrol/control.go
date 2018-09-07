@@ -39,7 +39,7 @@ type ServerParams struct {
 // ClientNode is the flow control system's representation of a client
 // (used in server mode only)
 type ClientNode struct {
-	params   *ServerParams
+	params   ServerParams
 	bufValue uint64
 	lastTime mclock.AbsTime
 	sumCost  uint64            // sum of req costs received from this client
@@ -50,7 +50,7 @@ type ClientNode struct {
 }
 
 // NewClientNode returns a new ClientNode
-func NewClientNode(cm *ClientManager, params *ServerParams) *ClientNode {
+func NewClientNode(cm *ClientManager, params ServerParams) *ClientNode {
 	node := &ClientNode{
 		cm:       cm,
 		params:   params,
@@ -112,14 +112,14 @@ type ServerNode struct {
 	bufEstimate uint64
 	bufRecharge bool
 	lastTime    mclock.AbsTime
-	params      *ServerParams
+	params      ServerParams
 	sumCost     uint64            // sum of req costs sent to this server
 	pending     map[uint64]uint64 // value = sumCost after sending the given req
 	lock        sync.RWMutex
 }
 
 // NewServerNode returns a new ServerNode
-func NewServerNode(params *ServerParams, clock mclock.Clock) *ServerNode {
+func NewServerNode(params ServerParams, clock mclock.Clock) *ServerNode {
 	return &ServerNode{
 		clock:       clock,
 		bufEstimate: params.BufLimit,
@@ -128,6 +128,22 @@ func NewServerNode(params *ServerParams, clock mclock.Clock) *ServerNode {
 		params:      params,
 		pending:     make(map[uint64]uint64),
 	}
+}
+
+func (peer *ServerNode) UpdateParams(params ServerParams) {
+	peer.lock.Lock()
+	defer peer.lock.Unlock()
+
+	peer.recalcBLE(peer.clock.Now())
+	if params.BufLimit > peer.params.BufLimit {
+		peer.bufEstimate += params.BufLimit - peer.params.BufLimit
+	} else {
+		if peer.bufEstimate <= params.BufLimit {
+			peer.bufEstimate = params.BufLimit
+			peer.bufRecharge = false
+		}
+	}
+	peer.params = params
 }
 
 func (peer *ServerNode) recalcBLE(time mclock.AbsTime) {

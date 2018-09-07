@@ -45,6 +45,11 @@ var (
 const maxProtocolErrors = 50 // number of protocol errors tolerated (makes the protocol less brittle but still avoids spam)
 
 const (
+	allowedUpdateBytes = 100000
+	allowedUpdateRate  = time.Millisecond * 10
+)
+
+const (
 	announceTypeNone = iota
 	announceTypeSimple
 	announceTypeSigned
@@ -78,10 +83,12 @@ type peer struct {
 	poolEntry      *poolEntry
 	hasBlock       func(common.Hash, uint64) bool
 	protocolErrors int
+	updateCounter  uint64
+	updateTime     mclock.AbsTime
 
 	fcClient       *flowcontrol.ClientNode // nil if the peer is server only
 	fcServer       *flowcontrol.ServerNode // nil if the peer is client only
-	fcServerParams *flowcontrol.ServerParams
+	fcServerParams flowcontrol.ServerParams
 	fcCosts        requestCostTable
 }
 
@@ -104,6 +111,25 @@ func newPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *pe
 func (p *peer) failOnError() bool {
 	p.protocolErrors++
 	return p.protocolErrors > maxProtocolErrors
+}
+
+func (p *peer) rejectUpdate(size uint64) bool {
+	now := mclock.Now()
+	if p.updateCounter == 0 {
+		p.updateTime = now
+	} else {
+		dt := now - p.updateTime
+		r := uint64(dt / mclock.AbsTime(allowedUpdateRate))
+		if p.updateCounter > r {
+			p.updateCounter -= r
+			p.updateTime += mclock.AbsTime(allowedUpdateRate * time.Duration(r))
+		} else {
+			p.updateCounter = 0
+			p.updateTime = now
+		}
+	}
+	p.updateCounter += size
+	return p.updateCounter > allowedUpdateBytes
 }
 
 func (p *peer) canQueue() bool {
@@ -362,12 +388,14 @@ func (l keyValueList) add(key string, val interface{}) keyValueList {
 	return append(l, entry)
 }
 
-func (l keyValueList) decode() keyValueMap {
+func (l keyValueList) decode() (keyValueMap, uint64) {
 	m := make(keyValueMap)
+	var size uint64
 	for _, entry := range l {
 		m[entry.Key] = entry.Value
+		size += uint64(len(entry.Key)) + uint64(len(entry.Value)) + 8
 	}
-	return m
+	return m, size
 }
 
 func (m keyValueMap) get(key string, val interface{}) error {
@@ -443,7 +471,10 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 	if err != nil {
 		return err
 	}
-	recv := recvList.decode()
+	recv, size := recvList.decode()
+	if p.rejectUpdate(size) {
+		return errResp(ErrRequestRejected, "")
+	}
 
 	var rGenesis, rHash common.Hash
 	var rVersion, rNetwork, rNum uint64
@@ -501,7 +532,7 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		if recv.get("txRelay", nil) != nil {
 			return errResp(ErrUselessPeer, "peer cannot relay transactions")
 		}
-		params := &flowcontrol.ServerParams{}
+		var params flowcontrol.ServerParams
 		if err := recv.get("flowControl/BL", &params.BufLimit); err != nil {
 			return err
 		}
@@ -519,6 +550,28 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 
 	p.headInfo = &announceData{Td: rTd, Hash: rHash, Number: rNum}
 	return nil
+}
+
+func (p *peer) updateFlowControl(update keyValueMap) {
+	if p.fcServer == nil {
+		return
+	}
+	params := p.fcServerParams
+	updateParams := false
+	if update.get("flowControl/BL", &params.BufLimit) == nil {
+		updateParams = true
+	}
+	if update.get("flowControl/MRR", &params.MinRecharge) == nil {
+		updateParams = true
+	}
+	if updateParams {
+		p.fcServerParams = params
+		p.fcServer.UpdateParams(params)
+	}
+	var MRC RequestCostList
+	if update.get("flowControl/MRC", &MRC) == nil {
+		p.fcCosts = MRC.decode()
+	}
 }
 
 // String implements fmt.Stringer.
