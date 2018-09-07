@@ -289,12 +289,12 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	}
 
 	if pm.server != nil {
-		pm.commonApi.systemBroadcast(ApiMessageFrom{Peer: p.id, Msg: "connect"})
+		pm.commonApi.peerConnect(p.id, true)
 	}
 
 	defer func() {
 		if pm.server != nil {
-			pm.commonApi.systemBroadcast(ApiMessageFrom{Peer: p.id, Msg: "disconnect"})
+			pm.commonApi.peerConnect(p.id, false)
 		}
 		pm.removePeer(p.id)
 	}()

@@ -30,46 +30,63 @@ var (
 	ErrInvalidID          = errors.New("extension ID invalid or already in use")
 	ErrAuthFailed         = errors.New("extension authentication failed")
 	ErrNotMaster          = errors.New("master privilege required")
+	ErrLimit              = errors.New("total weight limit exceeded")
+	ErrReduceLimit        = errors.New("cannot reduce weight limit")
+	ErrUnknownClient      = errors.New("unknown client")
 	ErrApiMessageSend     = errors.New("could not send API message")
 	ErrApiMessageUnwanted = errors.New("unwanted API message")
 )
 
 type clientInfo struct {
-	owner         string // extensionID
-	weight        uint64
-	offeredWeight map[string]uint64 // extensionID -> weight
+	owner  *serverExtension
+	weight uint64
 }
 
 type serverExtension struct {
-	master             bool
 	totalWeight, limit uint64
 	clients            map[string]*clientInfo
 }
 
 type serverAPI struct {
 	*PublicLesCommonAPI
-	server     *LesServer
-	extensions map[string]*serverExtension
-	clients    map[string]*clientInfo
+	server                 *LesServer
+	extensions             map[string]*serverExtension
+	clients                map[string]*clientInfo
+	master                 map[string]struct{}
+	extLimits, globalLimit uint64
 }
 
 // NewPublicLesServerAPI creates a new les server API.
 func NewLesServerAPI(server *LesServer, commonAPI *PublicLesCommonAPI) *serverAPI {
-	return &serverAPI{
+	api := &serverAPI{
 		PublicLesCommonAPI: commonAPI,
 		server:             server,
 		extensions:         make(map[string]*serverExtension),
 		clients:            make(map[string]*clientInfo),
+		master:             make(map[string]struct{}),
 	}
+	commonAPI.connectCallback = api.connect
+	commonAPI.registerCallback = api.register
+	return api
 }
 
-func (api *serverAPI) getOrNewExtension(id string) *serverExtension {
-	if res, ok := api.extensions[id]; ok {
-		return res
+func (api *serverAPI) register(id string) {
+	api.extensions[id] = &serverExtension{clients: make(map[string]*clientInfo)}
+}
+
+func (api *serverAPI) connect(peerId string, connect bool) {
+	if connect {
+		api.clients[peerId] = &clientInfo{}
 	} else {
-		res = &serverExtension{clients: make(map[string]*clientInfo)}
-		api.extensions[id] = res
-		return res
+		c := api.clients[peerId]
+		if c == nil {
+			return
+		}
+		if c.owner != nil {
+			delete(c.owner.clients, peerId)
+			c.owner.totalWeight -= c.weight
+		}
+		delete(api.clients, peerId)
 	}
 }
 
@@ -78,11 +95,11 @@ type (
 	PublicLesServerAPI  struct{ *serverAPI }
 )
 
-func (api PrivateLesServerAPI) SetMaster(extension string) {
+func (api PrivateLesServerAPI) SetMaster(id string) {
 	api.lock.Lock()
 	defer api.lock.Unlock()
 
-	api.getOrNewExtension(extension).master = true
+	api.master[id] = struct{}{}
 }
 
 func (api PublicLesServerAPI) SetLimit(master, masterKey, target string, newLimit uint64) error {
@@ -92,37 +109,93 @@ func (api PublicLesServerAPI) SetLimit(master, masterKey, target string, newLimi
 	if err := api.authenticate(master, masterKey); err != nil {
 		return err
 	}
-	if m, ok := api.extensions[master]; !ok || !m.master {
+	if _, ok := api.master[master]; !ok {
 		return ErrNotMaster
 	}
-	o := api.getOrNewExtension(target)
-	if newLimit < o.totalWeight {
-
+	ext := api.extensions[target]
+	if ext == nil {
+		return ErrInvalidID
 	}
-	o.limit = newLimit
-	data := make(map[string]interface{})
-	data["id"] = target
-	data["limit"] = newLimit
-	api.broadcast(ApiMessageFrom{Msg: "system/limitChanged", Data: data})
+
+	if newLimit < ext.totalWeight {
+		return ErrReduceLimit
+	}
+	if newLimit != ext.limit {
+		if newLimit > api.globalLimit-api.extLimits+ext.limit {
+			return ErrLimit
+		}
+		api.extLimits += newLimit - ext.limit
+		ext.limit = newLimit
+		api.broadcast(ApiMessageFrom{Msg: "system/limit", Data: msgData{"ext": target, "limit": newLimit}})
+	}
 	return nil
 }
 
+func (api PublicLesServerAPI) SetWeight(id, key, client string, weight uint64) (bool, error) {
+	api.lock.Lock()
+	defer api.lock.Unlock()
+
+	if err := api.authenticate(id, key); err != nil {
+		return false, err
+	}
+	ext := api.extensions[id]
+	c := api.clients[client]
+	if c == nil {
+		return false, ErrUnknownClient
+	}
+	if c.owner == ext {
+		if weight > ext.limit-ext.totalWeight+c.weight {
+			return false, ErrLimit
+		}
+	} else {
+		if weight <= c.weight {
+			return false, nil
+		}
+		if weight > ext.limit-ext.totalWeight {
+			return false, ErrLimit
+		}
+	}
+	if c.owner != nil {
+		c.owner.totalWeight -= c.weight
+	}
+	if weight != 0 {
+		ext.totalWeight += weight
+	} else {
+		ext = nil
+		id = ""
+	}
+	c.weight = weight
+	if ext != c.owner {
+		delete(c.owner.clients, client)
+		if ext != nil {
+			ext.clients[client] = c
+		}
+		c.owner = ext
+	}
+	api.broadcast(ApiMessageFrom{Msg: "system/weight", Data: msgData{"client": client, "ext": id, "weight": weight}})
+	return true, nil
+}
+
 //------------------------------------------------------------
 //------------------------------------------------------------
 //------------------------------------------------------------
 //------------------------------------------------------------
 //------------------------------------------------------------
 
-type ApiMessage struct {
-	Msg  string                 `json:"msg"`
-	Data map[string]interface{} `json:"data"`
-}
+type (
+	msgData map[string]interface{}
 
-type ApiMessageFrom struct {
-	Msg  string                 `json:"msg"`
-	Data map[string]interface{} `json:"data"`
-	Peer string                 `json:"peer"`
-}
+	ApiMessage struct {
+		Msg  string  `json:"msg"`
+		Data msgData `json:"data"`
+	}
+
+	ApiMessageFrom struct {
+		Msg  string  `json:"msg"`
+		Data msgData `json:"data"`
+		Peer string  `json:"peer"`
+	}
+)
 
 type PublicLesCommonAPI struct {
 	lock       sync.RWMutex
@@ -130,6 +203,9 @@ type PublicLesCommonAPI struct {
 	sendRemote func(to string, msg ApiMessage) error
 	subs       map[chan ApiMessageFrom]PrefixSet
 	allFilters PrefixSet
+
+	connectCallback  func(peerId string, connected bool)
+	registerCallback func(extId string)
 }
 
 // NewPublicLesServerAPI creates a new les server API.
@@ -139,6 +215,22 @@ func NewPublicLesCommonAPI(sendRemote func(to string, msg ApiMessage) error) *Pu
 		keys:       make(map[string]string),
 		subs:       make(map[chan ApiMessageFrom]PrefixSet),
 	}
+}
+
+func (api *PublicLesCommonAPI) peerConnect(peerId string, connected bool) {
+	api.lock.Lock()
+	defer api.lock.Unlock()
+
+	if api.connectCallback != nil {
+		api.connectCallback(peerId, connected)
+	}
+	msg := ApiMessageFrom{Peer: peerId}
+	if connected {
+		msg.Msg = "system/connect"
+	} else {
+		msg.Msg = "system/disconnect"
+	}
+	api.broadcast(msg)
 }
 
 func (api *PublicLesCommonAPI) RegisterExtension(id, key string) error {
@@ -152,6 +244,10 @@ func (api *PublicLesCommonAPI) RegisterExtension(id, key string) error {
 		return ErrInvalidID
 	}
 	api.keys[id] = key
+	if api.registerCallback != nil {
+		api.registerCallback(id)
+	}
+	api.broadcast(ApiMessageFrom{Msg: "system/register", Data: msgData{"id": id}})
 	return nil
 }
 
@@ -162,7 +258,7 @@ func (api *PublicLesCommonAPI) authenticate(id, key string) error {
 	return nil
 }
 
-func (api *PublicLesCommonAPI) getAllFilters() PrefixSet {
+func (api *PublicLesCommonAPI) getRemoteFilters() PrefixSet {
 	api.lock.RLock()
 	defer api.lock.RUnlock()
 
@@ -170,7 +266,7 @@ func (api *PublicLesCommonAPI) getAllFilters() PrefixSet {
 		list := make([]PrefixSet, len(api.subs))
 		pos := 0
 		for _, filter := range api.subs {
-			list[pos] = filter
+			list[pos] = filter.StripPrefix("remote/")
 			pos++
 		}
 		api.allFilters = PrefixSetUnion(list)
@@ -183,14 +279,6 @@ func (api *PublicLesCommonAPI) receivedRemote(msg ApiMessageFrom) error {
 	defer api.lock.RUnlock()
 
 	msg.Msg = "remote/" + msg.Msg
-	return api.broadcast(msg)
-}
-
-func (api *PublicLesCommonAPI) systemBroadcast(msg ApiMessageFrom) error {
-	api.lock.RLock()
-	defer api.lock.RUnlock()
-
-	msg.Msg = "system/" + msg.Msg
 	return api.broadcast(msg)
 }
 
@@ -326,4 +414,17 @@ func (p PrefixSet) SortAndFilter() PrefixSet {
 		readPos++
 	}
 	return p[:writePos]
+}
+
+func (p PrefixSet) StripPrefix(prefix string) PrefixSet {
+	res := make(PrefixSet, len(p))
+	pl := len(prefix)
+	l := 0
+	for _, pp := range p {
+		if strings.HasPrefix(pp, prefix) {
+			res[l] = pp[pl:]
+			l++
+		}
+	}
+	return res[:l]
 }
