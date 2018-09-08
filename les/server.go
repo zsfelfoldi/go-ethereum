@@ -104,8 +104,8 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	pm.server = srv
 
 	srv.defParams = flowcontrol.ServerParams{
-		BufLimit:    300000000,
-		MinRecharge: 50000,
+		BufLimit:    0,
+		MinRecharge: 0,
 	}
 	bwNormal := uint64(config.LightServ) * flowcontrol.FixedPointMultiplier / 100
 	srv.bwcNormal = flowcontrol.PieceWiseLinear{{0, 0}, {bwNormal / 10, bwNormal}, {bwNormal, bwNormal}}

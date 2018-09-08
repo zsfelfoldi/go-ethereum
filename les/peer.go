@@ -458,8 +458,8 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		send = send.add("serveChainSince", uint64(0))
 		send = send.add("serveStateSince", uint64(0))
 		send = send.add("txRelay", nil)
-		send = send.add("flowControl/BL", server.defParams.BufLimit)
-		send = send.add("flowControl/MRR", server.defParams.MinRecharge)
+		send = send.add("flowControl/BL", p.fcServerParams.BufLimit)
+		send = send.add("flowControl/MRR", p.fcServerParams.MinRecharge)
 		list := server.fcCostStats.getCurrentList()
 		send = send.add("flowControl/MRC", list)
 		p.fcCosts = list.decode()
@@ -521,7 +521,7 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		if recv.get("announceType", &p.announceType) != nil {
 			p.announceType = announceTypeSimple
 		}
-		p.fcClient = flowcontrol.NewClientNode(server.fcManager, server.defParams)
+		p.fcClient = flowcontrol.NewClientNode(server.fcManager, p.fcServerParams)
 	} else {
 		if recv.get("serveChainSince", nil) != nil {
 			return errResp(ErrUselessPeer, "peer cannot serve chain")

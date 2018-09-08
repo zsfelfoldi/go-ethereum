@@ -262,6 +262,9 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		number  = head.Number.Uint64()
 		td      = pm.blockchain.GetTd(hash, number)
 	)
+	if pm.server != nil {
+		p.fcServerParams = pm.server.defParams
+	}
 	if err := p.Handshake(td, hash, number, genesis.Hash(), pm.server, nil); err != nil {
 		p.Log().Debug("Light Ethereum handshake failed", "err", err)
 		return err
@@ -363,13 +366,13 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		costs := p.fcCosts[msg.Code]
 		maxCost = costs.baseCost + reqCnt*costs.reqCost
-		if maxCost > pm.server.defParams.BufLimit {
-			maxCost = pm.server.defParams.BufLimit
+		if maxCost > p.fcServerParams.BufLimit {
+			maxCost = p.fcServerParams.BufLimit
 		}
 
 		if accepted, bufShort, servingPriority := p.fcClient.AcceptRequest(responseCount, maxCost); !accepted {
 			if bufShort > 0 {
-				p.Log().Error("Request came too early", "remaining", common.PrettyDuration(time.Duration(bufShort*1000000/pm.server.defParams.MinRecharge)))
+				p.Log().Error("Request came too early", "remaining", common.PrettyDuration(time.Duration(bufShort*1000000/p.fcServerParams.MinRecharge)))
 			}
 			return true
 		} else {
