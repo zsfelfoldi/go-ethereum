@@ -18,6 +18,7 @@
 package flowcontrol
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -144,10 +145,10 @@ const safetyMargin = time.Millisecond
 
 func (peer *ServerNode) canSend(maxCost uint64) (time.Duration, float64) {
 	peer.recalcBLE(mclock.Now())
-	maxCost += uint64(safetyMargin) * peer.params.MinRecharge / uint64(fcTimeConst)
-	if maxCost > peer.params.BufLimit {
-		maxCost = peer.params.BufLimit
+	if peer.params.BufLimit == 0 || peer.params.MinRecharge == 0 {
+		return time.Duration(math.MaxInt64), 0
 	}
+	maxCost += uint64(safetyMargin) * peer.params.MinRecharge / uint64(fcTimeConst)
 	if peer.bufEstimate >= maxCost {
 		return 0, float64(peer.bufEstimate-maxCost) / float64(peer.params.BufLimit)
 	}
