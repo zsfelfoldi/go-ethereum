@@ -81,6 +81,9 @@ type peer struct {
 	updateCounter  uint64
 	updateTime     mclock.AbsTime
 
+	timerRunning bool
+	timerCh      chan bool
+
 	fcClient       *flowcontrol.ClientNode // nil if the peer is server only
 	fcServer       *flowcontrol.ServerNode // nil if the peer is client only
 	fcServerParams flowcontrol.ServerParams
@@ -524,6 +527,7 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		p.fcServerParams = params
 		p.fcServer = flowcontrol.NewServerNode(params)
 		p.fcCosts = MRC.decode()
+		p.updateBandwidthTimer()
 	}
 
 	p.headInfo = &announceData{Td: rTd, Hash: rHash, Number: rNum}
@@ -551,6 +555,32 @@ func (p *peer) updateFlowControl(update keyValueMap) {
 	var MRC RequestCostList
 	if update.get("flowControl/MRC", &MRC) == nil {
 		p.fcCosts = MRC.decode()
+		updateParams = true
+	}
+	if updateParams {
+		p.updateBandwidthTimer()
+	}
+}
+
+// updateBandwidthTimer calculates whether the bandwidth currently offered by the
+// server is considered enough for a usable peer and sends a notification to the
+// timerCh channel if this has changed since the last call.
+//
+// Note: ProtocolManager.handle initializes and watches timerCh, disconnecting the
+// peer if it is unusable for more than 5 seconds.
+func (p *peer) updateBandwidthTimer() {
+	var minBL uint64
+	for msgCode, info := range requests {
+		cost := p.fcCosts[msgCode]
+		mb := (cost.baseCost + info.maxCount*cost.reqCost) * 2
+		if mb > minBL {
+			minBL = mb
+		}
+	}
+	runTimer := p.fcServerParams.BufLimit < minBL || p.fcServerParams.MinRecharge < minBL/10000
+	if runTimer != p.timerRunning {
+		p.timerCh <- runTimer
+		p.timerRunning = runTimer
 	}
 }
 

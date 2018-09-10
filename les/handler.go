@@ -248,6 +248,30 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	}
 
 	p.Log().Debug("Light Ethereum peer connected", "name", p.Name())
+	if pm.lightSync {
+		p.timerRunning = false
+		p.timerCh = make(chan bool, 1)
+		defer close(p.timerCh)
+		go func() {
+			timer := time.NewTimer(0)
+			<-timer.C
+			for {
+				select {
+				case start, ok := <-p.timerCh:
+					if !ok {
+						return
+					}
+					if start {
+						timer.Reset(time.Second * 5)
+					} else {
+						timer.Stop()
+					}
+				case <-timer.C:
+					pm.removePeer(p.id)
+				}
+			}
+		}()
+	}
 
 	// Execute the LES handshake
 	var (
