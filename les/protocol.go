@@ -90,16 +90,16 @@ type requestInfo struct {
 
 var requests = map[uint64]requestInfo{
 	GetBlockHeadersMsg:     {"GetBlockHeaders", MaxHeaderFetch},
-	GetBlockBodiesMsg:      {"GetBlockBodies", MaxBodyFetch},
-	GetReceiptsMsg:         {"GetReceipts", MaxReceiptFetch},
-	GetProofsV1Msg:         {"GetProofsV1", MaxProofsFetch},
-	GetCodeMsg:             {"GetCode", MaxCodeFetch},
-	SendTxMsg:              {"SendTx", MaxTxSend},
-	GetHeaderProofsMsg:     {"GetHeaderProofs", MaxHelperTrieProofsFetch},
-	GetProofsV2Msg:         {"GetProofsV2", MaxProofsFetch},
-	GetHelperTrieProofsMsg: {"GetHelperTrieProofs", MaxHelperTrieProofsFetch},
-	SendTxV2Msg:            {"SendTxV2", MaxTxSend},
-	GetTxStatusMsg:         {"GetTxStatus", MaxTxStatus},
+	GetBlockBodiesMsg:      {"GetBlockBodies", 1},
+	GetReceiptsMsg:         {"GetReceipts", 1},
+	GetProofsV1Msg:         {"GetProofsV1", 1},
+	GetCodeMsg:             {"GetCode", 1},
+	SendTxMsg:              {"SendTx", 1},
+	GetHeaderProofsMsg:     {"GetHeaderProofs", 1},
+	GetProofsV2Msg:         {"GetProofsV2", 1},
+	GetHelperTrieProofsMsg: {"GetHelperTrieProofs", 16},
+	SendTxV2Msg:            {"SendTxV2", 1},
+	GetTxStatusMsg:         {"GetTxStatus", 1},
 }
 
 type errCode int

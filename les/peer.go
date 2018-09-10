@@ -569,15 +569,17 @@ func (p *peer) updateFlowControl(update keyValueMap) {
 // Note: ProtocolManager.handle initializes and watches timerCh, disconnecting the
 // peer if it is unusable for more than 5 seconds.
 func (p *peer) updateBandwidthTimer() {
+	fmt.Println("update")
 	var minBL uint64
 	for msgCode, info := range requests {
 		cost := p.fcCosts[msgCode]
-		mb := (cost.baseCost + info.maxCount*cost.reqCost) * 2
+		mb := cost.baseCost + info.maxCount*cost.reqCost
 		if mb > minBL {
 			minBL = mb
 		}
 	}
 	runTimer := p.fcServerParams.BufLimit < minBL || p.fcServerParams.MinRecharge < minBL/10000
+	fmt.Println(runTimer)
 	if runTimer != p.timerRunning {
 		p.timerCh <- runTimer
 		p.timerRunning = runTimer
