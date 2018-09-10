@@ -147,6 +147,7 @@ func NewProtocolManager(chainConfig *params.ChainConfig, indexerConfig *light.In
 		wg:          wg,
 		noMorePeers: make(chan struct{}),
 	}
+	manager.commonApi = NewPublicLesCommonAPI(manager.sendApiMessage)
 	if odr != nil {
 		manager.retriever = odr.retriever
 		manager.reqDist = odr.retriever.dist
@@ -425,8 +426,8 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&apiMessage); err != nil {
 			return errResp(ErrDecode, "%v: %v", msg, err)
 		}
-		if pm.commonApi.receivedRemote(ApiMessageFrom{Peer: p.id, Msg: apiMessage.Msg, Data: apiMessage.Data}) != nil {
-			// ***handle error
+		if pm.commonApi.receivedRemote(ApiMessageFrom{Peer: p.id, Msg: apiMessage.Msg, Data: apiMessage.Data}) != nil && p.failOnError() {
+			return errResp(ErrRequestRejected, "")
 		}
 
 	// Block header query, collect the requested headers and reply
@@ -1246,15 +1247,9 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 }
 
 // sendApiMessage sends a message through LES to message API listeners on the other side
-func (pm *ProtocolManager) sendApiMessage(to, message string) error {
-	if peer := pm.peers.Peer(to); peer != nil {
-		if len(message) < 1 || message[0] != '/' ||
-			peer.messageFilter == nil || !peer.messageFilter.Match(message) {
-			return ErrApiMessageUnwanted
-		}
-		if peer.SendApiMessage(message[1:]) == nil {
-			return nil
-		}
+func (pm *ProtocolManager) sendApiMessage(to string, message ApiMessage) error {
+	if peer := pm.peers.Peer(to); peer != nil && peer.SendApiMessage(message) == nil {
+		return nil
 	}
 	return ErrApiMessageSend
 }

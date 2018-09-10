@@ -222,7 +222,7 @@ func (p *peer) HasBlock(hash common.Hash, number uint64) bool {
 }
 
 // SendApiMessage sends a message to message API listeners on the other side
-func (p *peer) SendApiMessage(message string) error {
+func (p *peer) SendApiMessage(message ApiMessage) error {
 	return p2p.Send(p.rw, ApiMsg, message)
 }
 
