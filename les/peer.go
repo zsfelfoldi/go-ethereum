@@ -78,16 +78,20 @@ type peer struct {
 	announceChn chan announceData
 	sendQueue   *execQueue
 
+	errCh         chan error
+	responseLock  sync.Mutex
+	responseCount uint64
+
 	poolEntry      *poolEntry
 	hasBlock       func(common.Hash, uint64, bool) bool
 	responseErrors int
 	updateCounter  uint64
 	updateTime     mclock.AbsTime
 
-	fcClient       *flowcontrol.ClientNode // nil if the peer is server only
-	fcServer       *flowcontrol.ServerNode // nil if the peer is client only
-	fcServerParams flowcontrol.ServerParams
-	fcCosts        requestCostTable
+	fcClient *flowcontrol.ClientNode // nil if the peer is server only
+	fcServer *flowcontrol.ServerNode // nil if the peer is client only
+	fcParams flowcontrol.ServerParams
+	fcCosts  requestCostTable
 }
 
 func newPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
@@ -178,6 +182,15 @@ func (p *peer) waitBefore(maxCost uint64) (time.Duration, float64) {
 	return p.fcServer.CanSend(maxCost)
 }
 
+func (p *peer) updateBandwidth(bw uint64) {
+	p.fcParams = flowcontrol.ServerParams{MinRecharge: bw, BufLimit: bw * bufLimitRatio}
+	p.fcClient.UpdateParams(p.fcParams)
+	var kvList keyValueList
+	kvList = kvList.add("flowControl/MRR", bw)
+	kvList = kvList.add("flowControl/BL", bw*bufLimitRatio)
+	go p.SendAnnounce(announceData{Update: kvList})
+}
+
 func sendRequest(w p2p.MsgWriter, msgcode, reqID, cost uint64, data interface{}) error {
 	type req struct {
 		ReqID uint64
@@ -186,12 +199,22 @@ func sendRequest(w p2p.MsgWriter, msgcode, reqID, cost uint64, data interface{})
 	return p2p.Send(w, msgcode, req{reqID, data})
 }
 
-func sendResponse(w p2p.MsgWriter, msgcode, reqID, bv uint64, data interface{}) error {
+type reply struct {
+	w              p2p.MsgWriter
+	msgcode, reqID uint64
+	data           rlp.RawValue
+}
+
+func (r *reply) send(bv uint64) error {
 	type resp struct {
 		ReqID, BV uint64
-		Data      interface{}
+		Data      rlp.RawValue
 	}
-	return p2p.Send(w, msgcode, resp{reqID, bv, data})
+	return p2p.Send(r.w, r.msgcode, resp{r.reqID, bv, r.data})
+}
+
+func (r *reply) size() uint32 {
+	return uint32(len(r.data))
 }
 
 func (p *peer) GetRequestCost(msgcode uint64, amount int) uint64 {
@@ -199,8 +222,8 @@ func (p *peer) GetRequestCost(msgcode uint64, amount int) uint64 {
 	defer p.lock.RUnlock()
 
 	cost := p.fcCosts[msgcode].baseCost + p.fcCosts[msgcode].reqCost*uint64(amount)
-	if cost > p.fcServerParams.BufLimit {
-		cost = p.fcServerParams.BufLimit
+	if cost > p.fcParams.BufLimit {
+		cost = p.fcParams.BufLimit
 	}
 	return cost
 }
@@ -225,8 +248,8 @@ func (p *peer) GetTxRelayCost(amount, size int) uint64 {
 		cost = sizeCost
 	}
 
-	if cost > p.fcServerParams.BufLimit {
-		cost = p.fcServerParams.BufLimit
+	if cost > p.fcParams.BufLimit {
+		cost = p.fcParams.BufLimit
 	}
 	return cost
 }
@@ -246,51 +269,60 @@ func (p *peer) SendAnnounce(request announceData) error {
 }
 
 // SendBlockHeaders sends a batch of block headers to the remote peer.
-func (p *peer) SendBlockHeaders(reqID, bv uint64, headers []*types.Header) error {
-	return sendResponse(p.rw, BlockHeadersMsg, reqID, bv, headers)
+func (p *peer) ReplyBlockHeaders(reqID uint64, headers []*types.Header) *reply {
+	data, _ := rlp.EncodeToBytes(headers)
+	return &reply{p.rw, BlockHeadersMsg, reqID, data}
 }
 
 // SendBlockBodiesRLP sends a batch of block contents to the remote peer from
 // an already RLP encoded format.
-func (p *peer) SendBlockBodiesRLP(reqID, bv uint64, bodies []rlp.RawValue) error {
-	return sendResponse(p.rw, BlockBodiesMsg, reqID, bv, bodies)
+func (p *peer) ReplyBlockBodiesRLP(reqID uint64, bodies []rlp.RawValue) *reply {
+	data, _ := rlp.EncodeToBytes(bodies)
+	return &reply{p.rw, BlockBodiesMsg, reqID, data}
 }
 
 // SendCodeRLP sends a batch of arbitrary internal data, corresponding to the
 // hashes requested.
-func (p *peer) SendCode(reqID, bv uint64, data [][]byte) error {
-	return sendResponse(p.rw, CodeMsg, reqID, bv, data)
+func (p *peer) ReplyCode(reqID uint64, codes [][]byte) *reply {
+	data, _ := rlp.EncodeToBytes(codes)
+	return &reply{p.rw, CodeMsg, reqID, data}
 }
 
 // SendReceiptsRLP sends a batch of transaction receipts, corresponding to the
 // ones requested from an already RLP encoded format.
-func (p *peer) SendReceiptsRLP(reqID, bv uint64, receipts []rlp.RawValue) error {
-	return sendResponse(p.rw, ReceiptsMsg, reqID, bv, receipts)
+func (p *peer) ReplyReceiptsRLP(reqID uint64, receipts []rlp.RawValue) *reply {
+	data, _ := rlp.EncodeToBytes(receipts)
+	return &reply{p.rw, ReceiptsMsg, reqID, data}
 }
 
 // SendProofs sends a batch of legacy LES/1 merkle proofs, corresponding to the ones requested.
-func (p *peer) SendProofs(reqID, bv uint64, proofs proofsData) error {
-	return sendResponse(p.rw, ProofsV1Msg, reqID, bv, proofs)
+func (p *peer) ReplyProofs(reqID uint64, proofs proofsData) *reply {
+	data, _ := rlp.EncodeToBytes(proofs)
+	return &reply{p.rw, ProofsV1Msg, reqID, data}
 }
 
 // SendProofsV2 sends a batch of merkle proofs, corresponding to the ones requested.
-func (p *peer) SendProofsV2(reqID, bv uint64, proofs light.NodeList) error {
-	return sendResponse(p.rw, ProofsV2Msg, reqID, bv, proofs)
+func (p *peer) ReplyProofsV2(reqID uint64, proofs light.NodeList) *reply {
+	data, _ := rlp.EncodeToBytes(proofs)
+	return &reply{p.rw, ProofsV2Msg, reqID, data}
 }
 
 // SendHeaderProofs sends a batch of legacy LES/1 header proofs, corresponding to the ones requested.
-func (p *peer) SendHeaderProofs(reqID, bv uint64, proofs []ChtResp) error {
-	return sendResponse(p.rw, HeaderProofsMsg, reqID, bv, proofs)
+func (p *peer) ReplyHeaderProofs(reqID uint64, proofs []ChtResp) *reply {
+	data, _ := rlp.EncodeToBytes(proofs)
+	return &reply{p.rw, HeaderProofsMsg, reqID, data}
 }
 
 // SendHelperTrieProofs sends a batch of HelperTrie proofs, corresponding to the ones requested.
-func (p *peer) SendHelperTrieProofs(reqID, bv uint64, resp HelperTrieResps) error {
-	return sendResponse(p.rw, HelperTrieProofsMsg, reqID, bv, resp)
+func (p *peer) ReplyHelperTrieProofs(reqID uint64, resp HelperTrieResps) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, HelperTrieProofsMsg, reqID, data}
 }
 
 // SendTxStatus sends a batch of transaction status records, corresponding to the ones requested.
-func (p *peer) SendTxStatus(reqID, bv uint64, stats []txStatus) error {
-	return sendResponse(p.rw, TxStatusMsg, reqID, bv, stats)
+func (p *peer) ReplyTxStatus(reqID uint64, stats []txStatus) *reply {
+	data, _ := rlp.EncodeToBytes(stats)
+	return &reply{p.rw, TxStatusMsg, reqID, data}
 }
 
 // RequestHeadersByHash fetches a batch of blocks' headers corresponding to the
@@ -470,9 +502,9 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		send = send.add("txRelay", nil)
 		send = send.add("flowControl/BL", server.defParams.BufLimit)
 		send = send.add("flowControl/MRR", server.defParams.MinRecharge)
-		list := server.fcCostStats.getCurrentList()
-		send = send.add("flowControl/MRC", list)
-		p.fcCosts = list.decode()
+		send = send.add("flowControl/MRC", server.fcCostList)
+		p.fcCosts = server.fcCostTable
+		p.fcParams = server.defParams
 	} else {
 		p.requestAnnounceType = announceTypeSimple // set to default until "very light" client mode is implemented
 		send = send.add("announceType", p.requestAnnounceType)
@@ -548,8 +580,8 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		if err := recv.get("flowControl/MRC", &MRC); err != nil {
 			return err
 		}
-		p.fcServerParams = params
-		p.fcServer = flowcontrol.NewServerNode(params)
+		p.fcParams = params
+		p.fcServer = flowcontrol.NewServerNode(params, &mclock.System{})
 		p.fcCosts = MRC.decode()
 	}
 
@@ -563,7 +595,7 @@ func (p *peer) updateFlowControl(update keyValueMap) {
 	if p.fcServer == nil {
 		return
 	}
-	params := p.fcServerParams
+	params := p.fcParams
 	updateParams := false
 	if update.get("flowControl/BL", &params.BufLimit) == nil {
 		updateParams = true
@@ -572,7 +604,7 @@ func (p *peer) updateFlowControl(update keyValueMap) {
 		updateParams = true
 	}
 	if updateParams {
-		p.fcServerParams = params
+		p.fcParams = params
 		p.fcServer.UpdateParams(params)
 	}
 	var MRC RequestCostList
