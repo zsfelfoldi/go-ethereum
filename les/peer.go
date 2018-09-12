@@ -407,9 +407,8 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 		send = send.add("txRelay", nil)
 		send = send.add("flowControl/BL", server.defParams.BufLimit)
 		send = send.add("flowControl/MRR", server.defParams.MinRecharge)
-		list := server.fcCostStats.getCurrentList()
-		send = send.add("flowControl/MRC", list)
-		p.fcCosts = list.decode()
+		send = send.add("flowControl/MRC", server.fcCostList)
+		p.fcCosts = server.fcCostTable
 	} else {
 		p.requestAnnounceType = announceTypeSimple // set to default until "very light" client mode is implemented
 		send = send.add("announceType", p.requestAnnounceType)

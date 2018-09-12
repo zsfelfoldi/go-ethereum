@@ -159,7 +159,6 @@ func NewProtocolManager(chainConfig *params.ChainConfig, indexerConfig *light.In
 		manager.peers.notify((*downloaderPeerNotify)(manager))
 		manager.fetcher = newLightFetcher(manager)
 	}
-
 	return manager, nil
 }
 

@@ -24,6 +24,8 @@ func (c Config) MarshalTOML() (interface{}, error) {
 		SyncMode                downloader.SyncMode
 		NoPruning               bool
 		LightServ               int  `toml:",omitempty"`
+		LightBandwidthIn        int  `toml:",omitempty"`
+		LightBandwidthOut       int  `toml:",omitempty"`
 		LightPeers              int  `toml:",omitempty"`
 		SkipBcVersionCheck      bool `toml:"-"`
 		DatabaseHandles         int  `toml:"-"`
@@ -50,6 +52,8 @@ func (c Config) MarshalTOML() (interface{}, error) {
 	enc.SyncMode = c.SyncMode
 	enc.NoPruning = c.NoPruning
 	enc.LightServ = c.LightServ
+	enc.LightBandwidthIn = c.LightBandwidthIn
+	enc.LightBandwidthOut = c.LightBandwidthOut
 	enc.LightPeers = c.LightPeers
 	enc.SkipBcVersionCheck = c.SkipBcVersionCheck
 	enc.DatabaseHandles = c.DatabaseHandles
@@ -80,6 +84,8 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 		SyncMode                *downloader.SyncMode
 		NoPruning               *bool
 		LightServ               *int  `toml:",omitempty"`
+		LightBandwidthIn        *int  `toml:",omitempty"`
+		LightBandwidthOut       *int  `toml:",omitempty"`
 		LightPeers              *int  `toml:",omitempty"`
 		SkipBcVersionCheck      *bool `toml:"-"`
 		DatabaseHandles         *int  `toml:"-"`
@@ -118,6 +124,12 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 	}
 	if dec.LightServ != nil {
 		c.LightServ = *dec.LightServ
+	}
+	if dec.LightBandwidthIn != nil {
+		c.LightBandwidthIn = *dec.LightBandwidthIn
+	}
+	if dec.LightBandwidthOut != nil {
+		c.LightBandwidthOut = *dec.LightBandwidthOut
 	}
 	if dec.LightPeers != nil {
 		c.LightPeers = *dec.LightPeers
