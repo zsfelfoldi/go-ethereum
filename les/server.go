@@ -127,6 +127,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	srv.fcManager = flowcontrol.NewClientManager(srv.bwcNormal, &mclock.System{})
 	srv.blockProcLoop(pm)
 	srv.fcCostStats = newCostStats(eth.ChainDb())
+	pm.benchmark()
 	return srv, nil
 }
 

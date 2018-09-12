@@ -18,6 +18,7 @@
 package les
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -36,9 +37,11 @@ import (
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
+	"github.com/ethereum/go-ethereum/p2p/discover"
 	"github.com/ethereum/go-ethereum/p2p/discv5"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -165,7 +168,6 @@ func NewProtocolManager(chainConfig *params.ChainConfig, indexerConfig *light.In
 		manager.peers.notify((*downloaderPeerNotify)(manager))
 		manager.fetcher = newLightFetcher(manager)
 	}
-
 	return manager, nil
 }
 
@@ -1310,6 +1312,35 @@ func (pm *ProtocolManager) txStatus(hashes []common.Hash) []txStatus {
 		}
 	}
 	return stats
+}
+
+func (pm *ProtocolManager) benchmark() {
+	fmt.Println("benchmark")
+	app, net := p2p.MsgPipe()
+	var id discover.NodeID
+	rand.Read(id[:])
+	p := pm.newPeer(lpv2, NetworkId, p2p.NewPeer(id, "bench", nil), net)
+	p.sendQueue = newExecQueue(100)
+	p.announceType = announceTypeNone
+	p.fcCosts = make(requestCostTable)
+	c := &requestCosts{}
+	for code, _ := range requests {
+		p.fcCosts[code] = c
+	}
+	p.fcServerParams = flowcontrol.ServerParams{BufLimit: 1, MinRecharge: 1}
+	p.fcClient = flowcontrol.NewClientNode(pm.server.fcManager, p.fcServerParams)
+	go func() {
+		for i := 0; i < 100; i++ {
+			//p.RequestBodies(0, 0, nil)
+			sendRequest(app, GetBlockBodiesMsg, 0, 0, []common.Hash{common.Hash{}})
+		}
+	}()
+	cnt := 0
+	for pm.handleMsg(p) == nil {
+		fmt.Println(cnt)
+		cnt++
+	}
+	fmt.Println("done")
 }
 
 // downloaderPeerNotify implements peerSetNotify
