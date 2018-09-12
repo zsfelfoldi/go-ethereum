@@ -24,17 +24,21 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
-type logEvent struct {
-	time  mclock.AbsTime
-	event string
-}
-
+// logger collects events in string format and discards events older than the
+// "keep" parameter
 type logger struct {
 	events           map[uint64]logEvent
 	writePtr, delPtr uint64
 	keep             time.Duration
 }
 
+// logEvent describes a single event
+type logEvent struct {
+	time  mclock.AbsTime
+	event string
+}
+
+// newLogger creates a new logger
 func newLogger(keep time.Duration) *logger {
 	return &logger{
 		events: make(map[uint64]logEvent),
@@ -42,6 +46,7 @@ func newLogger(keep time.Duration) *logger {
 	}
 }
 
+// add adds a new event and discards old events if possible
 func (l *logger) add(time mclock.AbsTime, event string) {
 	keepAfter := time - mclock.AbsTime(l.keep)
 	for l.delPtr < l.writePtr && l.events[l.delPtr].time <= keepAfter {
@@ -52,6 +57,7 @@ func (l *logger) add(time mclock.AbsTime, event string) {
 	l.writePtr++
 }
 
+// dump prints all stored events
 func (l *logger) dump(now mclock.AbsTime) {
 	for i := l.delPtr; i < l.writePtr; i++ {
 		e := l.events[i]

@@ -50,9 +50,7 @@ func init() {
 	flag.Parse()
 	// register the Delivery service which will run as a devp2p
 	// protocol when using the exec adapter
-	fmt.Println("register start")
 	adapters.RegisterServices(services)
-	fmt.Println("register end")
 
 	log.PrintOrigins(true)
 	log.Root().SetHandler(log.LvlFilterHandler(log.Lvl(*loglevel), log.StreamHandler(colorable.NewColorableStderr(), log.TerminalFormat(true))))
@@ -95,7 +93,6 @@ func NewAdapter(adapterType string, services adapters.Services) (adapter adapter
 }
 
 func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node)) {
-	fmt.Println("test start")
 	net, teardown, err := NewNetwork()
 	defer teardown()
 	if err != nil {
@@ -404,8 +401,6 @@ func newLesClientService(ctx *adapters.ServiceContext) (node.Service, error) {
 }
 
 func newLesServerService(ctx *adapters.ServiceContext) (node.Service, error) {
-	fmt.Println("server init start")
-	defer fmt.Println("server init end")
 	config := eth.DefaultConfig
 	config.SyncMode = downloader.FullSync
 	config.LightServ = 200
@@ -420,11 +415,6 @@ func newLesServerService(ctx *adapters.ServiceContext) (node.Service, error) {
 		return nil, err
 	}
 	ethereum.AddLesServer(server)
-	/*	ethereum.AddExtraAPIs([]rpc.API{{
-		Namespace: "test",
-		Version:   "1.0",
-		Service:   &SimTestAPI{ethereum},
-	}})*/
 	return ethereum, nil
 }
 

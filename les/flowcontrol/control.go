@@ -34,6 +34,8 @@ const (
 	// avoid a buffer underrun error due to requests sent by the client before
 	// receiving the bandwidth update announcement
 	DecParamDelay = time.Second * 2
+	// keepLogs is the duration of keeping logs; logging is not used if zero
+	keepLogs = 0
 )
 
 // ServerParams are the flow control parameters specified by a server for a client
@@ -72,7 +74,9 @@ func NewClientNode(cm *ClientManager, params ServerParams) *ClientNode {
 		bufValue: params.BufLimit,
 		lastTime: cm.clock.Now(),
 		accepted: make(map[uint64]uint64),
-		//log:      newLogger(time.Second),
+	}
+	if keepLogs > 0 {
+		node.log = newLogger(keepLogs)
 	}
 	cm.init(node)
 	return node
@@ -106,7 +110,6 @@ func (peer *ClientNode) UpdateParams(params ServerParams) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
-	//fmt.Println("schedule", params.MinRecharge)
 	time := peer.cm.clock.Now()
 	peer.update(time)
 	if params.MinRecharge >= peer.params.MinRecharge {
@@ -125,7 +128,6 @@ func (peer *ClientNode) UpdateParams(params ServerParams) {
 }
 
 func (peer *ClientNode) updateParams(params ServerParams, time mclock.AbsTime) {
-	//fmt.Println("update", params.MinRecharge)
 	diff := params.BufLimit - peer.params.BufLimit
 	if int64(diff) > 0 {
 		peer.bufValue += diff
@@ -144,7 +146,6 @@ func (peer *ClientNode) AcceptRequest(reqID, index, maxCost uint64) (accepted bo
 
 	time := peer.cm.clock.Now()
 	peer.update(time)
-	//fmt.Println("received", time, maxCost, peer.bufValue)
 	if maxCost > peer.bufValue {
 		if peer.log != nil {
 			peer.log.add(time, fmt.Sprintf("rejected  reqID=%d  bv=%d  maxCost=%d", reqID, peer.bufValue, maxCost))
@@ -193,7 +194,7 @@ type ServerNode struct {
 
 // NewServerNode returns a new ServerNode
 func NewServerNode(params ServerParams, clock mclock.Clock) *ServerNode {
-	return &ServerNode{
+	node := &ServerNode{
 		clock:       clock,
 		bufEstimate: params.BufLimit,
 		bufRecharge: false,
@@ -202,6 +203,10 @@ func NewServerNode(params ServerParams, clock mclock.Clock) *ServerNode {
 		pending:     make(map[uint64]uint64),
 		//log:         newLogger(time.Second),
 	}
+	if keepLogs > 0 {
+		node.log = newLogger(keepLogs)
+	}
+	return node
 }
 
 // UpdateParams updates flow control parameters
@@ -281,7 +286,6 @@ func (peer *ServerNode) QueuedRequest(reqID, maxCost uint64) {
 	// Note: we do not know when requests actually arrive to the server so bufRecharge
 	// is not turned on here if buffer was full; in this case it is going to be turned
 	// on by the first reply's bufValue feedback
-	//fmt.Println("sent", now, maxCost, peer.bufEstimate)
 	if peer.bufEstimate >= maxCost {
 		peer.bufEstimate -= maxCost
 	} else {
