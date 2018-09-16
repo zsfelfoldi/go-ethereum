@@ -18,11 +18,11 @@
 package les
 
 import (
-	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -495,78 +495,74 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		pm.servingQueue.addTask(&servingTask{
 			priority: priority,
 			run: func() (bool, error) {
-				if !unknown && len(headers) < int(query.Amount) && bytes < softResponseLimit {
-					// Retrieve the next header satisfying the query
-					var origin *types.Header
-					if hashMode {
-						if first {
-							first = false
-							origin = pm.blockchain.GetHeaderByHash(query.Origin.Hash)
-							if origin != nil {
-								query.Origin.Number = origin.Number.Uint64()
-							}
-						} else {
-							origin = pm.blockchain.GetHeader(query.Origin.Hash, query.Origin.Number)
+				// Retrieve the next header satisfying the query
+				var origin *types.Header
+				if hashMode {
+					if first {
+						first = false
+						origin = pm.blockchain.GetHeaderByHash(query.Origin.Hash)
+						if origin != nil {
+							query.Origin.Number = origin.Number.Uint64()
 						}
 					} else {
-						origin = pm.blockchain.GetHeaderByNumber(query.Origin.Number)
+						origin = pm.blockchain.GetHeader(query.Origin.Hash, query.Origin.Number)
 					}
-					if origin == nil {
-						return true, nil
-					}
-					headers = append(headers, origin)
-					bytes += estHeaderRlpSize
+				} else {
+					origin = pm.blockchain.GetHeaderByNumber(query.Origin.Number)
+				}
+				if origin == nil {
+					return true, nil
+				}
+				headers = append(headers, origin)
+				bytes += estHeaderRlpSize
 
-					// Advance to the next header of the query
-					switch {
-					case hashMode && query.Reverse:
-						// Hash based traversal towards the genesis block
-						ancestor := query.Skip + 1
-						if ancestor == 0 {
-							unknown = true
-						} else {
-							query.Origin.Hash, query.Origin.Number = pm.blockchain.GetAncestor(query.Origin.Hash, query.Origin.Number, ancestor, &maxNonCanonical)
-							unknown = (query.Origin.Hash == common.Hash{})
-						}
-					case hashMode && !query.Reverse:
-						// Hash based traversal towards the leaf block
-						var (
-							current = origin.Number.Uint64()
-							next    = current + query.Skip + 1
-						)
-						if next <= current {
-							infos, _ := json.MarshalIndent(p.Peer.Info(), "", "  ")
-							p.Log().Warn("GetBlockHeaders skip overflow attack", "current", current, "skip", query.Skip, "next", next, "attacker", infos)
-							unknown = true
-						} else {
-							if header := pm.blockchain.GetHeaderByNumber(next); header != nil {
-								nextHash := header.Hash()
-								expOldHash, _ := pm.blockchain.GetAncestor(nextHash, next, query.Skip+1, &maxNonCanonical)
-								if expOldHash == query.Origin.Hash {
-									query.Origin.Hash, query.Origin.Number = nextHash, next
-								} else {
-									unknown = true
-								}
+				// Advance to the next header of the query
+				switch {
+				case hashMode && query.Reverse:
+					// Hash based traversal towards the genesis block
+					ancestor := query.Skip + 1
+					if ancestor == 0 {
+						unknown = true
+					} else {
+						query.Origin.Hash, query.Origin.Number = pm.blockchain.GetAncestor(query.Origin.Hash, query.Origin.Number, ancestor, &maxNonCanonical)
+						unknown = (query.Origin.Hash == common.Hash{})
+					}
+				case hashMode && !query.Reverse:
+					// Hash based traversal towards the leaf block
+					var (
+						current = origin.Number.Uint64()
+						next    = current + query.Skip + 1
+					)
+					if next <= current {
+						infos, _ := json.MarshalIndent(p.Peer.Info(), "", "  ")
+						p.Log().Warn("GetBlockHeaders skip overflow attack", "current", current, "skip", query.Skip, "next", next, "attacker", infos)
+						unknown = true
+					} else {
+						if header := pm.blockchain.GetHeaderByNumber(next); header != nil {
+							nextHash := header.Hash()
+							expOldHash, _ := pm.blockchain.GetAncestor(nextHash, next, query.Skip+1, &maxNonCanonical)
+							if expOldHash == query.Origin.Hash {
+								query.Origin.Hash, query.Origin.Number = nextHash, next
 							} else {
 								unknown = true
 							}
-						}
-					case query.Reverse:
-						// Number based traversal towards the genesis block
-						if query.Origin.Number >= query.Skip+1 {
-							query.Origin.Number -= query.Skip + 1
 						} else {
 							unknown = true
 						}
-
-					case !query.Reverse:
-						// Number based traversal towards the leaf block
-						query.Origin.Number += query.Skip + 1
 					}
-					return false, nil
-				} else {
-					return true, nil
+				case query.Reverse:
+					// Number based traversal towards the genesis block
+					if query.Origin.Number >= query.Skip+1 {
+						query.Origin.Number -= query.Skip + 1
+					} else {
+						unknown = true
+					}
+
+				case !query.Reverse:
+					// Number based traversal towards the leaf block
+					query.Origin.Number += query.Skip + 1
 				}
+				return unknown || len(headers) >= int(query.Amount) || bytes >= softResponseLimit, nil
 			},
 			after: sendFunc(query.Amount, func(bv uint64) error { return p.SendBlockHeaders(req.ReqID, bv, headers) }),
 		})
@@ -1320,7 +1316,7 @@ func (pm *ProtocolManager) benchmark() {
 	var id discover.NodeID
 	rand.Read(id[:])
 	p := pm.newPeer(lpv2, NetworkId, p2p.NewPeer(id, "bench", nil), net)
-	p.sendQueue = newExecQueue(100)
+	p.sendQueue = newExecQueue(200) // queue cap should always be >= preCount
 	p.announceType = announceTypeNone
 	p.fcCosts = make(requestCostTable)
 	c := &requestCosts{}
@@ -1329,18 +1325,81 @@ func (pm *ProtocolManager) benchmark() {
 	}
 	p.fcServerParams = flowcontrol.ServerParams{BufLimit: 1, MinRecharge: 1}
 	p.fcClient = flowcontrol.NewClientNode(pm.server.fcManager, p.fcServerParams)
-	go func() {
-		for i := 0; i < 100; i++ {
-			//p.RequestBodies(0, 0, nil)
-			sendRequest(app, GetBlockBodiesMsg, 0, 0, []common.Hash{common.Hash{}})
+
+	measure := func(send func(i int), count int) (time.Duration, error) {
+		preCount := 100
+		go func() {
+			for i := 0; i < count+preCount; i++ {
+				send(i) // shutdown
+			}
+		}()
+		var start mclock.AbsTime
+		for i := 0; i < count+preCount; i++ {
+			if i == preCount {
+				start = mclock.Now()
+			}
+			if i >= preCount {
+				msg, err := app.ReadMsg()
+				if err != nil {
+					return 0, err
+				}
+				var resp struct {
+					ReqID, BV uint64
+					Headers   []*types.Header
+				}
+				if err := msg.Decode(&resp); err != nil {
+					return 0, err
+				}
+			}
+			if i < count {
+				if err := pm.handleMsg(p); err != nil {
+					return 0, err
+				}
+			}
 		}
-	}()
-	cnt := 0
-	for pm.handleMsg(p) == nil {
-		fmt.Println(cnt)
-		cnt++
+		dt := time.Duration(mclock.Now()-start) / time.Duration(count)
+		fmt.Println("done", dt)
+		return dt, nil
 	}
-	fmt.Println("done")
+
+	costs := make(requestCostTable)
+
+	measureCost := func(code uint64, send func(i, reqCount int), count1, count2, maxReqCount int) error {
+		cost := costs[code]
+		if cost == nil {
+			cost = &requestCosts{}
+			costs[code] = cost
+		}
+		t1, err := measure(func(i int) { send(i, 1) }, count1)
+		if err != nil {
+			return err
+		}
+		if maxReqCount > 1 {
+			t2, err := measure(func(i int) { send(i, maxReqCount) }, count2)
+			if err != nil {
+				return err
+			}
+			dt := (t2 - t1) / time.Duration(maxReqCount-1)
+			cost.reqCost += uint64(dt)
+			if dt < t1 {
+				cost.baseCost += uint64(t1 - dt)
+			}
+		} else {
+			cost.reqCost += uint64(t1)
+		}
+		return nil
+	}
+
+	head := pm.blockchain.CurrentHeader()
+	headNumber := head.Number.Uint64()
+	j := int64(headNumber) + 2 - int64(reqCount)
+	if j > 0 {
+		measureCost(GetBlockHeadersMsg, func(i, reqCount int) {
+			sendRequest(app, GetBlockHeadersMsg, 0, 0, &getBlockHeadersData{Origin: hashOrNumber{Number: uint64(rand.Int63n(j))}, Amount: uint64(reqCount), Skip: 0, Reverse: false})
+		}, 10000, 200, 192)
+	}
+
+	//		sendRequest(app, GetBlockBodiesMsg, 0, 0, []common.Hash{common.Hash{}})
 }
 
 // downloaderPeerNotify implements peerSetNotify

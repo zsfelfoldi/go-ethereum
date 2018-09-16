@@ -95,7 +95,11 @@ func (sq *servingQueue) getNewTask(currentTask *servingTask, blocking bool) *ser
 	if sq.stopCount == 0 {
 		if sq.best != nil && (currentTask == nil || sq.best.priority <= currentTask.priority-sq.suspendBias) {
 			best := sq.best
-			sq.best, _ = sq.queue.PopItem().(*servingTask)
+			if sq.queue.Size() == 0 {
+				sq.best = nil
+			} else {
+				sq.best, _ = sq.queue.PopItem().(*servingTask)
+			}
 			sq.lock.Unlock()
 			return best
 		}
