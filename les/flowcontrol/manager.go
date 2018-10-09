@@ -215,10 +215,16 @@ func (self *ClientManager) stop(node *cmNode, time mclock.AbsTime) {
 	}
 }
 
-func (self *ClientManager) processed(node *cmNode, time mclock.AbsTime) (rcValue, rcCost uint64) {
+func (self *ClientManager) processed(node *cmNode, time mclock.AbsTime, sizeCost uint64) (rcValue, rcCost uint64) {
 	self.lock.Lock()
 	defer self.lock.Unlock()
 
 	self.stop(node, time)
-	return uint64(node.rcValue), uint64(node.rcValue - node.startValue)
+
+	rcost := uint64(node.rcValue - node.startValue)
+	if sizeCost > rcost {
+		node.rcValue += int64(sizeCost - rcost)
+		rcost = sizeCost
+	}
+	return uint64(node.rcValue), rcost
 }
