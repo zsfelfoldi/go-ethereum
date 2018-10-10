@@ -99,7 +99,8 @@ func (sq *servingQueue) getNewTask(currentTask *servingTask, blocking bool) *ser
 				sq.best = nil
 			} else {
 				sq.best, _ = sq.queue.PopItem().(*servingTask)
-			}			sq.lock.Unlock()
+			}
+			sq.lock.Unlock()
 			return best
 		}
 		if blocking {
