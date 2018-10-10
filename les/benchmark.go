@@ -550,7 +550,6 @@ func (pm *ProtocolManager) measure(setup *benchmarkSetup, count int) error {
 	setup.maxOutSize = serverMeteredPipe.maxSize
 	clientPipe.Close()
 	serverPipe.Close()
-	serverPeer.fcClient.Remove(pm.server.fcManager)
 	return nil
 }
 

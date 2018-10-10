@@ -130,7 +130,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	if config.LightBandwidthOut > 0 {
 		outSizeCostFactor = float64(config.LightServ) * 10000 / float64(config.LightBandwidthOut)
 	}
-	srv.fcCostList = pm.benchmarkCosts(/*srv.thcNormal, */inSizeCostFactor, outSizeCostFactor)
+	srv.fcCostList = pm.benchmarkCosts( /*srv.thcNormal, */ inSizeCostFactor, outSizeCostFactor)
 	srv.fcCostTable = srv.fcCostList.decode()
 	srv.fcCostStats = &requestCostStats{costs: srv.fcCostTable}
 
@@ -192,12 +192,7 @@ func (s *LesServer) SetBloomBitsIndexer(bloomIndexer *core.ChainIndexer) {
 func (s *LesServer) Stop() {
 	s.chtIndexer.Close()
 	// bloom trie indexer is closed by parent bloombits indexer
-<<<<<<< 45c9d8c10866923b06c2be51ca59a0fc643d57ce
 	s.fcCostStats.printStats()
-	s.fcManager.Stop()
-=======
-	s.fcCostStats.store()
->>>>>>> les, les/flowcontrol: parallel request serving and improved client manager
 	go func() {
 		<-s.protocolManager.noMorePeers
 	}()
