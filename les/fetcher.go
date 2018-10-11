@@ -18,6 +18,7 @@
 package les
 
 import (
+	"fmt"
 	"math/big"
 	"sync"
 	"time"
@@ -137,6 +138,7 @@ func (f *lightFetcher) syncLoop() {
 		// when a new announce is received, request loop keeps running until
 		// no further requests are necessary or possible
 		case newAnnounce := <-f.requestChn:
+			fmt.Println("<-f.requestChn", f.syncing, newAnnounce, requesting)
 			f.lock.Lock()
 			s := requesting
 			requesting = false
@@ -150,9 +152,11 @@ func (f *lightFetcher) syncLoop() {
 			syncing := f.syncing
 			f.lock.Unlock()
 
+			fmt.Println("<-f.requestChn nextRequest", rq != nil, reqID)
 			if rq != nil {
 				requesting = true
 				_, ok := <-f.pm.reqDist.queue(rq)
+				fmt.Println("<-f.requestChn req sent", ok)
 				if !ok {
 					f.requestChn <- false
 				}
@@ -163,6 +167,7 @@ func (f *lightFetcher) syncLoop() {
 						f.reqMu.Lock()
 						req, ok := f.requested[reqID]
 						if ok {
+							fmt.Println("soft timeout", reqID)
 							req.timeout = true
 							f.requested[reqID] = req
 						}
@@ -176,6 +181,7 @@ func (f *lightFetcher) syncLoop() {
 			f.reqMu.Lock()
 			req, ok := f.requested[reqID]
 			if ok {
+				fmt.Println("hard timeout", reqID)
 				delete(f.requested, reqID)
 			}
 			f.reqMu.Unlock()
@@ -191,6 +197,7 @@ func (f *lightFetcher) syncLoop() {
 				ok = false
 			}
 			if ok {
+				fmt.Println("delivered reply", resp.reqID, resp.peer.id)
 				delete(f.requested, resp.reqID)
 			}
 			f.reqMu.Unlock()
@@ -200,12 +207,14 @@ func (f *lightFetcher) syncLoop() {
 			f.lock.Lock()
 			if !ok || !(f.syncing || f.processResponse(req, resp)) {
 				resp.peer.Log().Debug("Failed processing response")
+				fmt.Println("Failed processing response")
 				go f.pm.removePeer(resp.peer.id)
 			}
 			f.lock.Unlock()
 		case p := <-f.syncDone:
 			f.lock.Lock()
 			p.Log().Debug("Done synchronising with peer")
+			fmt.Println("Done synchronising with peer", p.id)
 			f.checkSyncedHeaders(p)
 			f.syncing = false
 			f.lock.Unlock()
@@ -215,6 +224,7 @@ func (f *lightFetcher) syncLoop() {
 
 // registerPeer adds a new peer to the fetcher's peer set
 func (f *lightFetcher) registerPeer(p *peer) {
+	fmt.Println("registered", p.id)
 	p.lock.Lock()
 	p.hasBlock = func(hash common.Hash, number uint64, hasState bool) bool {
 		return f.peerHasBlock(p, hash, number, hasState)
@@ -229,6 +239,7 @@ func (f *lightFetcher) registerPeer(p *peer) {
 
 // unregisterPeer removes a new peer from the fetcher's peer set
 func (f *lightFetcher) unregisterPeer(p *peer) {
+	fmt.Println("unregistered", p.id)
 	p.lock.Lock()
 	p.hasBlock = nil
 	p.lock.Unlock()
@@ -246,16 +257,19 @@ func (f *lightFetcher) unregisterPeer(p *peer) {
 func (f *lightFetcher) announce(p *peer, head *announceData) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	fmt.Printf("announced %s %x %d %d", p.id, head.Hash, head.Number, head.ReorgDepth)
 	p.Log().Debug("Received new announcement", "number", head.Number, "hash", head.Hash, "reorg", head.ReorgDepth)
 
 	fp := f.peers[p]
 	if fp == nil {
+		fmt.Println("unknown peer", p.id)
 		p.Log().Debug("Announcement from unknown peer")
 		return
 	}
 
 	if fp.lastAnnounced != nil && head.Td.Cmp(fp.lastAnnounced.td) <= 0 {
 		// announced tds should be strictly monotonic
+		fmt.Println("bad announcement", p.id)
 		p.Log().Debug("Received non-monotonic td", "current", head.Td, "previous", fp.lastAnnounced.td)
 		go f.pm.removePeer(p.id)
 		return
@@ -431,6 +445,7 @@ func (f *lightFetcher) nextRequest() (*distReq, uint64) {
 	}
 
 	f.syncing = bestSyncing
+	fmt.Println("nextRequest syncing", bestSyncing)
 
 	var rq *distReq
 	reqID := genReqID()
@@ -445,12 +460,14 @@ func (f *lightFetcher) nextRequest() (*distReq, uint64) {
 				defer f.lock.Unlock()
 
 				fp := f.peers[p]
+				fmt.Println("canSend", p.id, fp != nil && fp.nodeByHash[bestHash] != nil)
 				return fp != nil && fp.nodeByHash[bestHash] != nil
 			},
 			request: func(dp distPeer) func() {
 				go func() {
 					p := dp.(*peer)
 					p.Log().Debug("Synchronisation started")
+					fmt.Println("starting sync", p.id)
 					f.pm.synchronise(p)
 					f.syncDone <- p
 				}()
@@ -470,9 +487,11 @@ func (f *lightFetcher) nextRequest() (*distReq, uint64) {
 
 				fp := f.peers[p]
 				if fp == nil {
+					fmt.Println("canSend", p.id, "peer unknown")
 					return false
 				}
 				n := fp.nodeByHash[bestHash]
+				fmt.Println("canSend", p.id, n != nil && !n.requested)
 				return n != nil && !n.requested
 			},
 			request: func(dp distPeer) func() {
@@ -496,6 +515,7 @@ func (f *lightFetcher) nextRequest() (*distReq, uint64) {
 					time.Sleep(hardRequestTimeout)
 					f.timeoutChn <- reqID
 				}()
+				fmt.Printf("requesting %x from %s\n", bestHash, p.id)
 				return func() { p.RequestHeadersByHash(reqID, cost, bestHash, int(bestAmount), 0, true) }
 			},
 		}
