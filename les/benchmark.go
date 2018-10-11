@@ -486,7 +486,7 @@ func (pm *ProtocolManager) measure(setup *benchmarkSetup, count int) error {
 	rand.Read(id[:])
 	clientPeer := pm.newPeer(lpv2, NetworkId, p2p.NewPeer(id, "client", nil), clientMeteredPipe)
 	serverPeer := pm.newPeer(lpv2, NetworkId, p2p.NewPeer(id, "server", nil), serverMeteredPipe)
-	serverPeer.sendQueue = newExecQueue(100)
+	serverPeer.sendQueue = newExecQueue(count)
 	serverPeer.announceType = announceTypeNone
 	serverPeer.fcCosts = make(requestCostTable)
 	c := &requestCosts{}
