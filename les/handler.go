@@ -642,16 +642,17 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			run: func() (bool, error) {
 				req := req.Reqs[index]
 				index++
+				done := index == reqCnt
 				// Retrieve the requested state entry, stopping if enough was found
 				if number := rawdb.ReadHeaderNumber(pm.chainDb, req.BHash); number != nil {
 					if header := rawdb.ReadHeader(pm.chainDb, req.BHash, *number); header != nil {
 						statedb, err := pm.blockchain.State()
 						if err != nil {
-							return false, nil
+							return done, nil
 						}
 						account, err := pm.getAccount(statedb, header.Root, common.BytesToHash(req.AccKey))
 						if err != nil {
-							return false, nil
+							return done, nil
 						}
 						code, _ := statedb.Database().TrieDB().Node(common.BytesToHash(account.CodeHash))
 
@@ -661,7 +662,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 						}
 					}
 				}
-				return index == reqCnt, nil
+				return done, nil
 			},
 			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendCode(req.ReqID, bv, data) }),
 		})
@@ -713,6 +714,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			run: func() (bool, error) {
 				hash := req.Hashes[index]
 				index++
+				done := index == reqCnt
 				if bytes >= softResponseLimit {
 					return true, nil
 				}
@@ -723,7 +725,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 				if results == nil {
 					if header := pm.blockchain.GetHeaderByHash(hash); header == nil || header.ReceiptHash != types.EmptyRootHash {
-						return false, nil
+						return done, nil
 					}
 				}
 				// If known, encode and queue for response packet
@@ -733,7 +735,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 					receipts = append(receipts, encoded)
 					bytes += len(encoded)
 				}
-				return index == reqCnt, nil
+				return done, nil
 			},
 			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendReceiptsRLP(req.ReqID, bv, receipts) }),
 		})
@@ -785,18 +787,19 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			run: func() (bool, error) {
 				req := req.Reqs[index]
 				index++
+				done := index == reqCnt
 				// Retrieve the requested state entry, stopping if enough was found
 				if number := rawdb.ReadHeaderNumber(pm.chainDb, req.BHash); number != nil {
 					if header := rawdb.ReadHeader(pm.chainDb, req.BHash, *number); header != nil {
 						statedb, err := pm.blockchain.State()
 						if err != nil {
-							return false, nil
+							return done, nil
 						}
 						var trie state.Trie
 						if len(req.AccKey) > 0 {
 							account, err := pm.getAccount(statedb, header.Root, common.BytesToHash(req.AccKey))
 							if err != nil {
-								return false, nil
+								return done, nil
 							}
 							trie, _ = statedb.Database().OpenStorageTrie(common.BytesToHash(req.AccKey), account.Root)
 						} else {
@@ -813,7 +816,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 						}
 					}
 				}
-				return index == reqCnt, nil
+				return done, nil
 			},
 			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendProofs(req.ReqID, bv, proofs) }),
 		})
@@ -847,6 +850,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			run: func() (bool, error) {
 				req := req.Reqs[index]
 				index++
+				done := index == reqCnt
 				// Look up the state belonging to the request
 				if statedb == nil || req.BHash != lastBHash {
 					statedb, root, lastBHash = nil, common.Hash{}, req.BHash
@@ -859,28 +863,28 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 					}
 				}
 				if statedb == nil {
-					return false, nil
+					return done, nil
 				}
 				// Pull the account or storage trie of the request
 				var trie state.Trie
 				if len(req.AccKey) > 0 {
 					account, err := pm.getAccount(statedb, root, common.BytesToHash(req.AccKey))
 					if err != nil {
-						return false, nil
+						return done, nil
 					}
 					trie, _ = statedb.Database().OpenStorageTrie(common.BytesToHash(req.AccKey), account.Root)
 				} else {
 					trie, _ = statedb.Database().OpenTrie(root)
 				}
 				if trie == nil {
-					return false, nil
+					return done, nil
 				}
 				// Prove the user's request from the account or stroage trie
 				trie.Prove(req.Key, req.FromLevel, nodes)
 				if nodes.DataSize() >= softResponseLimit {
 					return true, nil
 				}
-				return index == reqCnt, nil
+				return done, nil
 			},
 			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendProofsV2(req.ReqID, bv, nodes.NodeList()) }),
 		})
@@ -954,12 +958,13 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			run: func() (bool, error) {
 				req := req.Reqs[index]
 				index++
+				done := index == reqCnt
 				if header := pm.blockchain.GetHeaderByNumber(req.BlockNum); header != nil {
 					sectionHead := rawdb.ReadCanonicalHash(pm.chainDb, req.ChtNum*pm.iConfig.ChtSize-1)
 					if root := light.GetChtRoot(pm.chainDb, req.ChtNum-1, sectionHead); root != (common.Hash{}) {
 						trie, err := trie.New(root, trieDb)
 						if err != nil {
-							return false, nil
+							return done, nil
 						}
 						var encNumber [8]byte
 						binary.BigEndian.PutUint64(encNumber[:], req.BlockNum)
@@ -973,7 +978,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 						}
 					}
 				}
-				return index == reqCnt, nil
+				return done, nil
 			},
 			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendHeaderProofs(req.ReqID, bv, proofs) }),
 		})
