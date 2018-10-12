@@ -89,22 +89,23 @@ type txPool interface {
 }
 
 type ProtocolManager struct {
-	lightSync    bool
-	txpool       txPool
-	txrelay      *LesTxRelay
-	networkId    uint64
-	chainConfig  *params.ChainConfig
-	iConfig      *light.IndexerConfig
-	blockchain   BlockChain
-	chainDb      ethdb.Database
-	odr          *LesOdr
-	server       *LesServer
-	serverPool   *serverPool
-	clientPool   *freeClientPool
-	lesTopic     discv5.Topic
-	reqDist      *requestDistributor
-	retriever    *retrieveManager
-	servingQueue *servingQueue
+	lightSync                           bool
+	txpool                              txPool
+	txrelay                             *LesTxRelay
+	networkId                           uint64
+	chainConfig                         *params.ChainConfig
+	iConfig                             *light.IndexerConfig
+	blockchain                          BlockChain
+	chainDb                             ethdb.Database
+	odr                                 *LesOdr
+	server                              *LesServer
+	serverPool                          *serverPool
+	clientPool                          *freeClientPool
+	lesTopic                            discv5.Topic
+	reqDist                             *requestDistributor
+	retriever                           *retrieveManager
+	servingQueue                        *servingQueue
+	inSizeCostFactor, outSizeCostFactor float64
 
 	downloader *downloader.Downloader
 	fetcher    *lightFetcher
@@ -373,27 +374,38 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 
 	var deliverMsg *Msg
 
-	sendFunc := func(amount uint64, send func(bv uint64) error) func(servingTime uint64, err error) {
-		return func(servingTime uint64, err error) {
-			if err != nil {
-				p.errCh <- err
-				return
-			}
+	errorFn := func(err error) {
+		if err != nil {
+			p.errCh <- err
+		}
+	}
 
-			// responseLock ensures that responses are queued in the same order as
-			// RequestProcessed is called
-			p.responseLock.Lock()
-			defer p.responseLock.Unlock()
+	sendReq := func(amount uint64, reply *reply, servingTime uint64) {
+		// responseLock ensures that responses are queued in the same order as
+		// RequestProcessed is called
+		p.responseLock.Lock()
+		defer p.responseLock.Unlock()
 
-			bv, rcost := p.fcClient.RequestProcessed(responseCount, maxCost, servingTime)
-			pm.server.fcCostStats.update(msg.Code, amount, rcost)
-			if send != nil {
-				p.queueSend(func() {
-					if err := send(bv); err != nil {
-						p.errCh <- err
-					}
-				})
+		realCost := servingTime
+		inSizeCost := uint64(float64(msg.Size) * pm.inSizeCostFactor)
+		if inSizeCost > realCost {
+			realCost = inSizeCost
+		}
+		if reply != nil {
+			outSizeCost := uint64(float64(reply.size()) * pm.outSizeCostFactor)
+			if outSizeCost > realCost {
+				realCost = outSizeCost
 			}
+		}
+
+		bv := p.fcClient.RequestProcessed(responseCount, maxCost, realCost)
+		pm.server.fcCostStats.update(msg.Code, amount, realCost)
+		if reply != nil {
+			p.queueSend(func() {
+				if err := reply.send(bv); err != nil {
+					p.errCh <- err
+				}
+			})
 		}
 	}
 
@@ -528,7 +540,11 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 				return unknown || len(headers) >= int(query.Amount) || bytes >= softResponseLimit, nil
 			},
-			after: sendFunc(query.Amount, func(bv uint64) error { return p.SendBlockHeaders(req.ReqID, bv, headers) }),
+			//			after: sendFunc(query.Amount, func(bv uint64) error { return p.SendBlockHeaders(req.ReqID, bv, headers) }),
+			send: func(servingTime uint64) {
+				sendReq(query.Amount, p.ReplyBlockHeaders(req.ReqID, headers), servingTime)
+			},
+			fail: errorFn,
 		})
 
 	case BlockHeadersMsg:
@@ -593,7 +609,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 				return index == reqCnt, nil
 			},
-			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendBlockBodiesRLP(req.ReqID, bv, bodies) }),
+			send: func(servingTime uint64) {
+				sendReq(uint64(reqCnt), p.ReplyBlockBodiesRLP(req.ReqID, bodies), servingTime)
+			},
+			fail: errorFn,
 		})
 
 	case BlockBodiesMsg:
@@ -664,7 +683,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 				return done, nil
 			},
-			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendCode(req.ReqID, bv, data) }),
+			send: func(servingTime uint64) {
+				sendReq(uint64(reqCnt), p.ReplyCode(req.ReqID, data), servingTime)
+			},
+			fail: errorFn,
 		})
 
 	case CodeMsg:
@@ -737,7 +759,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 				return done, nil
 			},
-			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendReceiptsRLP(req.ReqID, bv, receipts) }),
+			send: func(servingTime uint64) {
+				sendReq(uint64(reqCnt), p.ReplyReceiptsRLP(req.ReqID, receipts), servingTime)
+			},
+			fail: errorFn,
 		})
 
 	case ReceiptsMsg:
@@ -818,7 +843,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 				return done, nil
 			},
-			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendProofs(req.ReqID, bv, proofs) }),
+			send: func(servingTime uint64) {
+				sendReq(uint64(reqCnt), p.ReplyProofs(req.ReqID, proofs), servingTime)
+			},
+			fail: errorFn,
 		})
 
 	case GetProofsV2Msg:
@@ -886,7 +914,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 				return done, nil
 			},
-			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendProofsV2(req.ReqID, bv, nodes.NodeList()) }),
+			send: func(servingTime uint64) {
+				sendReq(uint64(reqCnt), p.ReplyProofsV2(req.ReqID, nodes.NodeList()), servingTime)
+			},
+			fail: errorFn,
 		})
 
 	case ProofsV1Msg:
@@ -980,7 +1011,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 				return done, nil
 			},
-			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendHeaderProofs(req.ReqID, bv, proofs) }),
+			send: func(servingTime uint64) {
+				sendReq(uint64(reqCnt), p.ReplyHeaderProofs(req.ReqID, proofs), servingTime)
+			},
+			fail: errorFn,
 		})
 
 	case GetHelperTrieProofsMsg:
@@ -1047,9 +1081,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 				return index == reqCnt, nil
 			},
-			after: sendFunc(uint64(reqCnt), func(bv uint64) error {
-				return p.SendHelperTrieProofs(req.ReqID, bv, HelperTrieResps{Proofs: nodes.NodeList(), AuxData: auxData})
-			}),
+			send: func(servingTime uint64) {
+				sendReq(uint64(reqCnt), p.ReplyHelperTrieProofs(req.ReqID, HelperTrieResps{Proofs: nodes.NodeList(), AuxData: auxData}), servingTime)
+			},
+			fail: errorFn,
 		})
 
 	case HeaderProofsMsg:
@@ -1113,7 +1148,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				pm.txpool.AddRemotes(txs)
 				return true, nil
 			},
-			after: sendFunc(uint64(reqCnt), nil),
+			send: func(servingTime uint64) {
+				sendReq(uint64(reqCnt), nil, servingTime)
+			},
+			fail: errorFn,
 		})
 
 	case SendTxV2Msg:
@@ -1153,7 +1191,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				}
 				return true, nil
 			},
-			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendTxStatus(req.ReqID, bv, stats) }),
+			send: func(servingTime uint64) {
+				sendReq(uint64(reqCnt), p.ReplyTxStatus(req.ReqID, stats), servingTime)
+			},
+			fail: errorFn,
 		})
 
 	case GetTxStatusMsg:
@@ -1180,7 +1221,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				stats = pm.txStatus(req.Hashes)
 				return true, nil
 			},
-			after: sendFunc(uint64(reqCnt), func(bv uint64) error { return p.SendTxStatus(req.ReqID, bv, stats) }),
+			send: func(servingTime uint64) {
+				sendReq(uint64(reqCnt), p.ReplyTxStatus(req.ReqID, stats), servingTime)
+			},
+			fail: errorFn,
 		})
 
 	case TxStatusMsg:

@@ -50,7 +50,8 @@ type servingTask struct {
 	err         error
 	priority    int64
 	run         func() (finished bool, err error)
-	after       func(servingTime uint64, err error)
+	send        func(servingTime uint64)
+	fail        func(err error)
 }
 
 // newServingQueue returns a new servingQueue
@@ -166,7 +167,11 @@ func (sq *servingQueue) servingThread() {
 			task.done, task.err = task.run()
 			if task.done || task.err != nil {
 				task.servingTime += uint64(mclock.Now())
-				task.after(task.servingTime, task.err)
+				if task.err == nil {
+					task.send(task.servingTime)
+				} else {
+					task.fail(task.err)
+				}
 				break
 			}
 			if newTask := sq.getNewTask(task, false); newTask != nil {

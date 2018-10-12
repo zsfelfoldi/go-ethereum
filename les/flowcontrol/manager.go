@@ -134,11 +134,10 @@ func (cm *ClientManager) accepted(node *ClientNode, maxCost uint64, now mclock.A
 // serving has been finished.
 //
 // Note: processed should always be called for all accepted requests
-func (cm *ClientManager) processed(node *ClientNode, maxCost, servingTime uint64, now mclock.AbsTime) (realCost uint64) {
+func (cm *ClientManager) processed(node *ClientNode, maxCost, realCost uint64, now mclock.AbsTime) {
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
-	realCost = servingTime
 	if realCost > maxCost {
 		realCost = maxCost
 	}
@@ -146,7 +145,6 @@ func (cm *ClientManager) processed(node *ClientNode, maxCost, servingTime uint64
 	if uint64(node.corrBufValue) > node.bufValue {
 		node.bufValue = uint64(node.corrBufValue)
 	}
-	return
 }
 
 // updateRecharge updates the recharge integrator and checks the recharge queue

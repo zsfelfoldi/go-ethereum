@@ -123,14 +123,13 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	pm.servingQueue.setThreads(srv.thcNormal)
 	srv.fcManager = flowcontrol.NewClientManager(srv.bwcNormal, &mclock.System{})
 
-	var inSizeCostFactor, outSizeCostFactor float64
 	if config.LightBandwidthIn > 0 {
-		inSizeCostFactor = float64(config.LightServ) * 10000 / float64(config.LightBandwidthIn)
+		pm.inSizeCostFactor = float64(config.LightServ) * 10000 / float64(config.LightBandwidthIn)
 	}
 	if config.LightBandwidthOut > 0 {
-		outSizeCostFactor = float64(config.LightServ) * 10000 / float64(config.LightBandwidthOut)
+		pm.outSizeCostFactor = float64(config.LightServ) * 10000 / float64(config.LightBandwidthOut)
 	}
-	srv.fcCostList = pm.benchmarkCosts( /*srv.thcNormal, */ inSizeCostFactor, outSizeCostFactor)
+	srv.fcCostList = pm.benchmarkCosts(srv.thcNormal, pm.inSizeCostFactor, pm.outSizeCostFactor)
 	srv.fcCostTable = srv.fcCostList.decode()
 	srv.fcCostStats = &requestCostStats{costs: srv.fcCostTable}
 

@@ -276,7 +276,7 @@ type benchmarkSetup struct {
 	err                   error
 }
 
-var reqBenchmarkKey = []byte("_requestBenchmarks2_")
+var reqBenchmarkKey = []byte("_requestBenchmarks3_")
 
 const (
 	passCount          = 10
@@ -337,7 +337,7 @@ func dataToCost(id string, data []benchmarkData, inSizeCostFactor, outSizeCostFa
 	return cost
 }
 
-func (pm *ProtocolManager) benchmarkCosts(inSizeCostFactor, outSizeCostFactor float64) RequestCostList {
+func (pm *ProtocolManager) benchmarkCosts(threadCount int, inSizeCostFactor, outSizeCostFactor float64) RequestCostList {
 	blockNumber := pm.blockchain.CurrentHeader().Number.Uint64()
 	allData := make(map[string][]benchmarkData)
 	run := false
@@ -361,7 +361,7 @@ func (pm *ProtocolManager) benchmarkCosts(inSizeCostFactor, outSizeCostFactor fl
 		res := pm.runBenchmark()
 		for _, r := range res {
 			if r.err == nil {
-				data := append(allData[r.id], benchmarkData{BlockNumber: blockNumber, AvgTime: uint64(r.avgTime), MaxInSize: r.maxInSize, MaxOutSize: r.maxOutSize})
+				data := append(allData[r.id], benchmarkData{BlockNumber: blockNumber, AvgTime: uint64(r.avgTime) * uint64(threadCount), MaxInSize: r.maxInSize, MaxOutSize: r.maxOutSize})
 				allData[r.id] = data
 				if enc, err := rlp.EncodeToBytes(data); err == nil {
 					pm.chainDb.Put(append(reqBenchmarkKey, []byte(r.id)...), enc)

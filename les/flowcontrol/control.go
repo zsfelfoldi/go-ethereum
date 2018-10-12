@@ -93,13 +93,13 @@ func (peer *ClientNode) AcceptRequest(index, maxCost uint64) (accepted bool, buf
 }
 
 // RequestProcessed should be called when the request has been processed
-func (peer *ClientNode) RequestProcessed(index, maxCost, servingTime uint64) (bv, realCost uint64) {
+func (peer *ClientNode) RequestProcessed(index, maxCost, realCost uint64) (bv uint64) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
 	time := peer.cm.clock.Now()
 	peer.recalcBV(time)
-	realCost = peer.cm.processed(peer, maxCost, servingTime, time)
+	peer.cm.processed(peer, maxCost, realCost, time)
 	bv = peer.bufValue + peer.sumCost - peer.accepted[index]
 	delete(peer.accepted, index)
 	return
