@@ -115,12 +115,7 @@ func (f *freeClientPool) connect(address string, disconnectFn func()) bool {
 		i := f.connPool.PopItem().(*freeClientPoolEntry)
 		if e.linUsage+int64(connectedBias)-i.linUsage < 0 {
 			// kick it out and accept the new client
-			f.connPool.Remove(i.index)
-			f.calcLogUsage(i, now)
-			i.connected = false
-			f.disconnPool.Push(i, -i.logUsage)
-			log.Debug("Client kicked out", "address", i.address)
-			i.disconnectFn()
+			f.dropClient(i, now)
 		} else {
 			// keep the old client and reject the new one
 			f.connPool.Push(i, i.linUsage)
@@ -161,6 +156,27 @@ func (f *freeClientPool) disconnect(address string) {
 	e.connected = false
 	f.disconnPool.Push(e, -e.logUsage)
 	log.Debug("Client disconnected", "address", address)
+}
+
+func (f *freeClientPool) setConnLimit(newLimit int) {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+
+	f.connectedLimit = newLimit
+	now := mclock.Now()
+	for f.connPool.Size() >= f.connectedLimit {
+		i := f.connPool.PopItem().(*freeClientPoolEntry)
+		f.dropClient(i, now)
+	}
+}
+
+func (f *freeClientPool) dropClient(i *freeClientPoolEntry, now mclock.AbsTime) {
+	f.connPool.Remove(i.index)
+	f.calcLogUsage(i, now)
+	i.connected = false
+	f.disconnPool.Push(i, -i.logUsage)
+	log.Debug("Client kicked out", "address", i.address)
+	i.disconnectFn()
 }
 
 // logOffset calculates the time-dependent offset for the logarithmic

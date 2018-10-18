@@ -101,6 +101,8 @@ type ProtocolManager struct {
 	server                              *LesServer
 	serverPool                          *serverPool
 	clientPool                          *freeClientPool
+	freeClientBw                        uint64
+	vipClientPool                       *vipClientPool
 	lesTopic                            discv5.Topic
 	reqDist                             *requestDistributor
 	retriever                           *retrieveManager
@@ -171,13 +173,28 @@ func (pm *ProtocolManager) removePeer(id string) {
 	pm.peers.Unregister(id)
 }
 
+func (pm *ProtocolManager) maxFreePeers(otherPeers int, otherBw uint64) int {
+	if otherPeers >= pm.maxPeers || otherBw >= pm.server.totalBandwidth {
+		return 0
+	}
+	maxPeers := int((pm.server.totalBandwidth - otherBw) / pm.freeClientBw)
+	if maxPeers <= pm.maxPeers-otherPeers {
+		return maxPeers
+	}
+	return pm.maxPeers - otherPeers
+}
+
 func (pm *ProtocolManager) Start(maxPeers int) {
 	pm.maxPeers = maxPeers
+	pm.freeClientBw = pm.server.totalBandwidth / uint64(maxPeers)
+	if pm.freeClientBw < pm.server.minBandwidth {
+		pm.freeClientBw = pm.server.minBandwidth
+	}
 
 	if pm.lightSync {
 		go pm.syncer()
 	} else {
-		pm.clientPool = newFreeClientPool(pm.chainDb, maxPeers, 10000, mclock.System{})
+		pm.clientPool = newFreeClientPool(pm.chainDb, pm.maxFreePeers(0, 0), 10000, mclock.System{})
 		go func() {
 			for range pm.newPeerCh {
 			}
@@ -265,14 +282,25 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	}
 
 	if !pm.lightSync && !p.Peer.Info().Network.Trusted {
-		addr, ok := p.RemoteAddr().(*net.TCPAddr)
-		// test peer address is not a tcp address, don't use client pool if can not typecast
-		if ok {
-			id := addr.IP.String()
-			if !pm.clientPool.connect(id, func() { go pm.removePeer(p.id) }) {
-				return p2p.DiscTooManyPeers
+		bw, vipPeers, vipConn := pm.vipClientPool.connect(p.ID())
+		if bw != 0 {
+			pm.clientPool.setConnLimit(pm.maxFreePeers(vipPeers, vipConn))
+			defer func() {
+				vipPeers, vipConn := pm.vipClientPool.disconnect(p.ID())
+				pm.clientPool.setConnLimit(pm.maxFreePeers(vipPeers, vipConn))
+			}()
+			p.updateBandwidth(bw)
+		} else {
+			addr, ok := p.RemoteAddr().(*net.TCPAddr)
+			// test peer address is not a tcp address, don't use client pool if can not typecast
+			if ok {
+				id := addr.IP.String()
+				if !pm.clientPool.connect(id, func() { go pm.removePeer(p.id) }) {
+					return p2p.DiscTooManyPeers
+				}
+				defer pm.clientPool.disconnect(id)
 			}
-			defer pm.clientPool.disconnect(id)
+			p.updateBandwidth(pm.freeClientBw)
 		}
 	}
 

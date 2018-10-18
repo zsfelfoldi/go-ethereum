@@ -33,7 +33,10 @@ import (
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/discv5"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rpc"
 )
+
+const bufLimitRatio = 10000 // fixed bufLimit/MRR ratio
 
 type LesServer struct {
 	lesCommons
@@ -47,8 +50,9 @@ type LesServer struct {
 	privateKey  *ecdsa.PrivateKey
 	quitSync    chan struct{}
 
-	bwcNormal, bwcBlockProcessing flowcontrol.PieceWiseLinear // bandwidth curve for normal operation and block processing mode
-	thcNormal, thcBlockProcessing int                         // serving thread count for normal operation and block processing mode
+	totalBandwidth, minBandwidth, minBufLimit, bufLimitRatio uint64
+	bwcNormal, bwcBlockProcessing                            flowcontrol.PieceWiseLinear // bandwidth curve for normal operation and block processing mode
+	thcNormal, thcBlockProcessing                            int                         // serving thread count for normal operation and block processing mode
 }
 
 func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
@@ -100,10 +104,6 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	srv.chtIndexer.Start(eth.BlockChain())
 	pm.server = srv
 
-	srv.defParams = &flowcontrol.ServerParams{
-		BufLimit:    300000000,
-		MinRecharge: 50000,
-	}
 	bwNormal := uint64(config.LightServ) * flowcontrol.FixedPointMultiplier / 100
 	srv.bwcNormal = flowcontrol.PieceWiseLinear{{0, 0}, {bwNormal / 10, bwNormal}, {bwNormal, bwNormal}}
 	// limit the serving thread count to at least 4 times the targeted average
@@ -123,18 +123,36 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	pm.servingQueue.setThreads(srv.thcNormal)
 	srv.fcManager = flowcontrol.NewClientManager(srv.bwcNormal, &mclock.System{})
 
+	srv.totalBandwidth = bwNormal
 	if config.LightBandwidthIn > 0 {
-		pm.inSizeCostFactor = float64(config.LightServ) * 10000 / float64(config.LightBandwidthIn)
+		pm.inSizeCostFactor = float64(srv.totalBandwidth) / float64(config.LightBandwidthIn)
 	}
 	if config.LightBandwidthOut > 0 {
-		pm.outSizeCostFactor = float64(config.LightServ) * 10000 / float64(config.LightBandwidthOut)
+		pm.outSizeCostFactor = float64(srv.totalBandwidth) / float64(config.LightBandwidthOut)
 	}
-	srv.fcCostList = pm.benchmarkCosts(srv.thcNormal, pm.inSizeCostFactor, pm.outSizeCostFactor)
+	srv.fcCostList, srv.minBufLimit = pm.benchmarkCosts(srv.thcNormal, pm.inSizeCostFactor, pm.outSizeCostFactor)
 	srv.fcCostTable = srv.fcCostList.decode()
 	srv.fcCostStats = &requestCostStats{costs: srv.fcCostTable}
 
+	srv.minBandwidth = (srv.minBufLimit-1)/bufLimitRatio + 1
+	srv.defParams = &flowcontrol.ServerParams{
+		BufLimit:    srv.minBandwidth * bufLimitRatio,
+		MinRecharge: srv.minBandwidth,
+	}
+
 	srv.blockProcLoop(pm)
 	return srv, nil
+}
+
+func (s *LesServer) APIs() []rpc.API {
+	return []rpc.API{
+		{
+			Namespace: "les",
+			Version:   "1.0",
+			Service:   NewPrivateLesServerAPI(s),
+			Public:    false,
+		},
+	}
 }
 
 func (s *LesServer) blockProcLoop(pm *ProtocolManager) {

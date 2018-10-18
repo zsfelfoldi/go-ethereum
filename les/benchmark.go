@@ -337,7 +337,7 @@ func dataToCost(id string, data []benchmarkData, inSizeCostFactor, outSizeCostFa
 	return cost
 }
 
-func (pm *ProtocolManager) benchmarkCosts(threadCount int, inSizeCostFactor, outSizeCostFactor float64) RequestCostList {
+func (pm *ProtocolManager) benchmarkCosts(threadCount int, inSizeCostFactor, outSizeCostFactor float64) (costList RequestCostList, minBufLimit uint64) {
 	blockNumber := pm.blockchain.CurrentHeader().Number.Uint64()
 	allData := make(map[string][]benchmarkData)
 	run := false
@@ -375,6 +375,7 @@ func (pm *ProtocolManager) benchmarkCosts(threadCount int, inSizeCostFactor, out
 	for id, data := range allData {
 		costs[id] = dataToCost(id, data, inSizeCostFactor, outSizeCostFactor)
 	}
+	var maxAllCosts uint64
 	// create linear cost functions for actual request types using reqBenchMap
 	res := make(RequestCostList, len(reqBenchMap))
 	for i, m := range reqBenchMap {
@@ -406,6 +407,9 @@ func (pm *ProtocolManager) benchmarkCosts(threadCount int, inSizeCostFactor, out
 			if maxCost < cost {
 				maxCost = cost
 			}
+			if maxCost > maxAllCosts {
+				maxAllCosts = maxCost
+			}
 			dc := (maxCost - cost) / (m.maxCount - 1)
 			if cost < dc {
 				dc = maxCost / m.maxCount
@@ -415,7 +419,7 @@ func (pm *ProtocolManager) benchmarkCosts(threadCount int, inSizeCostFactor, out
 			res[i].ReqCost = dc
 		}
 	}
-	return res
+	return res, maxAllCosts * 2
 }
 
 func (pm *ProtocolManager) runBenchmark() []*benchmarkSetup {

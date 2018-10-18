@@ -148,6 +148,13 @@ func (p *peer) waitBefore(maxCost uint64) (time.Duration, float64) {
 	return p.fcServer.CanSend(maxCost)
 }
 
+func (p *peer) updateBandwidth(bw uint64) {
+	var kvList keyValueList
+	kvList = kvList.add("flowControl/MRR", bw)
+	kvList = kvList.add("flowControl/BL", bw*bufLimitRatio)
+	go p.SendAnnounce(announceData{Update: kvList})
+}
+
 func sendRequest(w p2p.MsgWriter, msgcode, reqID, cost uint64, data interface{}) error {
 	type req struct {
 		ReqID uint64
