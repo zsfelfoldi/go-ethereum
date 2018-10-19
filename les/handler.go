@@ -282,14 +282,8 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	}
 
 	if !pm.lightSync && !p.Peer.Info().Network.Trusted {
-		bw, vipPeers, vipConn := pm.vipClientPool.connect(p.ID())
-		if bw != 0 {
-			pm.clientPool.setConnLimit(pm.maxFreePeers(vipPeers, vipConn))
-			defer func() {
-				vipPeers, vipConn := pm.vipClientPool.disconnect(p.ID())
-				pm.clientPool.setConnLimit(pm.maxFreePeers(vipPeers, vipConn))
-			}()
-			p.updateBandwidth(bw)
+		if pm.vipClientPool.connect(p.ID(), p.updateBandwidth) {
+			defer pm.vipClientPool.disconnect(p.ID())
 		} else {
 			addr, ok := p.RemoteAddr().(*net.TCPAddr)
 			// test peer address is not a tcp address, don't use client pool if can not typecast

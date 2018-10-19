@@ -31,6 +31,7 @@ var (
 // It offers only methods that operate on public data that is freely available to anyone.
 type PrivateLesServerAPI struct {
 	server *LesServer
+	pm     *ProtocolManager
 	vip    *vipClientPool
 }
 
@@ -39,16 +40,32 @@ func NewPrivateLesServerAPI(server *LesServer) *PrivateLesServerAPI {
 	vip := &vipClientPool{
 		clients: make(map[enode.ID]vipClientInfo),
 		totalBw: server.totalBandwidth,
+		pm:      server.protocolManager,
 	}
 	server.protocolManager.vipClientPool = vip
 	return &PrivateLesServerAPI{
 		server: server,
+		pm:     server.protocolManager,
 		vip:    vip,
 	}
 }
 
 func (api *PrivateLesServerAPI) BandwidthLimits() (total, min uint64) {
 	return api.server.totalBandwidth, api.server.minBandwidth
+}
+
+type vipClientInfo struct {
+	bw        uint64
+	connected bool
+	updateBw  func(uint64)
+}
+
+type vipClientPool struct {
+	lock                                  sync.Mutex
+	pm                                    *ProtocolManager
+	clients                               map[enode.ID]vipClientInfo
+	totalBw, totalVipBw, totalConnectedBw uint64
+	connectedCount                        int
 }
 
 func (api *PrivateLesServerAPI) AssignBandwidth(id enode.ID, bw uint64) error {
@@ -64,48 +81,45 @@ func (api *PrivateLesServerAPI) AssignBandwidth(id enode.ID, bw uint64) error {
 		return ErrTotalBW
 	}
 	api.vip.totalVipBw += bw - c.bw
+	if c.connected {
+		api.vip.totalConnectedBw += bw - c.bw
+		api.pm.clientPool.setConnLimit(api.pm.maxFreePeers(api.vip.connectedCount, api.vip.totalConnectedBw))
+		c.updateBw(bw)
+	}
 	c.bw = bw
 	api.vip.clients[id] = c
 	return nil
 }
 
-type vipClientInfo struct{ bw, currentBw uint64 }
-
-type vipClientPool struct {
-	lock                                  sync.Mutex
-	clients                               map[enode.ID]vipClientInfo
-	totalBw, totalVipBw, totalConnectedBw uint64
-	connectedCount                        int
-}
-
-func (v *vipClientPool) connect(id enode.ID) (bw uint64, connectedCount int, totalConnectedBw uint64) {
+func (v *vipClientPool) connect(id enode.ID, updateBw func(uint64)) bool {
 	v.lock.Lock()
 	defer v.lock.Unlock()
 
 	c := v.clients[id]
-	if bw == 0 || c.currentBw != 0 {
-		return 0, v.connectedCount, v.totalConnectedBw
+	if c.bw == 0 || c.connected {
+		return false
 	}
-	c.currentBw = c.bw
-	if v.totalConnectedBw+c.currentBw > v.totalBw {
-		return 0, v.connectedCount, v.totalConnectedBw
-	}
-	v.connectedCount++
-	v.totalConnectedBw += c.currentBw
+	c.connected = true
+	c.updateBw = updateBw
 	v.clients[id] = c
-	return c.currentBw, v.connectedCount, v.totalConnectedBw
+	v.connectedCount++
+	v.totalConnectedBw += c.bw
+	v.pm.clientPool.setConnLimit(v.pm.maxFreePeers(v.connectedCount, v.totalConnectedBw))
+	updateBw(c.bw)
+	return true
 }
 
-func (v *vipClientPool) disconnect(id enode.ID) (connectedCount int, totalConnectedBw uint64) {
+func (v *vipClientPool) disconnect(id enode.ID) {
 	v.lock.Lock()
 	defer v.lock.Unlock()
 
 	c := v.clients[id]
-	if c.currentBw != 0 {
-		v.totalConnectedBw -= c.currentBw
-		c.currentBw = 0
-		v.clients[id] = c
-		v.connectedCount--
+	if c.bw == 0 || !c.connected {
+		return
 	}
-	return v.connectedCount, v.totalConnectedBw
+	c.connected = false
+	v.clients[id] = c
+	v.connectedCount--
+	v.totalConnectedBw -= c.bw
+	v.pm.clientPool.setConnLimit(v.pm.maxFreePeers(v.connectedCount, v.totalConnectedBw))
 }
