@@ -149,6 +149,7 @@ func (p *peer) waitBefore(maxCost uint64) (time.Duration, float64) {
 }
 
 func (p *peer) updateBandwidth(bw uint64) {
+	p.fcClient.UpdateParams(flowcontrol.ServerParams{MinRecharge: bw, BufLimit: bw * bufLimitRatio})
 	var kvList keyValueList
 	kvList = kvList.add("flowControl/MRR", bw)
 	kvList = kvList.add("flowControl/BL", bw*bufLimitRatio)
