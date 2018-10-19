@@ -125,7 +125,7 @@ func (cm *ClientManager) accepted(node *ClientNode, maxCost uint64, now mclock.A
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
-	cm.updateNodeRc(node, -int64(maxCost), now)
+	cm.updateNodeRc(node, -int64(maxCost), node.params, now)
 	rcTime := (node.params.BufLimit - uint64(node.corrBufValue)) * FixedPointMultiplier / node.params.MinRecharge
 	return -int64(now) - int64(rcTime)
 }
@@ -141,10 +141,17 @@ func (cm *ClientManager) processed(node *ClientNode, maxCost, realCost uint64, n
 	if realCost > maxCost {
 		realCost = maxCost
 	}
-	cm.updateNodeRc(node, int64(maxCost-realCost), now)
+	cm.updateNodeRc(node, int64(maxCost-realCost), node.params, now)
 	if uint64(node.corrBufValue) > node.bufValue {
 		node.bufValue = uint64(node.corrBufValue)
 	}
+}
+
+func (cm *ClientManager) updateParams(node *ClientNode, params *ServerParams, now mclock.AbsTime) {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	cm.updateNodeRc(node, 0, params, now)
 }
 
 // updateRecharge updates the recharge integrator and checks the recharge queue
@@ -182,8 +189,8 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 }
 
 // updateNodeRc updates a node's corrBufValue and adds an external correction value.
-// It also adds or removes the rcQueue entry and updates sumRecharge if necessary.
-func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, time mclock.AbsTime) {
+// It also adds or removes the rcQueue entry and updates ServerParams and sumRecharge if necessary.
+func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, params *ServerParams, time mclock.AbsTime) {
 	cm.updateRecharge(time)
 	wasFull := true
 	if node.corrBufValue != int64(node.params.BufLimit) {
@@ -198,16 +205,21 @@ func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, time mclock.A
 	if node.corrBufValue < 0 {
 		node.corrBufValue = 0
 	}
-	isFull := false
-	if node.corrBufValue >= int64(node.params.BufLimit) {
-		node.corrBufValue = int64(node.params.BufLimit)
-		isFull = true
+	diff := int64(params.BufLimit - node.params.BufLimit)
+	if diff > 0 {
+		node.corrBufValue += diff
 	}
-	if wasFull && !isFull {
-		cm.sumRecharge += node.params.MinRecharge
+	isFull := false
+	if node.corrBufValue >= int64(params.BufLimit) {
+		node.corrBufValue = int64(params.BufLimit)
+		isFull = true
 	}
 	if !wasFull && isFull {
 		cm.sumRecharge -= node.params.MinRecharge
+	}
+	node.params = params
+	if wasFull && !isFull {
+		cm.sumRecharge += node.params.MinRecharge
 	}
 	if !isFull {
 		if node.queueIndex != -1 {

@@ -24,9 +24,15 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
-// fcTimeConst is the time constant applied for MinRecharge during linear
-// buffer recharge period
-const fcTimeConst = time.Millisecond
+const (
+	// fcTimeConst is the time constant applied for MinRecharge during linear
+	// buffer recharge period
+	fcTimeConst = time.Millisecond
+	// decParamDelay is applied at server side when decreasing bandwidth in order to
+	// avoid a buffer underrun error due to requests sent by the client before
+	// receiving the bandwidth update announcement
+	decParamDelay = time.Second * 5
+)
 
 // ServerParams are the flow control parameters specified by a server for a client
 //
@@ -36,16 +42,22 @@ type ServerParams struct {
 	BufLimit, MinRecharge uint64
 }
 
+type scheduledUpdate struct {
+	time   mclock.AbsTime
+	params ServerParams
+}
+
 // ClientNode is the flow control system's representation of a client
 // (used in server mode only)
 type ClientNode struct {
-	params   *ServerParams
-	bufValue uint64
-	lastTime mclock.AbsTime
-	sumCost  uint64            // sum of req costs received from this client
-	accepted map[uint64]uint64 // value = sumCost after accepting the given req
-	lock     sync.Mutex
-	cm       *ClientManager
+	params         *ServerParams
+	bufValue       uint64
+	lastTime       mclock.AbsTime
+	updateSchedule []scheduledUpdate
+	sumCost        uint64            // sum of req costs received from this client
+	accepted       map[uint64]uint64 // value = sumCost after accepting the given req
+	lock           sync.Mutex
+	cm             *ClientManager
 	cmNodeFields
 }
 
@@ -62,6 +74,15 @@ func NewClientNode(cm *ClientManager, params *ServerParams) *ClientNode {
 	return node
 }
 
+func (peer *ClientNode) update(time mclock.AbsTime) {
+	for len(peer.updateSchedule) > 0 && peer.updateSchedule[0].time <= time {
+		peer.recalcBV(peer.updateSchedule[0].time)
+		peer.updateParams(peer.updateSchedule[0].params, time)
+		peer.updateSchedule = peer.updateSchedule[1:]
+	}
+	peer.recalcBV(time)
+}
+
 func (peer *ClientNode) recalcBV(time mclock.AbsTime) {
 	dt := uint64(time - peer.lastTime)
 	if time < peer.lastTime {
@@ -74,6 +95,37 @@ func (peer *ClientNode) recalcBV(time mclock.AbsTime) {
 	peer.lastTime = time
 }
 
+func (peer *ClientNode) UpdateParams(params ServerParams) {
+	peer.lock.Lock()
+	defer peer.lock.Unlock()
+
+	time := peer.cm.clock.Now()
+	peer.update(time)
+	if params.MinRecharge >= peer.params.MinRecharge {
+		peer.updateSchedule = nil
+		peer.updateParams(params, time)
+	} else {
+		for i, s := range peer.updateSchedule {
+			if params.MinRecharge >= s.params.MinRecharge {
+				s.params = params
+				peer.updateSchedule = peer.updateSchedule[:i+1]
+				return
+			}
+		}
+		peer.updateSchedule = append(peer.updateSchedule, scheduledUpdate{time: time + mclock.AbsTime(decParamDelay), params: params})
+	}
+}
+
+func (peer *ClientNode) updateParams(params ServerParams, time mclock.AbsTime) {
+	diff := params.BufLimit - peer.params.BufLimit
+	if int64(diff) > 0 {
+		peer.bufValue += diff
+	} else if peer.bufValue > params.BufLimit {
+		peer.bufValue = params.BufLimit
+	}
+	peer.cm.updateParams(peer, &params, time)
+}
+
 // AcceptRequest returns whether a new request can be accepted and the missing
 // buffer amount if it was rejected due to a buffer underrun. If accepted, maxCost
 // is deducted from the flow control buffer.
@@ -82,7 +134,7 @@ func (peer *ClientNode) AcceptRequest(index, maxCost uint64) (accepted bool, buf
 	defer peer.lock.Unlock()
 
 	time := peer.cm.clock.Now()
-	peer.recalcBV(time)
+	peer.update(time)
 	if maxCost > peer.bufValue {
 		return false, maxCost - peer.bufValue, 0
 	}
@@ -98,7 +150,7 @@ func (peer *ClientNode) RequestProcessed(index, maxCost, realCost uint64) (bv ui
 	defer peer.lock.Unlock()
 
 	time := peer.cm.clock.Now()
-	peer.recalcBV(time)
+	peer.update(time)
 	peer.cm.processed(peer, maxCost, realCost, time)
 	bv = peer.bufValue + peer.sumCost - peer.accepted[index]
 	delete(peer.accepted, index)
