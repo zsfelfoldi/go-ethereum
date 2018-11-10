@@ -18,6 +18,7 @@
 package les
 
 import (
+	"fmt"
 	"math/big"
 	"sync"
 	"time"
@@ -150,10 +151,15 @@ func (f *lightFetcher) syncLoop() {
 			}
 			f.lock.Unlock()
 
+			if syncing {
+				fmt.Println("nextRequest returned syncing")
+			}
+
 			if rq != nil {
 				requesting = true
 				if _, ok := <-f.pm.reqDist.queue(rq); ok {
 					if syncing {
+						fmt.Println("syncing started")
 						f.lock.Lock()
 						f.syncing = true
 						f.lock.Unlock()
@@ -173,6 +179,9 @@ func (f *lightFetcher) syncLoop() {
 					}
 				} else {
 					f.requestChn <- false
+					if syncing {
+						fmt.Println("no suitable peer for syncing")
+					}
 				}
 			}
 		case reqID := <-f.timeoutChn:
@@ -207,6 +216,7 @@ func (f *lightFetcher) syncLoop() {
 			}
 			f.lock.Unlock()
 		case p := <-f.syncDone:
+			fmt.Println("<-f.syncDone")
 			f.lock.Lock()
 			p.Log().Debug("Done synchronising with peer")
 			f.checkSyncedHeaders(p)
@@ -453,7 +463,9 @@ func (f *lightFetcher) nextRequest() (*distReq, uint64, bool) {
 				go func() {
 					p := dp.(*peer)
 					p.Log().Debug("Synchronisation started")
+					fmt.Println("f.pm.synchronise started", p.id)
 					f.pm.synchronise(p)
+					fmt.Println("f.pm.synchronise finished", p.id)
 					f.syncDone <- p
 				}()
 				return nil
