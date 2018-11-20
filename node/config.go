@@ -294,7 +294,11 @@ func (c *Config) instanceDir() string {
 	if c.DataDir == "" {
 		return ""
 	}
-	return filepath.Join(c.DataDir, c.name())
+	name := c.name()
+	if name == "p2p-node" {
+		name = "geth"
+	}
+	return filepath.Join(c.DataDir, name)
 }
 
 // NodeKey retrieves the currently configured private key of the node, checking

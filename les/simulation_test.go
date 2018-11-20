@@ -41,7 +41,7 @@ import (
 	colorable "github.com/mattn/go-colorable"
 )
 
-const simTestBlockCount = 1000
+const simTestBlockCount = 6705042
 
 func init() {
 	flag.Parse()
@@ -56,7 +56,7 @@ func init() {
 }
 
 var (
-	adapter  = flag.String("adapter", "sim", "type of simulation: sim|socket|exec|docker")
+	adapter  = flag.String("adapter", "exec", "type of simulation: sim|socket|exec|docker")
 	loglevel = flag.Int("loglevel", 0, "verbosity of logs")
 	nodes    = flag.Int("nodes", 0, "number of nodes")
 )
@@ -119,6 +119,7 @@ func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx conte
 
 	serverconf := adapters.RandomNodeConfig()
 	serverconf.Services = []string{"lesserver"}
+	serverconf.DataDir = "/media/1TB/.ethereum"
 	for i, _ := range servers {
 		server, err := net.NewNodeWithConfig(serverconf)
 		if err != nil {
@@ -258,10 +259,8 @@ func NewNetwork() (*simulations.Network, func(), error) {
 
 func newLesClientService(ctx *adapters.ServiceContext) (node.Service, error) {
 	config := eth.DefaultConfig
-	config.NetworkId = 12345
 	config.SyncMode = downloader.LightSync
 	config.Ethash.PowMode = ethash.ModeFake
-	config.Genesis = &core.Genesis{Config: params.TestChainConfig}
 	return New(ctx.NodeContext, &config)
 }
 
@@ -269,11 +268,9 @@ func newLesServerService(ctx *adapters.ServiceContext) (node.Service, error) {
 	fmt.Println("server init start")
 	defer fmt.Println("server init end")
 	config := eth.DefaultConfig
-	config.NetworkId = 12345
 	config.SyncMode = downloader.FullSync
 	config.LightServ = 50
-	config.Ethash.PowMode = ethash.ModeFake
-	config.Genesis = &core.Genesis{Config: params.TestChainConfig}
+	config.LightPeers = 20
 	ethereum, err := eth.New(ctx.NodeContext, &config)
 	if err != nil {
 		return nil, err
