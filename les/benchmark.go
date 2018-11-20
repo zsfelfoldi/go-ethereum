@@ -312,23 +312,23 @@ func dataToCost(id string, data []benchmarkData, inSizeCostFactor, outSizeCostFa
 			maxOutSize = d.MaxOutSize
 		}
 	}
-
-	sort.Sort(benchmarkDataByTime(data))
-	skip := len(data) / 5
-	for i := skip; i < len(data)-skip; i++ {
-		avgTime += data[i].AvgTime
+	var cost uint64
+	if len(data) > 0 {
+		sort.Sort(benchmarkDataByTime(data))
+		skip := len(data) / 5
+		for i := skip; i < len(data)-skip; i++ {
+			avgTime += data[i].AvgTime
+		}
+		avgTime /= uint64(len(data) - skip*2)
+		bt := benchmarkTypes[id]
+		maxOutSize += bt.outSizeCorr
+		if bt.avgTimeCorr != 0 {
+			avgTime = uint64(float64(avgTime) * bt.avgTimeCorr)
+		}
+		cost = avgTime * 2
 	}
-	avgTime /= uint64(len(data) - skip*2)
-	bt := benchmarkTypes[id]
-	maxOutSize += bt.outSizeCorr
-	if bt.avgTimeCorr != 0 {
-		avgTime = uint64(float64(avgTime) * bt.avgTimeCorr)
-	}
-
-	timeCost := avgTime * 2
 	inSizeCost := uint64(float64(maxInSize) * inSizeCostFactor * 1.25)
 	outSizeCost := uint64(float64(maxOutSize) * outSizeCostFactor * 1.25)
-	cost := timeCost
 	if inSizeCost > cost {
 		cost = inSizeCost
 	}
