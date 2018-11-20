@@ -192,7 +192,7 @@ func newTestProtocolManager(lightSync bool, blocks int, generator func(int, *cor
 		}
 
 		srv.fcManager = flowcontrol.NewClientManager(nil, &mclock.System{})
-		srv.fcCostStats = newCostStats(nil)
+		srv.fcCostStats = &requestCostStats{}
 	}
 	pm.Start(1000)
 	return pm, nil
