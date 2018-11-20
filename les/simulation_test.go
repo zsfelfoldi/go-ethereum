@@ -150,6 +150,8 @@ func testSimGenerateChain(node *simulations.Node, targetHead uint64) {
 
 func TestSim(t *testing.T) {
 	testSim(t, 1, 1, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
+		server := servers[0]
+		client := clients[0]
 
 		var headNum uint64
 		serverClient, err := server.Client()
