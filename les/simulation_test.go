@@ -33,7 +33,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/p2p/discover"
+	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/simulations"
 	"github.com/ethereum/go-ethereum/p2p/simulations/adapters"
 	"github.com/ethereum/go-ethereum/params"
@@ -80,11 +80,11 @@ func NewAdapter(adapterType string, services adapters.Services) (adapter adapter
 		}
 		teardown = func() { os.RemoveAll(baseDir) }
 		adapter = adapters.NewExecAdapter(baseDir)
-	case "docker":
-		adapter, err = adapters.NewDockerAdapter()
-		if err != nil {
-			return nil, teardown, err
-		}
+	/*case "docker":
+	adapter, err = adapters.NewDockerAdapter()
+	if err != nil {
+		return nil, teardown, err
+	}*/
 	default:
 		return nil, teardown, errors.New("adapter needs to be one of sim, socket, exec, docker")
 	}
@@ -170,7 +170,7 @@ func TestSim(t *testing.T) {
 			return nil
 		}
 
-		check := func(ctx context.Context, id discover.NodeID) (bool, error) {
+		check := func(ctx context.Context, id enode.ID) (bool, error) {
 			fmt.Println(id, "*****")
 			// check we haven't run out of time
 			select {
@@ -201,7 +201,7 @@ func TestSim(t *testing.T) {
 			return head == simTestBlockCount, nil
 		}
 
-		trigger := make(chan discover.NodeID)
+		trigger := make(chan enode.ID)
 		go func() {
 			for {
 				select {
@@ -224,7 +224,7 @@ func TestSim(t *testing.T) {
 			Action:  action,
 			Trigger: trigger,
 			Expect: &simulations.Expectation{
-				Nodes: []discover.NodeID{server.ID(), client.ID()},
+				Nodes: []enode.ID{server.ID(), client.ID()},
 				Check: check,
 			},
 		}
