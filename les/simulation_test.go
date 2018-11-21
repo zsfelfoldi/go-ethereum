@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/consensus/ethash"
 	"github.com/ethereum/go-ethereum/core"
@@ -40,8 +41,6 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 	colorable "github.com/mattn/go-colorable"
 )
-
-const simTestBlockCount = 6705042
 
 func init() {
 	flag.Parse()
@@ -98,8 +97,6 @@ func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx conte
 	if err != nil {
 		t.Fatalf("Failed to create network: %v", err)
 	}
-	fmt.Println("1")
-
 	timeout := 300 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -128,8 +125,6 @@ func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx conte
 		servers[i] = server
 	}
 
-	fmt.Println("2")
-
 	for _, client := range clients {
 		if err := net.Start(client.ID()); err != nil {
 			t.Fatalf("Failed to start client node: %v", err)
@@ -140,7 +135,6 @@ func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx conte
 			t.Fatalf("Failed to start server node: %v", err)
 		}
 	}
-	fmt.Println("3")
 
 	test(ctx, net, servers, clients)
 }
@@ -149,23 +143,68 @@ func testSimGenerateChain(node *simulations.Node, targetHead uint64) {
 
 }
 
+func getHead(ctx context.Context, t *testing.T, client *rpc.Client) (uint64, common.Hash) {
+	res := make(map[string]interface{})
+	if err := client.CallContext(ctx, &res, "eth_getBlockByNumber", "latest", false); err != nil {
+		t.Fatalf("Failed to obtain head block: %v", err)
+	}
+	numStr, ok := res["number"].(string)
+	if !ok {
+		t.Fatalf("RPC block number field invalid")
+	}
+	num, err := hexutil.DecodeUint64(numStr)
+	if err != nil {
+		t.Fatalf("Failed to decode RPC block number: %v", err)
+	}
+	hashStr, ok := res["hash"].(string)
+	if !ok {
+		t.Fatalf("RPC block number field invalid")
+	}
+	hash := common.HexToHash(hashStr)
+	return num, hash
+}
+
 func TestSim(t *testing.T) {
 	testSim(t, 1, 1, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
-		server := servers[0]
-		client := clients[0]
+		serverRpcClients := make([]*rpc.Client, len(servers))
+		clientRpcClients := make([]*rpc.Client, len(clients))
+		clientByID := make(map[enode.ID]int)
 
-		var headNum uint64
-		serverClient, err := server.Client()
-		if err != nil {
-			t.Fatalf("Failed to obtain server.Client(): %v", err)
+		var (
+			headNum  uint64
+			headHash common.Hash
+		)
+		for i, server := range servers {
+			var err error
+			serverRpcClients[i], err = server.Client()
+			if err != nil {
+				t.Fatalf("Failed to obtain rpc client: %v", err)
+			}
+			if i == 0 {
+				headNum, headHash = getHead(ctx, t, serverRpcClients[i])
+			} else {
+				n, h := getHead(ctx, t, serverRpcClients[i])
+				if headNum != n || headHash != h {
+					t.Fatalf("Server heads do not match")
+				}
+			}
 		}
-		if err := serverClient.CallContext(ctx, &headNum, "test_generateChain", simTestBlockCount); err != nil {
-			t.Fatalf("Failed to call test_generateChain: %v", err)
+		for i, client := range clients {
+			var err error
+			clientRpcClients[i], err = client.Client()
+			clientByID[client.ID()] = i
+			if err != nil {
+				t.Fatalf("Failed to obtain rpc client: %v", err)
+			}
 		}
 
-		fmt.Println("3x")
+		fmt.Printf("Head: %d %064x\n", headNum, headHash)
 
-		net.Connect(client.ID(), server.ID())
+		for _, server := range servers {
+			for _, client := range clients {
+				net.Connect(client.ID(), server.ID())
+			}
+		}
 
 		sim := simulations.NewSimulation(net)
 
@@ -174,60 +213,54 @@ func TestSim(t *testing.T) {
 		}
 
 		check := func(ctx context.Context, id enode.ID) (bool, error) {
-			fmt.Println(id, "*****")
 			// check we haven't run out of time
 			select {
 			case <-ctx.Done():
 				return false, ctx.Err()
 			default:
 			}
-
-			// get the node
-			node := net.GetNode(id)
-			if node == nil {
-				return false, fmt.Errorf("unknown node: %s", id)
+			num, hash := getHead(ctx, t, clientRpcClients[clientByID[id]])
+			match := num == headNum && hash == headHash
+			if match {
+				fmt.Println("client", id, "synced")
 			}
-			client, err := node.Client()
-			if err != nil {
-				return false, err
-			}
-			var s string
-			if err := client.CallContext(ctx, &s, "eth_blockNumber"); err != nil {
-				return false, err
-			}
-
-			fmt.Println(id, s)
-			head, err := hexutil.DecodeUint64(s)
-			if err != nil {
-				return false, err
-			}
-			return head == simTestBlockCount, nil
+			return match, nil
 		}
 
 		trigger := make(chan enode.ID)
 		go func() {
 			for {
-				select {
-				case trigger <- client.ID():
-				case <-ctx.Done():
-					return
+				for _, client := range clients {
+					select {
+					case trigger <- client.ID():
+					case <-ctx.Done():
+						return
+					}
 				}
-				select {
-				case trigger <- server.ID():
-				case <-ctx.Done():
-					return
+				for _, server := range servers {
+					select {
+					case trigger <- server.ID():
+					case <-ctx.Done():
+						return
+					}
+					time.Sleep(time.Second)
 				}
-				time.Sleep(time.Millisecond * 100)
 			}
-			//		trigger <- client.ID()
-			//		trigger <- server.ID()
 		}()
+
+		var nodes []enode.ID
+		for _, server := range servers {
+			nodes = append(nodes, server.ID())
+		}
+		for _, client := range clients {
+			nodes = append(nodes, client.ID())
+		}
 
 		step := &simulations.Step{
 			Action:  action,
 			Trigger: trigger,
 			Expect: &simulations.Expectation{
-				Nodes: []enode.ID{server.ID(), client.ID()},
+				Nodes: nodes,
 				Check: check,
 			},
 		}
@@ -281,11 +314,11 @@ func newLesServerService(ctx *adapters.ServiceContext) (node.Service, error) {
 		return nil, err
 	}
 	ethereum.AddLesServer(server)
-	ethereum.AddExtraAPIs([]rpc.API{{
+	/*	ethereum.AddExtraAPIs([]rpc.API{{
 		Namespace: "test",
 		Version:   "1.0",
 		Service:   &SimTestAPI{ethereum},
-	}})
+	}})*/
 	return ethereum, nil
 }
 
