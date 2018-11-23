@@ -200,7 +200,7 @@ func bandwidthLimits(ctx context.Context, t *testing.T, server *rpc.Client) (uin
 }
 
 func TestSim(t *testing.T) {
-	testSim(t, 1, 1, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
+	testSim(t, 1, 4, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
 		serverRpcClients := make([]*rpc.Client, len(servers))
 		clientRpcClients := make([]*rpc.Client, len(clients))
 
@@ -236,7 +236,7 @@ func TestSim(t *testing.T) {
 
 			fmt.Println("connecting client", i)
 			for j, server := range servers {
-				setBandwidth(ctx, t, serverRpcClients[j], client.ID(), 100000)
+				setBandwidth(ctx, t, serverRpcClients[j], client.ID(), 500000)
 				net.Connect(client.ID(), server.ID())
 			}
 
