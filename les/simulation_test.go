@@ -22,7 +22,10 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -139,10 +142,6 @@ func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx conte
 	test(ctx, net, servers, clients)
 }
 
-func testSimGenerateChain(node *simulations.Node, targetHead uint64) {
-
-}
-
 func getHead(ctx context.Context, t *testing.T, client *rpc.Client) (uint64, common.Hash) {
 	res := make(map[string]interface{})
 	if err := client.CallContext(ctx, &res, "eth_getBlockByNumber", "latest", false); err != nil {
@@ -162,6 +161,15 @@ func getHead(ctx context.Context, t *testing.T, client *rpc.Client) (uint64, com
 	}
 	hash := common.HexToHash(hashStr)
 	return num, hash
+}
+
+func testRequest(ctx context.Context, t *testing.T, client *rpc.Client) {
+	res := make(map[string]interface{})
+	var addr common.Address
+	rand.Read(addr[:])
+	if err := client.CallContext(ctx, &res, "eth_getProof", addr, nil, "latest"); err != nil {
+		t.Fatalf("Failed to obtain Merkle proof: %v", err)
+	}
 }
 
 func TestSim(t *testing.T) {
@@ -237,21 +245,10 @@ func TestSim(t *testing.T) {
 						return
 					}
 				}
-				for _, server := range servers {
-					select {
-					case trigger <- server.ID():
-					case <-ctx.Done():
-						return
-					}
-					time.Sleep(time.Second)
-				}
 			}
 		}()
 
 		var nodes []enode.ID
-		for _, server := range servers {
-			nodes = append(nodes, server.ID())
-		}
 		for _, client := range clients {
 			nodes = append(nodes, client.ID())
 		}
@@ -265,9 +262,71 @@ func TestSim(t *testing.T) {
 			},
 		}
 
-		result := sim.Run(ctx, step)
-		if result.Error != nil {
+		if result := sim.Run(ctx, step); result.Error != nil {
 			t.Fatalf("Simulation failed: %s", result.Error)
+		}
+
+		var wg sync.WaitGroup
+		stop := make(chan struct{})
+
+		reqCount := make([]uint64, len(clientRpcClients))
+		for i, c := range clientRpcClients {
+			wg.Add(1)
+			go func() {
+				queue := make(chan struct{}, 100)
+				var count uint64
+				for {
+					select {
+					case queue <- struct{}{}:
+						wg.Add(1)
+						go func() {
+							testRequest(ctx, t, c)
+							wg.Done()
+							<-queue
+							count++
+							atomic.StoreUint64(&reqCount[i], count)
+						}()
+					case <-stop:
+						wg.Done()
+						return
+					case <-ctx.Done():
+						wg.Done()
+						return
+					}
+				}
+			}()
+		}
+
+		check2 := func(ctx context.Context, id enode.ID) (bool, error) {
+			// check we haven't run out of time
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			default:
+			}
+			count := atomic.LoadUint64(&reqCount[clientByID[id]])
+			fmt.Println("  client", clientByID[id], "processed", count)
+			return count >= 10000, nil
+		}
+
+		step2 := &simulations.Step{
+			Action:  action,
+			Trigger: trigger,
+			Expect: &simulations.Expectation{
+				Nodes: nodes,
+				Check: check2,
+			},
+		}
+
+		if result := sim.Run(ctx, step2); result.Error != nil {
+			t.Fatalf("Simulation failed: %s", result.Error)
+		}
+
+		close(stop)
+		wg.Wait()
+
+		for i, count := range reqCount {
+			fmt.Println("client", i, "processed", count)
 		}
 	})
 }
@@ -302,7 +361,7 @@ func newLesServerService(ctx *adapters.ServiceContext) (node.Service, error) {
 	defer fmt.Println("server init end")
 	config := eth.DefaultConfig
 	config.SyncMode = downloader.FullSync
-	config.LightServ = 50
+	config.LightServ = 200
 	config.LightPeers = 20
 	ethereum, err := eth.New(ctx.NodeContext, &config)
 	if err != nil {
