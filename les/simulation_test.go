@@ -106,9 +106,9 @@ func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx conte
 	servers := make([]*simulations.Node, serverCount)
 	clients := make([]*simulations.Node, clientCount)
 
-	clientconf := adapters.RandomNodeConfig()
-	clientconf.Services = []string{"lesclient"}
 	for i, _ := range clients {
+		clientconf := adapters.RandomNodeConfig()
+		clientconf.Services = []string{"lesclient"}
 		client, err := net.NewNodeWithConfig(clientconf)
 		if err != nil {
 			t.Fatalf("Failed to create client: %v", err)
@@ -116,10 +116,10 @@ func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx conte
 		clients[i] = client
 	}
 
-	serverconf := adapters.RandomNodeConfig()
-	serverconf.Services = []string{"lesserver"}
-	serverconf.DataDir = "/media/1TB/.ethereum"
 	for i, _ := range servers {
+		serverconf := adapters.RandomNodeConfig()
+		serverconf.Services = []string{"lesserver"}
+		serverconf.DataDir = "/media/1TB/.ethereum" // ***
 		server, err := net.NewNodeWithConfig(serverconf)
 		if err != nil {
 			t.Fatalf("Failed to create server: %v", err)
@@ -163,16 +163,18 @@ func getHead(ctx context.Context, t *testing.T, client *rpc.Client) (uint64, com
 }
 
 func testRequest(ctx context.Context, t *testing.T, client *rpc.Client) {
-	res := make(map[string]interface{})
+	//res := make(map[string]interface{})
+	var res string
 	var addr common.Address
 	rand.Read(addr[:])
-	if err := client.CallContext(ctx, &res, "eth_getProof", addr, nil, "latest"); err != nil {
+	//	if err := client.CallContext(ctx, &res, "eth_getProof", addr, nil, "latest"); err != nil {
+	if err := client.CallContext(ctx, &res, "eth_getBalance", addr, "latest"); err != nil {
 		t.Fatalf("Failed to obtain Merkle proof: %v", err)
 	}
 }
 
 func TestSim(t *testing.T) {
-	testSim(t, 1, 1, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
+	testSim(t, 1, 2, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
 		serverRpcClients := make([]*rpc.Client, len(servers))
 		clientRpcClients := make([]*rpc.Client, len(clients))
 
@@ -270,7 +272,7 @@ func TestSim(t *testing.T) {
 			for i, _ := range clients {
 				count := atomic.LoadUint64(&reqCount[i])
 				fmt.Println("  client", i, "processed", count)
-				if count < 10000 {
+				if count < 1000 {
 					done = false
 				}
 			}
