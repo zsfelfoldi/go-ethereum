@@ -110,6 +110,7 @@ func (v *vipClientPool) connect(id enode.ID, updateBw func(uint64)) bool {
 	v.connectedCount++
 	v.totalConnectedBw += c.bw
 	v.pm.clientPool.setConnLimit(v.pm.maxFreePeers(v.connectedCount, v.totalConnectedBw))
+	updateBw(c.bw)
 	return true
 }
 
