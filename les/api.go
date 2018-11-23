@@ -19,6 +19,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 )
 
@@ -50,8 +51,12 @@ func NewPrivateLesServerAPI(server *LesServer) *PrivateLesServerAPI {
 	}
 }
 
-func (api *PrivateLesServerAPI) BandwidthLimits() (total, min uint64) {
-	return api.server.totalBandwidth, api.server.minBandwidth
+func (api *PrivateLesServerAPI) TotalBandwidth() hexutil.Uint64 {
+	return hexutil.Uint64(api.server.totalBandwidth)
+}
+
+func (api *PrivateLesServerAPI) MinimumBandwidth() hexutil.Uint64 {
+	return hexutil.Uint64(api.server.minBandwidth)
 }
 
 type vipClientInfo struct {

@@ -37,6 +37,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
+	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/simulations"
 	"github.com/ethereum/go-ethereum/p2p/simulations/adapters"
 	"github.com/ethereum/go-ethereum/params"
@@ -173,6 +174,31 @@ func testRequest(ctx context.Context, t *testing.T, client *rpc.Client) {
 	}
 }
 
+func setBandwidth(ctx context.Context, t *testing.T, server *rpc.Client, clientID enode.ID, bw uint64) {
+	if err := server.CallContext(ctx, nil, "les_assignBandwidth", clientID, bw); err != nil {
+		t.Fatalf("Failed to set client bandwidth: %v", err)
+	}
+}
+
+func bandwidthLimits(ctx context.Context, t *testing.T, server *rpc.Client) (uint64, uint64) {
+	var s string
+	if err := server.CallContext(ctx, &s, "les_totalBandwidth"); err != nil {
+		t.Fatalf("Failed to query total bandwidth: %v", err)
+	}
+	total, err := hexutil.DecodeUint64(s)
+	if err != nil {
+		t.Fatalf("Failed to decode total bandwidth: %v", err)
+	}
+	if err := server.CallContext(ctx, &s, "les_minimumBandwidth"); err != nil {
+		t.Fatalf("Failed to query minimum bandwidth: %v", err)
+	}
+	min, err := hexutil.DecodeUint64(s)
+	if err != nil {
+		t.Fatalf("Failed to decode minimum bandwidth: %v", err)
+	}
+	return total, min
+}
+
 func TestSim(t *testing.T) {
 	testSim(t, 1, 2, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
 		serverRpcClients := make([]*rpc.Client, len(servers))
@@ -196,32 +222,31 @@ func TestSim(t *testing.T) {
 					t.Fatalf("Server heads do not match")
 				}
 			}
+			totalBw, minBw := bandwidthLimits(ctx, t, serverRpcClients[i])
+			fmt.Println("server", i, "totalBw", totalBw, "minBw", minBw)
 		}
+		fmt.Printf("Server head: %d %064x\n", headNum, headHash)
+
 		for i, client := range clients {
 			var err error
 			clientRpcClients[i], err = client.Client()
 			if err != nil {
 				t.Fatalf("Failed to obtain rpc client: %v", err)
 			}
-		}
 
-		fmt.Printf("Head: %d %064x\n", headNum, headHash)
-
-		for _, server := range servers {
-			for _, client := range clients {
+			fmt.Println("connecting client", i)
+			for j, server := range servers {
+				setBandwidth(ctx, t, serverRpcClients[j], client.ID(), 1000000)
 				net.Connect(client.ID(), server.ID())
 			}
-		}
 
-		for i, client := range clientRpcClients {
 			for {
-				// check we haven't run out of time
 				select {
 				case <-ctx.Done():
 					t.Fatalf("Timeout")
 				default:
 				}
-				num, hash := getHead(ctx, t, client)
+				num, hash := getHead(ctx, t, clientRpcClients[i])
 				if num == headNum && hash == headHash {
 					fmt.Println("client", i, "synced")
 					break
@@ -236,6 +261,7 @@ func TestSim(t *testing.T) {
 		reqCount := make([]uint64, len(clientRpcClients))
 		for i, c := range clientRpcClients {
 			wg.Add(1)
+			i, c := i, c
 			go func() {
 				queue := make(chan struct{}, 100)
 				var count uint64
@@ -262,7 +288,6 @@ func TestSim(t *testing.T) {
 		}
 
 		for {
-			// check we haven't run out of time
 			select {
 			case <-ctx.Done():
 				t.Fatalf("Timeout")
@@ -272,7 +297,7 @@ func TestSim(t *testing.T) {
 			for i, _ := range clients {
 				count := atomic.LoadUint64(&reqCount[i])
 				fmt.Println("  client", i, "processed", count)
-				if count < 1000 {
+				if count < 200 {
 					done = false
 				}
 			}
