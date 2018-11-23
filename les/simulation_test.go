@@ -37,7 +37,6 @@ import (
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/simulations"
 	"github.com/ethereum/go-ethereum/p2p/simulations/adapters"
 	"github.com/ethereum/go-ethereum/params"
@@ -176,7 +175,6 @@ func TestSim(t *testing.T) {
 	testSim(t, 1, 1, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
 		serverRpcClients := make([]*rpc.Client, len(servers))
 		clientRpcClients := make([]*rpc.Client, len(clients))
-		clientByID := make(map[enode.ID]int)
 
 		var (
 			headNum  uint64
@@ -200,7 +198,6 @@ func TestSim(t *testing.T) {
 		for i, client := range clients {
 			var err error
 			clientRpcClients[i], err = client.Client()
-			clientByID[client.ID()] = i
 			if err != nil {
 				t.Fatalf("Failed to obtain rpc client: %v", err)
 			}
@@ -214,56 +211,21 @@ func TestSim(t *testing.T) {
 			}
 		}
 
-		sim := simulations.NewSimulation(net)
-
-		action := func(ctx context.Context) error {
-			return nil
-		}
-
-		check := func(ctx context.Context, id enode.ID) (bool, error) {
-			// check we haven't run out of time
-			select {
-			case <-ctx.Done():
-				return false, ctx.Err()
-			default:
-			}
-			num, hash := getHead(ctx, t, clientRpcClients[clientByID[id]])
-			match := num == headNum && hash == headHash
-			if match {
-				fmt.Println("client", id, "synced")
-			}
-			return match, nil
-		}
-
-		trigger := make(chan enode.ID)
-		go func() {
+		for i, client := range clientRpcClients {
 			for {
-				for _, client := range clients {
-					select {
-					case trigger <- client.ID():
-					case <-ctx.Done():
-						return
-					}
+				// check we haven't run out of time
+				select {
+				case <-ctx.Done():
+					t.Fatalf("Timeout")
+				default:
 				}
+				num, hash := getHead(ctx, t, client)
+				if num == headNum && hash == headHash {
+					fmt.Println("client", i, "synced")
+					break
+				}
+				time.Sleep(time.Millisecond * 200)
 			}
-		}()
-
-		var nodes []enode.ID
-		for _, client := range clients {
-			nodes = append(nodes, client.ID())
-		}
-
-		step := &simulations.Step{
-			Action:  action,
-			Trigger: trigger,
-			Expect: &simulations.Expectation{
-				Nodes: nodes,
-				Check: check,
-			},
-		}
-
-		if result := sim.Run(ctx, step); result.Error != nil {
-			t.Fatalf("Simulation failed: %s", result.Error)
 		}
 
 		var wg sync.WaitGroup
@@ -297,29 +259,25 @@ func TestSim(t *testing.T) {
 			}()
 		}
 
-		check2 := func(ctx context.Context, id enode.ID) (bool, error) {
+		for {
 			// check we haven't run out of time
 			select {
 			case <-ctx.Done():
-				return false, ctx.Err()
+				t.Fatalf("Timeout")
 			default:
 			}
-			count := atomic.LoadUint64(&reqCount[clientByID[id]])
-			fmt.Println("  client", clientByID[id], "processed", count)
-			return count >= 10000, nil
-		}
-
-		step2 := &simulations.Step{
-			Action:  action,
-			Trigger: trigger,
-			Expect: &simulations.Expectation{
-				Nodes: nodes,
-				Check: check2,
-			},
-		}
-
-		if result := sim.Run(ctx, step2); result.Error != nil {
-			t.Fatalf("Simulation failed: %s", result.Error)
+			done := true
+			for i, _ := range clients {
+				count := atomic.LoadUint64(&reqCount[i])
+				fmt.Println("  client", i, "processed", count)
+				if count < 10000 {
+					done = false
+				}
+			}
+			if done {
+				break
+			}
+			time.Sleep(time.Millisecond * 200)
 		}
 
 		close(stop)
