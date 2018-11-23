@@ -164,7 +164,7 @@ func (f *freeClientPool) setConnLimit(newLimit int) {
 
 	f.connectedLimit = newLimit
 	now := mclock.Now()
-	for f.connPool.Size() >= f.connectedLimit {
+	for f.connPool.Size() > f.connectedLimit {
 		i := f.connPool.PopItem().(*freeClientPoolEntry)
 		f.dropClient(i, now)
 	}
