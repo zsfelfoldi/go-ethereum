@@ -28,10 +28,10 @@ const (
 	// fcTimeConst is the time constant applied for MinRecharge during linear
 	// buffer recharge period
 	fcTimeConst = time.Millisecond
-	// decParamDelay is applied at server side when decreasing bandwidth in order to
+	// DecParamDelay is applied at server side when decreasing bandwidth in order to
 	// avoid a buffer underrun error due to requests sent by the client before
 	// receiving the bandwidth update announcement
-	decParamDelay = time.Second * 5
+	DecParamDelay = time.Second * 2
 )
 
 // ServerParams are the flow control parameters specified by a server for a client
@@ -113,7 +113,7 @@ func (peer *ClientNode) UpdateParams(params ServerParams) {
 				return
 			}
 		}
-		peer.updateSchedule = append(peer.updateSchedule, scheduledUpdate{time: time + mclock.AbsTime(decParamDelay), params: params})
+		peer.updateSchedule = append(peer.updateSchedule, scheduledUpdate{time: time + mclock.AbsTime(DecParamDelay), params: params})
 	}
 }
 

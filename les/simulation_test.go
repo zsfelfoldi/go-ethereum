@@ -35,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/eth/downloader"
+	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -199,33 +200,28 @@ func bandwidthLimits(ctx context.Context, t *testing.T, server *rpc.Client) (uin
 	return total, min
 }
 
+const minRelBw = 0.2
+
 func TestSim(t *testing.T) {
-	testSim(t, 1, 4, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
-		serverRpcClients := make([]*rpc.Client, len(servers))
+	testSim(t, 1, 2, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
+		if len(servers) != 1 {
+			t.Fatalf("Invalid number of servers: %d", len(servers))
+		}
+		server := servers[0]
+
 		clientRpcClients := make([]*rpc.Client, len(clients))
 
-		var (
-			headNum  uint64
-			headHash common.Hash
-		)
-		for i, server := range servers {
-			var err error
-			serverRpcClients[i], err = server.Client()
-			if err != nil {
-				t.Fatalf("Failed to obtain rpc client: %v", err)
-			}
-			if i == 0 {
-				headNum, headHash = getHead(ctx, t, serverRpcClients[i])
-			} else {
-				n, h := getHead(ctx, t, serverRpcClients[i])
-				if headNum != n || headHash != h {
-					t.Fatalf("Server heads do not match")
-				}
-			}
-			totalBw, minBw := bandwidthLimits(ctx, t, serverRpcClients[i])
-			fmt.Println("server", i, "totalBw", totalBw, "minBw", minBw)
+		serverRpcClient, err := server.Client()
+		if err != nil {
+			t.Fatalf("Failed to obtain rpc client: %v", err)
 		}
-		fmt.Printf("Server head: %d %064x\n", headNum, headHash)
+		headNum, headHash := getHead(ctx, t, serverRpcClient)
+		totalBw, minBw := bandwidthLimits(ctx, t, serverRpcClient)
+		fmt.Printf("Server totalBw: %d  minBw: %d  head number: %d  head hash: %064x\n", totalBw, minBw, headNum, headHash)
+		reqMinBw := uint64(float64(totalBw) * minRelBw / (minRelBw + float64(len(clients)-1)))
+		if minBw > reqMinBw {
+			t.Fatalf("Minimum client bandwidth (%d) bigger than required minimum for this test (%d)", minBw, reqMinBw)
+		}
 
 		for i, client := range clients {
 			var err error
@@ -235,10 +231,8 @@ func TestSim(t *testing.T) {
 			}
 
 			fmt.Println("connecting client", i)
-			for j, server := range servers {
-				setBandwidth(ctx, t, serverRpcClients[j], client.ID(), 500000)
-				net.Connect(client.ID(), server.ID())
-			}
+			setBandwidth(ctx, t, serverRpcClient, client.ID(), totalBw/uint64(len(clients)))
+			net.Connect(client.ID(), server.ID())
 
 			for {
 				select {
@@ -263,7 +257,7 @@ func TestSim(t *testing.T) {
 			wg.Add(1)
 			i, c := i, c
 			go func() {
-				queue := make(chan struct{}, 100)
+				queue := make(chan struct{}, 10)
 				var count uint64
 				for {
 					select {
@@ -287,24 +281,67 @@ func TestSim(t *testing.T) {
 			}()
 		}
 
-		for {
-			select {
-			case <-ctx.Done():
-				t.Fatalf("Timeout")
-			default:
-			}
-			done := true
-			for i, _ := range clients {
-				count := atomic.LoadUint64(&reqCount[i])
-				fmt.Println("  client", i, "processed", count)
-				if count < 1000 {
-					done = false
+		processedSince := func(start []uint64) []uint64 {
+			res := make([]uint64, len(reqCount))
+			for i, _ := range reqCount {
+				res[i] = atomic.LoadUint64(&reqCount[i])
+				if start != nil {
+					res[i] -= start[i]
 				}
 			}
-			if done {
-				break
+			return res
+		}
+
+		weights := make([]float64, len(clients))
+		for c := 0; c < 5; c++ {
+			var sum float64
+			for i, _ := range clients {
+				weights[i] = rand.Float64()*(1-minRelBw) + minRelBw
+				sum += weights[i]
 			}
-			time.Sleep(time.Millisecond * 200)
+			for i, client := range clients {
+				weights[i] /= sum
+				setBandwidth(ctx, t, serverRpcClient, client.ID(), uint64(float64(totalBw)*weights[i]))
+			}
+
+			time.Sleep(flowcontrol.DecParamDelay)
+			fmt.Println("starting measurement")
+			start := processedSince(nil)
+			for {
+				select {
+				case <-ctx.Done():
+					t.Fatalf("Timeout")
+				default:
+				}
+
+				processed := processedSince(start)
+				var avg uint64
+				fmt.Printf("Processed")
+				for i, p := range processed {
+					fmt.Printf(" %d", p)
+					processed[i] = uint64(float64(p) / weights[i])
+					avg += processed[i]
+				}
+				avg /= uint64(len(processed))
+
+				if avg >= 10000 {
+					var maxDev float64
+					for _, p := range processed {
+						dev := float64(int64(p-avg)) / float64(avg)
+						if dev > maxDev {
+							maxDev = dev
+						}
+					}
+					fmt.Printf("  max deviation: %f\n", maxDev)
+					if maxDev <= 0.01 {
+						fmt.Println("success")
+						break
+					}
+				} else {
+					fmt.Println()
+				}
+				time.Sleep(time.Millisecond * 200)
+			}
 		}
 
 		close(stop)
