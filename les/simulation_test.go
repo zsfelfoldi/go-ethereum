@@ -101,7 +101,7 @@ func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx conte
 	if err != nil {
 		t.Fatalf("Failed to create network: %v", err)
 	}
-	timeout := 300 * time.Second
+	timeout := 1800 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -176,9 +176,21 @@ func testRequest(ctx context.Context, t *testing.T, client *rpc.Client) {
 }
 
 func setBandwidth(ctx context.Context, t *testing.T, server *rpc.Client, clientID enode.ID, bw uint64) {
-	if err := server.CallContext(ctx, nil, "les_assignBandwidth", clientID, bw); err != nil {
+	if err := server.CallContext(ctx, nil, "les_setClientBandwidth", clientID, bw); err != nil {
 		t.Fatalf("Failed to set client bandwidth: %v", err)
 	}
+}
+
+func getBandwidth(ctx context.Context, t *testing.T, server *rpc.Client, clientID enode.ID) uint64 {
+	var s string
+	if err := server.CallContext(ctx, &s, "les_getClientBandwidth", clientID); err != nil {
+		t.Fatalf("Failed to get client bandwidth: %v", err)
+	}
+	bw, err := hexutil.DecodeUint64(s)
+	if err != nil {
+		t.Fatalf("Failed to decode client bandwidth: %v", err)
+	}
+	return bw
 }
 
 func bandwidthLimits(ctx context.Context, t *testing.T, server *rpc.Client) (uint64, uint64) {
@@ -203,7 +215,7 @@ func bandwidthLimits(ctx context.Context, t *testing.T, server *rpc.Client) (uin
 const minRelBw = 0.2
 
 func TestSim(t *testing.T) {
-	testSim(t, 1, 2, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
+	testSim(t, 1, 4, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
 		if len(servers) != 1 {
 			t.Fatalf("Invalid number of servers: %d", len(servers))
 		}
@@ -301,7 +313,16 @@ func TestSim(t *testing.T) {
 			}
 			for i, client := range clients {
 				weights[i] /= sum
-				setBandwidth(ctx, t, serverRpcClient, client.ID(), uint64(float64(totalBw)*weights[i]))
+				bandwidth := uint64(float64(totalBw) * weights[i])
+				if bandwidth < getBandwidth(ctx, t, serverRpcClient, client.ID()) {
+					setBandwidth(ctx, t, serverRpcClient, client.ID(), bandwidth)
+				}
+			}
+			for i, client := range clients {
+				bandwidth := uint64(float64(totalBw) * weights[i])
+				if bandwidth > getBandwidth(ctx, t, serverRpcClient, client.ID()) {
+					setBandwidth(ctx, t, serverRpcClient, client.ID(), bandwidth)
+				}
 			}
 
 			time.Sleep(flowcontrol.DecParamDelay)

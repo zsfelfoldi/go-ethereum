@@ -73,7 +73,7 @@ type vipClientPool struct {
 	connectedCount                        int
 }
 
-func (api *PrivateLesServerAPI) AssignBandwidth(id enode.ID, bw uint64) error {
+func (api *PrivateLesServerAPI) SetClientBandwidth(id enode.ID, bw uint64) error {
 	if bw < api.server.minBandwidth {
 		return ErrMinBW
 	}
@@ -94,6 +94,13 @@ func (api *PrivateLesServerAPI) AssignBandwidth(id enode.ID, bw uint64) error {
 	c.bw = bw
 	api.vip.clients[id] = c
 	return nil
+}
+
+func (api *PrivateLesServerAPI) GetClientBandwidth(id enode.ID) hexutil.Uint64 {
+	api.vip.lock.Lock()
+	defer api.vip.lock.Unlock()
+
+	return hexutil.Uint64(api.vip.clients[id].bw)
 }
 
 func (v *vipClientPool) connect(id enode.ID, updateBw func(uint64)) bool {
