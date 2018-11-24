@@ -111,7 +111,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	}
 	srv.fcCostList, srv.minBufLimit = pm.benchmarkCosts(srv.thcNormal, pm.inSizeCostFactor, pm.outSizeCostFactor)
 	srv.fcCostTable = srv.fcCostList.decode()
-	srv.fcCostStats = &requestCostStats{costs: srv.fcCostTable}
+	srv.fcCostStats = newCostStats(srv.fcCostTable)
 
 	srv.minBandwidth = (srv.minBufLimit-1)/bufLimitRatio + 1
 	srv.defParams = flowcontrol.ServerParams{

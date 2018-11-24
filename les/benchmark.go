@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"math/rand"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -561,7 +562,18 @@ func (pm *ProtocolManager) measure(setup *benchmarkSetup, count int) error {
 
 type requestCostStats struct {
 	costs requestCostTable
-	stats map[uint64][10]int
+	stats map[uint64][]uint64
+}
+
+func newCostStats(table requestCostTable) *requestCostStats {
+	stats := make(map[uint64][]uint64)
+	for code, _ := range table {
+		stats[code] = make([]uint64, 10)
+	}
+	return &requestCostStats{
+		costs: table,
+		stats: stats,
+	}
 }
 
 func (s *requestCostStats) update(msgCode, reqCnt, cost uint64) {
@@ -576,12 +588,8 @@ func (s *requestCostStats) update(msgCode, reqCnt, cost uint64) {
 		l++
 		cost >>= 1
 	}
-	if s.stats == nil {
-		s.stats = make(map[uint64][10]int)
-	}
-	arr := s.stats[msgCode]
-	arr[l]++
-	s.stats[msgCode] = arr
+	ptr := &s.stats[msgCode][l]
+	atomic.AddUint64(ptr, 1)
 }
 
 func (s *requestCostStats) printStats() {

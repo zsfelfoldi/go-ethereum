@@ -135,9 +135,9 @@ func testIndexers(db ethdb.Database, odr light.OdrBackend, iConfig *light.Indexe
 }
 
 func testRCL() RequestCostList {
-	cl := make(RequestCostList, len(reqList))
-	for i, code := range reqList {
-		cl[i].MsgCode = code
+	cl := make(RequestCostList, len(reqBenchMap))
+	for i, req := range reqBenchMap {
+		cl[i].MsgCode = req.code
 		cl[i].BaseCost = 0
 		cl[i].ReqCost = 0
 	}
@@ -192,7 +192,7 @@ func newTestProtocolManager(lightSync bool, blocks int, generator func(int, *cor
 		}
 
 		srv.fcManager = flowcontrol.NewClientManager(nil, &mclock.System{})
-		srv.fcCostStats = &requestCostStats{}
+		srv.fcCostStats = newCostStats(testRCL().decode())
 	}
 	pm.Start(1000)
 	return pm, nil
