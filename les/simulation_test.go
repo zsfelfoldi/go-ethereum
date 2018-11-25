@@ -101,7 +101,7 @@ func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx conte
 	if err != nil {
 		t.Fatalf("Failed to create network: %v", err)
 	}
-	timeout := 1800 * time.Second
+	timeout := 18000 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 

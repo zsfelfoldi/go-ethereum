@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 const (
@@ -281,7 +282,12 @@ func (peer *ServerNode) QueuedRequest(reqID, maxCost uint64) {
 	// is not turned on here if buffer was full; in this case it is going to be turned
 	// on by the first reply's bufValue feedback
 	//fmt.Println("sent", now, maxCost, peer.bufEstimate)
-	peer.bufEstimate -= maxCost
+	if peer.bufEstimate >= maxCost {
+		peer.bufEstimate -= maxCost
+	} else {
+		log.Error("Queued request with insufficient buffer estimate")
+		peer.bufEstimate = 0
+	}
 	peer.sumCost += maxCost
 	peer.pending[reqID] = peer.sumCost
 	if peer.log != nil {
@@ -306,10 +312,17 @@ func (peer *ServerNode) ReceivedReply(reqID, bv uint64) {
 	}
 	delete(peer.pending, reqID)
 	cc := peer.sumCost - sc
-	peer.bufEstimate = 0
+	newEstimate := uint64(0)
 	if bv > cc {
-		peer.bufEstimate = bv - cc
+		newEstimate = bv - cc
 	}
+	if newEstimate > peer.bufEstimate {
+		// Note: we never reduce the buffer estimate based on the reported value because
+		// this can only happen because of the delayed delivery of the latest reply.
+		// The lowest estimate based on the previous reply can still be considered valid.
+		peer.bufEstimate = newEstimate
+	}
+
 	peer.bufRecharge = peer.bufEstimate < peer.params.BufLimit
 	peer.lastTime = time
 	if peer.log != nil {
