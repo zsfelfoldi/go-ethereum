@@ -72,7 +72,7 @@ func NewClientNode(cm *ClientManager, params ServerParams) *ClientNode {
 		bufValue: params.BufLimit,
 		lastTime: cm.clock.Now(),
 		accepted: make(map[uint64]uint64),
-		log:      newLogger(time.Second),
+		//log:      newLogger(time.Second),
 	}
 	cm.init(node)
 	return node
@@ -200,7 +200,7 @@ func NewServerNode(params ServerParams, clock mclock.Clock) *ServerNode {
 		lastTime:    clock.Now(),
 		params:      params,
 		pending:     make(map[uint64]uint64),
-		log:         newLogger(time.Second),
+		//log:         newLogger(time.Second),
 	}
 }
 

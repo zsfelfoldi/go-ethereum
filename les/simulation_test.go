@@ -215,7 +215,7 @@ func bandwidthLimits(ctx context.Context, t *testing.T, server *rpc.Client) (uin
 const minRelBw = 0.2
 
 func TestSim(t *testing.T) {
-	testSim(t, 1, 4, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
+	testSim(t, 1, 10, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
 		if len(servers) != 1 {
 			t.Fatalf("Invalid number of servers: %d", len(servers))
 		}
@@ -349,12 +349,16 @@ func TestSim(t *testing.T) {
 					var maxDev float64
 					for _, p := range processed {
 						dev := float64(int64(p-avg)) / float64(avg)
+						fmt.Printf(" %7.4f", dev)
+						if dev < 0 {
+							dev = -dev
+						}
 						if dev > maxDev {
 							maxDev = dev
 						}
 					}
 					fmt.Printf("  max deviation: %f\n", maxDev)
-					if maxDev <= 0.01 {
+					if maxDev <= 0.1 {
 						fmt.Println("success")
 						break
 					}
