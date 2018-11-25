@@ -46,7 +46,7 @@ func (n *testNode) send(t *testing.T, now mclock.AbsTime) bool {
 		t.Fatalf("Rejected request after expected waiting time has passed")
 	}
 	rcost := uint64(rand.Int63n(testMaxCost))
-	bv, _ := n.node.RequestProcessed(n.index, testMaxCost, rcost)
+	bv := n.node.RequestProcessed(n.index, testMaxCost, rcost)
 	if bv < testMaxCost {
 		n.waitUntil = now + mclock.AbsTime((testMaxCost-bv)*1001000/n.bandwidth)
 	}
@@ -76,7 +76,7 @@ func testConstantTotalBandwidth(t *testing.T, nodeCount, maxCapacityNodes, rando
 	m := NewClientManager(PieceWiseLinear{{0, totalBandwidth}}, clock)
 	for _, n := range nodes {
 		n.bufLimit = n.bandwidth * 6000 //uint64(2000+rand.Intn(10000))
-		n.node = NewClientNode(m, &ServerParams{BufLimit: n.bufLimit, MinRecharge: n.bandwidth})
+		n.node = NewClientNode(m, ServerParams{BufLimit: n.bufLimit, MinRecharge: n.bandwidth})
 	}
 	maxNodes := make([]int, maxCapacityNodes)
 	for i, _ := range maxNodes {
