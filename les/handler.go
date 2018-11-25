@@ -343,6 +343,9 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	for {
 		if err := pm.handleMsg(p); err != nil {
 			p.Log().Debug("Light Ethereum message handling failed", "err", err)
+			if p.fcServer != nil {
+				p.fcServer.DumpLogs()
+			}
 			return err
 		}
 	}
@@ -365,7 +368,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		priority int64
 	)
 
-	reject := func(reqCnt, maxCnt uint64) bool {
+	reject := func(reqID, reqCnt, maxCnt uint64) bool {
 		if reqCnt == 0 {
 			return true
 		}
@@ -378,7 +381,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			maxCost = p.fcParams.BufLimit
 		}
 
-		if accepted, bufShort, servingPriority := p.fcClient.AcceptRequest(responseCount, maxCost); !accepted {
+		if accepted, bufShort, servingPriority := p.fcClient.AcceptRequest(reqID, responseCount, maxCost); !accepted {
 			if bufShort > 0 {
 				p.Log().Error("Request came too early", "remaining", common.PrettyDuration(time.Duration(bufShort*1000000/p.fcParams.MinRecharge)))
 			}
@@ -402,7 +405,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 	}
 
-	sendReq := func(amount uint64, reply *reply, servingTime uint64) {
+	sendReq := func(reqID, amount uint64, reply *reply, servingTime uint64) {
 		// responseLock ensures that responses are queued in the same order as
 		// RequestProcessed is called
 		p.responseLock.Lock()
@@ -420,7 +423,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			}
 		}
 
-		bv := p.fcClient.RequestProcessed(responseCount, maxCost, realCost)
+		bv := p.fcClient.RequestProcessed(reqID, responseCount, maxCost, realCost)
 		pm.server.fcCostStats.update(msg.Code, amount, realCost)
 		if reply != nil {
 			p.queueSend(func() {
@@ -483,7 +486,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 
 		query := req.Query
-		if reject(query.Amount, MaxHeaderFetch) {
+		if reject(req.ReqID, query.Amount, MaxHeaderFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 
@@ -572,7 +575,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			},
 			//			after: sendFunc(query.Amount, func(bv uint64) error { return p.SendBlockHeaders(req.ReqID, bv, headers) }),
 			send: func(servingTime uint64) {
-				sendReq(query.Amount, p.ReplyBlockHeaders(req.ReqID, headers), servingTime)
+				sendReq(req.ReqID, query.Amount, p.ReplyBlockHeaders(req.ReqID, headers), servingTime)
 			},
 			fail: errorFn,
 		})
@@ -617,7 +620,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			bodies []rlp.RawValue
 		)
 		reqCnt := len(req.Hashes)
-		if reject(uint64(reqCnt), MaxBodyFetch) {
+		if reject(req.ReqID, uint64(reqCnt), MaxBodyFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 
@@ -640,7 +643,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return index == reqCnt, nil
 			},
 			send: func(servingTime uint64) {
-				sendReq(uint64(reqCnt), p.ReplyBlockBodiesRLP(req.ReqID, bodies), servingTime)
+				sendReq(req.ReqID, uint64(reqCnt), p.ReplyBlockBodiesRLP(req.ReqID, bodies), servingTime)
 			},
 			fail: errorFn,
 		})
@@ -682,7 +685,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			data  [][]byte
 		)
 		reqCnt := len(req.Reqs)
-		if reject(uint64(reqCnt), MaxCodeFetch) {
+		if reject(req.ReqID, uint64(reqCnt), MaxCodeFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 		index := 0
@@ -714,7 +717,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return done, nil
 			},
 			send: func(servingTime uint64) {
-				sendReq(uint64(reqCnt), p.ReplyCode(req.ReqID, data), servingTime)
+				sendReq(req.ReqID, uint64(reqCnt), p.ReplyCode(req.ReqID, data), servingTime)
 			},
 			fail: errorFn,
 		})
@@ -756,7 +759,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			receipts []rlp.RawValue
 		)
 		reqCnt := len(req.Hashes)
-		if reject(uint64(reqCnt), MaxReceiptFetch) {
+		if reject(req.ReqID, uint64(reqCnt), MaxReceiptFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 
@@ -790,7 +793,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return done, nil
 			},
 			send: func(servingTime uint64) {
-				sendReq(uint64(reqCnt), p.ReplyReceiptsRLP(req.ReqID, receipts), servingTime)
+				sendReq(req.ReqID, uint64(reqCnt), p.ReplyReceiptsRLP(req.ReqID, receipts), servingTime)
 			},
 			fail: errorFn,
 		})
@@ -832,7 +835,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			proofs proofsData
 		)
 		reqCnt := len(req.Reqs)
-		if reject(uint64(reqCnt), MaxProofsFetch) {
+		if reject(req.ReqID, uint64(reqCnt), MaxProofsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 
@@ -874,7 +877,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return done, nil
 			},
 			send: func(servingTime uint64) {
-				sendReq(uint64(reqCnt), p.ReplyProofs(req.ReqID, proofs), servingTime)
+				sendReq(req.ReqID, uint64(reqCnt), p.ReplyProofs(req.ReqID, proofs), servingTime)
 			},
 			fail: errorFn,
 		})
@@ -896,7 +899,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			root      common.Hash
 		)
 		reqCnt := len(req.Reqs)
-		if reject(uint64(reqCnt), MaxProofsFetch) {
+		if reject(req.ReqID, uint64(reqCnt), MaxProofsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 
@@ -945,7 +948,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return done, nil
 			},
 			send: func(servingTime uint64) {
-				sendReq(uint64(reqCnt), p.ReplyProofsV2(req.ReqID, nodes.NodeList()), servingTime)
+				sendReq(req.ReqID, uint64(reqCnt), p.ReplyProofsV2(req.ReqID, nodes.NodeList()), servingTime)
 			},
 			fail: errorFn,
 		})
@@ -1008,7 +1011,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			proofs []ChtResp
 		)
 		reqCnt := len(req.Reqs)
-		if reject(uint64(reqCnt), MaxHelperTrieProofsFetch) {
+		if reject(req.ReqID, uint64(reqCnt), MaxHelperTrieProofsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 		trieDb := trie.NewDatabase(ethdb.NewTable(pm.chainDb, light.ChtTablePrefix))
@@ -1042,7 +1045,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return done, nil
 			},
 			send: func(servingTime uint64) {
-				sendReq(uint64(reqCnt), p.ReplyHeaderProofs(req.ReqID, proofs), servingTime)
+				sendReq(req.ReqID, uint64(reqCnt), p.ReplyHeaderProofs(req.ReqID, proofs), servingTime)
 			},
 			fail: errorFn,
 		})
@@ -1063,7 +1066,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			auxData  [][]byte
 		)
 		reqCnt := len(req.Reqs)
-		if reject(uint64(reqCnt), MaxHelperTrieProofsFetch) {
+		if reject(req.ReqID, uint64(reqCnt), MaxHelperTrieProofsFetch) {
 			return errResp(ErrRequestRejected, "")
 		}
 
@@ -1112,7 +1115,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return index == reqCnt, nil
 			},
 			send: func(servingTime uint64) {
-				sendReq(uint64(reqCnt), p.ReplyHelperTrieProofs(req.ReqID, HelperTrieResps{Proofs: nodes.NodeList(), AuxData: auxData}), servingTime)
+				sendReq(req.ReqID, uint64(reqCnt), p.ReplyHelperTrieProofs(req.ReqID, HelperTrieResps{Proofs: nodes.NodeList(), AuxData: auxData}), servingTime)
 			},
 			fail: errorFn,
 		})
@@ -1168,7 +1171,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		reqCnt := len(txs)
-		if reject(uint64(reqCnt), MaxTxSend) {
+		if reject(0, uint64(reqCnt), MaxTxSend) {
 			return errResp(ErrRequestRejected, "")
 		}
 
@@ -1179,7 +1182,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return true, nil
 			},
 			send: func(servingTime uint64) {
-				sendReq(uint64(reqCnt), nil, servingTime)
+				sendReq(0, uint64(reqCnt), nil, servingTime)
 			},
 			fail: errorFn,
 		})
@@ -1197,7 +1200,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		reqCnt := len(req.Txs)
-		if reject(uint64(reqCnt), MaxTxSend) {
+		if reject(req.ReqID, uint64(reqCnt), MaxTxSend) {
 			return errResp(ErrRequestRejected, "")
 		}
 
@@ -1222,7 +1225,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return true, nil
 			},
 			send: func(servingTime uint64) {
-				sendReq(uint64(reqCnt), p.ReplyTxStatus(req.ReqID, stats), servingTime)
+				sendReq(req.ReqID, uint64(reqCnt), p.ReplyTxStatus(req.ReqID, stats), servingTime)
 			},
 			fail: errorFn,
 		})
@@ -1240,7 +1243,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		reqCnt := len(req.Hashes)
-		if reject(uint64(reqCnt), MaxTxStatus) {
+		if reject(req.ReqID, uint64(reqCnt), MaxTxStatus) {
 			return errResp(ErrRequestRejected, "")
 		}
 
@@ -1252,7 +1255,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				return true, nil
 			},
 			send: func(servingTime uint64) {
-				sendReq(uint64(reqCnt), p.ReplyTxStatus(req.ReqID, stats), servingTime)
+				sendReq(req.ReqID, uint64(reqCnt), p.ReplyTxStatus(req.ReqID, stats), servingTime)
 			},
 			fail: errorFn,
 		})

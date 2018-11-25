@@ -18,6 +18,7 @@
 package flowcontrol
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -58,6 +59,7 @@ type ClientNode struct {
 	accepted       map[uint64]uint64 // value = sumCost after accepting the given req
 	lock           sync.Mutex
 	cm             *ClientManager
+	log            *logger
 	cmNodeFields
 }
 
@@ -69,6 +71,7 @@ func NewClientNode(cm *ClientManager, params ServerParams) *ClientNode {
 		bufValue: params.BufLimit,
 		lastTime: cm.clock.Now(),
 		accepted: make(map[uint64]uint64),
+		log:      newLogger(time.Second),
 	}
 	cm.init(node)
 	return node
@@ -91,6 +94,9 @@ func (peer *ClientNode) recalcBV(time mclock.AbsTime) {
 	peer.bufValue += peer.params.MinRecharge * dt / uint64(fcTimeConst)
 	if peer.bufValue > peer.params.BufLimit {
 		peer.bufValue = peer.params.BufLimit
+	}
+	if peer.log != nil {
+		peer.log.add(time, fmt.Sprintf("updated  bv=%d  MRR=%d  BufLimit=%d", peer.bufValue, peer.params.MinRecharge, peer.params.BufLimit))
 	}
 	peer.lastTime = time
 }
@@ -131,7 +137,7 @@ func (peer *ClientNode) updateParams(params ServerParams, time mclock.AbsTime) {
 // AcceptRequest returns whether a new request can be accepted and the missing
 // buffer amount if it was rejected due to a buffer underrun. If accepted, maxCost
 // is deducted from the flow control buffer.
-func (peer *ClientNode) AcceptRequest(index, maxCost uint64) (accepted bool, bufShort uint64, priority int64) {
+func (peer *ClientNode) AcceptRequest(reqID, index, maxCost uint64) (accepted bool, bufShort uint64, priority int64) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
@@ -139,16 +145,23 @@ func (peer *ClientNode) AcceptRequest(index, maxCost uint64) (accepted bool, buf
 	peer.update(time)
 	//fmt.Println("received", time, maxCost, peer.bufValue)
 	if maxCost > peer.bufValue {
+		if peer.log != nil {
+			peer.log.add(time, fmt.Sprintf("rejected  reqID=%d  bv=%d  maxCost=%d", reqID, peer.bufValue, maxCost))
+			peer.log.dump(time)
+		}
 		return false, maxCost - peer.bufValue, 0
 	}
 	peer.bufValue -= maxCost
 	peer.sumCost += maxCost
+	if peer.log != nil {
+		peer.log.add(time, fmt.Sprintf("accepted  reqID=%d  bv=%d  maxCost=%d  sumCost=%d", reqID, peer.bufValue, maxCost, peer.sumCost))
+	}
 	peer.accepted[index] = peer.sumCost
 	return true, 0, peer.cm.accepted(peer, maxCost, time)
 }
 
 // RequestProcessed should be called when the request has been processed
-func (peer *ClientNode) RequestProcessed(index, maxCost, realCost uint64) (bv uint64) {
+func (peer *ClientNode) RequestProcessed(reqID, index, maxCost, realCost uint64) (bv uint64) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
@@ -156,6 +169,9 @@ func (peer *ClientNode) RequestProcessed(index, maxCost, realCost uint64) (bv ui
 	peer.update(time)
 	peer.cm.processed(peer, maxCost, realCost, time)
 	bv = peer.bufValue + peer.sumCost - peer.accepted[index]
+	if peer.log != nil {
+		peer.log.add(time, fmt.Sprintf("processed  reqID=%d  bv=%d  maxCost=%d  realCost=%d  sumCost=%d  oldSumCost=%d  reportedBV=%d", reqID, peer.bufValue, maxCost, realCost, peer.sumCost, peer.accepted[index], bv))
+	}
 	delete(peer.accepted, index)
 	return
 }
@@ -170,6 +186,7 @@ type ServerNode struct {
 	params      ServerParams
 	sumCost     uint64            // sum of req costs sent to this server
 	pending     map[uint64]uint64 // value = sumCost after sending the given req
+	log         *logger
 	lock        sync.RWMutex
 }
 
@@ -182,6 +199,7 @@ func NewServerNode(params ServerParams, clock mclock.Clock) *ServerNode {
 		lastTime:    clock.Now(),
 		params:      params,
 		pending:     make(map[uint64]uint64),
+		log:         newLogger(time.Second),
 	}
 }
 
@@ -215,22 +233,13 @@ func (peer *ServerNode) recalcBLE(time mclock.AbsTime) {
 		}
 	}
 	peer.lastTime = time
+	if peer.log != nil {
+		peer.log.add(time, fmt.Sprintf("updated  bufEst=%d  MRR=%d  BufLimit=%d", peer.bufEstimate, peer.params.MinRecharge, peer.params.BufLimit))
+	}
 }
 
 // safetyMargin is added to the flow control waiting time when estimated buffer value is low
 const safetyMargin = time.Millisecond
-
-func (peer *ServerNode) canSend(maxCost uint64) (time.Duration, float64) {
-	peer.recalcBLE(peer.clock.Now())
-	maxCost += uint64(safetyMargin) * peer.params.MinRecharge / uint64(fcTimeConst)
-	if maxCost > peer.params.BufLimit {
-		maxCost = peer.params.BufLimit
-	}
-	if peer.bufEstimate >= maxCost {
-		return 0, float64(peer.bufEstimate-maxCost) / float64(peer.params.BufLimit)
-	}
-	return time.Duration((maxCost - peer.bufEstimate) * uint64(fcTimeConst) / peer.params.MinRecharge), 0
-}
 
 // CanSend returns the minimum waiting time required before sending a request
 // with the given maximum estimated cost. Second return value is the relative
@@ -239,7 +248,24 @@ func (peer *ServerNode) CanSend(maxCost uint64) (time.Duration, float64) {
 	peer.lock.RLock()
 	defer peer.lock.RUnlock()
 
-	return peer.canSend(maxCost)
+	now := peer.clock.Now()
+	peer.recalcBLE(now)
+	maxCost += uint64(safetyMargin) * peer.params.MinRecharge / uint64(fcTimeConst)
+	if maxCost > peer.params.BufLimit {
+		maxCost = peer.params.BufLimit
+	}
+	if peer.bufEstimate >= maxCost {
+		relBuf := float64(peer.bufEstimate-maxCost) / float64(peer.params.BufLimit)
+		if peer.log != nil {
+			peer.log.add(now, fmt.Sprintf("canSend  bufEst=%d  maxCost=%d  true  relBuf=%f", peer.bufEstimate, maxCost, relBuf))
+		}
+		return 0, relBuf
+	}
+	timeLeft := time.Duration((maxCost - peer.bufEstimate) * uint64(fcTimeConst) / peer.params.MinRecharge)
+	if peer.log != nil {
+		peer.log.add(now, fmt.Sprintf("canSend  bufEst=%d  maxCost=%d  false  timeLeft=%v", peer.bufEstimate, maxCost, timeLeft))
+	}
+	return timeLeft, 0
 }
 
 // QueuedRequest should be called when the request has been assigned to the given
@@ -258,6 +284,9 @@ func (peer *ServerNode) QueuedRequest(reqID, maxCost uint64) {
 	peer.bufEstimate -= maxCost
 	peer.sumCost += maxCost
 	peer.pending[reqID] = peer.sumCost
+	if peer.log != nil {
+		peer.log.add(now, fmt.Sprintf("queued  reqID=%d  bufEst=%d  maxCost=%d  sumCost=%d", reqID, peer.bufEstimate, maxCost, peer.sumCost))
+	}
 }
 
 // ReceivedReply adjusts estimated buffer value according to the value included in
@@ -266,7 +295,8 @@ func (peer *ServerNode) ReceivedReply(reqID, bv uint64) {
 	peer.lock.Lock()
 	defer peer.lock.Unlock()
 
-	peer.recalcBLE(peer.clock.Now())
+	time := peer.clock.Now()
+	peer.recalcBLE(time)
 	if bv > peer.params.BufLimit {
 		bv = peer.params.BufLimit
 	}
@@ -281,5 +311,18 @@ func (peer *ServerNode) ReceivedReply(reqID, bv uint64) {
 		peer.bufEstimate = bv - cc
 	}
 	peer.bufRecharge = peer.bufEstimate < peer.params.BufLimit
-	peer.lastTime = peer.clock.Now()
+	peer.lastTime = time
+	if peer.log != nil {
+		peer.log.add(time, fmt.Sprintf("received  reqID=%d  bufEst=%d  reportedBv=%d  sumCost=%d  oldSumCost=%d", reqID, peer.bufEstimate, bv, peer.sumCost, sc))
+	}
+}
+
+// DumpLogs dumps the event log if logging is used
+func (peer *ServerNode) DumpLogs() {
+	peer.lock.Lock()
+	defer peer.lock.Unlock()
+
+	if peer.log != nil {
+		peer.log.dump(peer.clock.Now())
+	}
 }

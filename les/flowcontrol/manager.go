@@ -144,6 +144,9 @@ func (cm *ClientManager) processed(node *ClientNode, maxCost, realCost uint64, n
 	}
 	cm.updateNodeRc(node, int64(maxCost-realCost), &node.params, now)
 	if uint64(node.corrBufValue) > node.bufValue {
+		if node.log != nil {
+			node.log.add(now, fmt.Sprintf("corrected  bv=%d  oldBv=%d", node.corrBufValue, node.bufValue))
+		}
 		node.bufValue = uint64(node.corrBufValue)
 	}
 }
