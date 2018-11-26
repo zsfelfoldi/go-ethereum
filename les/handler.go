@@ -296,7 +296,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 				}
 				defer pm.clientPool.disconnect(id)
 			}
-			p.updateBandwidth(pm.freeClientBw)
+			//p.updateBandwidth(pm.freeClientBw)
 		}
 	}
 
