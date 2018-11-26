@@ -1,0 +1,60 @@
+// Copyright 2018 The go-ethereum Authors
+// This file is part of the go-ethereum library.
+//
+// The go-ethereum library is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// The go-ethereum library is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
+
+// Package flowcontrol implements a client side flow control mechanism
+package flowcontrol
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/ethereum/go-ethereum/common/mclock"
+)
+
+type logEvent struct {
+	time  mclock.AbsTime
+	event string
+}
+
+type logger struct {
+	events           map[uint64]logEvent
+	writePtr, delPtr uint64
+	keep             time.Duration
+}
+
+func newLogger(keep time.Duration) *logger {
+	return &logger{
+		events: make(map[uint64]logEvent),
+		keep:   keep,
+	}
+}
+
+func (l *logger) add(time mclock.AbsTime, event string) {
+	keepAfter := time - mclock.AbsTime(l.keep)
+	for l.delPtr < l.writePtr && l.events[l.delPtr].time <= keepAfter {
+		delete(l.events, l.delPtr)
+		l.delPtr++
+	}
+	l.events[l.writePtr] = logEvent{time, event}
+	l.writePtr++
+}
+
+func (l *logger) dump(now mclock.AbsTime) {
+	for i := l.delPtr; i < l.writePtr; i++ {
+		e := l.events[i]
+		fmt.Println(time.Duration(e.time-now), e.event)
+	}
+}
