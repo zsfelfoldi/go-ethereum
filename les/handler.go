@@ -284,7 +284,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	}
 
 	if !pm.lightSync && !p.Peer.Info().Network.Trusted {
-		if pm.vipClientPool.connect(p.ID(), p.updateBandwidth) {
+		if pm.vipClientPool != nil && pm.vipClientPool.connect(p.ID(), p.updateBandwidth) {
 			defer pm.vipClientPool.disconnect(p.ID())
 		} else {
 			addr, ok := p.RemoteAddr().(*net.TCPAddr)
