@@ -46,6 +46,13 @@ import (
 	colorable "github.com/mattn/go-colorable"
 )
 
+const (
+	testServerDataDir   = "/media/1TB/.ethereum"
+	testServerBandwidth = 200
+	testMaxClients      = 10
+	testTolerance       = 0.1
+)
+
 func init() {
 	flag.Parse()
 	// register the Delivery service which will run as a devp2p
@@ -118,7 +125,7 @@ func testSim(t *testing.T, serverCount int, clientCount int, test func(ctx conte
 	for i, _ := range servers {
 		serverconf := adapters.RandomNodeConfig()
 		serverconf.Services = []string{"lesserver"}
-		serverconf.DataDir = "/media/1TB/.ethereum" // ***
+		serverconf.DataDir = testServerDataDir
 		server, err := net.NewNodeWithConfig(serverconf)
 		if err != nil {
 			t.Fatalf("Failed to create server: %v", err)
@@ -212,7 +219,7 @@ func bandwidthLimits(ctx context.Context, t *testing.T, server *rpc.Client) (uin
 const minRelBw = 0.2
 
 func TestSim(t *testing.T) {
-	testSim(t, 1, 10, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
+	testSim(t, 1, testMaxClients, func(ctx context.Context, net *simulations.Network, servers []*simulations.Node, clients []*simulations.Node) {
 		if len(servers) != 1 {
 			t.Fatalf("Invalid number of servers: %d", len(servers))
 		}
@@ -355,7 +362,7 @@ func TestSim(t *testing.T) {
 						}
 					}
 					fmt.Printf("  max deviation: %f\n", maxDev)
-					if maxDev <= 0.1 {
+					if maxDev <= testTolerance {
 						fmt.Println("success")
 						break
 					}
@@ -403,8 +410,8 @@ func newLesClientService(ctx *adapters.ServiceContext) (node.Service, error) {
 func newLesServerService(ctx *adapters.ServiceContext) (node.Service, error) {
 	config := eth.DefaultConfig
 	config.SyncMode = downloader.FullSync
-	config.LightServ = 200
-	config.LightPeers = 20
+	config.LightServ = testServerBandwidth
+	config.LightPeers = testMaxClients
 	ethereum, err := eth.New(ctx.NodeContext, &config)
 	if err != nil {
 		return nil, err
