@@ -460,7 +460,7 @@ func (pm *ProtocolManager) runBenchmark() []*benchmarkSetup {
 	for _, s := range setup {
 		if s.err == nil {
 			s.avgTime = s.totalTime / time.Duration(s.totalCount)
-			log.Info("result", "name", s.name, "avgTime", s.avgTime, "reqCount", s.totalCount, "maxInSize", s.maxInSize, "maxOutSize", s.maxOutSize)
+			log.Debug("result", "name", s.name, "avgTime", s.avgTime, "reqCount", s.totalCount, "maxInSize", s.maxInSize, "maxOutSize", s.maxOutSize)
 		} else {
 			log.Warn("failed", "name", s.name, "error", s.err)
 		}
@@ -597,6 +597,6 @@ func (s *requestCostStats) printStats() {
 		return
 	}
 	for code, arr := range s.stats {
-		log.Info("cost stats", "code", code, "1/16", arr[0], "1/8", arr[1], "1/4", arr[2], "1/2", arr[3], "1", arr[4], "2", arr[5], "4", arr[6], "8", arr[7], "16", arr[8], ">16", arr[9])
+		log.Debug("cost stats", "code", code, "1/16", arr[0], "1/8", arr[1], "1/4", arr[2], "1/2", arr[3], "1", arr[4], "2", arr[5], "4", arr[6], "8", arr[7], "16", arr[8], ">16", arr[9])
 	}
 }
