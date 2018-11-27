@@ -36,6 +36,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -191,6 +192,12 @@ func (pm *ProtocolManager) Start(maxPeers int) {
 		if pm.freeClientBw < pm.server.minBandwidth {
 			pm.freeClientBw = pm.server.minBandwidth
 		}
+		if pm.freeClientBw > 0 {
+			pm.server.defParams = flowcontrol.ServerParams{
+				BufLimit:    pm.freeClientBw * bufLimitRatio,
+				MinRecharge: pm.freeClientBw,
+			}
+		}
 	}
 
 	if pm.lightSync {
@@ -296,7 +303,6 @@ func (pm *ProtocolManager) handle(p *peer) error {
 				}
 				defer pm.clientPool.disconnect(id)
 			}
-			//p.updateBandwidth(pm.freeClientBw)
 		}
 	}
 

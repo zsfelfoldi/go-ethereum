@@ -114,10 +114,6 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	srv.fcCostStats = newCostStats(srv.fcCostTable)
 
 	srv.minBandwidth = (srv.minBufLimit-1)/bufLimitRatio + 1
-	srv.defParams = flowcontrol.ServerParams{
-		BufLimit:    srv.minBandwidth * bufLimitRatio,
-		MinRecharge: srv.minBandwidth,
-	}
 
 	chtV1SectionCount, _, _ := srv.chtIndexer.Sections() // indexer still uses LES/1 4k section size for backwards server compatibility
 	chtV2SectionCount := chtV1SectionCount / (params.CHTFrequencyClient / params.CHTFrequencyServer)
