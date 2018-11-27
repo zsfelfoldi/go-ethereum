@@ -82,99 +82,99 @@ func NewClientNode(cm *ClientManager, params ServerParams) *ClientNode {
 	return node
 }
 
-func (peer *ClientNode) update(time mclock.AbsTime) {
-	for len(peer.updateSchedule) > 0 && peer.updateSchedule[0].time <= time {
-		peer.recalcBV(peer.updateSchedule[0].time)
-		peer.updateParams(peer.updateSchedule[0].params, time)
-		peer.updateSchedule = peer.updateSchedule[1:]
+func (node *ClientNode) update(now mclock.AbsTime) {
+	for len(node.updateSchedule) > 0 && node.updateSchedule[0].time <= now {
+		node.recalcBV(node.updateSchedule[0].time)
+		node.updateParams(node.updateSchedule[0].params, now)
+		node.updateSchedule = node.updateSchedule[1:]
 	}
-	peer.recalcBV(time)
+	node.recalcBV(now)
 }
 
-func (peer *ClientNode) recalcBV(time mclock.AbsTime) {
-	dt := uint64(time - peer.lastTime)
-	if time < peer.lastTime {
+func (node *ClientNode) recalcBV(now mclock.AbsTime) {
+	dt := uint64(now - node.lastTime)
+	if now < node.lastTime {
 		dt = 0
 	}
-	peer.bufValue += peer.params.MinRecharge * dt / uint64(fcTimeConst)
-	if peer.bufValue > peer.params.BufLimit {
-		peer.bufValue = peer.params.BufLimit
+	node.bufValue += node.params.MinRecharge * dt / uint64(fcTimeConst)
+	if node.bufValue > node.params.BufLimit {
+		node.bufValue = node.params.BufLimit
 	}
-	if peer.log != nil {
-		peer.log.add(time, fmt.Sprintf("updated  bv=%d  MRR=%d  BufLimit=%d", peer.bufValue, peer.params.MinRecharge, peer.params.BufLimit))
+	if node.log != nil {
+		node.log.add(now, fmt.Sprintf("updated  bv=%d  MRR=%d  BufLimit=%d", node.bufValue, node.params.MinRecharge, node.params.BufLimit))
 	}
-	peer.lastTime = time
+	node.lastTime = now
 }
 
-func (peer *ClientNode) UpdateParams(params ServerParams) {
-	peer.lock.Lock()
-	defer peer.lock.Unlock()
+func (node *ClientNode) UpdateParams(params ServerParams) {
+	node.lock.Lock()
+	defer node.lock.Unlock()
 
-	time := peer.cm.clock.Now()
-	peer.update(time)
-	if params.MinRecharge >= peer.params.MinRecharge {
-		peer.updateSchedule = nil
-		peer.updateParams(params, time)
+	now := node.cm.clock.Now()
+	node.update(now)
+	if params.MinRecharge >= node.params.MinRecharge {
+		node.updateSchedule = nil
+		node.updateParams(params, now)
 	} else {
-		for i, s := range peer.updateSchedule {
+		for i, s := range node.updateSchedule {
 			if params.MinRecharge >= s.params.MinRecharge {
 				s.params = params
-				peer.updateSchedule = peer.updateSchedule[:i+1]
+				node.updateSchedule = node.updateSchedule[:i+1]
 				return
 			}
 		}
-		peer.updateSchedule = append(peer.updateSchedule, scheduledUpdate{time: time + mclock.AbsTime(DecParamDelay), params: params})
+		node.updateSchedule = append(node.updateSchedule, scheduledUpdate{time: now + mclock.AbsTime(DecParamDelay), params: params})
 	}
 }
 
-func (peer *ClientNode) updateParams(params ServerParams, time mclock.AbsTime) {
-	diff := params.BufLimit - peer.params.BufLimit
+func (node *ClientNode) updateParams(params ServerParams, now mclock.AbsTime) {
+	diff := params.BufLimit - node.params.BufLimit
 	if int64(diff) > 0 {
-		peer.bufValue += diff
-	} else if peer.bufValue > params.BufLimit {
-		peer.bufValue = params.BufLimit
+		node.bufValue += diff
+	} else if node.bufValue > params.BufLimit {
+		node.bufValue = params.BufLimit
 	}
-	peer.cm.updateParams(peer, params, time)
+	node.cm.updateParams(node, params, now)
 }
 
 // AcceptRequest returns whether a new request can be accepted and the missing
 // buffer amount if it was rejected due to a buffer underrun. If accepted, maxCost
 // is deducted from the flow control buffer.
-func (peer *ClientNode) AcceptRequest(reqID, index, maxCost uint64) (accepted bool, bufShort uint64, priority int64) {
-	peer.lock.Lock()
-	defer peer.lock.Unlock()
+func (node *ClientNode) AcceptRequest(reqID, index, maxCost uint64) (accepted bool, bufShort uint64, priority int64) {
+	node.lock.Lock()
+	defer node.lock.Unlock()
 
-	time := peer.cm.clock.Now()
-	peer.update(time)
-	if maxCost > peer.bufValue {
-		if peer.log != nil {
-			peer.log.add(time, fmt.Sprintf("rejected  reqID=%d  bv=%d  maxCost=%d", reqID, peer.bufValue, maxCost))
-			peer.log.dump(time)
+	now := node.cm.clock.Now()
+	node.update(now)
+	if maxCost > node.bufValue {
+		if node.log != nil {
+			node.log.add(now, fmt.Sprintf("rejected  reqID=%d  bv=%d  maxCost=%d", reqID, node.bufValue, maxCost))
+			node.log.dump(now)
 		}
-		return false, maxCost - peer.bufValue, 0
+		return false, maxCost - node.bufValue, 0
 	}
-	peer.bufValue -= maxCost
-	peer.sumCost += maxCost
-	if peer.log != nil {
-		peer.log.add(time, fmt.Sprintf("accepted  reqID=%d  bv=%d  maxCost=%d  sumCost=%d", reqID, peer.bufValue, maxCost, peer.sumCost))
+	node.bufValue -= maxCost
+	node.sumCost += maxCost
+	if node.log != nil {
+		node.log.add(now, fmt.Sprintf("accepted  reqID=%d  bv=%d  maxCost=%d  sumCost=%d", reqID, node.bufValue, maxCost, node.sumCost))
 	}
-	peer.accepted[index] = peer.sumCost
-	return true, 0, peer.cm.accepted(peer, maxCost, time)
+	node.accepted[index] = node.sumCost
+	return true, 0, node.cm.accepted(node, maxCost, now)
 }
 
 // RequestProcessed should be called when the request has been processed
-func (peer *ClientNode) RequestProcessed(reqID, index, maxCost, realCost uint64) (bv uint64) {
-	peer.lock.Lock()
-	defer peer.lock.Unlock()
+func (node *ClientNode) RequestProcessed(reqID, index, maxCost, realCost uint64) (bv uint64) {
+	node.lock.Lock()
+	defer node.lock.Unlock()
 
-	time := peer.cm.clock.Now()
-	peer.update(time)
-	peer.cm.processed(peer, maxCost, realCost, time)
-	bv = peer.bufValue + peer.sumCost - peer.accepted[index]
-	if peer.log != nil {
-		peer.log.add(time, fmt.Sprintf("processed  reqID=%d  bv=%d  maxCost=%d  realCost=%d  sumCost=%d  oldSumCost=%d  reportedBV=%d", reqID, peer.bufValue, maxCost, realCost, peer.sumCost, peer.accepted[index], bv))
+	now := node.cm.clock.Now()
+	node.update(now)
+	node.cm.processed(node, maxCost, realCost, now)
+	bv = node.bufValue + node.sumCost - node.accepted[index]
+	if node.log != nil {
+		node.log.add(now, fmt.Sprintf("processed  reqID=%d  bv=%d  maxCost=%d  realCost=%d  sumCost=%d  oldSumCost=%d  reportedBV=%d", reqID, node.bufValue, maxCost, realCost, node.sumCost, node.accepted[index], bv))
 	}
-	delete(peer.accepted, index)
+	delete(node.accepted, index)
 	return
 }
 
@@ -210,37 +210,36 @@ func NewServerNode(params ServerParams, clock mclock.Clock) *ServerNode {
 }
 
 // UpdateParams updates flow control parameters
-func (peer *ServerNode) UpdateParams(params ServerParams) {
-	peer.lock.Lock()
-	defer peer.lock.Unlock()
+func (node *ServerNode) UpdateParams(params ServerParams) {
+	node.lock.Lock()
+	defer node.lock.Unlock()
 
-	//fmt.Println(params.MinRecharge)
-	peer.recalcBLE(mclock.Now())
-	if params.BufLimit > peer.params.BufLimit {
-		peer.bufEstimate += params.BufLimit - peer.params.BufLimit
+	node.recalcBLE(mclock.Now())
+	if params.BufLimit > node.params.BufLimit {
+		node.bufEstimate += params.BufLimit - node.params.BufLimit
 	} else {
-		if peer.bufEstimate > params.BufLimit {
-			peer.bufEstimate = params.BufLimit
+		if node.bufEstimate > params.BufLimit {
+			node.bufEstimate = params.BufLimit
 		}
 	}
-	peer.params = params
+	node.params = params
 }
 
-func (peer *ServerNode) recalcBLE(time mclock.AbsTime) {
-	if time < peer.lastTime {
+func (node *ServerNode) recalcBLE(now mclock.AbsTime) {
+	if now < node.lastTime {
 		return
 	}
-	if peer.bufRecharge {
-		dt := uint64(time - peer.lastTime)
-		peer.bufEstimate += peer.params.MinRecharge * dt / uint64(fcTimeConst)
-		if peer.bufEstimate >= peer.params.BufLimit {
-			peer.bufEstimate = peer.params.BufLimit
-			peer.bufRecharge = false
+	if node.bufRecharge {
+		dt := uint64(now - node.lastTime)
+		node.bufEstimate += node.params.MinRecharge * dt / uint64(fcTimeConst)
+		if node.bufEstimate >= node.params.BufLimit {
+			node.bufEstimate = node.params.BufLimit
+			node.bufRecharge = false
 		}
 	}
-	peer.lastTime = time
-	if peer.log != nil {
-		peer.log.add(time, fmt.Sprintf("updated  bufEst=%d  MRR=%d  BufLimit=%d", peer.bufEstimate, peer.params.MinRecharge, peer.params.BufLimit))
+	node.lastTime = now
+	if node.log != nil {
+		node.log.add(now, fmt.Sprintf("updated  bufEst=%d  MRR=%d  BufLimit=%d", node.bufEstimate, node.params.MinRecharge, node.params.BufLimit))
 	}
 }
 
@@ -250,26 +249,26 @@ const safetyMargin = time.Millisecond
 // CanSend returns the minimum waiting time required before sending a request
 // with the given maximum estimated cost. Second return value is the relative
 // estimated buffer level after sending the request (divided by BufLimit).
-func (peer *ServerNode) CanSend(maxCost uint64) (time.Duration, float64) {
-	peer.lock.RLock()
-	defer peer.lock.RUnlock()
+func (node *ServerNode) CanSend(maxCost uint64) (time.Duration, float64) {
+	node.lock.RLock()
+	defer node.lock.RUnlock()
 
-	now := peer.clock.Now()
-	peer.recalcBLE(now)
-	maxCost += uint64(safetyMargin) * peer.params.MinRecharge / uint64(fcTimeConst)
-	if maxCost > peer.params.BufLimit {
-		maxCost = peer.params.BufLimit
+	now := node.clock.Now()
+	node.recalcBLE(now)
+	maxCost += uint64(safetyMargin) * node.params.MinRecharge / uint64(fcTimeConst)
+	if maxCost > node.params.BufLimit {
+		maxCost = node.params.BufLimit
 	}
-	if peer.bufEstimate >= maxCost {
-		relBuf := float64(peer.bufEstimate-maxCost) / float64(peer.params.BufLimit)
-		if peer.log != nil {
-			peer.log.add(now, fmt.Sprintf("canSend  bufEst=%d  maxCost=%d  true  relBuf=%f", peer.bufEstimate, maxCost, relBuf))
+	if node.bufEstimate >= maxCost {
+		relBuf := float64(node.bufEstimate-maxCost) / float64(node.params.BufLimit)
+		if node.log != nil {
+			node.log.add(now, fmt.Sprintf("canSend  bufEst=%d  maxCost=%d  true  relBuf=%f", node.bufEstimate, maxCost, relBuf))
 		}
 		return 0, relBuf
 	}
-	timeLeft := time.Duration((maxCost - peer.bufEstimate) * uint64(fcTimeConst) / peer.params.MinRecharge)
-	if peer.log != nil {
-		peer.log.add(now, fmt.Sprintf("canSend  bufEst=%d  maxCost=%d  false  timeLeft=%v", peer.bufEstimate, maxCost, timeLeft))
+	timeLeft := time.Duration((maxCost - node.bufEstimate) * uint64(fcTimeConst) / node.params.MinRecharge)
+	if node.log != nil {
+		node.log.add(now, fmt.Sprintf("canSend  bufEst=%d  maxCost=%d  false  timeLeft=%v", node.bufEstimate, maxCost, timeLeft))
 	}
 	return timeLeft, 0
 }
@@ -277,69 +276,69 @@ func (peer *ServerNode) CanSend(maxCost uint64) (time.Duration, float64) {
 // QueuedRequest should be called when the request has been assigned to the given
 // server node, before putting it in the send queue. It is mandatory that requests
 // are sent in the same order as the QueuedRequest calls are made.
-func (peer *ServerNode) QueuedRequest(reqID, maxCost uint64) {
-	peer.lock.Lock()
-	defer peer.lock.Unlock()
+func (node *ServerNode) QueuedRequest(reqID, maxCost uint64) {
+	node.lock.Lock()
+	defer node.lock.Unlock()
 
-	now := peer.clock.Now()
-	peer.recalcBLE(now)
+	now := node.clock.Now()
+	node.recalcBLE(now)
 	// Note: we do not know when requests actually arrive to the server so bufRecharge
 	// is not turned on here if buffer was full; in this case it is going to be turned
 	// on by the first reply's bufValue feedback
-	if peer.bufEstimate >= maxCost {
-		peer.bufEstimate -= maxCost
+	if node.bufEstimate >= maxCost {
+		node.bufEstimate -= maxCost
 	} else {
 		log.Error("Queued request with insufficient buffer estimate")
-		peer.bufEstimate = 0
+		node.bufEstimate = 0
 	}
-	peer.sumCost += maxCost
-	peer.pending[reqID] = peer.sumCost
-	if peer.log != nil {
-		peer.log.add(now, fmt.Sprintf("queued  reqID=%d  bufEst=%d  maxCost=%d  sumCost=%d", reqID, peer.bufEstimate, maxCost, peer.sumCost))
+	node.sumCost += maxCost
+	node.pending[reqID] = node.sumCost
+	if node.log != nil {
+		node.log.add(now, fmt.Sprintf("queued  reqID=%d  bufEst=%d  maxCost=%d  sumCost=%d", reqID, node.bufEstimate, maxCost, node.sumCost))
 	}
 }
 
 // ReceivedReply adjusts estimated buffer value according to the value included in
 // the latest request reply.
-func (peer *ServerNode) ReceivedReply(reqID, bv uint64) {
-	peer.lock.Lock()
-	defer peer.lock.Unlock()
+func (node *ServerNode) ReceivedReply(reqID, bv uint64) {
+	node.lock.Lock()
+	defer node.lock.Unlock()
 
-	time := peer.clock.Now()
-	peer.recalcBLE(time)
-	if bv > peer.params.BufLimit {
-		bv = peer.params.BufLimit
+	now := node.clock.Now()
+	node.recalcBLE(now)
+	if bv > node.params.BufLimit {
+		bv = node.params.BufLimit
 	}
-	sc, ok := peer.pending[reqID]
+	sc, ok := node.pending[reqID]
 	if !ok {
 		return
 	}
-	delete(peer.pending, reqID)
-	cc := peer.sumCost - sc
+	delete(node.pending, reqID)
+	cc := node.sumCost - sc
 	newEstimate := uint64(0)
 	if bv > cc {
 		newEstimate = bv - cc
 	}
-	if newEstimate > peer.bufEstimate {
+	if newEstimate > node.bufEstimate {
 		// Note: we never reduce the buffer estimate based on the reported value because
 		// this can only happen because of the delayed delivery of the latest reply.
 		// The lowest estimate based on the previous reply can still be considered valid.
-		peer.bufEstimate = newEstimate
+		node.bufEstimate = newEstimate
 	}
 
-	peer.bufRecharge = peer.bufEstimate < peer.params.BufLimit
-	peer.lastTime = time
-	if peer.log != nil {
-		peer.log.add(time, fmt.Sprintf("received  reqID=%d  bufEst=%d  reportedBv=%d  sumCost=%d  oldSumCost=%d", reqID, peer.bufEstimate, bv, peer.sumCost, sc))
+	node.bufRecharge = node.bufEstimate < node.params.BufLimit
+	node.lastTime = now
+	if node.log != nil {
+		node.log.add(now, fmt.Sprintf("received  reqID=%d  bufEst=%d  reportedBv=%d  sumCost=%d  oldSumCost=%d", reqID, node.bufEstimate, bv, node.sumCost, sc))
 	}
 }
 
 // DumpLogs dumps the event log if logging is used
-func (peer *ServerNode) DumpLogs() {
-	peer.lock.Lock()
-	defer peer.lock.Unlock()
+func (node *ServerNode) DumpLogs() {
+	node.lock.Lock()
+	defer node.lock.Unlock()
 
-	if peer.log != nil {
-		peer.log.dump(peer.clock.Now())
+	if node.log != nil {
+		node.log.dump(node.clock.Now())
 	}
 }

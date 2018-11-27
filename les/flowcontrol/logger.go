@@ -47,13 +47,13 @@ func newLogger(keep time.Duration) *logger {
 }
 
 // add adds a new event and discards old events if possible
-func (l *logger) add(time mclock.AbsTime, event string) {
-	keepAfter := time - mclock.AbsTime(l.keep)
+func (l *logger) add(now mclock.AbsTime, event string) {
+	keepAfter := now - mclock.AbsTime(l.keep)
 	for l.delPtr < l.writePtr && l.events[l.delPtr].time <= keepAfter {
 		delete(l.events, l.delPtr)
 		l.delPtr++
 	}
-	l.events[l.writePtr] = logEvent{time, event}
+	l.events[l.writePtr] = logEvent{now, event}
 	l.writePtr++
 }
 

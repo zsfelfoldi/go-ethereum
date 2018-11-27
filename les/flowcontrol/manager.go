@@ -160,9 +160,9 @@ func (cm *ClientManager) updateParams(node *ClientNode, params ServerParams, now
 
 // updateRecharge updates the recharge integrator and checks the recharge queue
 // for nodes with recently filled buffers
-func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
+func (cm *ClientManager) updateRecharge(now mclock.AbsTime) {
 	lastUpdate := cm.rcLastUpdate
-	cm.rcLastUpdate = time
+	cm.rcLastUpdate = now
 	// updating is done in multiple steps if node buffers are filled and sumRecharge
 	// is decreased before the given target time
 	for cm.sumRecharge > 0 {
@@ -170,7 +170,7 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 		if bonusRatio < 1 {
 			bonusRatio = 1
 		}
-		dt := time - lastUpdate
+		dt := now - lastUpdate
 		// fetch the client that finishes first
 
 		if cm.rcQueue.Empty() { // debug
@@ -200,8 +200,8 @@ func (cm *ClientManager) updateRecharge(time mclock.AbsTime) {
 
 // updateNodeRc updates a node's corrBufValue and adds an external correction value.
 // It also adds or removes the rcQueue entry and updates ServerParams and sumRecharge if necessary.
-func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, params *ServerParams, time mclock.AbsTime) {
-	cm.updateRecharge(time)
+func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, params *ServerParams, now mclock.AbsTime) {
+	cm.updateRecharge(now)
 	wasFull := true
 	if node.corrBufValue != int64(node.params.BufLimit) {
 		wasFull = false
