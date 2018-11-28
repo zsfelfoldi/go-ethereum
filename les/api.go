@@ -51,30 +51,41 @@ func NewPrivateLesServerAPI(server *LesServer) *PrivateLesServerAPI {
 	}
 }
 
+// Query total available bandwidth for all clients
 func (api *PrivateLesServerAPI) TotalBandwidth() hexutil.Uint64 {
 	return hexutil.Uint64(api.server.totalBandwidth)
 }
 
+// Query minimum assignable bandwidth for a single client
 func (api *PrivateLesServerAPI) MinimumBandwidth() hexutil.Uint64 {
 	return hexutil.Uint64(api.server.minBandwidth)
 }
 
+// vipClientPool stores information about prioritized clients
+type vipClientPool struct {
+	lock                                  sync.Mutex
+	pm                                    *ProtocolManager
+	clients                               map[enode.ID]vipClientInfo
+	totalBw, totalVipBw, totalConnectedBw uint64
+	vipCount                              int
+}
+
+// vipClientInfo entries exist for all prioritized clients and currently connected free clients
 type vipClientInfo struct {
 	bw        uint64
 	connected bool
 	updateBw  func(uint64)
 }
 
-type vipClientPool struct {
-	lock                                  sync.Mutex
-	pm                                    *ProtocolManager
-	clients                               map[enode.ID]vipClientInfo
-	totalBw, totalVipBw, totalConnectedBw uint64
-	connectedCount                        int
-}
-
+// SetClientBandwidth sets the priority bandwidth assigned to a given client.
+// If the assigned bandwidth is bigger than zero then connection is always
+// guaranteed. The sum of bandwidth assigned to priority clients can not exceed
+// the total available bandwidth.
+//
+// Note: assigned bandwidth can be changed while the client is connected with
+// immediate effect.
 func (api *PrivateLesServerAPI) SetClientBandwidth(id enode.ID, bw uint64) error {
-	if bw < api.server.minBandwidth {
+	if bw != 0 && bw < api.server.minBandwidth {
 		return ErrMinBW
 	}
 
@@ -86,13 +97,25 @@ func (api *PrivateLesServerAPI) SetClientBandwidth(id enode.ID, bw uint64) error
 		return ErrTotalBW
 	}
 	api.vip.totalVipBw += bw - c.bw
-	if c.connected {
-		api.vip.totalConnectedBw += bw - c.bw
-		api.pm.clientPool.setConnLimit(api.pm.maxFreePeers(api.vip.connectedCount, api.vip.totalConnectedBw))
+	if c.bw != 0 {
+		api.vip.vipCount--
+	}
+	if bw != 0 {
+		api.vip.vipCount++
+	}
+	if c.updateBw != nil {
 		c.updateBw(bw)
 	}
-	c.bw = bw
-	api.vip.clients[id] = c
+	if c.connected {
+		api.vip.totalConnectedBw += bw - c.bw
+		api.pm.clientPool.setConnLimit(api.pm.maxFreePeers(api.vip.vipCount, api.vip.totalConnectedBw))
+	}
+	if bw != 0 || c.connected {
+		c.bw = bw
+		api.vip.clients[id] = c
+	} else {
+		delete(api.vip.clients, id)
+	}
 	return nil
 }
 
@@ -103,22 +126,23 @@ func (api *PrivateLesServerAPI) GetClientBandwidth(id enode.ID) hexutil.Uint64 {
 	return hexutil.Uint64(api.vip.clients[id].bw)
 }
 
-func (v *vipClientPool) connect(id enode.ID, updateBw func(uint64)) bool {
+func (v *vipClientPool) connect(id enode.ID, updateBw func(uint64)) (uint64, bool) {
 	v.lock.Lock()
 	defer v.lock.Unlock()
 
 	c := v.clients[id]
-	if c.bw == 0 || c.connected {
-		return false
+	if c.connected {
+		return 0, false
 	}
 	c.connected = true
 	c.updateBw = updateBw
 	v.clients[id] = c
-	v.connectedCount++
+	if c.bw != 0 {
+		v.vipCount++
+	}
 	v.totalConnectedBw += c.bw
-	v.pm.clientPool.setConnLimit(v.pm.maxFreePeers(v.connectedCount, v.totalConnectedBw))
-	updateBw(c.bw)
-	return true
+	v.pm.clientPool.setConnLimit(v.pm.maxFreePeers(v.vipCount, v.totalConnectedBw))
+	return c.bw, true
 }
 
 func (v *vipClientPool) disconnect(id enode.ID) {
@@ -126,12 +150,13 @@ func (v *vipClientPool) disconnect(id enode.ID) {
 	defer v.lock.Unlock()
 
 	c := v.clients[id]
-	if c.bw == 0 || !c.connected {
-		return
-	}
 	c.connected = false
-	v.clients[id] = c
-	v.connectedCount--
+	if c.bw != 0 {
+		v.clients[id] = c
+		v.vipCount--
+	} else {
+		delete(v.clients, id)
+	}
 	v.totalConnectedBw -= c.bw
-	v.pm.clientPool.setConnLimit(v.pm.maxFreePeers(v.connectedCount, v.totalConnectedBw))
+	v.pm.clientPool.setConnLimit(v.pm.maxFreePeers(v.vipCount, v.totalConnectedBw))
 }

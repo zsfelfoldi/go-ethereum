@@ -291,19 +291,83 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	}
 
 	if !pm.lightSync && !p.Peer.Info().Network.Trusted {
-		if pm.vipClientPool != nil && pm.vipClientPool.connect(p.ID(), p.updateBandwidth) {
-			defer pm.vipClientPool.disconnect(p.ID())
-		} else {
-			addr, ok := p.RemoteAddr().(*net.TCPAddr)
-			// test peer address is not a tcp address, don't use client pool if can not typecast
-			if ok {
-				id := addr.IP.String()
-				if !pm.clientPool.connect(id, func() { go pm.removePeer(p.id) }) {
-					return p2p.DiscTooManyPeers
+		var freeId string
+		if addr, ok := p.RemoteAddr().(*net.TCPAddr); ok {
+			freeId = addr.IP.String()
+		}
+		quit := make(chan struct{})
+		defer close(quit)
+
+		updateBw := make(chan uint64, 10)
+		// the vip client pool registers currently connected non-vip clients too
+		// in order to be able to notify them if they get priority while connected
+
+		var free, vip bool
+
+		if pm.vipClientPool != nil {
+			vipBw, ok := pm.vipClientPool.connect(p.ID(), func(bw uint64) {
+				select {
+				case updateBw <- bw:
+				default:
 				}
-				defer pm.clientPool.disconnect(id)
+			})
+			if !ok {
+				return p2p.DiscAlreadyConnected
+			}
+			// always unregister
+			defer pm.vipClientPool.disconnect(p.ID())
+			if vipBw != 0 {
+				vip = true
+				p.updateBandwidth(vipBw)
 			}
 		}
+
+		if !vip && freeId != "" {
+			// if freeId == "" then we are in test mode and let the client connect
+			// without entering the free client pool
+			if !pm.clientPool.connect(freeId, func() { go pm.removePeer(p.id) }) {
+				return p2p.DiscTooManyPeers
+			}
+			free = true
+		}
+
+		go func() {
+			for {
+				select {
+				case bw := <-updateBw:
+					if !vip && bw != 0 {
+						// switch to vip mode
+						if free {
+							pm.clientPool.disconnect(freeId)
+							free = false
+						}
+						p.updateBandwidth(bw)
+					}
+					if vip {
+						if bw == 0 {
+							// priority revoked; switch to free client mode or drop
+							if freeId != "" {
+								if !pm.clientPool.connect(freeId, func() { go pm.removePeer(p.id) }) {
+									pm.removePeer(p.id)
+									return
+								}
+								free = true
+							}
+							p.updateBandwidth(pm.freeClientBw)
+						} else {
+							// just update vip bandwidth
+							p.updateBandwidth(bw)
+						}
+					}
+				case <-quit:
+					if free {
+						pm.clientPool.disconnect(freeId)
+					}
+					return
+				}
+			}
+		}()
+
 	}
 
 	if rw, ok := p.rw.(*meteredMsgReadWriter); ok {
