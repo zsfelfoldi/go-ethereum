@@ -96,6 +96,10 @@ func (f *freeClientPool) connect(address string, disconnectFn func()) bool {
 	if f.closed {
 		return false
 	}
+	if f.connectedLimit == 0 {
+		log.Debug("Client rejected", "address", address)
+		return false
+	}
 	e := f.addressMap[address]
 	now := f.clock.Now()
 	var recentUsage int64

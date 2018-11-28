@@ -97,7 +97,7 @@ func testLoadBalance(t *testing.T, clientCount int) {
 		}
 
 		freeIdx := rand.Intn(len(clients))
-		freeBw := totalBw / testMaxClients
+		freeBw := totalBw/testMaxClients + 100
 
 		for i, client := range clients {
 			var err error
@@ -173,6 +173,7 @@ func testLoadBalance(t *testing.T, clientCount int) {
 		weights := make([]float64, len(clients))
 		for c := 0; c < 5; c++ {
 			setBandwidth(ctx, t, serverRpcClient, clients[freeIdx].ID(), freeBw)
+			time.Sleep(time.Millisecond * 200)
 			freeIdx = rand.Intn(len(clients))
 			var sum float64
 			for i, _ := range clients {
