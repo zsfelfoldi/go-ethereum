@@ -72,7 +72,7 @@ type vipClientPool struct {
 
 // vipClientInfo entries exist for all prioritized clients and currently connected free clients
 type vipClientInfo struct {
-	bw        uint64
+	bw        uint64 // zero for non-vip clients
 	connected bool
 	updateBw  func(uint64)
 }

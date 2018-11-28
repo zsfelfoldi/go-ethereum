@@ -51,19 +51,19 @@ request performance test. When testServerDataDir is empty, the test is skipped.
 */
 
 const (
-	testServerDataDir   = "" // should always be empty on the master branch
+	testServerDataDir   = "/media/1TB/.ethereum" // should always be empty on the master branch
 	testServerBandwidth = 200
 	testMaxClients      = 10
-	testTolerance       = 0.05
+	testTolerance       = 0.1
 	minRelBw            = 0.2
 )
 
 func TestLoadBalance2(t *testing.T) {
-	testLoadBalance(t, 2)
+	testLoadBalance(t, 3)
 }
 
 func TestLoadBalance5(t *testing.T) {
-	testLoadBalance(t, 5)
+	testLoadBalance(t, 6)
 }
 
 func TestLoadBalance10(t *testing.T) {
@@ -96,6 +96,9 @@ func testLoadBalance(t *testing.T, clientCount int) {
 			t.Fatalf("Minimum client bandwidth (%d) bigger than required minimum for this test (%d)", minBw, reqMinBw)
 		}
 
+		freeIdx := rand.Intn(len(clients))
+		freeBw := totalBw / testMaxClients
+
 		for i, client := range clients {
 			var err error
 			clientRpcClients[i], err = client.Client()
@@ -104,7 +107,9 @@ func testLoadBalance(t *testing.T, clientCount int) {
 			}
 
 			fmt.Println("connecting client", i)
-			setBandwidth(ctx, t, serverRpcClient, client.ID(), totalBw/uint64(len(clients)))
+			if i != freeIdx {
+				setBandwidth(ctx, t, serverRpcClient, client.ID(), totalBw/uint64(len(clients)))
+			}
 			net.Connect(client.ID(), server.ID())
 
 			for {
@@ -167,23 +172,36 @@ func testLoadBalance(t *testing.T, clientCount int) {
 
 		weights := make([]float64, len(clients))
 		for c := 0; c < 5; c++ {
+			setBandwidth(ctx, t, serverRpcClient, clients[freeIdx].ID(), freeBw)
+			freeIdx = rand.Intn(len(clients))
 			var sum float64
 			for i, _ := range clients {
-				weights[i] = rand.Float64()*(1-minRelBw) + minRelBw
+				if i == freeIdx {
+					weights[i] = 0
+				} else {
+					weights[i] = rand.Float64()*(1-minRelBw) + minRelBw
+				}
 				sum += weights[i]
 			}
+			fmt.Printf("bandwidth")
 			for i, client := range clients {
-				weights[i] /= sum
-				bandwidth := uint64(float64(totalBw) * weights[i])
+				weights[i] *= float64(totalBw-freeBw) / sum
+				bandwidth := uint64(weights[i])
+				fmt.Printf(" %d", bandwidth)
 				if bandwidth < getBandwidth(ctx, t, serverRpcClient, client.ID()) {
 					setBandwidth(ctx, t, serverRpcClient, client.ID(), bandwidth)
 				}
 			}
 			for i, client := range clients {
-				bandwidth := uint64(float64(totalBw) * weights[i])
+				bandwidth := uint64(weights[i])
 				if bandwidth > getBandwidth(ctx, t, serverRpcClient, client.ID()) {
 					setBandwidth(ctx, t, serverRpcClient, client.ID(), bandwidth)
 				}
+			}
+			fmt.Println()
+			weights[freeIdx] = float64(freeBw)
+			for i, _ := range clients {
+				weights[i] /= float64(totalBw)
 			}
 
 			time.Sleep(flowcontrol.DecParamDelay)
