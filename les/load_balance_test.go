@@ -58,11 +58,11 @@ const (
 	minRelBw            = 0.2
 )
 
-func TestLoadBalance2(t *testing.T) {
+func TestLoadBalance3(t *testing.T) {
 	testLoadBalance(t, 3)
 }
 
-func TestLoadBalance5(t *testing.T) {
+func TestLoadBalance6(t *testing.T) {
 	testLoadBalance(t, 6)
 }
 
@@ -97,7 +97,7 @@ func testLoadBalance(t *testing.T, clientCount int) {
 		}
 
 		freeIdx := rand.Intn(len(clients))
-		freeBw := totalBw/testMaxClients + 100
+		freeBw := totalBw / testMaxClients
 
 		for i, client := range clients {
 			var err error
@@ -173,7 +173,6 @@ func testLoadBalance(t *testing.T, clientCount int) {
 		weights := make([]float64, len(clients))
 		for c := 0; c < 5; c++ {
 			setBandwidth(ctx, t, serverRpcClient, clients[freeIdx].ID(), freeBw)
-			time.Sleep(time.Millisecond * 200)
 			freeIdx = rand.Intn(len(clients))
 			var sum float64
 			for i, _ := range clients {
@@ -186,16 +185,17 @@ func testLoadBalance(t *testing.T, clientCount int) {
 			}
 			fmt.Printf("bandwidth")
 			for i, client := range clients {
-				weights[i] *= float64(totalBw-freeBw) / sum
+				weights[i] *= float64(totalBw-freeBw-100) / sum
 				bandwidth := uint64(weights[i])
 				fmt.Printf(" %d", bandwidth)
-				if bandwidth < getBandwidth(ctx, t, serverRpcClient, client.ID()) {
+				if i != freeIdx && bandwidth < getBandwidth(ctx, t, serverRpcClient, client.ID()) {
 					setBandwidth(ctx, t, serverRpcClient, client.ID(), bandwidth)
 				}
 			}
+			setBandwidth(ctx, t, serverRpcClient, clients[freeIdx].ID(), 0)
 			for i, client := range clients {
 				bandwidth := uint64(weights[i])
-				if bandwidth > getBandwidth(ctx, t, serverRpcClient, client.ID()) {
+				if i != freeIdx && bandwidth > getBandwidth(ctx, t, serverRpcClient, client.ID()) {
 					setBandwidth(ctx, t, serverRpcClient, client.ID(), bandwidth)
 				}
 			}
@@ -291,9 +291,11 @@ func testRequest(ctx context.Context, t *testing.T, client *rpc.Client) {
 }
 
 func setBandwidth(ctx context.Context, t *testing.T, server *rpc.Client, clientID enode.ID, bw uint64) {
+	fmt.Println("setBandwidth", bw)
 	if err := server.CallContext(ctx, nil, "les_setClientBandwidth", clientID, bw); err != nil {
 		t.Fatalf("Failed to set client bandwidth: %v", err)
 	}
+	fmt.Println("setBandwidth", bw, "done")
 }
 
 func getBandwidth(ctx context.Context, t *testing.T, server *rpc.Client, clientID enode.ID) uint64 {

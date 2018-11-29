@@ -97,18 +97,21 @@ func (api *PrivateLesServerAPI) SetClientBandwidth(id enode.ID, bw uint64) error
 		return ErrTotalBW
 	}
 	api.vip.totalVipBw += bw - c.bw
-	if c.bw != 0 {
-		api.vip.vipCount--
-	}
-	if bw != 0 {
-		api.vip.vipCount++
-	}
-	if c.updateBw != nil {
+	if c.updateBw != nil && bw != 0 {
 		c.updateBw(bw)
 	}
 	if c.connected {
+		if c.bw != 0 {
+			api.vip.vipCount--
+		}
+		if bw != 0 {
+			api.vip.vipCount++
+		}
 		api.vip.totalConnectedBw += bw - c.bw
 		api.pm.clientPool.setConnLimit(api.pm.maxFreePeers(api.vip.vipCount, api.vip.totalConnectedBw))
+	}
+	if c.updateBw != nil && bw == 0 {
+		c.updateBw(bw)
 	}
 	if bw != 0 || c.connected {
 		c.bw = bw

@@ -18,6 +18,7 @@
 package les
 
 import (
+	"fmt"
 	"io"
 	"math"
 	"sync"
@@ -96,8 +97,15 @@ func (f *freeClientPool) connect(address string, disconnectFn func()) bool {
 	if f.closed {
 		return false
 	}
+	fmt.Println("addr", address)
+	/*if address != "127.0.0.1" {
+		return false
+	}*/
+
+	fmt.Println("free pool limit", f.connectedLimit, "size", f.connPool.Size())
 	if f.connectedLimit == 0 {
 		log.Debug("Client rejected", "address", address)
+		fmt.Println("rejected (limit 0)")
 		return false
 	}
 	e := f.addressMap[address]
@@ -109,6 +117,7 @@ func (f *freeClientPool) connect(address string, disconnectFn func()) bool {
 	} else {
 		if e.connected {
 			log.Debug("Client already connected", "address", address)
+			fmt.Println("rejected (already connected)")
 			return false
 		}
 		recentUsage = int64(math.Exp(float64(e.logUsage-f.logOffset(now)) / fixedPointMultiplier))
@@ -124,6 +133,7 @@ func (f *freeClientPool) connect(address string, disconnectFn func()) bool {
 			// keep the old client and reject the new one
 			f.connPool.Push(i, i.linUsage)
 			log.Debug("Client rejected", "address", address)
+			fmt.Println("rejected")
 			return false
 		}
 	}
@@ -135,6 +145,7 @@ func (f *freeClientPool) connect(address string, disconnectFn func()) bool {
 		f.disconnPool.Pop()
 	}
 	log.Debug("Client accepted", "address", address)
+	fmt.Println("accepted")
 	return true
 }
 
@@ -180,6 +191,7 @@ func (f *freeClientPool) dropClient(i *freeClientPoolEntry, now mclock.AbsTime) 
 	i.connected = false
 	f.disconnPool.Push(i, -i.logUsage)
 	log.Debug("Client kicked out", "address", i.address)
+	fmt.Println("kick")
 	i.disconnectFn()
 }
 

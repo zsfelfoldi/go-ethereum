@@ -175,13 +175,17 @@ func (pm *ProtocolManager) removePeer(id string) {
 }
 
 func (pm *ProtocolManager) maxFreePeers(otherPeers int, otherBw uint64) int {
+	fmt.Println("maxFreePeers", otherPeers, otherBw)
 	if otherPeers >= pm.maxPeers || otherBw >= pm.server.totalBandwidth {
+		fmt.Println("a", 0)
 		return 0
 	}
 	maxPeers := int((pm.server.totalBandwidth - otherBw) / pm.freeClientBw)
 	if maxPeers <= pm.maxPeers-otherPeers {
+		fmt.Println("b", maxPeers)
 		return maxPeers
 	}
+	fmt.Println("c", pm.maxPeers-otherPeers)
 	return pm.maxPeers - otherPeers
 }
 
@@ -295,22 +299,60 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		if addr, ok := p.RemoteAddr().(*net.TCPAddr); ok {
 			freeId = addr.IP.String()
 		}
-		quit := make(chan struct{})
-		defer close(quit)
 
-		updateBw := make(chan uint64, 10)
-		// the vip client pool registers currently connected non-vip clients too
-		// in order to be able to notify them if they get priority while connected
+		var (
+			free, vip bool
+			lock      sync.Mutex
+		)
 
-		var free, vip bool
+		defer func() {
+			lock.Lock()
+			if free {
+				pm.clientPool.disconnect(freeId)
+			}
+			lock.Unlock()
+		}()
 
-		if pm.vipClientPool != nil {
-			vipBw, ok := pm.vipClientPool.connect(p.ID(), func(bw uint64) {
-				select {
-				case updateBw <- bw:
-				default:
+		updateBw := func(bw uint64) {
+			fmt.Println("updateBw", bw)
+			defer fmt.Println("updateBw", bw, "done")
+			lock.Lock()
+			defer lock.Unlock()
+
+			if !vip && bw != 0 {
+				// switch to vip mode
+				if free {
+					pm.clientPool.disconnect(freeId)
+					free = false
 				}
-			})
+				vip = true
+				p.updateBandwidth(bw)
+			}
+			if vip {
+				if bw == 0 {
+					// priority revoked; switch to free client mode or drop
+					if freeId != "" {
+						if !pm.clientPool.connect(freeId, func() { go pm.removePeer(p.id) }) {
+							fmt.Println("drop (connect failed)")
+							pm.removePeer(p.id)
+							return
+						}
+						free = true
+					}
+					vip = false
+					p.updateBandwidth(pm.freeClientBw)
+				} else {
+					// just update vip bandwidth
+					p.updateBandwidth(bw)
+				}
+			}
+		}
+
+		lock.Lock()
+		if pm.vipClientPool != nil {
+			// the vip client pool registers currently connected non-vip clients too
+			// in order to be able to notify them if they get priority while connected
+			vipBw, ok := pm.vipClientPool.connect(p.ID(), updateBw)
 			if !ok {
 				return p2p.DiscAlreadyConnected
 			}
@@ -330,44 +372,8 @@ func (pm *ProtocolManager) handle(p *peer) error {
 			}
 			free = true
 		}
-
-		go func() {
-			for {
-				select {
-				case bw := <-updateBw:
-					if !vip && bw != 0 {
-						// switch to vip mode
-						if free {
-							pm.clientPool.disconnect(freeId)
-							free = false
-						}
-						p.updateBandwidth(bw)
-					}
-					if vip {
-						if bw == 0 {
-							// priority revoked; switch to free client mode or drop
-							if freeId != "" {
-								if !pm.clientPool.connect(freeId, func() { go pm.removePeer(p.id) }) {
-									pm.removePeer(p.id)
-									return
-								}
-								free = true
-							}
-							p.updateBandwidth(pm.freeClientBw)
-						} else {
-							// just update vip bandwidth
-							p.updateBandwidth(bw)
-						}
-					}
-				case <-quit:
-					if free {
-						pm.clientPool.disconnect(freeId)
-					}
-					return
-				}
-			}
-		}()
-
+		lock.Unlock()
+		fmt.Println("connect", vip, free)
 	}
 
 	if rw, ok := p.rw.(*meteredMsgReadWriter); ok {
@@ -413,6 +419,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 	for {
 		if err := pm.handleMsg(p); err != nil {
 			p.Log().Debug("Light Ethereum message handling failed", "err", err)
+			fmt.Println("handle err", err)
 			if p.fcServer != nil {
 				p.fcServer.DumpLogs()
 			}
