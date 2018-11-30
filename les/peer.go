@@ -97,12 +97,11 @@ func newPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *pe
 	id := p.ID()
 
 	return &peer{
-		Peer:      p,
-		rw:        rw,
-		version:   version,
-		network:   network,
-		id:        fmt.Sprintf("%x", id[:8]),
-		sendQueue: newExecQueue(100),
+		Peer:    p,
+		rw:      rw,
+		version: version,
+		network: network,
+		id:      fmt.Sprintf("%x", id[:8]),
 	}
 }
 
@@ -675,6 +674,7 @@ func (ps *peerSet) Register(p *peer) error {
 		return errAlreadyRegistered
 	}
 	ps.peers[p.id] = p
+	p.sendQueue = newExecQueue(100)
 	peers := make([]peerSetNotify, len(ps.notifyList))
 	copy(peers, ps.notifyList)
 	ps.lock.Unlock()

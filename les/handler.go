@@ -294,6 +294,18 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		return err
 	}
 
+	if rw, ok := p.rw.(*meteredMsgReadWriter); ok {
+		rw.Init(p.version)
+	}
+	// Register the peer locally
+	if err := pm.peers.Register(p); err != nil {
+		p.Log().Error("Light Ethereum peer registration failed", "err", err)
+		return err
+	}
+	defer func() {
+		pm.removePeer(p.id)
+	}()
+
 	if !pm.lightSync && !p.Peer.Info().Network.Trusted {
 		var freeId string
 		if addr, ok := p.RemoteAddr().(*net.TCPAddr); ok {
@@ -378,17 +390,6 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		fmt.Println("connect", vip, free)
 	}
 
-	if rw, ok := p.rw.(*meteredMsgReadWriter); ok {
-		rw.Init(p.version)
-	}
-	// Register the peer locally
-	if err := pm.peers.Register(p); err != nil {
-		p.Log().Error("Light Ethereum peer registration failed", "err", err)
-		return err
-	}
-	defer func() {
-		pm.removePeer(p.id)
-	}()
 	// Register the peer in the downloader. If the downloader considers it banned, we disconnect
 	if pm.lightSync {
 		p.lock.Lock()
