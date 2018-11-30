@@ -35,7 +35,7 @@ const (
 	// receiving the bandwidth update announcement
 	DecParamDelay = time.Second * 2
 	// keepLogs is the duration of keeping logs; logging is not used if zero
-	keepLogs = 0
+	keepLogs = time.Millisecond * 200
 )
 
 // ServerParams are the flow control parameters specified by a server for a client

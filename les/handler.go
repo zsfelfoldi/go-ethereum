@@ -302,7 +302,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 
 		var (
 			free, vip bool
-			lock      sync.Mutex
+			lock      sync.Mutex // lock protects access to the free and vip flags
 		)
 
 		defer func() {
@@ -354,6 +354,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 			// in order to be able to notify them if they get priority while connected
 			vipBw, ok := pm.vipClientPool.connect(p.ID(), updateBw)
 			if !ok {
+				lock.Unlock()
 				return p2p.DiscAlreadyConnected
 			}
 			// always unregister
@@ -368,6 +369,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 			// if freeId == "" then we are in test mode and let the client connect
 			// without entering the free client pool
 			if !pm.clientPool.connect(freeId, func() { go pm.removePeer(p.id) }) {
+				lock.Unlock()
 				return p2p.DiscTooManyPeers
 			}
 			free = true
@@ -400,20 +402,6 @@ func (pm *ProtocolManager) handle(p *peer) error {
 			pm.serverPool.registered(p.poolEntry)
 		}
 	}
-
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		// new block announce loop
-		for {
-			select {
-			case announce := <-p.announceChn:
-				p.SendAnnounce(announce)
-			case <-stop:
-				return
-			}
-		}
-	}()
 
 	// main loop. handle incoming messages.
 	for {

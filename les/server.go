@@ -268,12 +268,7 @@ func (pm *ProtocolManager) blockLoop() {
 							switch p.announceType {
 
 							case announceTypeSimple:
-								select {
-								case p.announceChn <- announce:
-								default:
-									pm.removePeer(p.id)
-								}
-
+								p.queueSend(func() { p.SendAnnounce(announce) })
 							case announceTypeSigned:
 								if !signed {
 									signedAnnounce = announce
@@ -281,11 +276,7 @@ func (pm *ProtocolManager) blockLoop() {
 									signed = true
 								}
 
-								select {
-								case p.announceChn <- signedAnnounce:
-								default:
-									pm.removePeer(p.id)
-								}
+								p.queueSend(func() { p.SendAnnounce(signedAnnounce) })
 							}
 						}
 					}

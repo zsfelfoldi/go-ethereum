@@ -75,8 +75,7 @@ type peer struct {
 	headInfo *announceData
 	lock     sync.RWMutex
 
-	announceChn chan announceData
-	sendQueue   *execQueue
+	sendQueue *execQueue
 
 	errCh         chan error
 	responseLock  sync.Mutex
@@ -98,12 +97,11 @@ func newPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *pe
 	id := p.ID()
 
 	return &peer{
-		Peer:        p,
-		rw:          rw,
-		version:     version,
-		network:     network,
-		id:          fmt.Sprintf("%x", id[:8]),
-		announceChn: make(chan announceData, 20),
+		Peer:    p,
+		rw:      rw,
+		version: version,
+		network: network,
+		id:      fmt.Sprintf("%x", id[:8]),
 	}
 }
 
@@ -183,12 +181,17 @@ func (p *peer) waitBefore(maxCost uint64) (time.Duration, float64) {
 }
 
 func (p *peer) updateBandwidth(bw uint64) {
+	// responseLock ensures that responses are queued in the same order as
+	// RequestProcessed is called
+	p.responseLock.Lock()
+	defer p.responseLock.Unlock()
+
 	p.fcParams = flowcontrol.ServerParams{MinRecharge: bw, BufLimit: bw * bufLimitRatio}
 	p.fcClient.UpdateParams(p.fcParams)
 	var kvList keyValueList
 	kvList = kvList.add("flowControl/MRR", bw)
 	kvList = kvList.add("flowControl/BL", bw*bufLimitRatio)
-	go p.SendAnnounce(announceData{Update: kvList})
+	p.queueSend(func() { p.SendAnnounce(announceData{Update: kvList}) })
 }
 
 func sendRequest(w p2p.MsgWriter, msgcode, reqID, cost uint64, data interface{}) error {
