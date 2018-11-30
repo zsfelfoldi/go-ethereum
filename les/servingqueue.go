@@ -18,6 +18,7 @@
 package les
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -93,6 +94,9 @@ func (sq *servingQueue) addTask(task *servingTask) {
 // Note: either blocking should be false or currentTask should be nil.
 func (sq *servingQueue) getNewTask(currentTask *servingTask, blocking bool) *servingTask {
 	sq.lock.Lock()
+	if sq.stopCount != 0 {
+		fmt.Println("getNewTask", sq.stopCount)
+	}
 	if sq.stopCount == 0 {
 		if sq.best != nil && (currentTask == nil || sq.best.priority <= currentTask.priority-sq.suspendBias) {
 			best := sq.best
@@ -123,6 +127,7 @@ func (sq *servingQueue) getNewTask(currentTask *servingTask, blocking bool) *ser
 func (sq *servingQueue) setThreads(threadCount int) {
 	sq.lock.Lock()
 	defer sq.lock.Unlock()
+	fmt.Println("setThreads", threadCount, sq.threadCount, sq.stopCount)
 
 	diff := threadCount - sq.threadCount + sq.stopCount
 	if diff > 0 {
@@ -132,7 +137,9 @@ func (sq *servingQueue) setThreads(threadCount int) {
 		} else {
 			diff -= sq.stopCount
 			sq.stopCount = 0
+			sq.threadCount += diff
 			for ; diff > 0; diff-- {
+				fmt.Println("setThreads start")
 				go sq.servingThread()
 			}
 		}
@@ -140,14 +147,18 @@ func (sq *servingQueue) setThreads(threadCount int) {
 	if diff < 0 {
 		// stop some threads
 		lw := len(sq.waiting)
+		sq.stopCount -= diff
 		for diff < 0 && lw > 0 {
 			diff++
 			lw--
+			fmt.Println("setThreads stop")
 			sq.waiting[lw] <- nil
+			sq.stopCount--
+			sq.threadCount--
 		}
 		sq.waiting = sq.waiting[:lw]
-		sq.stopCount += diff
 	}
+	fmt.Println("setThreads done", threadCount, sq.threadCount, sq.stopCount)
 }
 
 // stop stops task processing as soon as possible
@@ -157,9 +168,11 @@ func (sq *servingQueue) stop() {
 
 // servingThread implements a single serving thread
 func (sq *servingQueue) servingThread() {
+	fmt.Println("thread start")
 	for {
 		task := sq.getNewTask(nil, true)
 		if task == nil {
+			fmt.Println("thread stop")
 			return
 		}
 		task.servingTime -= uint64(mclock.Now())
