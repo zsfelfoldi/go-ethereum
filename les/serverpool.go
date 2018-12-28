@@ -126,18 +126,18 @@ type serverPool struct {
 	discNodes     chan *enode.Node
 	discLookups   chan bool
 
-	trustedNodes         []string
+	trustedNodes         map[enode.ID]*enode.Node
 	entries              map[enode.ID]*poolEntry
 	timeout, enableRetry chan *poolEntry
 	adjustStats          chan poolStatAdjust
 
-	knownQueue, newQueue, trustedQueue poolEntryQueue
-	knownSelect, newSelect             *weightedRandomSelect
-	knownSelected, newSelected         int
-	fastDiscover                       bool
-	connCh                             chan *connReq
-	disconnCh                          chan *disconnReq
-	registerCh                         chan *registerReq
+	knownQueue, newQueue       poolEntryQueue
+	knownSelect, newSelect     *weightedRandomSelect
+	knownSelected, newSelected int
+	fastDiscover               bool
+	connCh                     chan *connReq
+	disconnCh                  chan *disconnReq
+	registerCh                 chan *registerReq
 }
 
 // newServerPool creates a new serverPool instance
@@ -156,10 +156,9 @@ func newServerPool(db ethdb.Database, quit chan struct{}, wg *sync.WaitGroup, tr
 		knownSelect:  newWeightedRandomSelect(),
 		newSelect:    newWeightedRandomSelect(),
 		fastDiscover: true,
-		trustedNodes: trustedNodes,
+		trustedNodes: parseTrustedNodes(trustedNodes),
 	}
 
-	pool.trustedQueue = newPoolEntryQueue(maxKnownEntries, pool.removeEntry)
 	pool.knownQueue = newPoolEntryQueue(maxKnownEntries, pool.removeEntry)
 	pool.newQueue = newPoolEntryQueue(maxNewEntries, pool.removeEntry)
 	return pool
@@ -341,8 +340,10 @@ func (pool *serverPool) eventLoop() {
 			}
 
 		case node := <-pool.discNodes:
-			entry := pool.findOrNewNode(node)
-			pool.updateCheckDial(entry)
+			if pool.trustedNodes[node.ID()] == nil {
+				entry := pool.findOrNewNode(node)
+				pool.updateCheckDial(entry)
+			}
 
 		case conv := <-pool.discLookups:
 			if conv {
@@ -359,29 +360,34 @@ func (pool *serverPool) eventLoop() {
 			}
 
 		case req := <-pool.connCh:
-			// Handle peer connection requests.
-			entry := pool.entries[req.p.ID()]
-			if entry == nil {
-				entry = pool.findOrNewNode(req.node)
-			}
-			if entry.state == psConnected || entry.state == psRegistered {
+			if pool.trustedNodes[req.p.ID()] != nil {
+				// ignore trusted nodes
 				req.result <- nil
-				continue
+			} else {
+				// Handle peer connection requests.
+				entry := pool.entries[req.p.ID()]
+				if entry == nil {
+					entry = pool.findOrNewNode(req.node)
+				}
+				if entry.state == psConnected || entry.state == psRegistered {
+					req.result <- nil
+					continue
+				}
+				pool.connWg.Add(1)
+				entry.peer = req.p
+				entry.state = psConnected
+				addr := &poolEntryAddress{
+					ip:       req.node.IP(),
+					port:     uint16(req.node.TCP()),
+					lastSeen: mclock.Now(),
+				}
+				entry.lastConnected = addr
+				entry.addr = make(map[string]*poolEntryAddress)
+				entry.addr[addr.strKey()] = addr
+				entry.addrSelect = *newWeightedRandomSelect()
+				entry.addrSelect.update(addr)
+				req.result <- entry
 			}
-			pool.connWg.Add(1)
-			entry.peer = req.p
-			entry.state = psConnected
-			addr := &poolEntryAddress{
-				ip:       req.node.IP(),
-				port:     uint16(req.node.TCP()),
-				lastSeen: mclock.Now(),
-			}
-			entry.lastConnected = addr
-			entry.addr = make(map[string]*poolEntryAddress)
-			entry.addr[addr.strKey()] = addr
-			entry.addrSelect = *newWeightedRandomSelect()
-			entry.addrSelect.update(addr)
-			req.result <- entry
 
 		case req := <-pool.registerCh:
 			// Handle peer registration requests.
@@ -449,7 +455,7 @@ func (pool *serverPool) findOrNewNode(node *enode.Node) *poolEntry {
 	}
 	addr.lastSeen = now
 	entry.addrSelect.update(addr)
-	if !entry.known || !entry.trusted {
+	if !entry.known {
 		pool.newQueue.setLatest(entry)
 	}
 	return entry
@@ -474,35 +480,38 @@ func (pool *serverPool) loadNodes() {
 			"response", fmt.Sprintf("%v/%v", time.Duration(e.responseStats.avg), e.responseStats.weight),
 			"timeout", fmt.Sprintf("%v/%v", e.timeoutStats.avg, e.timeoutStats.weight))
 		pool.entries[e.node.ID()] = e
-		pool.knownQueue.setLatest(e)
-		pool.knownSelect.update((*knownEntry)(e))
-	}
-}
-
-func (pool *serverPool) connectToTrustedNodes() {
-	//connect to trusted nodes
-	if len(pool.trustedNodes) > 0 {
-		for _, trusted := range pool.parseTrustedServers() {
-			e := pool.findOrNewNode(trusted)
-			e.trusted = true
-			e.dialed = &poolEntryAddress{ip: trusted.IP(), port: uint16(trusted.TCP())}
-			pool.entries[e.node.ID()] = e
-			pool.trustedQueue.setLatest(e)
+		if pool.trustedNodes[e.node.ID()] == nil {
+			pool.knownQueue.setLatest(e)
+			pool.knownSelect.update((*knownEntry)(e))
 		}
 	}
 }
 
-// parseTrustedServers returns valid and parsed by discovery enodes.
-func (pool *serverPool) parseTrustedServers() []*enode.Node {
-	nodes := make([]*enode.Node, 0, len(pool.trustedNodes))
-
+// connectToTrustedNodes adds trusted server nodes as static trusted peers.
+//
+// Note: trusted nodes are not handled by the server pool logic, they are not
+// added to either the known or new selection pools. They are connected/reconnected
+// by p2p.Server whenever possible.
+func (pool *serverPool) connectToTrustedNodes() {
+	//connect to trusted nodes
 	for _, node := range pool.trustedNodes {
+		pool.server.AddTrustedPeer(node)
+		pool.server.AddPeer(node)
+		log.Debug("Added trusted node", "id", node.ID().String())
+	}
+}
+
+// parseTrustedNodes returns valid and parsed enodes
+func parseTrustedNodes(trustedNodes []string) map[enode.ID]*enode.Node {
+	nodes := make(map[enode.ID]*enode.Node)
+
+	for _, node := range trustedNodes {
 		node, err := enode.ParseV4(node)
 		if err != nil {
 			log.Warn("Trusted node URL invalid", "enode", node, "err", err)
 			continue
 		}
-		nodes = append(nodes, node)
+		nodes[node.ID()] = node
 	}
 	return nodes
 }
@@ -562,10 +571,6 @@ func (pool *serverPool) updateCheckDial(entry *poolEntry) {
 // checkDial checks if new dials can/should be made. It tries to select servers both
 // based on good statistics and recent discovery.
 func (pool *serverPool) checkDial() {
-	for _, e := range pool.trustedQueue.queue {
-		pool.dial(e, false)
-	}
-
 	fillWithKnownSelects := !pool.fastDiscover
 	for pool.knownSelected < targetKnownSelect {
 		entry := pool.knownSelect.choose()
@@ -602,24 +607,15 @@ func (pool *serverPool) dial(entry *poolEntry, knownSelected bool) {
 		return
 	}
 	entry.state = psDialed
-
-	if !entry.trusted {
-		entry.knownSelected = knownSelected
-		if knownSelected {
-			pool.knownSelected++
-		} else {
-			pool.newSelected++
-		}
-		addr := entry.addrSelect.choose().(*poolEntryAddress)
-		entry.dialed = addr
+	entry.knownSelected = knownSelected
+	if knownSelected {
+		pool.knownSelected++
+	} else {
+		pool.newSelected++
 	}
-
-	state := "known"
-	if entry.trusted {
-		state = "trusted"
-	}
-	log.Debug("Dialing new peer", "lesaddr", entry.node.ID().String()+"@"+entry.dialed.strKey(), "set", len(entry.addr), state, knownSelected)
-
+	addr := entry.addrSelect.choose().(*poolEntryAddress)
+	log.Debug("Dialing new peer", "lesaddr", entry.node.ID().String()+"@"+addr.strKey(), "set", len(entry.addr), "known", knownSelected)
+	entry.dialed = addr
 	go func() {
 		pool.server.AddPeer(entry.node)
 		select {
@@ -669,7 +665,6 @@ type poolEntry struct {
 
 	lastDiscovered              mclock.AbsTime
 	known, knownSelected        bool
-	trusted                     bool
 	connectStats, delayStats    poolStats
 	responseStats, timeoutStats poolStats
 	state                       int
