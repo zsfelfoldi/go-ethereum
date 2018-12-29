@@ -304,6 +304,9 @@ func (pool *serverPool) eventLoop() {
 			}
 		}
 		entry.state = psNotConnected
+		if pool.trustedNodes[entry.node.ID()] == nil {
+			pool.server.RemovePeer(entry.node)
+		}
 
 		if entry.knownSelected {
 			pool.knownSelected--
@@ -474,7 +477,7 @@ func (pool *serverPool) loadNodes() {
 		return
 	}
 	for _, e := range list {
-		log.Debug("Loaded server stats", "id", e.node.ID(), "fails", e.lastConnected.fails,
+		log.Info("Loaded server stats", "id", e.node.ID(), "fails", e.lastConnected.fails,
 			"conn", fmt.Sprintf("%v/%v", e.connectStats.avg, e.connectStats.weight),
 			"delay", fmt.Sprintf("%v/%v", time.Duration(e.delayStats.avg), e.delayStats.weight),
 			"response", fmt.Sprintf("%v/%v", time.Duration(e.responseStats.avg), e.responseStats.weight),
@@ -637,6 +640,9 @@ func (pool *serverPool) checkDialTimeout(entry *poolEntry) {
 	}
 	log.Debug("Dial timeout", "lesaddr", entry.node.ID().String()+"@"+entry.dialed.strKey())
 	entry.state = psNotConnected
+	if pool.trustedNodes[entry.node.ID()] == nil {
+		pool.server.RemovePeer(entry.node)
+	}
 	if entry.knownSelected {
 		pool.knownSelected--
 	} else {
