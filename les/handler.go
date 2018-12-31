@@ -310,7 +310,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		}
 
 		if p.poolEntry != nil {
-			pm.serverPool.registered(p.poolEntry)
+			pm.serverPool.registered(p.poolEntry, p.fcCosts)
 		}
 	}
 
@@ -368,7 +368,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 	}
 	defer msg.Discard()
 
-	var deliverMsg *Msg
+	var (
+		deliverMsg           *Msg
+		adjCost, adjRecharge uint64
+	)
 
 	sendReq := func(reqID, amount uint64, reply *reply, servingTime uint64) {
 		p.responseLock.Lock()
@@ -549,7 +552,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&resp); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		adjCost, adjRecharge = p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 		if pm.fetcher != nil && pm.fetcher.requestedID(resp.ReqID) {
 			pm.fetcher.deliverHeaders(p, resp.ReqID, resp.Headers)
 		} else {
@@ -611,7 +614,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&resp); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		adjCost, adjRecharge = p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
 			MsgType: MsgBlockBodies,
 			ReqID:   resp.ReqID,
@@ -679,7 +682,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&resp); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		adjCost, adjRecharge = p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
 			MsgType: MsgCode,
 			ReqID:   resp.ReqID,
@@ -748,7 +751,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&resp); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		adjCost, adjRecharge = p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
 			MsgType: MsgReceipts,
 			ReqID:   resp.ReqID,
@@ -890,7 +893,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&resp); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		adjCost, adjRecharge = p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
 			MsgType: MsgProofsV1,
 			ReqID:   resp.ReqID,
@@ -911,7 +914,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&resp); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		adjCost, adjRecharge = p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
 			MsgType: MsgProofsV2,
 			ReqID:   resp.ReqID,
@@ -1043,7 +1046,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&resp); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		adjCost, adjRecharge = p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
 			MsgType: MsgHeaderProofs,
 			ReqID:   resp.ReqID,
@@ -1064,7 +1067,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		adjCost, adjRecharge = p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 		deliverMsg = &Msg{
 			MsgType: MsgHelperTrieProofs,
 			ReqID:   resp.ReqID,
@@ -1170,11 +1173,15 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		adjCost, adjRecharge = p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 
 	default:
 		p.Log().Trace("Received unknown message", "code", msg.Code)
 		return errResp(ErrInvalidMsgCode, "%v", msg.Code)
+	}
+
+	if adjCost != 0 && p.poolEntry != nil {
+		pm.serverPool.adjustCorrFactor(p.poolEntry, adjCost, adjRecharge)
 	}
 
 	if deliverMsg != nil {

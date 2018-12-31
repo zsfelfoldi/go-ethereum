@@ -189,6 +189,10 @@ func (node *ClientNode) RequestProcessed(reqID, index, maxCost, realCost uint64)
 	return
 }
 
+type pendingRequest struct {
+	maxCost, sumCost uint64 // sumCost is the sum of request maxCosts sent to this server
+}
+
 // ServerNode is the flow control system's representation of a server
 // (used in client mode only)
 type ServerNode struct {
@@ -197,8 +201,8 @@ type ServerNode struct {
 	bufRecharge bool
 	lastTime    mclock.AbsTime
 	params      ServerParams
-	sumCost     uint64            // sum of req costs sent to this server
-	pending     map[uint64]uint64 // value = sumCost after sending the given req
+	sumCost     uint64
+	pending     map[uint64]pendingRequest
 	log         *logger
 	lock        sync.RWMutex
 }
@@ -211,7 +215,7 @@ func NewServerNode(params ServerParams, clock mclock.Clock) *ServerNode {
 		bufRecharge: false,
 		lastTime:    clock.Now(),
 		params:      params,
-		pending:     make(map[uint64]uint64),
+		pending:     make(map[uint64]pendingRequest),
 	}
 	if keepLogs > 0 {
 		node.log = newLogger(keepLogs)
@@ -304,7 +308,7 @@ func (node *ServerNode) QueuedRequest(reqID, maxCost uint64) {
 		node.bufEstimate = 0
 	}
 	node.sumCost += maxCost
-	node.pending[reqID] = node.sumCost
+	node.pending[reqID] = pendingRequest{maxCost: maxCost, sumCost: node.sumCost}
 	if node.log != nil {
 		node.log.add(now, fmt.Sprintf("queued  reqID=%d  bufEst=%d  maxCost=%d  sumCost=%d", reqID, node.bufEstimate, maxCost, node.sumCost))
 	}
@@ -312,7 +316,7 @@ func (node *ServerNode) QueuedRequest(reqID, maxCost uint64) {
 
 // ReceivedReply adjusts estimated buffer value according to the value included in
 // the latest request reply.
-func (node *ServerNode) ReceivedReply(reqID, bv uint64) {
+func (node *ServerNode) ReceivedReply(reqID, bv uint64) (maxCost, extraRecharge uint64) {
 	node.lock.Lock()
 	defer node.lock.Unlock()
 
@@ -321,12 +325,13 @@ func (node *ServerNode) ReceivedReply(reqID, bv uint64) {
 	if bv > node.params.BufLimit {
 		bv = node.params.BufLimit
 	}
-	sc, ok := node.pending[reqID]
+	req, ok := node.pending[reqID]
 	if !ok {
 		return
 	}
 	delete(node.pending, reqID)
-	cc := node.sumCost - sc
+	maxCost = req.maxCost
+	cc := node.sumCost - req.sumCost
 	newEstimate := uint64(0)
 	if bv > cc {
 		newEstimate = bv - cc
@@ -335,14 +340,16 @@ func (node *ServerNode) ReceivedReply(reqID, bv uint64) {
 		// Note: we never reduce the buffer estimate based on the reported value because
 		// this can only happen because of the delayed delivery of the latest reply.
 		// The lowest estimate based on the previous reply can still be considered valid.
+		extraRecharge = newEstimate - node.bufEstimate
 		node.bufEstimate = newEstimate
 	}
 
 	node.bufRecharge = node.bufEstimate < node.params.BufLimit
 	node.lastTime = now
 	if node.log != nil {
-		node.log.add(now, fmt.Sprintf("received  reqID=%d  bufEst=%d  reportedBv=%d  sumCost=%d  oldSumCost=%d", reqID, node.bufEstimate, bv, node.sumCost, sc))
+		node.log.add(now, fmt.Sprintf("received  reqID=%d  bufEst=%d  reportedBv=%d  sumCost=%d  oldSumCost=%d", reqID, node.bufEstimate, bv, node.sumCost, req.sumCost))
 	}
+	return
 }
 
 // DumpLogs dumps the event log if logging is used

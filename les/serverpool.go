@@ -104,8 +104,9 @@ type disconnReq struct {
 
 // registerReq represents a request for peer registration.
 type registerReq struct {
-	entry *poolEntry
-	done  chan struct{}
+	entry   *poolEntry
+	done    chan struct{}
+	refCost float64
 }
 
 // serverPool implements a pool for storing and selecting newly discovered and already
@@ -214,9 +215,9 @@ func (pool *serverPool) connect(p *peer, node *enode.Node) *poolEntry {
 }
 
 // registered should be called after a successful handshake
-func (pool *serverPool) registered(entry *poolEntry) {
+func (pool *serverPool) registered(entry *poolEntry, refCost float64) {
 	log.Debug("Registered new entry", "enode", entry.node.ID())
-	req := &registerReq{entry: entry, done: make(chan struct{})}
+	req := &registerReq{entry: entry, done: make(chan struct{}), refCost: refCost}
 	select {
 	case pool.registerCh <- req:
 	case <-pool.quit:
@@ -247,13 +248,15 @@ const (
 	pseBlockDelay = iota
 	pseResponseTime
 	pseResponseTimeout
+	pseCorrFactor
 )
 
 // poolStatAdjust records are sent to adjust peer block delay/response time statistics
 type poolStatAdjust struct {
-	adjustType int
-	entry      *poolEntry
-	time       time.Duration
+	adjustType     int
+	entry          *poolEntry
+	time           time.Duration
+	cost, recharge uint64
 }
 
 // adjustBlockDelay adjusts the block announce delay statistics of a node
@@ -261,7 +264,7 @@ func (pool *serverPool) adjustBlockDelay(entry *poolEntry, time time.Duration) {
 	if entry == nil {
 		return
 	}
-	pool.adjustStats <- poolStatAdjust{pseBlockDelay, entry, time}
+	pool.adjustStats <- poolStatAdjust{adjustType: pseBlockDelay, entry: entry, time: time}
 }
 
 // adjustResponseTime adjusts the request response time statistics of a node
@@ -270,10 +273,18 @@ func (pool *serverPool) adjustResponseTime(entry *poolEntry, time time.Duration,
 		return
 	}
 	if timeout {
-		pool.adjustStats <- poolStatAdjust{pseResponseTimeout, entry, time}
+		pool.adjustStats <- poolStatAdjust{adjustType: pseResponseTimeout, entry: entry, time: time}
 	} else {
-		pool.adjustStats <- poolStatAdjust{pseResponseTime, entry, time}
+		pool.adjustStats <- poolStatAdjust{adjustType: pseResponseTime, entry: entry, time: time}
 	}
+}
+
+// adjustCorrFactor adjusts the bandwidth correction statistics of a node
+func (pool *serverPool) adjustCorrFactor(entry *poolEntry, cost, recharge uint64) {
+	if entry == nil {
+		return
+	}
+	pool.adjustStats <- poolStatAdjust{adjustType: pseCorrFactor, entry: entry, cost: cost, recharge: recharge}
 }
 
 // eventLoop handles pool events and mutex locking for all internal functions
@@ -336,6 +347,11 @@ func (pool *serverPool) eventLoop() {
 				adj.entry.timeoutStats.add(0, 1)
 			case pseResponseTimeout:
 				adj.entry.timeoutStats.add(1, 1)
+			case pseCorrFactor:
+				if adj.entry.refCost == 0 {
+					log.Error("Reference cost is not initialized", "enode", entry.enode.ID())
+				}
+				adj.entry.bwCorrStats.add(float64(adj.recharge)/float64(adj.cost), float64(adj.cost)/adj.entry.refCost)
 			}
 
 		case node := <-pool.discNodes:
@@ -391,6 +407,7 @@ func (pool *serverPool) eventLoop() {
 		case req := <-pool.registerCh:
 			// Handle peer registration requests.
 			entry := req.entry
+			entry.refCost = req.refCost
 			entry.state = psRegistered
 			entry.regTime = mclock.Now()
 			if !entry.known {
@@ -438,6 +455,7 @@ func (pool *serverPool) findOrNewNode(node *enode.Node) *poolEntry {
 			addrSelect: *newWeightedRandomSelect(),
 			shortRetry: shortRetryCnt,
 		}
+		entry.initMaxWeights()
 		pool.entries[node.ID()] = entry
 		// initialize previously unknown peers with good statistics to give a chance to prove themselves
 		entry.connectStats.add(1, initStatsWeight)
@@ -474,10 +492,12 @@ func (pool *serverPool) loadNodes() {
 	}
 	for _, e := range list {
 		log.Debug("Loaded server stats", "id", e.node.ID(), "fails", e.lastConnected.fails,
-			"conn", fmt.Sprintf("%v/%v", e.connectStats.avg, e.connectStats.weight),
-			"delay", fmt.Sprintf("%v/%v", time.Duration(e.delayStats.avg), e.delayStats.weight),
-			"response", fmt.Sprintf("%v/%v", time.Duration(e.responseStats.avg), e.responseStats.weight),
-			"timeout", fmt.Sprintf("%v/%v", e.timeoutStats.avg, e.timeoutStats.weight))
+			"conn", fmt.Sprintf("%v/%v", e.connectStats.recentAvg(), e.connectStats.weight),
+			"delay", fmt.Sprintf("%v/%v", time.Duration(e.delayStats.recentAvg()), e.delayStats.weight),
+			"response", fmt.Sprintf("%v/%v", time.Duration(e.responseStats.recentAvg()), e.responseStats.weight),
+			"timeout", fmt.Sprintf("%v/%v", e.timeoutStats.recentAvg(), e.timeoutStats.weight),
+			"bwCorr", fmt.Sprintf("%v/%v", e.bwCorrStats.recentAvg(), e.bwCorrStats.weight))
+		e.initMaxWeights()
 		pool.entries[e.node.ID()] = e
 		if pool.trustedNodes[e.node.ID()] == nil {
 			pool.knownQueue.setLatest(e)
@@ -666,6 +686,8 @@ type poolEntry struct {
 	known, knownSelected        bool
 	connectStats, delayStats    poolStats
 	responseStats, timeoutStats poolStats
+	bwCorrStats                 poolStats
+	refCost                     float64
 	state                       int
 	regTime                     mclock.AbsTime
 	queueIdx                    int
@@ -682,6 +704,14 @@ type poolEntryEnc struct {
 	Port                       uint16
 	Fails                      uint
 	CStat, DStat, RStat, TStat poolStats
+}
+
+func (e *poolEntry) initMaxWeights() {
+	e.connectStats.init(10)
+	e.delayStats.init(5000)
+	e.responseStats.init(10000)
+	e.timeoutStats.init(10000)
+	e.bwCorrStats.init(1000)
 }
 
 func (e *poolEntry) EncodeRLP(w io.Writer) error {
@@ -781,50 +811,33 @@ func (a *poolEntryAddress) strKey() string {
 // pstatRecentAdjust with each update and also returned exponentially to the
 // average with the time constant pstatReturnToMeanTC
 type poolStats struct {
-	sum, weight, avg, recent float64
-	lastRecalc               mclock.AbsTime
+	sum, weight, maxWeight float64
 }
 
 // init initializes stats with a long term sum/update count pair retrieved from the database
-func (s *poolStats) init(sum, weight float64) {
-	s.sum = sum
-	s.weight = weight
-	var avg float64
-	if weight > 0 {
-		avg = s.sum / weight
-	}
-	s.avg = avg
-	s.recent = avg
-	s.lastRecalc = mclock.Now()
-}
-
-// recalc recalculates recent value return-to-mean and long term average
-func (s *poolStats) recalc() {
-	now := mclock.Now()
-	s.recent = s.avg + (s.recent-s.avg)*math.Exp(-float64(now-s.lastRecalc)/float64(pstatReturnToMeanTC))
-	if s.sum == 0 {
-		s.avg = 0
-	} else {
-		if s.sum > s.weight*1e30 {
-			s.avg = 1e30
-		} else {
-			s.avg = s.sum / s.weight
-		}
-	}
-	s.lastRecalc = now
+func (s *poolStats) init(maxWeight float64) {
+	s.maxWeight = maxWeight
 }
 
 // add updates the stats with a new value
 func (s *poolStats) add(value, weight float64) {
 	s.weight += weight
 	s.sum += value * weight
-	s.recalc()
+	if s.weight > s.maxWeight {
+		s.sum *= s.maxWeight / s.weight
+		s.weight = s.maxWeight
+	}
 }
 
 // recentAvg returns the short-term adjusted average
 func (s *poolStats) recentAvg() float64 {
-	s.recalc()
-	return s.recent
+	var avg float64
+	if s.sum > s.weight*1e30 {
+		avg = 1e30
+	} else {
+		avg = s.sum / s.weight
+	}
+	return avg
 }
 
 func (s *poolStats) EncodeRLP(w io.Writer) error {
@@ -838,7 +851,8 @@ func (s *poolStats) DecodeRLP(st *rlp.Stream) error {
 	if err := st.Decode(&stats); err != nil {
 		return err
 	}
-	s.init(math.Float64frombits(stats.SumUint), math.Float64frombits(stats.WeightUint))
+	s.sum = math.Float64frombits(stats.SumUint)
+	s.weight = math.Float64frombits(stats.WeightUint)
 	return nil
 }
 
