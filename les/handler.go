@@ -257,7 +257,9 @@ func (pm *ProtocolManager) newPeer(pv int, nv uint64, p *p2p.Peer, rw p2p.MsgRea
 	if pm.isULCEnabled() {
 		isTrusted = pm.ulc.isTrusted(p.ID())
 	}
-	return newPeer(pv, nv, isTrusted, p, newMeteredMsgWriter(rw))
+	peer := newPeer(pv, nv, isTrusted, p, newMeteredMsgWriter(rw))
+	peer.reqCounter = pm.serverPool.reqCounter
+	return peer
 }
 
 // handle is the callback invoked to manage the life cycle of a les peer. When
@@ -1284,7 +1286,7 @@ func (pc *peerConnection) RequestHeadersByHash(origin common.Hash, amount int, s
 			peer := dp.(*peer)
 			cost := peer.GetRequestCost(GetBlockHeadersMsg, amount)
 			peer.fcServer.QueuedRequest(reqID, cost)
-			return func() { peer.RequestHeadersByHash(reqID, cost, origin, amount, skip, reverse) }
+			return func() { peer.RequestHeadersByHash(reqID, origin, amount, skip, reverse) }
 		},
 	}
 	_, ok := <-pc.manager.reqDist.queue(rq)
@@ -1308,7 +1310,7 @@ func (pc *peerConnection) RequestHeadersByNumber(origin uint64, amount int, skip
 			peer := dp.(*peer)
 			cost := peer.GetRequestCost(GetBlockHeadersMsg, amount)
 			peer.fcServer.QueuedRequest(reqID, cost)
-			return func() { peer.RequestHeadersByNumber(reqID, cost, origin, amount, skip, reverse) }
+			return func() { peer.RequestHeadersByNumber(reqID, origin, amount, skip, reverse) }
 		},
 	}
 	_, ok := <-pc.manager.reqDist.queue(rq)

@@ -104,9 +104,9 @@ type disconnReq struct {
 
 // registerReq represents a request for peer registration.
 type registerReq struct {
-	entry   *poolEntry
-	done    chan struct{}
-	refCost float64
+	entry *poolEntry
+	done  chan struct{}
+	costs requestCostTable
 }
 
 // serverPool implements a pool for storing and selecting newly discovered and already
@@ -138,6 +138,8 @@ type serverPool struct {
 	connCh                     chan *connReq
 	disconnCh                  chan *disconnReq
 	registerCh                 chan *registerReq
+
+	reqCounter *requestCounter
 }
 
 // newServerPool creates a new serverPool instance
@@ -157,6 +159,7 @@ func newServerPool(db ethdb.Database, quit chan struct{}, wg *sync.WaitGroup, tr
 		newSelect:    newWeightedRandomSelect(),
 		fastDiscover: true,
 		trustedNodes: parseTrustedNodes(trustedNodes),
+		reqCounter:   newRequestCounter(),
 	}
 
 	pool.knownQueue = newPoolEntryQueue(maxKnownEntries, pool.removeEntry)
@@ -169,7 +172,7 @@ func (pool *serverPool) start(server *p2p.Server, topic discv5.Topic) {
 	pool.topic = topic
 	pool.dbKey = append([]byte("serverPool/"), []byte(topic)...)
 	pool.wg.Add(1)
-	pool.loadNodes()
+	pool.loadPoolState()
 	pool.connectToTrustedNodes()
 
 	if pool.server.DiscV5 != nil {
@@ -215,9 +218,9 @@ func (pool *serverPool) connect(p *peer, node *enode.Node) *poolEntry {
 }
 
 // registered should be called after a successful handshake
-func (pool *serverPool) registered(entry *poolEntry, refCost float64) {
+func (pool *serverPool) registered(entry *poolEntry, costs requestCostTable) {
 	log.Debug("Registered new entry", "enode", entry.node.ID())
-	req := &registerReq{entry: entry, done: make(chan struct{}), refCost: refCost}
+	req := &registerReq{entry: entry, done: make(chan struct{}), costs: costs}
 	select {
 	case pool.registerCh <- req:
 	case <-pool.quit:
@@ -349,7 +352,7 @@ func (pool *serverPool) eventLoop() {
 				adj.entry.timeoutStats.add(1, 1)
 			case pseCorrFactor:
 				if adj.entry.refCost == 0 {
-					log.Error("Reference cost is not initialized", "enode", entry.enode.ID())
+					log.Error("Reference cost is not initialized", "enode", adj.entry.node.ID())
 				}
 				adj.entry.bwCorrStats.add(float64(adj.recharge)/float64(adj.cost), float64(adj.cost)/adj.entry.refCost)
 			}
@@ -407,7 +410,7 @@ func (pool *serverPool) eventLoop() {
 		case req := <-pool.registerCh:
 			// Handle peer registration requests.
 			entry := req.entry
-			entry.refCost = req.refCost
+			entry.refCost = pool.reqCounter.referenceCost(req.costs)
 			entry.state = psRegistered
 			entry.regTime = mclock.Now()
 			if !entry.known {
@@ -437,7 +440,7 @@ func (pool *serverPool) eventLoop() {
 			for req := range pool.disconnCh {
 				disconnect(req, true)
 			}
-			pool.saveNodes()
+			pool.savePoolState()
 			pool.wg.Done()
 			return
 		}
@@ -478,19 +481,23 @@ func (pool *serverPool) findOrNewNode(node *enode.Node) *poolEntry {
 	return entry
 }
 
-// loadNodes loads known nodes and their statistics from the database
-func (pool *serverPool) loadNodes() {
+// loadPoolState loads server pool state from the database
+func (pool *serverPool) loadPoolState() {
 	enc, err := pool.db.Get(pool.dbKey)
 	if err != nil {
 		return
 	}
-	var list []*poolEntry
-	err = rlp.DecodeBytes(enc, &list)
+	var poolState struct {
+		List       []*poolEntry
+		ReqCounter *requestCounter
+	}
+	poolState.ReqCounter = pool.reqCounter
+	err = rlp.DecodeBytes(enc, &poolState)
 	if err != nil {
 		log.Debug("Failed to decode node list", "err", err)
 		return
 	}
-	for _, e := range list {
+	for _, e := range poolState.List {
 		log.Debug("Loaded server stats", "id", e.node.ID(), "fails", e.lastConnected.fails,
 			"conn", fmt.Sprintf("%v/%v", e.connectStats.recentAvg(), e.connectStats.weight),
 			"delay", fmt.Sprintf("%v/%v", time.Duration(e.delayStats.recentAvg()), e.delayStats.weight),
@@ -535,14 +542,19 @@ func parseTrustedNodes(trustedNodes []string) map[enode.ID]*enode.Node {
 	return nodes
 }
 
-// saveNodes saves known nodes and their statistics into the database. Nodes are
+// savePoolState saves server pool state into the database. Nodes are
 // ordered from least to most recently connected.
-func (pool *serverPool) saveNodes() {
-	list := make([]*poolEntry, len(pool.knownQueue.queue))
-	for i := range list {
-		list[i] = pool.knownQueue.fetchOldest()
+func (pool *serverPool) savePoolState() {
+	var poolState struct {
+		List       []*poolEntry
+		ReqCounter *requestCounter
 	}
-	enc, err := rlp.EncodeToBytes(list)
+	poolState.List = make([]*poolEntry, len(pool.knownQueue.queue))
+	for i := range poolState.List {
+		poolState.List[i] = pool.knownQueue.fetchOldest()
+	}
+	poolState.ReqCounter = pool.reqCounter
+	enc, err := rlp.EncodeToBytes(poolState)
 	if err == nil {
 		pool.db.Put(pool.dbKey, enc)
 	}

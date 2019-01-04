@@ -19,6 +19,7 @@ package les
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"sync"
 	"time"
@@ -95,6 +96,7 @@ type peer struct {
 
 	isTrusted      bool
 	isOnlyAnnounce bool
+	reqCounter     *requestCounter
 }
 
 func newPeer(version int, network uint64, isTrusted bool, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
@@ -199,7 +201,7 @@ func (p *peer) updateCapacity(cap uint64) {
 	p.queueSend(func() { p.SendAnnounce(announceData{Update: kvList}) })
 }
 
-func sendRequest(w p2p.MsgWriter, msgcode, reqID, cost uint64, data interface{}) error {
+func sendRequest(w p2p.MsgWriter, msgcode, reqID uint64, data interface{}) error {
 	type req struct {
 		ReqID uint64
 		Data  interface{}
@@ -340,53 +342,60 @@ func (p *peer) ReplyTxStatus(reqID uint64, stats []txStatus) *reply {
 
 // RequestHeadersByHash fetches a batch of blocks' headers corresponding to the
 // specified header query, based on the hash of an origin block.
-func (p *peer) RequestHeadersByHash(reqID, cost uint64, origin common.Hash, amount int, skip int, reverse bool) error {
+func (p *peer) RequestHeadersByHash(reqID uint64, origin common.Hash, amount int, skip int, reverse bool) error {
 	p.Log().Debug("Fetching batch of headers", "count", amount, "fromhash", origin, "skip", skip, "reverse", reverse)
-	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, cost, &getBlockHeadersData{Origin: hashOrNumber{Hash: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
+	p.reqCounter.add(GetBlockHeadersMsg, uint64(amount))
+	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, &getBlockHeadersData{Origin: hashOrNumber{Hash: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
 }
 
 // RequestHeadersByNumber fetches a batch of blocks' headers corresponding to the
 // specified header query, based on the number of an origin block.
-func (p *peer) RequestHeadersByNumber(reqID, cost, origin uint64, amount int, skip int, reverse bool) error {
+func (p *peer) RequestHeadersByNumber(reqID, origin uint64, amount int, skip int, reverse bool) error {
 	p.Log().Debug("Fetching batch of headers", "count", amount, "fromnum", origin, "skip", skip, "reverse", reverse)
-	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, cost, &getBlockHeadersData{Origin: hashOrNumber{Number: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
+	p.reqCounter.add(GetBlockHeadersMsg, uint64(amount))
+	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, &getBlockHeadersData{Origin: hashOrNumber{Number: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
 }
 
 // RequestBodies fetches a batch of blocks' bodies corresponding to the hashes
 // specified.
-func (p *peer) RequestBodies(reqID, cost uint64, hashes []common.Hash) error {
+func (p *peer) RequestBodies(reqID uint64, hashes []common.Hash) error {
 	p.Log().Debug("Fetching batch of block bodies", "count", len(hashes))
-	return sendRequest(p.rw, GetBlockBodiesMsg, reqID, cost, hashes)
+	p.reqCounter.add(GetBlockBodiesMsg, uint64(len(hashes)))
+	return sendRequest(p.rw, GetBlockBodiesMsg, reqID, hashes)
 }
 
 // RequestCode fetches a batch of arbitrary data from a node's known state
 // data, corresponding to the specified hashes.
-func (p *peer) RequestCode(reqID, cost uint64, reqs []CodeReq) error {
+func (p *peer) RequestCode(reqID uint64, reqs []CodeReq) error {
 	p.Log().Debug("Fetching batch of codes", "count", len(reqs))
-	return sendRequest(p.rw, GetCodeMsg, reqID, cost, reqs)
+	p.reqCounter.add(GetCodeMsg, uint64(len(reqs)))
+	return sendRequest(p.rw, GetCodeMsg, reqID, reqs)
 }
 
 // RequestReceipts fetches a batch of transaction receipts from a remote node.
-func (p *peer) RequestReceipts(reqID, cost uint64, hashes []common.Hash) error {
+func (p *peer) RequestReceipts(reqID uint64, hashes []common.Hash) error {
 	p.Log().Debug("Fetching batch of receipts", "count", len(hashes))
-	return sendRequest(p.rw, GetReceiptsMsg, reqID, cost, hashes)
+	p.reqCounter.add(GetReceiptsMsg, uint64(len(hashes)))
+	return sendRequest(p.rw, GetReceiptsMsg, reqID, hashes)
 }
 
 // RequestProofs fetches a batch of merkle proofs from a remote node.
-func (p *peer) RequestProofs(reqID, cost uint64, reqs []ProofReq) error {
+func (p *peer) RequestProofs(reqID uint64, reqs []ProofReq) error {
 	p.Log().Debug("Fetching batch of proofs", "count", len(reqs))
 	switch p.version {
 	case lpv1:
-		return sendRequest(p.rw, GetProofsV1Msg, reqID, cost, reqs)
+		p.reqCounter.add(GetProofsV1Msg, uint64(len(reqs)))
+		return sendRequest(p.rw, GetProofsV1Msg, reqID, reqs)
 	case lpv2:
-		return sendRequest(p.rw, GetProofsV2Msg, reqID, cost, reqs)
+		p.reqCounter.add(GetProofsV2Msg, uint64(len(reqs)))
+		return sendRequest(p.rw, GetProofsV2Msg, reqID, reqs)
 	default:
 		panic(nil)
 	}
 }
 
 // RequestHelperTrieProofs fetches a batch of HelperTrie merkle proofs from a remote node.
-func (p *peer) RequestHelperTrieProofs(reqID, cost uint64, data interface{}) error {
+func (p *peer) RequestHelperTrieProofs(reqID uint64, data interface{}) error {
 	switch p.version {
 	case lpv1:
 		reqs, ok := data.([]ChtReq)
@@ -394,33 +403,38 @@ func (p *peer) RequestHelperTrieProofs(reqID, cost uint64, data interface{}) err
 			return errInvalidHelpTrieReq
 		}
 		p.Log().Debug("Fetching batch of header proofs", "count", len(reqs))
-		return sendRequest(p.rw, GetHeaderProofsMsg, reqID, cost, reqs)
+		p.reqCounter.add(GetHeaderProofsMsg, uint64(len(reqs)))
+		return sendRequest(p.rw, GetHeaderProofsMsg, reqID, reqs)
 	case lpv2:
 		reqs, ok := data.([]HelperTrieReq)
 		if !ok {
 			return errInvalidHelpTrieReq
 		}
 		p.Log().Debug("Fetching batch of HelperTrie proofs", "count", len(reqs))
-		return sendRequest(p.rw, GetHelperTrieProofsMsg, reqID, cost, reqs)
+		p.reqCounter.add(GetHelperTrieProofsMsg, uint64(len(reqs)))
+		return sendRequest(p.rw, GetHelperTrieProofsMsg, reqID, reqs)
 	default:
 		panic(nil)
 	}
 }
 
 // RequestTxStatus fetches a batch of transaction status records from a remote node.
-func (p *peer) RequestTxStatus(reqID, cost uint64, txHashes []common.Hash) error {
+func (p *peer) RequestTxStatus(reqID uint64, txHashes []common.Hash) error {
 	p.Log().Debug("Requesting transaction status", "count", len(txHashes))
-	return sendRequest(p.rw, GetTxStatusMsg, reqID, cost, txHashes)
+	p.reqCounter.add(GetTxStatusMsg, uint64(len(txHashes)))
+	return sendRequest(p.rw, GetTxStatusMsg, reqID, txHashes)
 }
 
 // SendTxStatus creates a reply with a batch of transactions to be added to the remote transaction pool.
-func (p *peer) SendTxs(reqID, cost uint64, txs rlp.RawValue) error {
+func (p *peer) SendTxs(reqID, count uint64, txs rlp.RawValue) error {
 	p.Log().Debug("Sending batch of transactions", "size", len(txs))
 	switch p.version {
 	case lpv1:
+		p.reqCounter.add(SendTxMsg, count)
 		return p2p.Send(p.rw, SendTxMsg, txs) // old message format does not include reqID
 	case lpv2:
-		return sendRequest(p.rw, SendTxV2Msg, reqID, cost, txs)
+		p.reqCounter.add(SendTxV2Msg, count)
+		return sendRequest(p.rw, SendTxV2Msg, reqID, txs)
 	default:
 		panic(nil)
 	}
@@ -811,4 +825,76 @@ func (ps *peerSet) Close() {
 		p.Disconnect(p2p.DiscQuitting)
 	}
 	ps.closed = true
+}
+
+type requestCountItem struct {
+	sumReq, sumCount uint64
+}
+
+type requestCounter struct {
+	lock     sync.Mutex
+	counter  map[uint64]requestCountItem
+	totalReq uint64
+}
+
+func newRequestCounter() *requestCounter {
+	return &requestCounter{counter: make(map[uint64]requestCountItem)}
+}
+
+func (rc *requestCounter) add(code, count uint64) {
+	if rc == nil {
+		return
+	}
+	rc.lock.Lock()
+	defer rc.lock.Unlock()
+
+	item := rc.counter[code]
+	item.sumReq++
+	item.sumCount += count
+	rc.counter[code] = item
+	rc.totalReq++
+}
+
+func (rc *requestCounter) referenceCost(costs requestCostTable) float64 {
+	rc.lock.Lock()
+	defer rc.lock.Unlock()
+
+	var r float64
+	for code, cost := range costs {
+		usage := rc.counter[code]
+		r += float64(usage.sumReq)*float64(cost.baseCost) + float64(usage.sumCount)*float64(cost.reqCost)
+	}
+	return r / float64(rc.totalReq)
+}
+
+type requestCountListItem struct {
+	Code, SumReq, SumCount uint64
+}
+
+func (rc *requestCounter) EncodeRLP(w io.Writer) error {
+	rc.lock.Lock()
+	defer rc.lock.Unlock()
+
+	list := make([]requestCountListItem, len(rc.counter))
+	ptr := 0
+	for code, item := range rc.counter {
+		list[ptr] = requestCountListItem{code, item.sumReq, item.sumCount}
+		ptr++
+	}
+	return rlp.Encode(w, list)
+}
+
+func (rc *requestCounter) DecodeRLP(st *rlp.Stream) error {
+	rc.lock.Lock()
+	defer rc.lock.Unlock()
+
+	var list []requestCountListItem
+	if err := st.Decode(&list); err != nil {
+		return err
+	}
+	for _, item := range list {
+		rc.counter[item.Code] = requestCountItem{item.SumReq, item.SumCount}
+		rc.totalReq += item.SumReq
+	}
+	return nil
 }

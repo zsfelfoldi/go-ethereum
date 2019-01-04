@@ -129,7 +129,7 @@ func (self *LesTxRelay) send(txs types.Transactions, count int) {
 				peer := dp.(*peer)
 				cost := peer.GetTxRelayCost(len(ll), len(enc))
 				peer.fcServer.QueuedRequest(reqID, cost)
-				return func() { peer.SendTxs(reqID, cost, enc) }
+				return func() { peer.SendTxs(reqID, uint64(len(ll)), enc) }
 			},
 		}
 		self.reqDist.queue(rq)
