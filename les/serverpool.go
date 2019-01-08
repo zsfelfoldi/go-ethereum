@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/discv5"
@@ -88,26 +89,40 @@ const (
 	initStatsWeight = 1
 )
 
-// connReq represents a request for peer connection.
-type connReq struct {
-	p      *peer
-	node   *enode.Node
-	result chan *poolEntry
-}
+type (
+	// connReq represents a request for peer connection.
+	connReq struct {
+		p      *peer
+		node   *enode.Node
+		result chan *poolEntry
+	}
 
-// disconnReq represents a request for peer disconnection.
-type disconnReq struct {
-	entry   *poolEntry
-	stopped bool
-	done    chan struct{}
-}
+	// disconnReq represents a request for peer disconnection.
+	disconnReq struct {
+		entry *poolEntry
+		done  chan struct{}
+	}
 
-// registerReq represents a request for peer registration.
-type registerReq struct {
-	entry *poolEntry
-	done  chan struct{}
-	costs requestCostTable
-}
+	// registerReq represents a request for peer registration.
+	registerReq struct {
+		entry     *poolEntry
+		done      chan struct{}
+		capacity  float64
+		costTable requestCostTable
+	}
+
+	// updateParamsReq represents a request for parameter update.
+	updateParamsReq struct {
+		entry     *poolEntry
+		capacity  float64
+		costTable requestCostTable
+	}
+
+	peerEvent struct {
+		eventType int
+		req       interface{}
+	}
+)
 
 // serverPool implements a pool for storing and selecting newly discovered and already
 // known light server nodes. It received discovered nodes, stores statistics about
@@ -118,7 +133,6 @@ type serverPool struct {
 	server *p2p.Server
 	quit   chan struct{}
 	wg     *sync.WaitGroup
-	connWg sync.WaitGroup
 
 	topic discv5.Topic
 
@@ -130,6 +144,8 @@ type serverPool struct {
 	entries              map[enode.ID]*poolEntry
 	timeout, enableRetry chan *poolEntry
 	adjustStats          chan poolStatAdjust
+
+	peerEvents chan peerEvent
 
 	knownQueue, newQueue       poolEntryQueue
 	knownSelect, newSelect     *weightedRandomSelect
@@ -152,9 +168,7 @@ func newServerPool(db ethdb.Database, quit chan struct{}, wg *sync.WaitGroup, tr
 		timeout:      make(chan *poolEntry, 1),
 		adjustStats:  make(chan poolStatAdjust, 100),
 		enableRetry:  make(chan *poolEntry, 1),
-		connCh:       make(chan *connReq),
-		disconnCh:    make(chan *disconnReq),
-		registerCh:   make(chan *registerReq),
+		peerEvents:   make(chan peerEvent),
 		knownSelect:  newWeightedRandomSelect(),
 		newSelect:    newWeightedRandomSelect(),
 		fastDiscover: true,
@@ -201,6 +215,14 @@ func (pool *serverPool) discoverNodes() {
 	}
 }
 
+func paramsToCapacity(params flowcontrol.ServerParams) float64 {
+	c := params.BufLimit / bufLimitRatio
+	if params.MinRecharge < c {
+		c = params.MinRecharge
+	}
+	return float64(c)
+}
+
 // connect should be called upon any incoming connection. If the connection has been
 // dialed by the server pool recently, the appropriate pool entry is returned.
 // Otherwise, the connection should be rejected.
@@ -210,7 +232,7 @@ func (pool *serverPool) connect(p *peer, node *enode.Node) *poolEntry {
 	log.Debug("Connect new entry", "enode", p.id)
 	req := &connReq{p: p, node: node, result: make(chan *poolEntry, 1)}
 	select {
-	case pool.connCh <- req:
+	case pool.peerEvents <- peerEvent{eventType: peConnect, req: req}:
 	case <-pool.quit:
 		return nil
 	}
@@ -218,32 +240,39 @@ func (pool *serverPool) connect(p *peer, node *enode.Node) *poolEntry {
 }
 
 // registered should be called after a successful handshake
-func (pool *serverPool) registered(entry *poolEntry, costs requestCostTable) {
+func (pool *serverPool) registered(entry *poolEntry, params flowcontrol.ServerParams, costTable requestCostTable) {
 	log.Debug("Registered new entry", "enode", entry.node.ID())
-	req := &registerReq{entry: entry, done: make(chan struct{}), costs: costs}
+	req := &registerReq{entry: entry, done: make(chan struct{}), capacity: paramsToCapacity(params), costTable: costTable}
 	select {
-	case pool.registerCh <- req:
+	case pool.peerEvents <- peerEvent{eventType: peRegister, req: req}:
 	case <-pool.quit:
 		return
 	}
 	<-req.done
 }
 
+// updateParams should be called after in case of a flow control parameter update from the server side
+func (pool *serverPool) updateParams(entry *poolEntry, params flowcontrol.ServerParams, costTable requestCostTable) {
+	log.Debug("Updated parameters for peer", "enode", entry.node.ID())
+	req := &registerReq{entry: entry, capacity: paramsToCapacity(params), costTable: costTable}
+	select {
+	case pool.peerEvents <- peerEvent{eventType: peUpdateParams, req: req}:
+	case <-pool.quit:
+		return
+	}
+}
+
 // disconnect should be called when ending a connection. Service quality statistics
 // can be updated optionally (not updated if no registration happened, in this case
 // only connection statistics are updated, just like in case of timeout)
 func (pool *serverPool) disconnect(entry *poolEntry) {
-	stopped := false
-	select {
-	case <-pool.quit:
-		stopped = true
-	default:
-	}
 	log.Debug("Disconnected old entry", "enode", entry.node.ID())
-	req := &disconnReq{entry: entry, stopped: stopped, done: make(chan struct{})}
-
-	// Block until disconnection request is served.
-	pool.disconnCh <- req
+	req := &disconnReq{entry: entry, done: make(chan struct{})}
+	select {
+	case pool.peerEvents <- peerEvent{eventType: peDisconnect, req: req}:
+	case <-pool.quit:
+		return
+	}
 	<-req.done
 }
 
@@ -252,6 +281,11 @@ const (
 	pseResponseTime
 	pseResponseTimeout
 	pseCorrFactor
+
+	peConnect = iota
+	peRegister
+	peUpdateParams
+	peDisconnect
 )
 
 // poolStatAdjust records are sent to adjust peer block delay/response time statistics
@@ -300,9 +334,8 @@ func (pool *serverPool) eventLoop() {
 
 	// disconnect updates service quality statistics depending on the connection time
 	// and disconnection initiator.
-	disconnect := func(req *disconnReq, stopped bool) {
+	disconnect := func(entry *poolEntry, stopped bool) {
 		// Handle peer disconnection requests.
-		entry := req.entry
 		if entry.state == psRegistered {
 			connAdjust := float64(mclock.Now()-entry.regTime) / float64(targetConnTime)
 			if connAdjust > 1 {
@@ -324,8 +357,6 @@ func (pool *serverPool) eventLoop() {
 			pool.newSelected--
 		}
 		pool.setRetryDial(entry)
-		pool.connWg.Done()
-		close(req.done)
 	}
 
 	for {
@@ -351,10 +382,10 @@ func (pool *serverPool) eventLoop() {
 			case pseResponseTimeout:
 				adj.entry.timeoutStats.add(1, 1)
 			case pseCorrFactor:
-				if adj.entry.refCost == 0 {
-					log.Error("Reference cost is not initialized", "enode", adj.entry.node.ID())
+				refCost := adj.entry.refCost()
+				if refCost != 0 {
+					adj.entry.bwCorrStats.add(float64(adj.recharge)/float64(adj.cost), float64(adj.cost)/refCost)
 				}
-				adj.entry.bwCorrStats.add(float64(adj.recharge)/float64(adj.cost), float64(adj.cost)/adj.entry.refCost)
 			}
 
 		case node := <-pool.discNodes:
@@ -377,69 +408,81 @@ func (pool *serverPool) eventLoop() {
 				}
 			}
 
-		case req := <-pool.connCh:
-			if pool.trustedNodes[req.p.ID()] != nil {
-				// ignore trusted nodes
-				req.result <- nil
-			} else {
-				// Handle peer connection requests.
-				entry := pool.entries[req.p.ID()]
-				if entry == nil {
-					entry = pool.findOrNewNode(req.node)
-				}
-				if entry.state == psConnected || entry.state == psRegistered {
+		case ev := <-pool.peerEvents:
+			switch ev.eventType {
+			case peConnect:
+				req := ev.req.(*connReq)
+				if pool.trustedNodes[req.p.ID()] != nil {
+					// ignore trusted nodes
 					req.result <- nil
-					continue
+				} else {
+					// Handle peer connection requests.
+					entry := pool.entries[req.p.ID()]
+					if entry == nil {
+						entry = pool.findOrNewNode(req.node)
+					}
+					if entry.state == psConnected || entry.state == psRegistered {
+						req.result <- nil
+						continue
+					}
+					entry.peer = req.p
+					entry.state = psConnected
+					addr := &poolEntryAddress{
+						ip:       req.node.IP(),
+						port:     uint16(req.node.TCP()),
+						lastSeen: mclock.Now(),
+					}
+					entry.lastConnected = addr
+					entry.addr = make(map[string]*poolEntryAddress)
+					entry.addr[addr.strKey()] = addr
+					entry.addrSelect = *newWeightedRandomSelect()
+					entry.addrSelect.update(addr)
+					req.result <- entry
 				}
-				pool.connWg.Add(1)
-				entry.peer = req.p
-				entry.state = psConnected
-				addr := &poolEntryAddress{
-					ip:       req.node.IP(),
-					port:     uint16(req.node.TCP()),
-					lastSeen: mclock.Now(),
+
+			case peRegister:
+				req := ev.req.(*registerReq)
+				// Handle peer registration requests.
+				entry := req.entry
+				entry.capacity = req.capacity
+				entry.costTable = req.costTable
+				entry.cachedRefCost = 0
+				entry.state = psRegistered
+				entry.regTime = mclock.Now()
+				entry.lastFreeCapStatsUpdate = entry.regTime
+				if !entry.known {
+					pool.newQueue.remove(entry)
+					entry.known = true
 				}
-				entry.lastConnected = addr
-				entry.addr = make(map[string]*poolEntryAddress)
-				entry.addr[addr.strKey()] = addr
-				entry.addrSelect = *newWeightedRandomSelect()
-				entry.addrSelect.update(addr)
-				req.result <- entry
-			}
+				pool.knownQueue.setLatest(entry)
+				entry.shortRetry = shortRetryCnt
+				close(req.done)
 
-		case req := <-pool.registerCh:
-			// Handle peer registration requests.
-			entry := req.entry
-			entry.refCost = pool.reqCounter.referenceCost(req.costs)
-			entry.state = psRegistered
-			entry.regTime = mclock.Now()
-			if !entry.known {
-				pool.newQueue.remove(entry)
-				entry.known = true
-			}
-			pool.knownQueue.setLatest(entry)
-			entry.shortRetry = shortRetryCnt
-			close(req.done)
+			case peUpdateParams:
+				req := ev.req.(*updateParamsReq)
+				// Handle peer parameter updates
+				req.entry.updateFreeCapStats()
+				req.entry.capacity = req.capacity
+				req.entry.costTable = req.costTable
+				req.entry.cachedRefCost = 0 // force update
 
-		case req := <-pool.disconnCh:
-			// Handle peer disconnection requests.
-			disconnect(req, req.stopped)
+			case peDisconnect:
+				req := ev.req.(*disconnReq)
+				// Handle peer disconnection requests.
+				req.entry.updateFreeCapStats()
+				disconnect(req.entry, false)
+				close(req.done)
+			}
 
 		case <-pool.quit:
 			if pool.discSetPeriod != nil {
 				close(pool.discSetPeriod)
 			}
 
-			// Spawn a goroutine to close the disconnCh after all connections are disconnected.
-			go func() {
-				pool.connWg.Wait()
-				close(pool.disconnCh)
-			}()
-
-			// Handle all remaining disconnection requests before exit.
-			for req := range pool.disconnCh {
-				disconnect(req, true)
+			for _, entry := range pool.entries {
+				disconnect(entry, true)
 			}
+
 			pool.savePoolState()
 			pool.wg.Done()
 			return
@@ -453,6 +496,7 @@ func (pool *serverPool) findOrNewNode(node *enode.Node) *poolEntry {
 	if entry == nil {
 		log.Debug("Discovered new entry", "id", node.ID())
 		entry = &poolEntry{
+			pool:       pool,
 			node:       node,
 			addr:       make(map[string]*poolEntryAddress),
 			addrSelect: *newWeightedRandomSelect(),
@@ -687,6 +731,7 @@ const (
 
 // poolEntry represents a server node and stores its current state and statistics.
 type poolEntry struct {
+	pool                  *serverPool
 	peer                  *peer
 	pubkey                [64]byte // secp256k1 key of the node
 	addr                  map[string]*poolEntryAddress
@@ -698,8 +743,7 @@ type poolEntry struct {
 	known, knownSelected        bool
 	connectStats, delayStats    poolStats
 	responseStats, timeoutStats poolStats
-	bwCorrStats                 poolStats
-	refCost                     float64
+	bwCorrStats, freeCapStats   poolStats
 	state                       int
 	regTime                     mclock.AbsTime
 	queueIdx                    int
@@ -707,6 +751,11 @@ type poolEntry struct {
 
 	delayedRetry bool
 	shortRetry   int
+
+	capacity                                  float64
+	costTable                                 requestCostTable
+	cachedRefCost                             float64
+	lastRefCostRecalc, lastFreeCapStatsUpdate mclock.AbsTime
 }
 
 // poolEntryEnc is the RLP encoding of poolEntry.
@@ -723,7 +772,32 @@ func (e *poolEntry) initMaxWeights() {
 	e.delayStats.init(5000)
 	e.responseStats.init(10000)
 	e.timeoutStats.init(10000)
-	e.bwCorrStats.init(1000)
+	e.bwCorrStats.init(10000)
+	e.freeCapStats.init(1000000000000)
+}
+
+func (e *poolEntry) refCost() float64 {
+	now := mclock.Now()
+	if e.cachedRefCost == 0 || time.Duration(now-e.lastRefCostRecalc) > time.Second*10 {
+		e.cachedRefCost = e.pool.reqCounter.referenceCost(e.costTable)
+		e.lastRefCostRecalc = now
+	}
+	return e.cachedRefCost
+}
+
+func (e *poolEntry) corrCapacity() float64 {
+	bwc := 1 - e.bwCorrStats.recentAvg()
+	if bwc < 0.1 {
+		bwc = 0.1
+	}
+	return e.capacity / bwc / e.refCost() * (1 - e.timeoutStats.recentAvg())
+}
+
+func (e *poolEntry) updateFreeCapStats() {
+	now := mclock.Now()
+	dt := now - e.lastFreeCapStatsUpdate
+	e.lastFreeCapStatsUpdate = now
+	e.freeCapStats.add(e.corrCapacity(), float64(dt))
 }
 
 func (e *poolEntry) EncodeRLP(w io.Writer) error {
@@ -843,13 +917,14 @@ func (s *poolStats) add(value, weight float64) {
 
 // recentAvg returns the short-term adjusted average
 func (s *poolStats) recentAvg() float64 {
-	var avg float64
-	if s.sum > s.weight*1e30 {
-		avg = 1e30
-	} else {
-		avg = s.sum / s.weight
+	if s.weight < 1e-30 {
+		return 0
 	}
-	return avg
+	if s.sum > s.weight*1e30 {
+		return 1e30
+	} else {
+		return s.sum / s.weight
+	}
 }
 
 func (s *poolStats) EncodeRLP(w io.Writer) error {

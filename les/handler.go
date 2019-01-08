@@ -312,7 +312,7 @@ func (pm *ProtocolManager) handle(p *peer) error {
 		}
 
 		if p.poolEntry != nil {
-			pm.serverPool.registered(p.poolEntry, p.fcCosts)
+			pm.serverPool.registered(p.poolEntry, p.fcParams, p.fcCosts)
 		}
 	}
 
@@ -419,7 +419,9 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if p.rejectUpdate(size) {
 			return errResp(ErrRequestRejected, "")
 		}
-		p.updateFlowControl(update)
+		if p.updateFlowControl(update) && p.poolEntry != nil {
+			pm.serverPool.updateParams(p.poolEntry, p.fcParams, p.fcCosts)
+		}
 
 		if req.Hash != (common.Hash{}) {
 			if p.announceType == announceTypeNone {

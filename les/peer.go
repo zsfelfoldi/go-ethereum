@@ -639,9 +639,9 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 
 // updateFlowControl updates the flow control parameters belonging to the server
 // node if the announced key/value set contains relevant fields
-func (p *peer) updateFlowControl(update keyValueMap) {
+func (p *peer) updateFlowControl(update keyValueMap) bool {
 	if p.fcServer == nil {
-		return
+		return false
 	}
 	params := p.fcParams
 	updateParams := false
@@ -658,7 +658,9 @@ func (p *peer) updateFlowControl(update keyValueMap) {
 	var MRC RequestCostList
 	if update.get("flowControl/MRC", &MRC) == nil {
 		p.fcCosts = MRC.decode()
+		updateParams = true
 	}
+	return updateParams
 }
 
 // String implements fmt.Stringer.
@@ -859,6 +861,9 @@ func (rc *requestCounter) referenceCost(costs requestCostTable) float64 {
 	rc.lock.Lock()
 	defer rc.lock.Unlock()
 
+	if rc.totalReq == 0 {
+		return 0
+	}
 	var r float64
 	for code, cost := range costs {
 		usage := rc.counter[code]
