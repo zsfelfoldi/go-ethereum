@@ -52,7 +52,7 @@ const (
 	maxNewEntries = 1000
 	// maxKnownEntries is the maximum number of known (already connected) nodes.
 	// If the limit is reached, the least recently connected one is thrown out.
-	// (not that unlike new entries, known entries are persistent)
+	// (note that unlike new entries, known entries are persistent)
 	maxKnownEntries = 1000
 	// target for simultaneously connected servers
 	targetServerCount = 5
@@ -70,20 +70,14 @@ const (
 	discoverExpireConst = time.Minute * 20
 	// known entry selection weight is dropped by a factor of exp(-failDropLn) after
 	// each unsuccessful connection (restored after a successful one)
-	failDropLn = 0.1
-	// known node connection success and quality statistics have a long term average
-	// and a short term value which is adjusted exponentially with a factor of
-	// pstatRecentAdjust with each dial/connection and also returned exponentially
-	// to the average with the time constant pstatReturnToMeanTC
-	pstatReturnToMeanTC = time.Hour
+	failDropLn = 0.01
 	// node address selection weight is dropped by a factor of exp(-addrFailDropLn) after
 	// each unsuccessful connection (restored after a successful one)
-	addrFailDropLn = math.Ln2
+	addrFailDropLn = 0.1
 	// responseScoreTC and delayScoreTC are exponential decay time constants for
 	// calculating selection chances from response times and block delay times
-	responseScoreTC = time.Millisecond * 100
+	responseScoreTC = time.Millisecond * 500
 	delayScoreTC    = time.Second * 5
-	timeoutPow      = 10
 	// initStatsWeight is used to initialize previously unknown peers with good
 	// statistics to give a chance to prove themselves
 	initStatsWeight = 1
@@ -348,6 +342,7 @@ func (pool *serverPool) eventLoop() {
 				// disconnect requested by server side.
 				entry.connectStats.add(connAdjust, 1)
 			}
+			entry.updateFreeCapStats()
 		}
 		entry.state = psNotConnected
 
@@ -380,6 +375,7 @@ func (pool *serverPool) eventLoop() {
 				adj.entry.responseStats.add(float64(adj.time), 1)
 				adj.entry.timeoutStats.add(0, 1)
 			case pseResponseTimeout:
+				adj.entry.responseStats.add(float64(adj.time), 1)
 				adj.entry.timeoutStats.add(1, 1)
 			case pseCorrFactor:
 				refCost := adj.entry.refCost()
@@ -469,7 +465,6 @@ func (pool *serverPool) eventLoop() {
 			case peDisconnect:
 				req := ev.req.(*disconnReq)
 				// Handle peer disconnection requests.
-				req.entry.updateFreeCapStats()
 				disconnect(req.entry, false)
 				close(req.done)
 			}
@@ -478,11 +473,9 @@ func (pool *serverPool) eventLoop() {
 			if pool.discSetPeriod != nil {
 				close(pool.discSetPeriod)
 			}
-
 			for _, entry := range pool.entries {
 				disconnect(entry, true)
 			}
-
 			pool.savePoolState()
 			pool.wg.Done()
 			return
@@ -542,12 +535,15 @@ func (pool *serverPool) loadPoolState() {
 		return
 	}
 	for _, e := range poolState.List {
-		log.Debug("Loaded server stats", "id", e.node.ID(), "fails", e.lastConnected.fails,
+		log.Info("Loaded server stats", "id", e.node.ID(), "fails", e.lastConnected.fails,
 			"conn", fmt.Sprintf("%v/%v", e.connectStats.recentAvg(), e.connectStats.weight),
 			"delay", fmt.Sprintf("%v/%v", time.Duration(e.delayStats.recentAvg()), e.delayStats.weight),
 			"response", fmt.Sprintf("%v/%v", time.Duration(e.responseStats.recentAvg()), e.responseStats.weight),
 			"timeout", fmt.Sprintf("%v/%v", e.timeoutStats.recentAvg(), e.timeoutStats.weight),
-			"bwCorr", fmt.Sprintf("%v/%v", e.bwCorrStats.recentAvg(), e.bwCorrStats.weight))
+			"bwCorr", fmt.Sprintf("%v/%v", e.bwCorrStats.recentAvg(), e.bwCorrStats.weight),
+			"freeCap", fmt.Sprintf("%v/%v", e.freeCapStats.recentAvg(), e.freeCapStats.weight),
+			"weight", fmt.Sprintf("%v", (*knownEntry)(e).Weight()))
+		e.pool = pool
 		e.initMaxWeights()
 		pool.entries[e.node.ID()] = e
 		if pool.trustedNodes[e.node.ID()] == nil {
@@ -760,11 +756,11 @@ type poolEntry struct {
 
 // poolEntryEnc is the RLP encoding of poolEntry.
 type poolEntryEnc struct {
-	Pubkey                     []byte
-	IP                         net.IP
-	Port                       uint16
-	Fails                      uint
-	CStat, DStat, RStat, TStat poolStats
+	Pubkey                                     []byte
+	IP                                         net.IP
+	Port                                       uint16
+	Fails                                      uint
+	CStat, DStat, RStat, TStat, BwStat, FcStat poolStats
 }
 
 func (e *poolEntry) initMaxWeights() {
@@ -779,25 +775,34 @@ func (e *poolEntry) initMaxWeights() {
 func (e *poolEntry) refCost() float64 {
 	now := mclock.Now()
 	if e.cachedRefCost == 0 || time.Duration(now-e.lastRefCostRecalc) > time.Second*10 {
+		if e.costTable == nil {
+			return 0
+		}
 		e.cachedRefCost = e.pool.reqCounter.referenceCost(e.costTable)
 		e.lastRefCostRecalc = now
 	}
 	return e.cachedRefCost
 }
 
-func (e *poolEntry) corrCapacity() float64 {
+func (e *poolEntry) corrCapacity() (float64, bool) {
+	refCost := e.refCost()
+	if refCost == 0 {
+		return 0, false
+	}
 	bwc := 1 - e.bwCorrStats.recentAvg()
 	if bwc < 0.1 {
 		bwc = 0.1
 	}
-	return e.capacity / bwc / e.refCost() * (1 - e.timeoutStats.recentAvg())
+	return e.capacity / bwc / refCost * (1 - e.timeoutStats.recentAvg()), true
 }
 
 func (e *poolEntry) updateFreeCapStats() {
 	now := mclock.Now()
 	dt := now - e.lastFreeCapStatsUpdate
 	e.lastFreeCapStatsUpdate = now
-	e.freeCapStats.add(e.corrCapacity(), float64(dt))
+	if ccap, ok := e.corrCapacity(); ok {
+		e.freeCapStats.add(ccap, float64(dt))
+	}
 }
 
 func (e *poolEntry) EncodeRLP(w io.Writer) error {
@@ -810,6 +815,8 @@ func (e *poolEntry) EncodeRLP(w io.Writer) error {
 		DStat:  e.delayStats,
 		RStat:  e.responseStats,
 		TStat:  e.timeoutStats,
+		BwStat: e.bwCorrStats,
+		FcStat: e.freeCapStats,
 	})
 }
 
@@ -833,6 +840,8 @@ func (e *poolEntry) DecodeRLP(s *rlp.Stream) error {
 	e.delayStats = entry.DStat
 	e.responseStats = entry.RStat
 	e.timeoutStats = entry.TStat
+	e.bwCorrStats = entry.BwStat
+	e.freeCapStats = entry.FcStat
 	e.shortRetry = shortRetryCnt
 	e.known = true
 	return nil
@@ -869,7 +878,15 @@ func (e *knownEntry) Weight() int64 {
 	if e.state != psNotConnected || !e.known || e.delayedRetry {
 		return 0
 	}
-	return int64(1000000000 * e.connectStats.recentAvg() * math.Exp(-float64(e.lastConnected.fails)*failDropLn-e.responseStats.recentAvg()/float64(responseScoreTC)-e.delayStats.recentAvg()/float64(delayScoreTC)) * math.Pow(1-e.timeoutStats.recentAvg(), timeoutPow))
+	qualityFactor := math.Exp(-float64(e.lastConnected.fails)*failDropLn - e.responseStats.recentAvg()/float64(responseScoreTC) - e.delayStats.recentAvg()/float64(delayScoreTC))
+	weight := 1000000000000 * e.connectStats.recentAvg() * e.freeCapStats.recentAvg() * qualityFactor
+	if weight < 0 {
+		weight = 0
+	}
+	if weight > 9e18/maxKnownEntries {
+		weight = 9e18 / maxKnownEntries
+	}
+	return int64(weight)
 }
 
 // poolEntryAddress is a separate object because currently it is necessary to remember
@@ -892,10 +909,8 @@ func (a *poolEntryAddress) strKey() string {
 	return a.ip.String() + ":" + strconv.Itoa(int(a.port))
 }
 
-// poolStats implement statistics for a certain quantity with a long term average
-// and a short term value which is adjusted exponentially with a factor of
-// pstatRecentAdjust with each update and also returned exponentially to the
-// average with the time constant pstatReturnToMeanTC
+// poolStats implement statistics for a certain quantity. After total weight exceeds
+// maxWeight the weight of old entries is reduced exponentially.
 type poolStats struct {
 	sum, weight, maxWeight float64
 }

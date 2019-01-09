@@ -258,7 +258,9 @@ func (pm *ProtocolManager) newPeer(pv int, nv uint64, p *p2p.Peer, rw p2p.MsgRea
 		isTrusted = pm.ulc.isTrusted(p.ID())
 	}
 	peer := newPeer(pv, nv, isTrusted, p, newMeteredMsgWriter(rw))
-	peer.reqCounter = pm.serverPool.reqCounter
+	if pm.serverPool != nil {
+		peer.reqCounter = pm.serverPool.reqCounter
+	}
 	return peer
 }
 
