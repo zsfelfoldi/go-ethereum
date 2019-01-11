@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
@@ -141,13 +142,15 @@ type serverPool struct {
 
 	peerEvents chan peerEvent
 
-	knownQueue, newQueue       poolEntryQueue
-	knownSelect, newSelect     *weightedRandomSelect
-	knownSelected, newSelected int
-	fastDiscover               bool
-	connCh                     chan *connReq
-	disconnCh                  chan *disconnReq
-	registerCh                 chan *registerReq
+	knownQueue, newQueue           poolEntryQueue
+	knownSelect, newSelect         *weightedRandomSelect
+	knownSelected, newSelected     int
+	knownDialCycle, newDialCycle   *dialCycle
+	knownDelayQueue, newDelayQueue *retryDelayQueue
+	fastDiscover                   bool
+	connCh                         chan *connReq
+	disconnCh                      chan *disconnReq
+	registerCh                     chan *registerReq
 
 	reqCounter *requestCounter
 }
@@ -155,19 +158,23 @@ type serverPool struct {
 // newServerPool creates a new serverPool instance
 func newServerPool(db ethdb.Database, quit chan struct{}, wg *sync.WaitGroup, trustedNodes []string) *serverPool {
 	pool := &serverPool{
-		db:           db,
-		quit:         quit,
-		wg:           wg,
-		entries:      make(map[enode.ID]*poolEntry),
-		timeout:      make(chan *poolEntry, 1),
-		adjustStats:  make(chan poolStatAdjust, 100),
-		enableRetry:  make(chan *poolEntry, 1),
-		peerEvents:   make(chan peerEvent),
-		knownSelect:  newWeightedRandomSelect(),
-		newSelect:    newWeightedRandomSelect(),
-		fastDiscover: true,
-		trustedNodes: parseTrustedNodes(trustedNodes),
-		reqCounter:   newRequestCounter(),
+		db:              db,
+		quit:            quit,
+		wg:              wg,
+		entries:         make(map[enode.ID]*poolEntry),
+		timeout:         make(chan *poolEntry, 1),
+		adjustStats:     make(chan poolStatAdjust, 100),
+		enableRetry:     make(chan *poolEntry, 1),
+		peerEvents:      make(chan peerEvent),
+		knownSelect:     newWeightedRandomSelect(),
+		newSelect:       newWeightedRandomSelect(),
+		knownDialCycle:  &dialCycle{qwer: 1},
+		newDialCycle:    &dialCycle{qwer: 1},
+		knownDelayQueue: prque.New(nil),
+		newDelayQueue:   prque.New(nil),
+		fastDiscover:    true,
+		trustedNodes:    parseTrustedNodes(trustedNodes),
+		reqCounter:      newRequestCounter(),
 	}
 
 	pool.knownQueue = newPoolEntryQueue(maxKnownEntries, pool.removeEntry)
@@ -750,8 +757,8 @@ type poolEntry struct {
 	queueIdx                    int
 	removed                     bool
 
-	delayedRetry bool
-	shortRetry   int
+	newDialDelayed, knownDialDelayed bool
+	newDialRetryAt, knownDialRetryAt mclock.AbsTime
 
 	capacity                                  float64
 	costTable                                 requestCostTable
@@ -860,6 +867,29 @@ func decodePubkey64(b []byte) (*ecdsa.PublicKey, error) {
 	return crypto.UnmarshalPubkey(append([]byte{0x04}, b...))
 }
 
+type retryDelay interface {
+	startDelay() mclock.AbsTime
+	checkDelay()
+}
+
+type retryDelayQueue prque.Prque
+
+func (rq *retryDelayQueue) schedule(d retryDelay) {
+	rq.Push(d, int64(d.startDelay()))
+}
+
+func (rq *retryDelayQueue) check(d retryDelay) {
+	now := mclock.Now()
+	for rq.Size() != 0 {
+		item, time := rq.Pop()
+		if time > now {
+			rq.Push(item, time)
+			return
+		}
+		item.(retryDelay).checkDelay()
+	}
+}
+
 // discoveredEntry implements wrsItem
 type discoveredEntry poolEntry
 
@@ -873,6 +903,21 @@ func (e *discoveredEntry) Weight() int64 {
 		return 1000000000
 	}
 	return int64(1000000000 * math.Exp(-float64(t-discoverExpireStart)/float64(discoverExpireConst)))
+}
+
+func (e *discoveredEntry) startDelay() mclock.AbsTime {
+	dt := float64(newRetryDelay) * math.Exp(float64(e.newDialFails)*newRetryDelayExp)
+	e.newDialDelayed = true
+	e.newDialRetryAt = mclock.Now() + mclock.AbsTime(dt)
+	return e.newDialRetryAt
+}
+
+func (e *discoveredEntry) checkDelay() {
+	if e.newDialDelayed && e.newDialRetryAt <= mclock.Now() {
+		e.newDialDelayed = false
+		e.pool.newSelect.update(e)
+		e.pool.newDialCycle.resume()
+	}
 }
 
 // knownEntry implements wrsItem
@@ -892,6 +937,21 @@ func (e *knownEntry) Weight() int64 {
 		weight = 9e18 / maxKnownEntries
 	}
 	return int64(weight)
+}
+
+func (e *knownEntry) startDelay() mclock.AbsTime {
+	dt := float64(knownRetryDelay) * math.Exp(float64(e.knownDialFails)*knownRetryDelayExp)
+	e.knownDialDelayed = true
+	e.knownDialRetryAt = mclock.Now() + mclock.AbsTime(dt)
+	return e.knownDialRetryAt
+}
+
+func (e *knownEntry) checkDelay() {
+	if e.knownDialDelayed && e.knownDialRetryAt <= mclock.Now() {
+		e.knownDialDelayed = false
+		e.pool.knownSelect.update(e)
+		e.pool.knownDialCycle.resume()
+	}
 }
 
 // poolEntryAddress is a separate object because currently it is necessary to remember
