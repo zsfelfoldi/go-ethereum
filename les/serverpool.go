@@ -303,6 +303,9 @@ func (pool *serverPool) adjustResponseTime(entry *poolEntry, time time.Duration,
 	if entry == nil {
 		return
 	}
+	if time > hardRequestTimeout {
+		time = hardRequestTimeout
+	}
 	if timeout {
 		pool.adjustStats <- poolStatAdjust{adjustType: pseResponseTimeout, entry: entry, time: time}
 	} else {
@@ -345,6 +348,7 @@ func (pool *serverPool) eventLoop() {
 			entry.updateFreeCapStats()
 		}
 		entry.state = psNotConnected
+		pool.server.RemovePeer(entry.node)
 
 		if entry.knownSelected {
 			pool.knownSelected--
@@ -708,6 +712,7 @@ func (pool *serverPool) checkDialTimeout(entry *poolEntry) {
 	}
 	log.Debug("Dial timeout", "lesaddr", entry.node.ID().String()+"@"+entry.dialed.strKey())
 	entry.state = psNotConnected
+	pool.server.RemovePeer(entry.node)
 	if entry.knownSelected {
 		pool.knownSelected--
 	} else {
@@ -764,7 +769,7 @@ type poolEntryEnc struct {
 }
 
 func (e *poolEntry) initMaxWeights() {
-	e.connectStats.init(10)
+	e.connectStats.init(100)
 	e.delayStats.init(5000)
 	e.responseStats.init(10000)
 	e.timeoutStats.init(10000)
