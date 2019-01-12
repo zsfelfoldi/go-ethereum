@@ -45,9 +45,14 @@ const (
 	// waiting period = base delay * (1 + random(1))
 	// base delay = shortRetryDelay for the first shortRetryCnt times after a
 	// successful connection, after that longRetryDelay is applied
-	shortRetryCnt   = 5
-	shortRetryDelay = time.Second * 5
-	longRetryDelay  = time.Minute * 10
+
+	newRetryDelay      = time.Second * 30
+	newRetryDelayExp   = 0.1
+	knownRetryDelay    = time.Second * 30
+	knownRetryDelayExp = 0.1
+
+	dialPeriod = time.Second
+
 	// maxNewEntries is the maximum number of newly discovered (never connected) nodes.
 	// If the limit is reached, the least recently discovered one is thrown out.
 	maxNewEntries = 1000
@@ -55,10 +60,8 @@ const (
 	// If the limit is reached, the least recently connected one is thrown out.
 	// (note that unlike new entries, known entries are persistent)
 	maxKnownEntries = 1000
-	// target for simultaneously connected servers
-	targetServerCount = 5
-	// target for servers selected from the known table
-	// (we leave room for trying new ones if there is any)
+	// target count for servers selected from the newly discovered and the known tables
+	targetNewSelect   = 3
 	targetKnownSelect = 3
 	// after dialTimeout, consider the server unavailable and adjust statistics
 	dialTimeout = time.Second * 30
@@ -135,16 +138,16 @@ type serverPool struct {
 	discNodes     chan *enode.Node
 	discLookups   chan bool
 
-	trustedNodes         map[enode.ID]*enode.Node
-	entries              map[enode.ID]*poolEntry
-	timeout, enableRetry chan *poolEntry
-	adjustStats          chan poolStatAdjust
+	trustedNodes map[enode.ID]*enode.Node
+	entries      map[enode.ID]*poolEntry
+	timeout      chan *poolEntry
+	dialCh       chan *dialCycle
+	adjustStats  chan poolStatAdjust
 
 	peerEvents chan peerEvent
 
 	knownQueue, newQueue           poolEntryQueue
 	knownSelect, newSelect         *weightedRandomSelect
-	knownSelected, newSelected     int
 	knownDialCycle, newDialCycle   *dialCycle
 	knownDelayQueue, newDelayQueue *retryDelayQueue
 	fastDiscover                   bool
@@ -164,19 +167,18 @@ func newServerPool(db ethdb.Database, quit chan struct{}, wg *sync.WaitGroup, tr
 		entries:         make(map[enode.ID]*poolEntry),
 		timeout:         make(chan *poolEntry, 1),
 		adjustStats:     make(chan poolStatAdjust, 100),
-		enableRetry:     make(chan *poolEntry, 1),
+		dialCh:          make(chan *dialCycle, 2),
 		peerEvents:      make(chan peerEvent),
 		knownSelect:     newWeightedRandomSelect(),
 		newSelect:       newWeightedRandomSelect(),
-		knownDialCycle:  &dialCycle{qwer: 1},
-		newDialCycle:    &dialCycle{qwer: 1},
-		knownDelayQueue: prque.New(nil),
-		newDelayQueue:   prque.New(nil),
+		knownDelayQueue: (*retryDelayQueue)(prque.New(nil)),
+		newDelayQueue:   (*retryDelayQueue)(prque.New(nil)),
 		fastDiscover:    true,
 		trustedNodes:    parseTrustedNodes(trustedNodes),
 		reqCounter:      newRequestCounter(),
 	}
-
+	pool.knownDialCycle = &dialCycle{pool: pool, period: dialPeriod, sel: pool.knownSelect, suspended: true, required: targetKnownSelect}
+	pool.newDialCycle = &dialCycle{pool: pool, period: dialPeriod, sel: pool.newSelect, suspended: true, required: targetNewSelect}
 	pool.knownQueue = newPoolEntryQueue(maxKnownEntries, pool.removeEntry)
 	pool.newQueue = newPoolEntryQueue(maxNewEntries, pool.removeEntry)
 	return pool
@@ -196,7 +198,8 @@ func (pool *serverPool) start(server *p2p.Server, topic discv5.Topic) {
 		pool.discLookups = make(chan bool, 100)
 		go pool.discoverNodes()
 	}
-	pool.checkDial()
+	pool.knownDialCycle.resume()
+	pool.newDialCycle.resume()
 	go pool.eventLoop()
 }
 
@@ -357,12 +360,9 @@ func (pool *serverPool) eventLoop() {
 		entry.state = psNotConnected
 		pool.server.RemovePeer(entry.node)
 
-		if entry.knownSelected {
-			pool.knownSelected--
-		} else {
-			pool.newSelected--
-		}
-		pool.setRetryDial(entry)
+		entry.dialedBy.addConnected(-1)
+		pool.knownDelayQueue.schedule((*knownEntry)(entry))
+		pool.newDelayQueue.schedule((*discoveredEntry)(entry))
 	}
 
 	for {
@@ -372,10 +372,11 @@ func (pool *serverPool) eventLoop() {
 				pool.checkDialTimeout(entry)
 			}
 
-		case entry := <-pool.enableRetry:
-			if !entry.removed {
-				entry.delayedRetry = false
-				pool.updateCheckDial(entry)
+		case dial := <-pool.dialCh:
+			pool.knownDelayQueue.check()
+			pool.newDelayQueue.check()
+			if entry := dial.next(); entry != nil {
+				pool.dial(entry, dial)
 			}
 
 		case adj := <-pool.adjustStats:
@@ -398,7 +399,8 @@ func (pool *serverPool) eventLoop() {
 		case node := <-pool.discNodes:
 			if pool.trustedNodes[node.ID()] == nil {
 				entry := pool.findOrNewNode(node)
-				pool.updateCheckDial(entry)
+				pool.newSelect.update((*discoveredEntry)(entry))
+				pool.newDialCycle.resume()
 			}
 
 		case conv := <-pool.discLookups:
@@ -462,7 +464,6 @@ func (pool *serverPool) eventLoop() {
 					entry.known = true
 				}
 				pool.knownQueue.setLatest(entry)
-				entry.shortRetry = shortRetryCnt
 				close(req.done)
 
 			case peUpdateParams:
@@ -504,7 +505,6 @@ func (pool *serverPool) findOrNewNode(node *enode.Node) *poolEntry {
 			node:       node,
 			addr:       make(map[string]*poolEntryAddress),
 			addrSelect: *newWeightedRandomSelect(),
-			shortRetry: shortRetryCnt,
 		}
 		entry.initMaxWeights()
 		pool.entries[node.ID()] = entry
@@ -621,82 +621,16 @@ func (pool *serverPool) removeEntry(entry *poolEntry) {
 	delete(pool.entries, entry.node.ID())
 }
 
-// setRetryDial starts the timer which will enable dialing a certain node again
-func (pool *serverPool) setRetryDial(entry *poolEntry) {
-	delay := longRetryDelay
-	if entry.shortRetry > 0 {
-		entry.shortRetry--
-		delay = shortRetryDelay
-	}
-	delay += time.Duration(rand.Int63n(int64(delay) + 1))
-	entry.delayedRetry = true
-	go func() {
-		select {
-		case <-pool.quit:
-		case <-time.After(delay):
-			select {
-			case <-pool.quit:
-			case pool.enableRetry <- entry:
-			}
-		}
-	}()
-}
-
-// updateCheckDial is called when an entry can potentially be dialed again. It updates
-// its selection weights and checks if new dials can/should be made.
-func (pool *serverPool) updateCheckDial(entry *poolEntry) {
-	pool.newSelect.update((*discoveredEntry)(entry))
-	pool.knownSelect.update((*knownEntry)(entry))
-	pool.checkDial()
-}
-
-// checkDial checks if new dials can/should be made. It tries to select servers both
-// based on good statistics and recent discovery.
-func (pool *serverPool) checkDial() {
-	fillWithKnownSelects := !pool.fastDiscover
-	for pool.knownSelected < targetKnownSelect {
-		entry := pool.knownSelect.choose()
-		if entry == nil {
-			fillWithKnownSelects = false
-			break
-		}
-		pool.dial((*poolEntry)(entry.(*knownEntry)), true)
-	}
-	for pool.knownSelected+pool.newSelected < targetServerCount {
-		entry := pool.newSelect.choose()
-		if entry == nil {
-			break
-		}
-		pool.dial((*poolEntry)(entry.(*discoveredEntry)), false)
-	}
-	if fillWithKnownSelects {
-		// no more newly discovered nodes to select and since fast discover period
-		// is over, we probably won't find more in the near future so select more
-		// known entries if possible
-		for pool.knownSelected < targetServerCount {
-			entry := pool.knownSelect.choose()
-			if entry == nil {
-				break
-			}
-			pool.dial((*poolEntry)(entry.(*knownEntry)), true)
-		}
-	}
-}
-
 // dial initiates a new connection
-func (pool *serverPool) dial(entry *poolEntry, knownSelected bool) {
+func (pool *serverPool) dial(entry *poolEntry, dialedBy *dialCycle) {
 	if pool.server == nil || entry.state != psNotConnected {
 		return
 	}
 	entry.state = psDialed
-	entry.knownSelected = knownSelected
-	if knownSelected {
-		pool.knownSelected++
-	} else {
-		pool.newSelected++
-	}
+	entry.dialedBy = dialedBy
+	dialedBy.addConnected(1)
 	addr := entry.addrSelect.choose().(*poolEntryAddress)
-	log.Debug("Dialing new peer", "lesaddr", entry.node.ID().String()+"@"+addr.strKey(), "set", len(entry.addr), "known", knownSelected)
+	log.Debug("Dialing new peer", "lesaddr", entry.node.ID().String()+"@"+addr.strKey(), "set", len(entry.addr), "known", dialedBy == pool.knownDialCycle)
 	entry.dialed = addr
 	go func() {
 		pool.server.AddPeer(entry.node)
@@ -720,14 +654,65 @@ func (pool *serverPool) checkDialTimeout(entry *poolEntry) {
 	log.Debug("Dial timeout", "lesaddr", entry.node.ID().String()+"@"+entry.dialed.strKey())
 	entry.state = psNotConnected
 	pool.server.RemovePeer(entry.node)
-	if entry.knownSelected {
-		pool.knownSelected--
-	} else {
-		pool.newSelected--
-	}
+	entry.dialedBy.addConnected(-1)
+	pool.knownDelayQueue.schedule((*knownEntry)(entry))
+	pool.newDelayQueue.schedule((*discoveredEntry)(entry))
 	entry.connectStats.add(0, 1)
 	entry.dialed.fails++
-	pool.setRetryDial(entry)
+	if entry.dialedBy == pool.knownDialCycle {
+		entry.knownDialFails++
+	} else {
+		entry.newDialFails++
+	}
+}
+
+type dialCycle struct {
+	pool                *serverPool
+	period              time.Duration
+	sel                 *weightedRandomSelect
+	suspended           bool
+	connected, required int
+}
+
+func (dc *dialCycle) next() *poolEntry {
+	if dc.connected >= dc.required {
+		dc.suspended = true
+		return nil
+	}
+	item := dc.sel.choose()
+	if item == nil {
+		dc.suspended = true
+		return nil
+	}
+	time.AfterFunc(dc.period, func() {
+		select {
+		case dc.pool.dialCh <- dc:
+		case <-dc.pool.quit:
+		}
+	})
+	if entry, ok := item.(*knownEntry); ok {
+		return (*poolEntry)(entry)
+	}
+	entry := item.(*discoveredEntry)
+	return (*poolEntry)(entry)
+}
+
+func (dc *dialCycle) resume() {
+	if !dc.suspended {
+		return
+	}
+	dc.suspended = false
+	select {
+	case dc.pool.dialCh <- dc:
+	case <-dc.pool.quit:
+	}
+}
+
+func (dc *dialCycle) addConnected(diff int) {
+	dc.connected += diff
+	if dc.suspended && dc.connected < dc.required {
+		dc.resume()
+	}
 }
 
 const (
@@ -748,7 +733,8 @@ type poolEntry struct {
 	addrSelect            weightedRandomSelect
 
 	lastDiscovered              mclock.AbsTime
-	known, knownSelected        bool
+	known                       bool
+	dialedBy                    *dialCycle
 	connectStats, delayStats    poolStats
 	responseStats, timeoutStats poolStats
 	bwCorrStats, freeCapStats   poolStats
@@ -759,6 +745,7 @@ type poolEntry struct {
 
 	newDialDelayed, knownDialDelayed bool
 	newDialRetryAt, knownDialRetryAt mclock.AbsTime
+	newDialFails, knownDialFails     int
 
 	capacity                                  float64
 	costTable                                 requestCostTable
@@ -854,7 +841,6 @@ func (e *poolEntry) DecodeRLP(s *rlp.Stream) error {
 	e.timeoutStats = entry.TStat
 	e.bwCorrStats = entry.BwStat
 	e.freeCapStats = entry.FcStat
-	e.shortRetry = shortRetryCnt
 	e.known = true
 	return nil
 }
@@ -875,15 +861,15 @@ type retryDelay interface {
 type retryDelayQueue prque.Prque
 
 func (rq *retryDelayQueue) schedule(d retryDelay) {
-	rq.Push(d, int64(d.startDelay()))
+	(*prque.Prque)(rq).Push(d, int64(d.startDelay()))
 }
 
-func (rq *retryDelayQueue) check(d retryDelay) {
+func (rq *retryDelayQueue) check() {
 	now := mclock.Now()
-	for rq.Size() != 0 {
-		item, time := rq.Pop()
-		if time > now {
-			rq.Push(item, time)
+	for (*prque.Prque)(rq).Size() != 0 {
+		item, time := (*prque.Prque)(rq).Pop()
+		if mclock.AbsTime(time) > now {
+			(*prque.Prque)(rq).Push(item, time)
 			return
 		}
 		item.(retryDelay).checkDelay()
@@ -895,7 +881,7 @@ type discoveredEntry poolEntry
 
 // Weight calculates random selection weight for newly discovered entries
 func (e *discoveredEntry) Weight() int64 {
-	if e.state != psNotConnected || e.delayedRetry {
+	if e.state != psNotConnected || e.newDialDelayed {
 		return 0
 	}
 	t := time.Duration(mclock.Now() - e.lastDiscovered)
@@ -906,7 +892,7 @@ func (e *discoveredEntry) Weight() int64 {
 }
 
 func (e *discoveredEntry) startDelay() mclock.AbsTime {
-	dt := float64(newRetryDelay) * math.Exp(float64(e.newDialFails)*newRetryDelayExp)
+	dt := float64(newRetryDelay) * math.Exp(float64(e.newDialFails)*newRetryDelayExp) * (1 + rand.Float64())
 	e.newDialDelayed = true
 	e.newDialRetryAt = mclock.Now() + mclock.AbsTime(dt)
 	return e.newDialRetryAt
@@ -925,7 +911,7 @@ type knownEntry poolEntry
 
 // Weight calculates random selection weight for known entries
 func (e *knownEntry) Weight() int64 {
-	if e.state != psNotConnected || !e.known || e.delayedRetry {
+	if e.state != psNotConnected || !e.known || e.knownDialDelayed {
 		return 0
 	}
 	qualityFactor := math.Exp(-float64(e.lastConnected.fails)*failDropLn - e.responseStats.recentAvg()/float64(responseScoreTC) - e.delayStats.recentAvg()/float64(delayScoreTC))
@@ -940,7 +926,7 @@ func (e *knownEntry) Weight() int64 {
 }
 
 func (e *knownEntry) startDelay() mclock.AbsTime {
-	dt := float64(knownRetryDelay) * math.Exp(float64(e.knownDialFails)*knownRetryDelayExp)
+	dt := float64(knownRetryDelay) * math.Exp(float64(e.knownDialFails)*knownRetryDelayExp) * (1 + rand.Float64())
 	e.knownDialDelayed = true
 	e.knownDialRetryAt = mclock.Now() + mclock.AbsTime(dt)
 	return e.knownDialRetryAt
