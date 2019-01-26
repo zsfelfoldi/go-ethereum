@@ -32,7 +32,7 @@ import (
 
 var (
 	retryQueue         = time.Millisecond * 100
-	softRequestTimeout = time.Millisecond * 500
+	softRequestTimeout = time.Second * 2
 	hardRequestTimeout = time.Second * 10
 )
 
