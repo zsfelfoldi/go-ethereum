@@ -457,11 +457,13 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				unknown bool
 			)
 			for !unknown && len(headers) < int(query.Amount) && bytes < softResponseLimit {
+				if !first && !task.waitOrStop() {
+					return
+				}
 				// Retrieve the next header satisfying the query
 				var origin *types.Header
 				if hashMode {
 					if first {
-						first = false
 						origin = pm.blockchain.GetHeaderByHash(query.Origin.Hash)
 						if origin != nil {
 							query.Origin.Number = origin.Number.Uint64()
@@ -524,6 +526,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 					// Number based traversal towards the leaf block
 					query.Origin.Number += query.Skip + 1
 				}
+				first = false
 			}
 			sendReq(req.ReqID, query.Amount, p.ReplyBlockHeaders(req.ReqID, headers), task.done())
 		}()
@@ -572,7 +575,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrRequestRejected, "")
 		}
 		go func() {
-			for _, hash := range req.Hashes {
+			for i, hash := range req.Hashes {
+				if i != 0 && !task.waitOrStop() {
+					return
+				}
 				if bytes >= softResponseLimit {
 					break
 				}
@@ -628,7 +634,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrRequestRejected, "")
 		}
 		go func() {
-			for _, req := range req.Reqs {
+			for i, req := range req.Reqs {
+				if i != 0 && !task.waitOrStop() {
+					return
+				}
 				// Retrieve the requested state entry, stopping if enough was found
 				if number := rawdb.ReadHeaderNumber(pm.chainDb, req.BHash); number != nil {
 					if header := rawdb.ReadHeader(pm.chainDb, req.BHash, *number); header != nil {
@@ -693,7 +702,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrRequestRejected, "")
 		}
 		go func() {
-			for _, hash := range req.Hashes {
+			for i, hash := range req.Hashes {
+				if i != 0 && !task.waitOrStop() {
+					return
+				}
 				if bytes >= softResponseLimit {
 					break
 				}
@@ -759,7 +771,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrRequestRejected, "")
 		}
 		go func() {
-			for _, req := range req.Reqs {
+			for i, req := range req.Reqs {
+				if i != 0 && !task.waitOrStop() {
+					return
+				}
 				// Retrieve the requested state entry, stopping if enough was found
 				if number := rawdb.ReadHeaderNumber(pm.chainDb, req.BHash); number != nil {
 					if header := rawdb.ReadHeader(pm.chainDb, req.BHash, *number); header != nil {
@@ -816,7 +831,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 
 			nodes := light.NewNodeSet()
 
-			for _, req := range req.Reqs {
+			for i, req := range req.Reqs {
+				if i != 0 && !task.waitOrStop() {
+					return
+				}
 				// Look up the state belonging to the request
 				if statedb == nil || req.BHash != lastBHash {
 					statedb, root, lastBHash = nil, common.Hash{}, req.BHash
@@ -917,7 +935,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 		go func() {
 			trieDb := trie.NewDatabase(ethdb.NewTable(pm.chainDb, light.ChtTablePrefix))
-			for _, req := range req.Reqs {
+			for i, req := range req.Reqs {
+				if i != 0 && !task.waitOrStop() {
+					return
+				}
 				if header := pm.blockchain.GetHeaderByNumber(req.BlockNum); header != nil {
 					sectionHead := rawdb.ReadCanonicalHash(pm.chainDb, req.ChtNum*pm.iConfig.ChtSize-1)
 					if root := light.GetChtRoot(pm.chainDb, req.ChtNum-1, sectionHead); root != (common.Hash{}) {
@@ -969,7 +990,10 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 				auxTrie  *trie.Trie
 			)
 			nodes := light.NewNodeSet()
-			for _, req := range req.Reqs {
+			for i, req := range req.Reqs {
+				if i != 0 && !task.waitOrStop() {
+					return
+				}
 				if auxTrie == nil || req.Type != lastType || req.TrieIdx != lastIdx {
 					auxTrie, lastType, lastIdx = nil, req.Type, req.TrieIdx
 
@@ -1057,7 +1081,12 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrRequestRejected, "")
 		}
 		go func() {
-			pm.txpool.AddRemotes(txs)
+			for i, tx := range txs {
+				if i != 0 && !task.waitOrStop() {
+					return
+				}
+				pm.txpool.AddRemotes([]*types.Transaction{tx})
+			}
 			sendReq(0, uint64(reqCnt), nil, task.done())
 		}()
 
@@ -1078,18 +1107,19 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrRequestRejected, "")
 		}
 		go func() {
-			hashes := make([]common.Hash, len(req.Txs))
+			stats := make([]txStatus, len(req.Txs))
 			for i, tx := range req.Txs {
-				hashes[i] = tx.Hash()
-			}
-			stats := pm.txStatus(hashes)
-			for i, stat := range stats {
-				if stat.Status == core.TxStatusUnknown {
-					if errs := pm.txpool.AddRemotes([]*types.Transaction{req.Txs[i]}); errs[0] != nil {
+				if i != 0 && !task.waitOrStop() {
+					return
+				}
+				hash := tx.Hash()
+				stats[i] = pm.txStatus(hash)
+				if stats[i].Status == core.TxStatusUnknown {
+					if errs := pm.txpool.AddRemotes([]*types.Transaction{tx}); errs[0] != nil {
 						stats[i].Error = errs[0].Error()
 						continue
 					}
-					stats[i] = pm.txStatus([]common.Hash{hashes[i]})[0]
+					stats[i] = pm.txStatus(hash)
 				}
 			}
 			sendReq(req.ReqID, uint64(reqCnt), p.ReplyTxStatus(req.ReqID, stats), task.done())
@@ -1112,7 +1142,13 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			return errResp(ErrRequestRejected, "")
 		}
 		go func() {
-			stats := pm.txStatus(req.Hashes)
+			stats := make([]txStatus, len(req.Hashes))
+			for i, hash := range req.Hashes {
+				if i != 0 && !task.waitOrStop() {
+					return
+				}
+				stats[i] = pm.txStatus(hash)
+			}
 			sendReq(req.ReqID, uint64(reqCnt), p.ReplyTxStatus(req.ReqID, stats), task.done())
 		}()
 
@@ -1190,21 +1226,17 @@ func (pm *ProtocolManager) getHelperTrieAuxData(req HelperTrieReq) []byte {
 	return nil
 }
 
-func (pm *ProtocolManager) txStatus(hashes []common.Hash) []txStatus {
-	stats := make([]txStatus, len(hashes))
-	for i, stat := range pm.txpool.Status(hashes) {
-		// Save the status we've got from the transaction pool
-		stats[i].Status = stat
-
-		// If the transaction is unknown to the pool, try looking it up locally
-		if stat == core.TxStatusUnknown {
-			if block, number, index := rawdb.ReadTxLookupEntry(pm.chainDb, hashes[i]); block != (common.Hash{}) {
-				stats[i].Status = core.TxStatusIncluded
-				stats[i].Lookup = &rawdb.TxLookupEntry{BlockHash: block, BlockIndex: number, Index: index}
-			}
+func (pm *ProtocolManager) txStatus(hash common.Hash) txStatus {
+	var stat txStatus
+	stat.Status = pm.txpool.Status([]common.Hash{hash})[0]
+	// If the transaction is unknown to the pool, try looking it up locally
+	if stat.Status == core.TxStatusUnknown {
+		if block, number, index := rawdb.ReadTxLookupEntry(pm.chainDb, hash); block != (common.Hash{}) {
+			stat.Status = core.TxStatusIncluded
+			stat.Lookup = &rawdb.TxLookupEntry{BlockHash: block, BlockIndex: number, Index: index}
 		}
 	}
-	return stats
+	return stat
 }
 
 // isULCEnabled returns true if we can use ULC
