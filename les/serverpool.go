@@ -156,6 +156,7 @@ type serverPool struct {
 	registerCh                     chan *registerReq
 
 	reqCounter *requestCounter
+	respTime   *responseTimeStats
 }
 
 // newServerPool creates a new serverPool instance
@@ -281,9 +282,7 @@ func (pool *serverPool) disconnect(entry *poolEntry) {
 }
 
 const (
-	pseBlockDelay = iota
-	pseResponseTime
-	pseResponseTimeout
+	pseResponseTime = iota
 	pseCorrFactor
 
 	peConnect = iota
@@ -300,27 +299,12 @@ type poolStatAdjust struct {
 	cost, recharge uint64
 }
 
-// adjustBlockDelay adjusts the block announce delay statistics of a node
-func (pool *serverPool) adjustBlockDelay(entry *poolEntry, time time.Duration) {
-	if entry == nil {
-		return
-	}
-	pool.adjustStats <- poolStatAdjust{adjustType: pseBlockDelay, entry: entry, time: time}
-}
-
 // adjustResponseTime adjusts the request response time statistics of a node
-func (pool *serverPool) adjustResponseTime(entry *poolEntry, time time.Duration, timeout bool) {
+func (pool *serverPool) adjustResponseTime(entry *poolEntry, time time.Duration) {
 	if entry == nil {
 		return
 	}
-	if time > hardRequestTimeout {
-		time = hardRequestTimeout
-	}
-	if timeout {
-		pool.adjustStats <- poolStatAdjust{adjustType: pseResponseTimeout, entry: entry, time: time}
-	} else {
-		pool.adjustStats <- poolStatAdjust{adjustType: pseResponseTime, entry: entry, time: time}
-	}
+	pool.adjustStats <- poolStatAdjust{adjustType: pseResponseTime, entry: entry, time: time}
 }
 
 // adjustCorrFactor adjusts the bandwidth correction statistics of a node
@@ -355,7 +339,7 @@ func (pool *serverPool) eventLoop() {
 				// disconnect requested by server side.
 				entry.connectStats.add(connAdjust, 1)
 			}
-			entry.updateFreeCapStats()
+			entry.addSessionStats()
 		}
 		entry.state = psNotConnected
 		pool.server.RemovePeer(entry.node)
@@ -380,21 +364,9 @@ func (pool *serverPool) eventLoop() {
 			}
 
 		case adj := <-pool.adjustStats:
-			switch adj.adjustType {
-			case pseBlockDelay:
-				adj.entry.delayStats.add(float64(adj.time), 1)
-			case pseResponseTime:
-				adj.entry.responseStats.add(float64(adj.time), 1)
-				adj.entry.timeoutStats.add(0, 1)
-			case pseResponseTimeout:
-				adj.entry.responseStats.add(float64(adj.time), 1)
-				adj.entry.timeoutStats.add(1, 1)
-			case pseCorrFactor:
-				refCost := adj.entry.refCost()
-				if refCost != 0 {
-					adj.entry.bwCorrStats.add(float64(adj.recharge)/float64(adj.cost), float64(adj.cost)/refCost)
-				}
-			}
+			adj.entry.sessionValue += adj.refCost * pool.responseStats.add(adj.time)
+			adj.entry.sessionRecharge += adj.recharge
+			adj.entry.sessionMaxCost += adj.maxCost
 
 		case node := <-pool.discNodes:
 			if pool.trustedNodes[node.ID()] == nil {
@@ -469,10 +441,11 @@ func (pool *serverPool) eventLoop() {
 			case peUpdateParams:
 				req := ev.req.(*updateParamsReq)
 				// Handle peer parameter updates
-				req.entry.updateFreeCapStats()
+				if req.entry.costTable != req.costTable {
+					req.entry.addSessionStats()
+					req.entry.costTable = req.costTable
+				}
 				req.entry.capacity = req.capacity
-				req.entry.costTable = req.costTable
-				req.entry.cachedRefCost = 0 // force update
 
 			case peDisconnect:
 				req := ev.req.(*disconnReq)
@@ -536,10 +509,12 @@ func (pool *serverPool) loadPoolState() {
 		return
 	}
 	var poolState struct {
-		List       []*poolEntry
-		ReqCounter *requestCounter
+		List          []*poolEntry
+		ReqCounter    *requestCounter
+		ResponseStats *responseTimeStats
 	}
 	poolState.ReqCounter = pool.reqCounter
+	poolState.ResponseStats = pool.responseStats
 	err = rlp.DecodeBytes(enc, &poolState)
 	if err != nil {
 		log.Debug("Failed to decode node list", "err", err)
@@ -597,14 +572,16 @@ func parseTrustedNodes(trustedNodes []string) map[enode.ID]*enode.Node {
 // ordered from least to most recently connected.
 func (pool *serverPool) savePoolState() {
 	var poolState struct {
-		List       []*poolEntry
-		ReqCounter *requestCounter
+		List          []*poolEntry
+		ReqCounter    *requestCounter
+		ResponseStats *responseTimeStats
 	}
 	poolState.List = make([]*poolEntry, len(pool.knownQueue.queue))
 	for i := range poolState.List {
 		poolState.List[i] = pool.knownQueue.fetchOldest()
 	}
 	poolState.ReqCounter = pool.reqCounter
+	poolState.ResponseStats = pool.responseStats
 	enc, err := rlp.EncodeToBytes(poolState)
 	if err == nil {
 		pool.db.Put(pool.dbKey, enc)
@@ -732,90 +709,89 @@ type poolEntry struct {
 	lastConnected, dialed *poolEntryAddress
 	addrSelect            weightedRandomSelect
 
-	lastDiscovered              mclock.AbsTime
-	known                       bool
-	dialedBy                    *dialCycle
-	connectStats, delayStats    poolStats
-	responseStats, timeoutStats poolStats
-	bwCorrStats, freeCapStats   poolStats
-	state                       int
-	regTime                     mclock.AbsTime
-	queueIdx                    int
-	removed                     bool
+	totalRecharge, totalValue, sessionValue float64
+	sessionRecharge, sessionMaxCost         uint64
+	lastFade                                mclock.AbsTime
+
+	lastDiscovered mclock.AbsTime
+	known          bool
+	dialedBy       *dialCycle
+	state          int
+	regTime        mclock.AbsTime
+	queueIdx       int
+	removed        bool
 
 	newDialDelayed, knownDialDelayed bool
 	newDialRetryAt, knownDialRetryAt mclock.AbsTime
 	newDialFails, knownDialFails     int
 
-	capacity                                  float64
-	costTable                                 requestCostTable
-	cachedRefCost                             float64
-	lastRefCostRecalc, lastFreeCapStatsUpdate mclock.AbsTime
+	capacity  float64
+	costTable requestCostTable
 }
 
 // poolEntryEnc is the RLP encoding of poolEntry.
 type poolEntryEnc struct {
-	Pubkey                                     []byte
-	IP                                         net.IP
-	Port                                       uint16
-	Fails                                      uint
-	CStat, DStat, RStat, TStat, BwStat, FcStat poolStats
+	Pubkey                              []byte
+	IP                                  net.IP
+	Port                                uint16
+	Fails                               uint
+	TotalRecharge, TotalValue, LastFade uint64
 }
 
-func (e *poolEntry) initMaxWeights() {
-	e.connectStats.init(100)
-	e.delayStats.init(5000)
-	e.responseStats.init(10000)
-	e.timeoutStats.init(10000)
-	e.bwCorrStats.init(10000)
-	e.freeCapStats.init(1000000000000)
+func (e *poolEntry) fadeStatsBy(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	exp := math.Exp(-float64(d) / float64(fadeStatsTC))
+	e.sumRecharge *= exp
+	e.sumMaxCost *= exp
+	e.totalValue *= exp
 }
 
-func (e *poolEntry) refCost() float64 {
+func (e *poolEntry) fadeStats() {
 	now := mclock.Now()
-	if e.cachedRefCost == 0 || time.Duration(now-e.lastRefCostRecalc) > time.Second*10 {
-		if e.costTable == nil {
-			return 0
+	dt := time.Duration(now - e.lastFade)
+	if dt >= fadeStatsRecalc {
+		e.fadeStatsBy(dt)
+		e.lastFade = now
+	}
+}
+
+func (e *poolEntry) addSessionStats() {
+	e.fadeStats()
+	oldTotalValue := e.totalValue
+	e.totalValue += e.sessionValue
+	if e.totalValue < 0 {
+		e.totalValue = 0
+	}
+	if e.sessionValue > 0 {
+		if e.sessionMaxCost > e.sessionRecharge {
+			e.totalRecharge += e.sessionValue * float64(e.sessionRecharge) / float64(e.sessionMaxCost)
+		} else {
+			e.totalRecharge += e.sessionValue
 		}
-		e.cachedRefCost = e.pool.reqCounter.referenceCost(e.costTable)
-		e.lastRefCostRecalc = now
 	}
-	return e.cachedRefCost
-}
-
-func (e *poolEntry) corrCapacity() (float64, bool) {
-	refCost := e.refCost()
-	if refCost == 0 {
-		return 0, false
+	if e.totalValue < oldTotalValue {
+		e.totalRecharge *= e.totalValue / oldTotalValue
 	}
-	bwc := 1 - e.bwCorrStats.recentAvg()
-	if bwc < 0.1 {
-		bwc = 0.1
+	if e.totalValue < e.totalRecharge {
+		e.totalRecharge = e.totalValue
 	}
-	return e.capacity / bwc / refCost * (1 - e.timeoutStats.recentAvg()), true
-}
-
-func (e *poolEntry) updateFreeCapStats() {
-	now := mclock.Now()
-	dt := now - e.lastFreeCapStatsUpdate
-	e.lastFreeCapStatsUpdate = now
-	if ccap, ok := e.corrCapacity(); ok {
-		e.freeCapStats.add(ccap, float64(dt))
-	}
+	e.sessionValue = 0
+	e.sessionRecharge = 0
+	e.sessionMaxCost = 0
 }
 
 func (e *poolEntry) EncodeRLP(w io.Writer) error {
+	e.fadeStatsBy(time.Duration(mclock.Now() - e.lastFade))
 	return rlp.Encode(w, &poolEntryEnc{
-		Pubkey: encodePubkey64(e.node.Pubkey()),
-		IP:     e.lastConnected.ip,
-		Port:   e.lastConnected.port,
-		Fails:  e.lastConnected.fails,
-		CStat:  e.connectStats,
-		DStat:  e.delayStats,
-		RStat:  e.responseStats,
-		TStat:  e.timeoutStats,
-		BwStat: e.bwCorrStats,
-		FcStat: e.freeCapStats,
+		Pubkey:        encodePubkey64(e.node.Pubkey()),
+		IP:            e.lastConnected.ip,
+		Port:          e.lastConnected.port,
+		Fails:         e.lastConnected.fails,
+		TotalRecharge: math.Float64bits(e.totalRecharge),
+		TotalValue:    math.Float64bits(e.totalValue),
+		LastFade:      uint64(time.Now().UnixNano()),
 	})
 }
 
@@ -835,13 +811,11 @@ func (e *poolEntry) DecodeRLP(s *rlp.Stream) error {
 	e.addrSelect = *newWeightedRandomSelect()
 	e.addrSelect.update(addr)
 	e.lastConnected = addr
-	e.connectStats = entry.CStat
-	e.delayStats = entry.DStat
-	e.responseStats = entry.RStat
-	e.timeoutStats = entry.TStat
-	e.bwCorrStats = entry.BwStat
-	e.freeCapStats = entry.FcStat
 	e.known = true
+	e.totalRecharge = math.Float64frombits(entry.TotalRecharge)
+	e.totalValue = math.Float64frombits(entry.TotalValue)
+	e.fadeStatsBy(time.Duration(time.Now().UnixNano() - int64(entry.LastFade)))
+	e.lastFade = mclock.Now()
 	return nil
 }
 
@@ -914,8 +888,8 @@ func (e *knownEntry) Weight() int64 {
 	if e.state != psNotConnected || !e.known || e.knownDialDelayed {
 		return 0
 	}
-	qualityFactor := math.Exp(-float64(e.lastConnected.fails)*failDropLn - e.responseStats.recentAvg()/float64(responseScoreTC) - e.delayStats.recentAvg()/float64(delayScoreTC))
-	weight := 1000000000000 * e.connectStats.recentAvg() * e.freeCapStats.recentAvg() * qualityFactor
+	e.fadeStats()
+	weight := e.totalValue
 	if weight < 0 {
 		weight = 0
 	}
@@ -958,55 +932,6 @@ func (a *poolEntryAddress) Weight() int64 {
 
 func (a *poolEntryAddress) strKey() string {
 	return a.ip.String() + ":" + strconv.Itoa(int(a.port))
-}
-
-// poolStats implement statistics for a certain quantity. After total weight exceeds
-// maxWeight the weight of old entries is reduced exponentially.
-type poolStats struct {
-	sum, weight, maxWeight float64
-}
-
-// init initializes stats with a long term sum/update count pair retrieved from the database
-func (s *poolStats) init(maxWeight float64) {
-	s.maxWeight = maxWeight
-}
-
-// add updates the stats with a new value
-func (s *poolStats) add(value, weight float64) {
-	s.weight += weight
-	s.sum += value * weight
-	if s.weight > s.maxWeight {
-		s.sum *= s.maxWeight / s.weight
-		s.weight = s.maxWeight
-	}
-}
-
-// recentAvg returns the short-term adjusted average
-func (s *poolStats) recentAvg() float64 {
-	if s.weight < 1e-30 {
-		return 0
-	}
-	if s.sum > s.weight*1e30 {
-		return 1e30
-	} else {
-		return s.sum / s.weight
-	}
-}
-
-func (s *poolStats) EncodeRLP(w io.Writer) error {
-	return rlp.Encode(w, []interface{}{math.Float64bits(s.sum), math.Float64bits(s.weight)})
-}
-
-func (s *poolStats) DecodeRLP(st *rlp.Stream) error {
-	var stats struct {
-		SumUint, WeightUint uint64
-	}
-	if err := st.Decode(&stats); err != nil {
-		return err
-	}
-	s.sum = math.Float64frombits(stats.SumUint)
-	s.weight = math.Float64frombits(stats.WeightUint)
-	return nil
 }
 
 // poolEntryQueue keeps track of its least recently accessed entries and removes
