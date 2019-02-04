@@ -47,6 +47,7 @@ type distPeer interface {
 	waitBefore(uint64) (time.Duration, float64)
 	canQueue() bool
 	queueSend(f func())
+	softRequestTimeout() time.Duration
 }
 
 // distReq is the request abstraction used by the distributor. It is based on

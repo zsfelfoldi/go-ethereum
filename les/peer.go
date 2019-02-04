@@ -22,6 +22,7 @@ import (
 	"io"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -88,6 +89,7 @@ type peer struct {
 	responseErrors int
 	updateCounter  uint64
 	updateTime     mclock.AbsTime
+	srto           time.Duration
 
 	fcClient *flowcontrol.ClientNode // nil if the peer is server only
 	fcServer *flowcontrol.ServerNode // nil if the peer is client only
@@ -96,7 +98,7 @@ type peer struct {
 
 	isTrusted      bool
 	isOnlyAnnounce bool
-	reqCounter     *requestCounter
+	serverPool     *serverPool
 }
 
 func newPeer(version int, network uint64, isTrusted bool, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
@@ -109,6 +111,7 @@ func newPeer(version int, network uint64, isTrusted bool, p *p2p.Peer, rw p2p.Ms
 		network:   network,
 		id:        fmt.Sprintf("%x", id),
 		isTrusted: isTrusted,
+		srto:      minSoftRequestTimeout,
 	}
 }
 
@@ -199,6 +202,10 @@ func (p *peer) updateCapacity(cap uint64) {
 	kvList = kvList.add("flowControl/MRR", cap)
 	kvList = kvList.add("flowControl/BL", cap*bufLimitRatio)
 	p.queueSend(func() { p.SendAnnounce(announceData{Update: kvList}) })
+}
+
+func (p *peer) softRequestTimeout() time.Duration {
+	return time.Duration(atomic.LoadInt64((*int64)(&p.srto)))
 }
 
 func sendRequest(w p2p.MsgWriter, msgcode, reqID uint64, data interface{}) error {
@@ -344,7 +351,7 @@ func (p *peer) ReplyTxStatus(reqID uint64, stats []txStatus) *reply {
 // specified header query, based on the hash of an origin block.
 func (p *peer) RequestHeadersByHash(reqID uint64, origin common.Hash, amount int, skip int, reverse bool) error {
 	p.Log().Debug("Fetching batch of headers", "count", amount, "fromhash", origin, "skip", skip, "reverse", reverse)
-	p.reqCounter.add(GetBlockHeadersMsg, uint64(amount))
+	p.serverPool.addRequest(GetBlockHeadersMsg, uint64(amount))
 	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, &getBlockHeadersData{Origin: hashOrNumber{Hash: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
 }
 
@@ -352,7 +359,7 @@ func (p *peer) RequestHeadersByHash(reqID uint64, origin common.Hash, amount int
 // specified header query, based on the number of an origin block.
 func (p *peer) RequestHeadersByNumber(reqID, origin uint64, amount int, skip int, reverse bool) error {
 	p.Log().Debug("Fetching batch of headers", "count", amount, "fromnum", origin, "skip", skip, "reverse", reverse)
-	p.reqCounter.add(GetBlockHeadersMsg, uint64(amount))
+	p.serverPool.addRequest(GetBlockHeadersMsg, uint64(amount))
 	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, &getBlockHeadersData{Origin: hashOrNumber{Number: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
 }
 
@@ -360,7 +367,7 @@ func (p *peer) RequestHeadersByNumber(reqID, origin uint64, amount int, skip int
 // specified.
 func (p *peer) RequestBodies(reqID uint64, hashes []common.Hash) error {
 	p.Log().Debug("Fetching batch of block bodies", "count", len(hashes))
-	p.reqCounter.add(GetBlockBodiesMsg, uint64(len(hashes)))
+	p.serverPool.addRequest(GetBlockBodiesMsg, uint64(len(hashes)))
 	return sendRequest(p.rw, GetBlockBodiesMsg, reqID, hashes)
 }
 
@@ -368,14 +375,14 @@ func (p *peer) RequestBodies(reqID uint64, hashes []common.Hash) error {
 // data, corresponding to the specified hashes.
 func (p *peer) RequestCode(reqID uint64, reqs []CodeReq) error {
 	p.Log().Debug("Fetching batch of codes", "count", len(reqs))
-	p.reqCounter.add(GetCodeMsg, uint64(len(reqs)))
+	p.serverPool.addRequest(GetCodeMsg, uint64(len(reqs)))
 	return sendRequest(p.rw, GetCodeMsg, reqID, reqs)
 }
 
 // RequestReceipts fetches a batch of transaction receipts from a remote node.
 func (p *peer) RequestReceipts(reqID uint64, hashes []common.Hash) error {
 	p.Log().Debug("Fetching batch of receipts", "count", len(hashes))
-	p.reqCounter.add(GetReceiptsMsg, uint64(len(hashes)))
+	p.serverPool.addRequest(GetReceiptsMsg, uint64(len(hashes)))
 	return sendRequest(p.rw, GetReceiptsMsg, reqID, hashes)
 }
 
@@ -384,10 +391,10 @@ func (p *peer) RequestProofs(reqID uint64, reqs []ProofReq) error {
 	p.Log().Debug("Fetching batch of proofs", "count", len(reqs))
 	switch p.version {
 	case lpv1:
-		p.reqCounter.add(GetProofsV1Msg, uint64(len(reqs)))
+		p.serverPool.addRequest(GetProofsV1Msg, uint64(len(reqs)))
 		return sendRequest(p.rw, GetProofsV1Msg, reqID, reqs)
 	case lpv2:
-		p.reqCounter.add(GetProofsV2Msg, uint64(len(reqs)))
+		p.serverPool.addRequest(GetProofsV2Msg, uint64(len(reqs)))
 		return sendRequest(p.rw, GetProofsV2Msg, reqID, reqs)
 	default:
 		panic(nil)
@@ -403,7 +410,7 @@ func (p *peer) RequestHelperTrieProofs(reqID uint64, data interface{}) error {
 			return errInvalidHelpTrieReq
 		}
 		p.Log().Debug("Fetching batch of header proofs", "count", len(reqs))
-		p.reqCounter.add(GetHeaderProofsMsg, uint64(len(reqs)))
+		p.serverPool.addRequest(GetHeaderProofsMsg, uint64(len(reqs)))
 		return sendRequest(p.rw, GetHeaderProofsMsg, reqID, reqs)
 	case lpv2:
 		reqs, ok := data.([]HelperTrieReq)
@@ -411,7 +418,7 @@ func (p *peer) RequestHelperTrieProofs(reqID uint64, data interface{}) error {
 			return errInvalidHelpTrieReq
 		}
 		p.Log().Debug("Fetching batch of HelperTrie proofs", "count", len(reqs))
-		p.reqCounter.add(GetHelperTrieProofsMsg, uint64(len(reqs)))
+		p.serverPool.addRequest(GetHelperTrieProofsMsg, uint64(len(reqs)))
 		return sendRequest(p.rw, GetHelperTrieProofsMsg, reqID, reqs)
 	default:
 		panic(nil)
@@ -421,7 +428,7 @@ func (p *peer) RequestHelperTrieProofs(reqID uint64, data interface{}) error {
 // RequestTxStatus fetches a batch of transaction status records from a remote node.
 func (p *peer) RequestTxStatus(reqID uint64, txHashes []common.Hash) error {
 	p.Log().Debug("Requesting transaction status", "count", len(txHashes))
-	p.reqCounter.add(GetTxStatusMsg, uint64(len(txHashes)))
+	p.serverPool.addRequest(GetTxStatusMsg, uint64(len(txHashes)))
 	return sendRequest(p.rw, GetTxStatusMsg, reqID, txHashes)
 }
 
@@ -430,10 +437,10 @@ func (p *peer) SendTxs(reqID, count uint64, txs rlp.RawValue) error {
 	p.Log().Debug("Sending batch of transactions", "size", len(txs))
 	switch p.version {
 	case lpv1:
-		p.reqCounter.add(SendTxMsg, count)
+		p.serverPool.addRequest(SendTxMsg, count)
 		return p2p.Send(p.rw, SendTxMsg, txs) // old message format does not include reqID
 	case lpv2:
-		p.reqCounter.add(SendTxV2Msg, count)
+		p.serverPool.addRequest(SendTxV2Msg, count)
 		return sendRequest(p.rw, SendTxV2Msg, reqID, txs)
 	default:
 		panic(nil)
@@ -827,79 +834,4 @@ func (ps *peerSet) Close() {
 		p.Disconnect(p2p.DiscQuitting)
 	}
 	ps.closed = true
-}
-
-type requestCountItem struct {
-	sumReq, sumCount uint64
-}
-
-type requestCounter struct {
-	lock     sync.Mutex
-	counter  map[uint64]requestCountItem
-	totalReq uint64
-}
-
-func newRequestCounter() *requestCounter {
-	return &requestCounter{counter: make(map[uint64]requestCountItem)}
-}
-
-func (rc *requestCounter) add(code, count uint64) {
-	if rc == nil {
-		return
-	}
-	rc.lock.Lock()
-	defer rc.lock.Unlock()
-
-	item := rc.counter[code]
-	item.sumReq++
-	item.sumCount += count
-	rc.counter[code] = item
-	rc.totalReq++
-}
-
-func (rc *requestCounter) referenceCost(costs requestCostTable) float64 {
-	rc.lock.Lock()
-	defer rc.lock.Unlock()
-
-	if rc.totalReq == 0 {
-		return 0
-	}
-	var r float64
-	for code, cost := range costs {
-		usage := rc.counter[code]
-		r += float64(usage.sumReq)*float64(cost.baseCost) + float64(usage.sumCount)*float64(cost.reqCost)
-	}
-	return r / float64(rc.totalReq)
-}
-
-type requestCountListItem struct {
-	Code, SumReq, SumCount uint64
-}
-
-func (rc *requestCounter) EncodeRLP(w io.Writer) error {
-	rc.lock.Lock()
-	defer rc.lock.Unlock()
-
-	list := make([]requestCountListItem, len(rc.counter))
-	ptr := 0
-	for code, item := range rc.counter {
-		list[ptr] = requestCountListItem{code, item.sumReq, item.sumCount}
-		ptr++
-	}
-	return rlp.Encode(w, list)
-}
-
-func (rc *requestCounter) DecodeRLP(st *rlp.Stream) error {
-	rc.lock.Lock()
-	defer rc.lock.Unlock()
-
-	var list []requestCountListItem
-	if err := st.Decode(&list); err != nil {
-		return err
-	}
-	for _, item := range list {
-		rc.counter[item.Code] = requestCountItem{item.SumReq, item.SumCount}
-		rc.totalReq += item.SumReq
-	}
-	return nil
 }

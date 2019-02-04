@@ -87,7 +87,19 @@ const (
 	initStatsWeight = 1
 )
 
+const (
+	peConnect = iota
+	peRegister
+	peUpdateParams
+	peDisconnect
+)
+
 type (
+	peerEvent struct {
+		eventType int
+		req       interface{}
+	}
+
 	// connReq represents a request for peer connection.
 	connReq struct {
 		p      *peer
@@ -115,12 +127,14 @@ type (
 		capacity  float64
 		costTable requestCostTable
 	}
-
-	peerEvent struct {
-		eventType int
-		req       interface{}
-	}
 )
+
+// poolStatAdjust records are sent to adjust peer block delay/response time statistics
+type poolStatAdjust struct {
+	entry                      *poolEntry
+	responseTime               time.Duration
+	refCost, maxCost, recharge uint64
+}
 
 // serverPool implements a pool for storing and selecting newly discovered and already
 // known light server nodes. It received discovered nodes, stores statistics about
@@ -156,7 +170,6 @@ type serverPool struct {
 	registerCh                     chan *registerReq
 
 	reqCounter *requestCounter
-	respTime   *responseTimeStats
 }
 
 // newServerPool creates a new serverPool instance
@@ -281,30 +294,12 @@ func (pool *serverPool) disconnect(entry *poolEntry) {
 	<-req.done
 }
 
-const (
-	pseResponseTime = iota
-	pseCorrFactor
-
-	peConnect = iota
-	peRegister
-	peUpdateParams
-	peDisconnect
-)
-
-// poolStatAdjust records are sent to adjust peer block delay/response time statistics
-type poolStatAdjust struct {
-	adjustType     int
-	entry          *poolEntry
-	time           time.Duration
-	cost, recharge uint64
-}
-
-// adjustResponseTime adjusts the request response time statistics of a node
-func (pool *serverPool) adjustResponseTime(entry *poolEntry, time time.Duration) {
+// adjustStats adjusts the request cost and response time statistics of a node
+func (pool *serverPool) adjustStats(entry *poolEntry, responseTime time.Duration, refCost, maxCost, recharge uint64) {
 	if entry == nil {
 		return
 	}
-	pool.adjustStats <- poolStatAdjust{adjustType: pseResponseTime, entry: entry, time: time}
+	pool.adjustStats <- poolStatAdjust{entry: entry, time: time, responseTime: responseTime, refCost: refCost, maxCost: maxCost, recharge: recharge}
 }
 
 // adjustCorrFactor adjusts the bandwidth correction statistics of a node
@@ -364,9 +359,10 @@ func (pool *serverPool) eventLoop() {
 			}
 
 		case adj := <-pool.adjustStats:
-			adj.entry.sessionValue += adj.refCost * pool.responseStats.add(adj.time)
+			adj.entry.sessionValue += adj.refCost
 			adj.entry.sessionRecharge += adj.recharge
 			adj.entry.sessionMaxCost += adj.maxCost
+			adj.entry.responseStats.add(adj.responseTime)
 
 		case node := <-pool.discNodes:
 			if pool.trustedNodes[node.ID()] == nil {
@@ -711,6 +707,7 @@ type poolEntry struct {
 
 	totalRecharge, totalValue, sessionValue float64
 	sessionRecharge, sessionMaxCost         uint64
+	responseStats                           responseTimeStats
 	lastFade                                mclock.AbsTime
 
 	lastDiscovered mclock.AbsTime
@@ -736,6 +733,7 @@ type poolEntryEnc struct {
 	Port                                uint16
 	Fails                               uint
 	TotalRecharge, TotalValue, LastFade uint64
+	ResponseStats                       *responseTimeStats
 }
 
 func (e *poolEntry) fadeStatsBy(d time.Duration) {
@@ -746,6 +744,7 @@ func (e *poolEntry) fadeStatsBy(d time.Duration) {
 	e.sumRecharge *= exp
 	e.sumMaxCost *= exp
 	e.totalValue *= exp
+	e.responseStats.fade(exp)
 }
 
 func (e *poolEntry) fadeStats() {
@@ -759,23 +758,11 @@ func (e *poolEntry) fadeStats() {
 
 func (e *poolEntry) addSessionStats() {
 	e.fadeStats()
-	oldTotalValue := e.totalValue
 	e.totalValue += e.sessionValue
-	if e.totalValue < 0 {
-		e.totalValue = 0
-	}
-	if e.sessionValue > 0 {
-		if e.sessionMaxCost > e.sessionRecharge {
-			e.totalRecharge += e.sessionValue * float64(e.sessionRecharge) / float64(e.sessionMaxCost)
-		} else {
-			e.totalRecharge += e.sessionValue
-		}
-	}
-	if e.totalValue < oldTotalValue {
-		e.totalRecharge *= e.totalValue / oldTotalValue
-	}
-	if e.totalValue < e.totalRecharge {
-		e.totalRecharge = e.totalValue
+	if e.sessionMaxCost > e.sessionRecharge {
+		e.totalRecharge += e.sessionValue * float64(e.sessionRecharge) / float64(e.sessionMaxCost)
+	} else {
+		e.totalRecharge += e.sessionValue
 	}
 	e.sessionValue = 0
 	e.sessionRecharge = 0
@@ -791,12 +778,14 @@ func (e *poolEntry) EncodeRLP(w io.Writer) error {
 		Fails:         e.lastConnected.fails,
 		TotalRecharge: math.Float64bits(e.totalRecharge),
 		TotalValue:    math.Float64bits(e.totalValue),
+		ResponseStats: &e.responseStats,
 		LastFade:      uint64(time.Now().UnixNano()),
 	})
 }
 
 func (e *poolEntry) DecodeRLP(s *rlp.Stream) error {
 	var entry poolEntryEnc
+	entry.ResponseStats = &e.responseStats
 	if err := s.Decode(&entry); err != nil {
 		return err
 	}
@@ -984,4 +973,163 @@ func (q *poolEntryQueue) setLatest(entry *poolEntry) {
 	entry.queueIdx = q.newPtr
 	q.queue[entry.queueIdx] = entry
 	q.newPtr++
+}
+
+type requestCountItem struct {
+	sumReq, sumCount uint64
+}
+
+type requestCounter struct {
+	counter  map[uint64]requestCountItem
+	totalReq uint64
+}
+
+func newRequestCounter() *requestCounter {
+	return &requestCounter{counter: make(map[uint64]requestCountItem)}
+}
+
+func (rc *requestCounter) add(code, count uint64) {
+	if rc == nil {
+		return
+	}
+	item := rc.counter[code]
+	item.sumReq++
+	item.sumCount += count
+	rc.counter[code] = item
+	rc.totalReq++
+}
+
+type requestCountListItem struct {
+	Code, SumReq, SumCount uint64
+}
+
+func (rc *requestCounter) EncodeRLP(w io.Writer) error {
+	list := make([]requestCountListItem, len(rc.counter))
+	ptr := 0
+	for code, item := range rc.counter {
+		list[ptr] = requestCountListItem{code, item.sumReq, item.sumCount}
+		ptr++
+	}
+	return rlp.Encode(w, list)
+}
+
+func (rc *requestCounter) DecodeRLP(st *rlp.Stream) error {
+	var list []requestCountListItem
+	if err := st.Decode(&list); err != nil {
+		return err
+	}
+	for _, item := range list {
+		rc.counter[item.Code] = requestCountItem{item.SumReq, item.SumCount}
+		rc.totalReq += item.SumReq
+	}
+	return nil
+}
+
+type responseTimeStats struct {
+	stats      [64]float64
+	sum        float64
+	srtoRecalc int
+	peer       *peer // nil if not connected
+}
+
+func (rt *responseTimeStats) EncodeRLP(w io.Writer) error {
+	var list [64]uint64
+	for i, v := range rt.stats[:] {
+		list[i] = math.math.Float64bits(v)
+	}
+	return rlp.Encode(w, list)
+}
+
+func (rt *responseTimeStats) DecodeRLP(st *rlp.Stream) error {
+	var list [64]uint64
+	if err := st.Decode(&list); err != nil {
+		return err
+	}
+	for i, v := range list {
+		rt.stats[i] = math.Float64frombits(v)
+	}
+	return nil
+}
+
+func timeToStatScale(d time.Duration) float64 {
+	if d < 0 {
+		return 0
+	}
+	r := float64(d) / float64(time.Millisecond*50)
+	if r > 1 {
+		r = math.Log(r) + 1
+	}
+	r *= 10
+	if r > 63 {
+		return 63
+	}
+	return r
+}
+
+func statScaleToTime(r float64) time.Duration {
+	r /= 10
+	if r > 1 {
+		r = math.Exp(r - 1)
+	}
+	return time.Duration(r * float64(time.Millisecond*50))
+}
+
+func (rt *responseTimeStats) add(respTime time.Duration, weight float64) {
+	r := timeToStatScale(respTime)
+	i := int(r)
+	r -= float64(i)
+	rt.stats[i] += weight * (1 - r)
+	if i < 63 {
+		rt.stats[i+1] += weight * r
+	}
+	rt.sum += weight
+
+	if rt.peer != nil {
+		rt.srtoRecalc++
+		if rt.srtoRecalc >= srtoRecalcCount {
+			rt.updateSoftRequestTimeout()
+			rt.srtoRecalc = 0
+		}
+	}
+}
+
+func (rt *responseTimeStats) updateSoftRequestTimeout() {
+	s := rt.sum * 0.1
+	i := 63
+	for i > 0 && s >= rt.stats[i] {
+		s -= rt.stats[i]
+		i--
+	}
+	r := float64(i) + 0.5
+	if rt.stats[i] > 1e-100 {
+		r -= s / rt.stats[i]
+	}
+	srto := statScaleToTime(r) * 5 / 4
+	atomic.StoreInt64((*int64)(&rt.peer.srto), int64(srto))
+}
+
+type statValueWeights [64]float64
+
+func makeStatValueWeights(crossTime time.Duration) statValueWeights {
+	var wt statValueWeights
+	for i, _ := range w[:] {
+		t := statScaleToTime(float64(i))
+		w := 1 - float64(t)/float64(crossTime)
+		if w < -1 {
+			w = -1
+		}
+		wt[i] = w
+	}
+	return wt
+}
+
+func (rt *responseTimeStats) value(weights *statValueWeights) float64 {
+	var v float64
+	for i, s := range rt.stats[:] {
+		v += s * weights[i]
+	}
+	if v > 0 {
+		return v
+	}
+	return 0
 }

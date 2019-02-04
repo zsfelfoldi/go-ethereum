@@ -160,14 +160,14 @@ func (f *lightFetcher) syncLoop() {
 
 			if rq != nil {
 				requesting = true
-				if _, ok := <-f.pm.reqDist.queue(rq); ok {
+				if peer, ok := <-f.pm.reqDist.queue(rq); ok {
 					if syncing {
 						f.lock.Lock()
 						f.syncing = true
 						f.lock.Unlock()
 					} else {
 						go func() {
-							time.Sleep(softRequestTimeout)
+							time.Sleep(peer.softRequestTimeout())
 							f.reqMu.Lock()
 							req, ok := f.requested[reqID]
 							if ok {
@@ -235,7 +235,7 @@ func (f *lightFetcher) registerPeer(p *peer) {
 
 	f.lock.Lock()
 	defer f.lock.Unlock()
-	f.peers[p] = &fetcherPeerInfo{nodeByHash: make(map[common.Hash]*fetcherTreeNode)}
+	f.peers[p] = &fetcherPeerInfo{peernodeByHash: make(map[common.Hash]*fetcherTreeNode)}
 }
 
 // unregisterPeer removes a new peer from the fetcher's peer set

@@ -29,9 +29,10 @@ import (
 )
 
 var (
-	retryQueue         = time.Millisecond * 100
-	softRequestTimeout = time.Second * 2
-	hardRequestTimeout = time.Second * 10
+	retryQueue            = time.Millisecond * 100
+	minSoftRequestTimeout = time.Millisecond * 500
+	maxSoftRequestTimeout = time.Second * 5
+	hardRequestTimeout    = time.Second * 10
 )
 
 // retrieveManager is a layer on top of requestDistributor which takes care of
@@ -50,7 +51,7 @@ type validatorFunc func(distPeer, *Msg) error
 
 // peerSelector receives feedback info about response times and timeouts
 type peerSelector interface {
-	adjustResponseTime(*poolEntry, time.Duration, bool)
+	adjustStats(entry *poolEntry, responseTime time.Duration, refCost, maxCost, recharge uint64)
 }
 
 // sentReq represents a request sent and tracked by retrieveManager
@@ -350,7 +351,7 @@ func (r *sentReq) tryRequest() {
 			r.eventsCh <- reqPeerEvent{rpDeliveredInvalid, p}
 		}
 		return
-	case <-time.After(softRequestTimeout):
+	case <-time.After(p.softRequestTimeout()):
 		srto = true
 		r.eventsCh <- reqPeerEvent{rpSoftTimeout, p}
 	}
