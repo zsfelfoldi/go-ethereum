@@ -19,7 +19,6 @@ package les
 import (
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -90,6 +89,8 @@ type peer struct {
 	updateCounter  uint64
 	updateTime     mclock.AbsTime
 	srto           time.Duration
+	pending        map[uint64]*pendingRequest
+	pendingLock    sync.Mutex
 
 	fcClient *flowcontrol.ClientNode // nil if the peer is server only
 	fcServer *flowcontrol.ServerNode // nil if the peer is client only
@@ -98,7 +99,7 @@ type peer struct {
 
 	isTrusted      bool
 	isOnlyAnnounce bool
-	serverPool     *serverPool
+	reqCounter     *requestCounter
 }
 
 func newPeer(version int, network uint64, isTrusted bool, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
@@ -113,6 +114,29 @@ func newPeer(version int, network uint64, isTrusted bool, p *p2p.Peer, rw p2p.Ms
 		isTrusted: isTrusted,
 		srto:      minSoftRequestTimeout,
 	}
+}
+
+type pendingRequest struct {
+	sentTime  mclock.AbsTime
+	refCost   uint64
+	deliver   func(peer *peer, msg *Msg) error
+	fcPending flowcontrol.PendingRequest
+}
+
+func (p *peer) addPendingRequest(reqID uint64, req *pendingRequest) {
+	p.pendingLock.Lock()
+	defer p.pendingLock.Unlock()
+
+	p.pending[reqID] = req
+}
+
+func (p *peer) getPendingRequest(reqID uint64) *pendingRequest {
+	p.pendingLock.Lock()
+	defer p.pendingLock.Unlock()
+
+	req := p.pending[reqID]
+	delete(p.pending, reqID)
+	return req
 }
 
 // rejectUpdate returns true if a parameter update has to be rejected because
@@ -351,7 +375,7 @@ func (p *peer) ReplyTxStatus(reqID uint64, stats []txStatus) *reply {
 // specified header query, based on the hash of an origin block.
 func (p *peer) RequestHeadersByHash(reqID uint64, origin common.Hash, amount int, skip int, reverse bool) error {
 	p.Log().Debug("Fetching batch of headers", "count", amount, "fromhash", origin, "skip", skip, "reverse", reverse)
-	p.serverPool.addRequest(GetBlockHeadersMsg, uint64(amount))
+	p.reqCounter.add(GetBlockHeadersMsg, uint64(amount))
 	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, &getBlockHeadersData{Origin: hashOrNumber{Hash: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
 }
 
@@ -359,7 +383,7 @@ func (p *peer) RequestHeadersByHash(reqID uint64, origin common.Hash, amount int
 // specified header query, based on the number of an origin block.
 func (p *peer) RequestHeadersByNumber(reqID, origin uint64, amount int, skip int, reverse bool) error {
 	p.Log().Debug("Fetching batch of headers", "count", amount, "fromnum", origin, "skip", skip, "reverse", reverse)
-	p.serverPool.addRequest(GetBlockHeadersMsg, uint64(amount))
+	p.reqCounter.add(GetBlockHeadersMsg, uint64(amount))
 	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, &getBlockHeadersData{Origin: hashOrNumber{Number: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
 }
 
@@ -367,7 +391,7 @@ func (p *peer) RequestHeadersByNumber(reqID, origin uint64, amount int, skip int
 // specified.
 func (p *peer) RequestBodies(reqID uint64, hashes []common.Hash) error {
 	p.Log().Debug("Fetching batch of block bodies", "count", len(hashes))
-	p.serverPool.addRequest(GetBlockBodiesMsg, uint64(len(hashes)))
+	p.reqCounter.add(GetBlockBodiesMsg, uint64(len(hashes)))
 	return sendRequest(p.rw, GetBlockBodiesMsg, reqID, hashes)
 }
 
@@ -375,14 +399,14 @@ func (p *peer) RequestBodies(reqID uint64, hashes []common.Hash) error {
 // data, corresponding to the specified hashes.
 func (p *peer) RequestCode(reqID uint64, reqs []CodeReq) error {
 	p.Log().Debug("Fetching batch of codes", "count", len(reqs))
-	p.serverPool.addRequest(GetCodeMsg, uint64(len(reqs)))
+	p.reqCounter.add(GetCodeMsg, uint64(len(reqs)))
 	return sendRequest(p.rw, GetCodeMsg, reqID, reqs)
 }
 
 // RequestReceipts fetches a batch of transaction receipts from a remote node.
 func (p *peer) RequestReceipts(reqID uint64, hashes []common.Hash) error {
 	p.Log().Debug("Fetching batch of receipts", "count", len(hashes))
-	p.serverPool.addRequest(GetReceiptsMsg, uint64(len(hashes)))
+	p.reqCounter.add(GetReceiptsMsg, uint64(len(hashes)))
 	return sendRequest(p.rw, GetReceiptsMsg, reqID, hashes)
 }
 
@@ -391,10 +415,10 @@ func (p *peer) RequestProofs(reqID uint64, reqs []ProofReq) error {
 	p.Log().Debug("Fetching batch of proofs", "count", len(reqs))
 	switch p.version {
 	case lpv1:
-		p.serverPool.addRequest(GetProofsV1Msg, uint64(len(reqs)))
+		p.reqCounter.add(GetProofsV1Msg, uint64(len(reqs)))
 		return sendRequest(p.rw, GetProofsV1Msg, reqID, reqs)
 	case lpv2:
-		p.serverPool.addRequest(GetProofsV2Msg, uint64(len(reqs)))
+		p.reqCounter.add(GetProofsV2Msg, uint64(len(reqs)))
 		return sendRequest(p.rw, GetProofsV2Msg, reqID, reqs)
 	default:
 		panic(nil)
@@ -410,7 +434,7 @@ func (p *peer) RequestHelperTrieProofs(reqID uint64, data interface{}) error {
 			return errInvalidHelpTrieReq
 		}
 		p.Log().Debug("Fetching batch of header proofs", "count", len(reqs))
-		p.serverPool.addRequest(GetHeaderProofsMsg, uint64(len(reqs)))
+		p.reqCounter.add(GetHeaderProofsMsg, uint64(len(reqs)))
 		return sendRequest(p.rw, GetHeaderProofsMsg, reqID, reqs)
 	case lpv2:
 		reqs, ok := data.([]HelperTrieReq)
@@ -418,7 +442,7 @@ func (p *peer) RequestHelperTrieProofs(reqID uint64, data interface{}) error {
 			return errInvalidHelpTrieReq
 		}
 		p.Log().Debug("Fetching batch of HelperTrie proofs", "count", len(reqs))
-		p.serverPool.addRequest(GetHelperTrieProofsMsg, uint64(len(reqs)))
+		p.reqCounter.add(GetHelperTrieProofsMsg, uint64(len(reqs)))
 		return sendRequest(p.rw, GetHelperTrieProofsMsg, reqID, reqs)
 	default:
 		panic(nil)
@@ -428,7 +452,7 @@ func (p *peer) RequestHelperTrieProofs(reqID uint64, data interface{}) error {
 // RequestTxStatus fetches a batch of transaction status records from a remote node.
 func (p *peer) RequestTxStatus(reqID uint64, txHashes []common.Hash) error {
 	p.Log().Debug("Requesting transaction status", "count", len(txHashes))
-	p.serverPool.addRequest(GetTxStatusMsg, uint64(len(txHashes)))
+	p.reqCounter.add(GetTxStatusMsg, uint64(len(txHashes)))
 	return sendRequest(p.rw, GetTxStatusMsg, reqID, txHashes)
 }
 
@@ -437,10 +461,10 @@ func (p *peer) SendTxs(reqID, count uint64, txs rlp.RawValue) error {
 	p.Log().Debug("Sending batch of transactions", "size", len(txs))
 	switch p.version {
 	case lpv1:
-		p.serverPool.addRequest(SendTxMsg, count)
+		p.reqCounter.add(SendTxMsg, count)
 		return p2p.Send(p.rw, SendTxMsg, txs) // old message format does not include reqID
 	case lpv2:
-		p.serverPool.addRequest(SendTxV2Msg, count)
+		p.reqCounter.add(SendTxV2Msg, count)
 		return sendRequest(p.rw, SendTxV2Msg, reqID, txs)
 	default:
 		panic(nil)

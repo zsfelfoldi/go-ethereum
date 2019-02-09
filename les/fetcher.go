@@ -51,12 +51,9 @@ type lightFetcher struct {
 	syncing         bool
 	syncDone        chan *peer
 
-	reqMu             sync.RWMutex // reqMu protects access to sent header fetch requests
-	requested         map[uint64]fetchRequest
-	deliverChn        chan fetchResponse
-	timeoutChn        chan uint64
-	requestChn        chan bool // true if initiated from outside
-	lastTrustedHeader *types.Header
+	deliverChn, timeoutChn chan fetchResponse
+	requestChn             chan bool // true if initiated from outside
+	lastTrustedHeader      *types.Header
 }
 
 // lightChain extends the BlockChain interface by locking.
@@ -98,16 +95,14 @@ type fetcherTreeNode struct {
 
 // fetchRequest represents a header download request
 type fetchRequest struct {
-	hash    common.Hash
-	amount  uint64
-	peer    *peer
-	sent    mclock.AbsTime
-	timeout bool
+	hash   common.Hash
+	amount uint64
 }
 
 // fetchResponse represents a header download response
 type fetchResponse struct {
 	reqID   uint64
+	req     fetchRequest
 	headers []*types.Header
 	peer    *peer
 }
@@ -120,8 +115,7 @@ func newLightFetcher(pm *ProtocolManager) *lightFetcher {
 		odr:            pm.odr,
 		peers:          make(map[*peer]*fetcherPeerInfo),
 		deliverChn:     make(chan fetchResponse, 100),
-		requested:      make(map[uint64]fetchRequest),
-		timeoutChn:     make(chan uint64),
+		timeoutChn:     make(chan fetchResponse, 10),
 		requestChn:     make(chan bool, 100),
 		syncDone:       make(chan *peer),
 		maxConfirmedTd: big.NewInt(0),
@@ -168,13 +162,6 @@ func (f *lightFetcher) syncLoop() {
 					} else {
 						go func() {
 							time.Sleep(peer.softRequestTimeout())
-							f.reqMu.Lock()
-							req, ok := f.requested[reqID]
-							if ok {
-								req.timeout = true
-								f.requested[reqID] = req
-							}
-							f.reqMu.Unlock()
 							// keep starting new requests while possible
 							f.requestChn <- false
 						}()
@@ -183,33 +170,14 @@ func (f *lightFetcher) syncLoop() {
 					f.requestChn <- false
 				}
 			}
-		case reqID := <-f.timeoutChn:
-			f.reqMu.Lock()
-			req, ok := f.requested[reqID]
-			if ok {
-				delete(f.requested, reqID)
-			}
-			f.reqMu.Unlock()
-			if ok {
-				f.pm.serverPool.adjustResponseTime(req.peer.poolEntry, time.Duration(mclock.Now()-req.sent), true)
-				req.peer.Log().Debug("Fetching data timed out hard")
-				go f.pm.removePeer(req.peer.id)
+		case r := <-f.timeoutChn:
+			if p := r.peer.getPendingRequest(r.reqID); p != nil {
+				r.peer.Log().Debug("Fetching data timed out hard")
+				go f.pm.removePeer(r.peer.id)
 			}
 		case resp := <-f.deliverChn:
-			f.reqMu.Lock()
-			req, ok := f.requested[resp.reqID]
-			if ok && req.peer != resp.peer {
-				ok = false
-			}
-			if ok {
-				delete(f.requested, resp.reqID)
-			}
-			f.reqMu.Unlock()
-			if ok {
-				f.pm.serverPool.adjustResponseTime(req.peer.poolEntry, time.Duration(mclock.Now()-req.sent), req.timeout)
-			}
 			f.lock.Lock()
-			if !ok || !(f.syncing || f.processResponse(req, resp)) {
+			if !(f.syncing || f.processResponse(resp.req, resp)) {
 				resp.peer.Log().Debug("Failed processing response")
 				go f.pm.removePeer(resp.peer.id)
 			}
@@ -235,7 +203,7 @@ func (f *lightFetcher) registerPeer(p *peer) {
 
 	f.lock.Lock()
 	defer f.lock.Unlock()
-	f.peers[p] = &fetcherPeerInfo{peernodeByHash: make(map[common.Hash]*fetcherTreeNode)}
+	f.peers[p] = &fetcherPeerInfo{nodeByHash: make(map[common.Hash]*fetcherTreeNode)}
 }
 
 // unregisterPeer removes a new peer from the fetcher's peer set
@@ -409,14 +377,6 @@ func (f *lightFetcher) requestAmount(p *peer, n *fetcherTreeNode) uint64 {
 	return amount
 }
 
-// requestedID tells if a certain reqID has been requested by the fetcher
-func (f *lightFetcher) requestedID(reqID uint64) bool {
-	f.reqMu.RLock()
-	_, ok := f.requested[reqID]
-	f.reqMu.RUnlock()
-	return ok
-}
-
 // nextRequest selects the peer and announced head to be requested next, amount
 // to be downloaded starting from the head backwards is also returned
 func (f *lightFetcher) nextRequest() (*distReq, uint64, bool) {
@@ -558,13 +518,25 @@ func (f *lightFetcher) newFetcherDistReq(bestHash common.Hash, reqID uint64, bes
 			f.lock.Unlock()
 
 			cost := p.GetRequestCost(GetBlockHeadersMsg, int(bestAmount))
-			p.fcServer.QueuedRequest(reqID, cost)
-			f.reqMu.Lock()
-			f.requested[reqID] = fetchRequest{hash: bestHash, amount: bestAmount, peer: p, sent: mclock.Now()}
-			f.reqMu.Unlock()
+			refCost := getReferenceCost(GetBlockHeadersMsg, int(bestAmount))
+			fcPending := p.fcServer.QueuedRequest(reqID, cost)
+			req := fetchRequest{hash: bestHash, amount: bestAmount}
+			p.addPendingRequest(reqID, &pendingRequest{
+				sentTime: mclock.Now(),
+				refCost:  refCost,
+				deliver: func(peer *peer, msg *Msg) error {
+					headers, ok := msg.Obj.([]*types.Header)
+					if !ok || msg.MsgType != MsgBlockHeaders {
+						return errResp(ErrInvalidMsgCode, "%v", msg.MsgType)
+					}
+					f.deliverHeaders(peer, msg.ReqID, req, headers)
+					return nil
+				},
+				fcPending: fcPending,
+			})
 			go func() {
 				time.Sleep(hardRequestTimeout)
-				f.timeoutChn <- reqID
+				f.timeoutChn <- fetchResponse{reqID: reqID, peer: p}
 			}()
 			return func() { p.RequestHeadersByHash(reqID, bestHash, int(bestAmount), 0, true) }
 		},
@@ -572,14 +544,14 @@ func (f *lightFetcher) newFetcherDistReq(bestHash common.Hash, reqID uint64, bes
 }
 
 // deliverHeaders delivers header download request responses for processing
-func (f *lightFetcher) deliverHeaders(peer *peer, reqID uint64, headers []*types.Header) {
-	f.deliverChn <- fetchResponse{reqID: reqID, headers: headers, peer: peer}
+func (f *lightFetcher) deliverHeaders(peer *peer, reqID uint64, req fetchRequest, headers []*types.Header) {
+	f.deliverChn <- fetchResponse{reqID: reqID, req: req, headers: headers, peer: peer}
 }
 
 // processResponse processes header download request responses, returns true if successful
 func (f *lightFetcher) processResponse(req fetchRequest, resp fetchResponse) bool {
 	if uint64(len(resp.headers)) != req.amount || resp.headers[0].Hash() != req.hash {
-		req.peer.Log().Debug("Response content mismatch", "requested", len(resp.headers), "reqfrom", resp.headers[0], "delivered", req.amount, "delfrom", req.hash)
+		resp.peer.Log().Debug("Response content mismatch", "requested", len(resp.headers), "reqfrom", resp.headers[0], "delivered", req.amount, "delfrom", req.hash)
 		return false
 	}
 	headers := make([]*types.Header, req.amount)
@@ -894,12 +866,12 @@ func (f *lightFetcher) checkUpdateStats(p *peer, newEntry *updateStatsEntry) {
 		fp.firstUpdateStats = newEntry
 	}
 	for fp.firstUpdateStats != nil && fp.firstUpdateStats.time <= now-mclock.AbsTime(blockDelayTimeout) {
-		f.pm.serverPool.adjustBlockDelay(p.poolEntry, blockDelayTimeout)
+		//f.pm.serverPool.adjustBlockDelay(p.poolEntry, blockDelayTimeout)
 		fp.firstUpdateStats = fp.firstUpdateStats.next
 	}
 	if fp.confirmedTd != nil {
 		for fp.firstUpdateStats != nil && fp.firstUpdateStats.td.Cmp(fp.confirmedTd) <= 0 {
-			f.pm.serverPool.adjustBlockDelay(p.poolEntry, time.Duration(now-fp.firstUpdateStats.time))
+			//f.pm.serverPool.adjustBlockDelay(p.poolEntry, time.Duration(now-fp.firstUpdateStats.time))
 			fp.firstUpdateStats = fp.firstUpdateStats.next
 		}
 	}

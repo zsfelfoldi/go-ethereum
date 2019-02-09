@@ -386,3 +386,7 @@ func testCostList() RequestCostList {
 	}
 	return cl
 }
+
+func getReferenceCost(msgcode uint64, amount int) uint64 {
+	return reqAvgTimeCost[msgcode].baseCost + reqAvgTimeCost[msgcode].reqCost*uint64(amount)
+}

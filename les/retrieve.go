@@ -38,9 +38,8 @@ var (
 // retrieveManager is a layer on top of requestDistributor which takes care of
 // matching replies by request ID and handles timeouts and resends if necessary.
 type retrieveManager struct {
-	dist       *requestDistributor
-	peers      *peerSet
-	serverPool peerSelector
+	dist  *requestDistributor
+	peers *peerSet
 
 	lock     sync.RWMutex
 	sentReqs map[uint64]*sentReq
@@ -48,11 +47,6 @@ type retrieveManager struct {
 
 // validatorFunc is a function that processes a reply message
 type validatorFunc func(distPeer, *Msg) error
-
-// peerSelector receives feedback info about response times and timeouts
-type peerSelector interface {
-	adjustStats(entry *poolEntry, responseTime time.Duration, refCost, maxCost, recharge uint64)
-}
 
 // sentReq represents a request sent and tracked by retrieveManager
 type sentReq struct {
@@ -99,12 +93,11 @@ const (
 )
 
 // newRetrieveManager creates the retrieve manager
-func newRetrieveManager(peers *peerSet, dist *requestDistributor, serverPool peerSelector) *retrieveManager {
+func newRetrieveManager(peers *peerSet, dist *requestDistributor) *retrieveManager {
 	return &retrieveManager{
-		peers:      peers,
-		dist:       dist,
-		serverPool: serverPool,
-		sentReqs:   make(map[uint64]*sentReq),
+		peers:    peers,
+		dist:     dist,
+		sentReqs: make(map[uint64]*sentReq),
 	}
 }
 
@@ -327,10 +320,6 @@ func (r *sentReq) tryRequest() {
 	defer func() {
 		// send feedback to server pool and remove peer if hard timeout happened
 		pp, ok := p.(*peer)
-		if ok && r.rm.serverPool != nil {
-			respTime := time.Duration(mclock.Now() - reqSent)
-			r.rm.serverPool.adjustResponseTime(pp.poolEntry, respTime, srto)
-		}
 		if hrto {
 			pp.Log().Debug("Request timed out hard")
 			if r.rm.peers != nil {

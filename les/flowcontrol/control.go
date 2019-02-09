@@ -189,7 +189,7 @@ func (node *ClientNode) RequestProcessed(reqID, index, maxCost, realCost uint64)
 	return
 }
 
-type pendingRequest struct {
+type PendingRequest struct {
 	maxCost, sumCost uint64 // sumCost is the sum of request maxCosts sent to this server
 }
 
@@ -202,7 +202,6 @@ type ServerNode struct {
 	lastTime    mclock.AbsTime
 	params      ServerParams
 	sumCost     uint64
-	pending     map[uint64]pendingRequest
 	log         *logger
 	lock        sync.RWMutex
 }
@@ -215,7 +214,6 @@ func NewServerNode(params ServerParams, clock mclock.Clock) *ServerNode {
 		bufRecharge: false,
 		lastTime:    clock.Now(),
 		params:      params,
-		pending:     make(map[uint64]pendingRequest),
 	}
 	if keepLogs > 0 {
 		node.log = newLogger(keepLogs)
@@ -292,7 +290,7 @@ func (node *ServerNode) CanSend(maxCost uint64) (time.Duration, float64) {
 // QueuedRequest should be called when the request has been assigned to the given
 // server node, before putting it in the send queue. It is mandatory that requests
 // are sent in the same order as the QueuedRequest calls are made.
-func (node *ServerNode) QueuedRequest(reqID, maxCost uint64) {
+func (node *ServerNode) QueuedRequest(reqID, maxCost uint64) PendingRequest {
 	node.lock.Lock()
 	defer node.lock.Unlock()
 
@@ -308,15 +306,15 @@ func (node *ServerNode) QueuedRequest(reqID, maxCost uint64) {
 		node.bufEstimate = 0
 	}
 	node.sumCost += maxCost
-	node.pending[reqID] = pendingRequest{maxCost: maxCost, sumCost: node.sumCost}
 	if node.log != nil {
 		node.log.add(now, fmt.Sprintf("queued  reqID=%d  bufEst=%d  maxCost=%d  sumCost=%d", reqID, node.bufEstimate, maxCost, node.sumCost))
 	}
+	return PendingRequest{maxCost: maxCost, sumCost: node.sumCost}
 }
 
 // ReceivedReply adjusts estimated buffer value according to the value included in
 // the latest request reply.
-func (node *ServerNode) ReceivedReply(reqID, bv uint64) (maxCost, extraRecharge uint64) {
+func (node *ServerNode) ReceivedReply(reqID, bv uint64, req PendingRequest) (maxCost, extraRecharge uint64) {
 	node.lock.Lock()
 	defer node.lock.Unlock()
 
@@ -325,11 +323,6 @@ func (node *ServerNode) ReceivedReply(reqID, bv uint64) (maxCost, extraRecharge 
 	if bv > node.params.BufLimit {
 		bv = node.params.BufLimit
 	}
-	req, ok := node.pending[reqID]
-	if !ok {
-		return
-	}
-	delete(node.pending, reqID)
 	maxCost = req.maxCost
 	cc := node.sumCost - req.sumCost
 	newEstimate := uint64(0)

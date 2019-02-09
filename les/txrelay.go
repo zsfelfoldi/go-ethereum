@@ -127,8 +127,14 @@ func (self *LesTxRelay) send(txs types.Transactions, count int) {
 			},
 			request: func(dp distPeer) func() {
 				peer := dp.(*peer)
-				cost := peer.GetTxRelayCost(len(ll), len(enc))
-				peer.fcServer.QueuedRequest(reqID, cost)
+				cost, refCost := peer.GetTxRelayCost(len(ll), len(enc))
+				fcPending := peer.fcServer.QueuedRequest(reqID, cost)
+				p.addPendingRequest(&pendingRequest{
+					sentTime:  mclock.Now(),
+					refCost:   refCost,
+					deliver:   nil,
+					fcPending: fcPending,
+				})
 				return func() { peer.SendTxs(reqID, uint64(len(ll)), enc) }
 			},
 		}

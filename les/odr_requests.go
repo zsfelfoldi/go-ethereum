@@ -46,7 +46,8 @@ var (
 )
 
 type LesOdrRequest interface {
-	GetCost(*peer) uint64
+	GetMaxCost(*peer) uint64
+	GetRefCost() uint64
 	CanSend(*peer) bool
 	Request(uint64, *peer) error
 	Validate(ethdb.Database, *Msg) error
@@ -74,10 +75,16 @@ func LesRequest(req light.OdrRequest) LesOdrRequest {
 // BlockRequest is the ODR request type for block bodies
 type BlockRequest light.BlockRequest
 
-// GetCost returns the cost of the given ODR request according to the serving
+// GetMaxCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *BlockRequest) GetCost(peer *peer) uint64 {
+func (r *BlockRequest) GetMaxCost(peer *peer) uint64 {
 	return peer.GetRequestCost(GetBlockBodiesMsg, 1)
+}
+
+// GetRefCost returns the reference cost of the given ODR request according to the
+// client's reference cost table
+func (r *BlockRequest) GetRefCost() uint64 {
+	return getReferenceCost(GetBlockBodiesMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -130,10 +137,16 @@ func (r *BlockRequest) Validate(db ethdb.Database, msg *Msg) error {
 // ReceiptsRequest is the ODR request type for block receipts by block hash
 type ReceiptsRequest light.ReceiptsRequest
 
-// GetCost returns the cost of the given ODR request according to the serving
+// GetMaxCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *ReceiptsRequest) GetCost(peer *peer) uint64 {
+func (r *ReceiptsRequest) GetMaxCost(peer *peer) uint64 {
 	return peer.GetRequestCost(GetReceiptsMsg, 1)
+}
+
+// GetRefCost returns the reference cost of the given ODR request according to the
+// client's reference cost table
+func (r *ReceiptsRequest) GetRefCost() uint64 {
+	return getReferenceCost(GetReceiptsMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -185,9 +198,9 @@ type ProofReq struct {
 // ODR request type for state/storage trie entries, see LesOdrRequest interface
 type TrieRequest light.TrieRequest
 
-// GetCost returns the cost of the given ODR request according to the serving
+// GetMaxCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *TrieRequest) GetCost(peer *peer) uint64 {
+func (r *TrieRequest) GetMaxCost(peer *peer) uint64 {
 	switch peer.version {
 	case lpv1:
 		return peer.GetRequestCost(GetProofsV1Msg, 1)
@@ -196,6 +209,12 @@ func (r *TrieRequest) GetCost(peer *peer) uint64 {
 	default:
 		panic(nil)
 	}
+}
+
+// GetRefCost returns the reference cost of the given ODR request according to the
+// client's reference cost table
+func (r *TrieRequest) GetRefCost() uint64 {
+	return getReferenceCost(GetProofsV2Msg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -262,10 +281,16 @@ type CodeReq struct {
 // ODR request type for node data (used for retrieving contract code), see LesOdrRequest interface
 type CodeRequest light.CodeRequest
 
-// GetCost returns the cost of the given ODR request according to the serving
+// GetMaxCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *CodeRequest) GetCost(peer *peer) uint64 {
+func (r *CodeRequest) GetMaxCost(peer *peer) uint64 {
 	return peer.GetRequestCost(GetCodeMsg, 1)
+}
+
+// GetRefCost returns the reference cost of the given ODR request according to the
+// client's reference cost table
+func (r *CodeRequest) GetRefCost() uint64 {
+	return getReferenceCost(GetCodeMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -345,9 +370,9 @@ type ChtResp struct {
 // ODR request type for requesting headers by Canonical Hash Trie, see LesOdrRequest interface
 type ChtRequest light.ChtRequest
 
-// GetCost returns the cost of the given ODR request according to the serving
+// GetMaxCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *ChtRequest) GetCost(peer *peer) uint64 {
+func (r *ChtRequest) GetMaxCost(peer *peer) uint64 {
 	switch peer.version {
 	case lpv1:
 		return peer.GetRequestCost(GetHeaderProofsMsg, 1)
@@ -356,6 +381,12 @@ func (r *ChtRequest) GetCost(peer *peer) uint64 {
 	default:
 		panic(nil)
 	}
+}
+
+// GetRefCost returns the reference cost of the given ODR request according to the
+// client's reference cost table
+func (r *ChtRequest) GetRefCost() uint64 {
+	return getReferenceCost(GetHelperTrieProofsMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -482,10 +513,16 @@ type BloomReq struct {
 // ODR request type for requesting headers by Canonical Hash Trie, see LesOdrRequest interface
 type BloomRequest light.BloomRequest
 
-// GetCost returns the cost of the given ODR request according to the serving
+// GetMaxCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *BloomRequest) GetCost(peer *peer) uint64 {
+func (r *BloomRequest) GetMaxCost(peer *peer) uint64 {
 	return peer.GetRequestCost(GetHelperTrieProofsMsg, len(r.SectionIndexList))
+}
+
+// GetRefCost returns the reference cost of the given ODR request according to the
+// client's reference cost table
+func (r *BloomRequest) GetRefCost() uint64 {
+	return getReferenceCost(GetHelperTrieProofsMsg, len(r.SectionIndexList))
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request

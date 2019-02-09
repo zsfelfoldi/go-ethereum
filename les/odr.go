@@ -19,6 +19,7 @@ package les
 import (
 	"context"
 
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/light"
@@ -81,20 +82,22 @@ func (odr *LesOdr) IndexerConfig() *light.IndexerConfig {
 }
 
 const (
-	MsgBlockBodies = iota
+	MsgBlockHeaders = iota
+	MsgBlockBodies
 	MsgCode
 	MsgReceipts
 	MsgProofsV1
 	MsgProofsV2
 	MsgHeaderProofs
 	MsgHelperTrieProofs
+	MsgTxStatus
 )
 
 // Msg encodes a LES message that delivers reply data for a request
 type Msg struct {
-	MsgType int
-	ReqID   uint64
-	Obj     interface{}
+	MsgType   int
+	ReqID, BV uint64
+	Obj       interface{}
 }
 
 // Retrieve tries to fetch an object from the LES network.
@@ -105,7 +108,7 @@ func (odr *LesOdr) Retrieve(ctx context.Context, req light.OdrRequest) (err erro
 	reqID := genReqID()
 	rq := &distReq{
 		getCost: func(dp distPeer) uint64 {
-			return lreq.GetCost(dp.(*peer))
+			return lreq.GetMaxCost(dp.(*peer))
 		},
 		canSend: func(dp distPeer) bool {
 			p := dp.(*peer)
@@ -116,8 +119,16 @@ func (odr *LesOdr) Retrieve(ctx context.Context, req light.OdrRequest) (err erro
 		},
 		request: func(dp distPeer) func() {
 			p := dp.(*peer)
-			cost := lreq.GetCost(p)
-			p.fcServer.QueuedRequest(reqID, cost)
+			cost := lreq.GetMaxCost(p)
+			fcPending := p.fcServer.QueuedRequest(reqID, cost)
+			p.addPendingRequest(reqID, &pendingRequest{
+				sentTime: mclock.Now(),
+				refCost:  lreq.GetRefCost(),
+				deliver: func(peer *peer, msg *Msg) error {
+					return odr.retriever.deliver(peer, msg)
+				},
+				fcPending: fcPending,
+			})
 			return func() { lreq.Request(reqID, p) }
 		},
 	}

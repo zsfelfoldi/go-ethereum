@@ -45,13 +45,10 @@ const (
 	// waiting period = base delay * (1 + random(1))
 	// base delay = shortRetryDelay for the first shortRetryCnt times after a
 	// successful connection, after that longRetryDelay is applied
-
-	newRetryDelay      = time.Second * 30
-	newRetryDelayExp   = 0.1
-	knownRetryDelay    = time.Second * 30
-	knownRetryDelayExp = 0.1
-
-	dialPeriod = time.Second
+	retryDelayBase = time.Second * 30
+	dialValue      = 1000000
+	redialValue    = 10000000
+	dialPeriod     = time.Second
 
 	// maxNewEntries is the maximum number of newly discovered (never connected) nodes.
 	// If the limit is reached, the least recently discovered one is thrown out.
@@ -294,20 +291,12 @@ func (pool *serverPool) disconnect(entry *poolEntry) {
 	<-req.done
 }
 
-// adjustStats adjusts the request cost and response time statistics of a node
-func (pool *serverPool) adjustStats(entry *poolEntry, responseTime time.Duration, refCost, maxCost, recharge uint64) {
+// adjustRequestStats adjusts the request cost and response time statistics of a node
+func (pool *serverPool) adjustRequestStats(entry *poolEntry, responseTime time.Duration, refCost, maxCost, recharge uint64) {
 	if entry == nil {
 		return
 	}
-	pool.adjustStats <- poolStatAdjust{entry: entry, time: time, responseTime: responseTime, refCost: refCost, maxCost: maxCost, recharge: recharge}
-}
-
-// adjustCorrFactor adjusts the bandwidth correction statistics of a node
-func (pool *serverPool) adjustCorrFactor(entry *poolEntry, cost, recharge uint64) {
-	if entry == nil {
-		return
-	}
-	pool.adjustStats <- poolStatAdjust{adjustType: pseCorrFactor, entry: entry, cost: cost, recharge: recharge}
+	pool.adjustStats <- poolStatAdjust{entry: entry, responseTime: responseTime, refCost: refCost, maxCost: maxCost, recharge: recharge}
 }
 
 // eventLoop handles pool events and mutex locking for all internal functions
@@ -359,10 +348,11 @@ func (pool *serverPool) eventLoop() {
 			}
 
 		case adj := <-pool.adjustStats:
-			adj.entry.sessionValue += adj.refCost
+			refCost := float64(adj.refCost)
+			adj.entry.sessionValue += refCost
 			adj.entry.sessionRecharge += adj.recharge
 			adj.entry.sessionMaxCost += adj.maxCost
-			adj.entry.responseStats.add(adj.responseTime)
+			adj.entry.responseStats.add(adj.responseTime, refCost)
 
 		case node := <-pool.discNodes:
 			if pool.trustedNodes[node.ID()] == nil {
@@ -423,10 +413,8 @@ func (pool *serverPool) eventLoop() {
 				entry := req.entry
 				entry.capacity = req.capacity
 				entry.costTable = req.costTable
-				entry.cachedRefCost = 0
 				entry.state = psRegistered
 				entry.regTime = mclock.Now()
-				entry.lastFreeCapStatsUpdate = entry.regTime
 				if !entry.known {
 					pool.newQueue.remove(entry)
 					entry.known = true
@@ -437,10 +425,8 @@ func (pool *serverPool) eventLoop() {
 			case peUpdateParams:
 				req := ev.req.(*updateParamsReq)
 				// Handle peer parameter updates
-				if req.entry.costTable != req.costTable {
-					req.entry.addSessionStats()
-					req.entry.costTable = req.costTable
-				}
+				req.entry.addSessionStats()
+				req.entry.costTable = req.costTable
 				req.entry.capacity = req.capacity
 
 			case peDisconnect:
@@ -480,8 +466,6 @@ func (pool *serverPool) findOrNewNode(node *enode.Node) *poolEntry {
 		// initialize previously unknown peers with good statistics to give a chance to prove themselves
 		entry.connectStats.add(1, initStatsWeight)
 		entry.delayStats.add(0, initStatsWeight)
-		entry.responseStats.add(0, initStatsWeight)
-		entry.timeoutStats.add(0, initStatsWeight)
 	}
 	entry.lastDiscovered = now
 	addr := &poolEntryAddress{ip: node.IP(), port: uint16(node.TCP())}
@@ -719,8 +703,8 @@ type poolEntry struct {
 	removed        bool
 
 	newDialDelayed, knownDialDelayed bool
+	newRetryDelay, knownRetryDelay   retryDelayController
 	newDialRetryAt, knownDialRetryAt mclock.AbsTime
-	newDialFails, knownDialFails     int
 
 	capacity  float64
 	costTable requestCostTable
@@ -839,6 +823,41 @@ func (rq *retryDelayQueue) check() {
 	}
 }
 
+type retryDelayController struct {
+	lastFade mclock.AbsTime
+	factor   float64
+}
+
+func (rdc *retryDelayController) delay() time.Duration {
+	now := mclock.Now()
+	dt := now - rdc.lastFade
+	rdc.lastFade = now
+	if dt > 0 {
+		rdc.logFactor -= float64(dt) / float64(retryDelayTC)
+		if rdc.logFactor < 0 {
+			rdc.logFactor = 0
+		}
+	}
+	if rdc.logFactor > 128 {
+		rdc.logFactor = 128
+	}
+	delay := float64(retryDelayBase) * math.Exp(rdc.logFactor)
+	delay = math.Log1p(delay/float64(retryDelayTC)) * float64(retryDelayTC)
+	return time.Duration(dt)
+}
+
+func (rdc *retryDelayController) update(success bool, value float64) {
+	if success {
+		rdc.logFactor = 0
+		return
+	}
+	if value*128 < redialValue {
+		rdc.logFactor += 128
+	} else {
+		rdc.logFactor += redialValue / value
+	}
+}
+
 // discoveredEntry implements wrsItem
 type discoveredEntry poolEntry
 
@@ -855,9 +874,8 @@ func (e *discoveredEntry) Weight() int64 {
 }
 
 func (e *discoveredEntry) startDelay() mclock.AbsTime {
-	dt := float64(newRetryDelay) * math.Exp(float64(e.newDialFails)*newRetryDelayExp) * (1 + rand.Float64())
 	e.newDialDelayed = true
-	e.newDialRetryAt = mclock.Now() + mclock.AbsTime(dt)
+	e.newDialRetryAt = mclock.Now() + mclock.AbsTime(e.newRetryDelay)
 	return e.newDialRetryAt
 }
 
@@ -889,9 +907,8 @@ func (e *knownEntry) Weight() int64 {
 }
 
 func (e *knownEntry) startDelay() mclock.AbsTime {
-	dt := float64(knownRetryDelay) * math.Exp(float64(e.knownDialFails)*knownRetryDelayExp) * (1 + rand.Float64())
 	e.knownDialDelayed = true
-	e.knownDialRetryAt = mclock.Now() + mclock.AbsTime(dt)
+	e.knownDialRetryAt = mclock.Now() + mclock.AbsTime(e.knownRetryDelay)
 	return e.knownDialRetryAt
 }
 
@@ -1035,7 +1052,7 @@ type responseTimeStats struct {
 func (rt *responseTimeStats) EncodeRLP(w io.Writer) error {
 	var list [64]uint64
 	for i, v := range rt.stats[:] {
-		list[i] = math.math.Float64bits(v)
+		list[i] = math.Float64bits(v)
 	}
 	return rlp.Encode(w, list)
 }
@@ -1105,6 +1122,12 @@ func (rt *responseTimeStats) updateSoftRequestTimeout() {
 		r -= s / rt.stats[i]
 	}
 	srto := statScaleToTime(r) * 5 / 4
+	if srto < minSoftRequestTimeout {
+		srto = minSoftRequestTimeout
+	}
+	if srto > maxSoftRequestTimeout {
+		srto = maxSoftRequestTimeout
+	}
 	atomic.StoreInt64((*int64)(&rt.peer.srto), int64(srto))
 }
 
