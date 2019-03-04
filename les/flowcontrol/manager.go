@@ -66,7 +66,7 @@ type ClientManager struct {
 	sumRecharge, totalRecharge, totalConnected uint64
 	capLogFactor, totalCapacity                float64
 	capLastUpdate                              mclock.AbsTime
-	totalCapacityCh                            chan uint64
+	totalCapacityCh                            chan TotalCapUpdate
 
 	// recharge integrator is increasing in each moment with a rate of
 	// (totalRecharge / sumRecharge)*FixedPointMultiplier or 0 if sumRecharge==0
@@ -76,6 +76,14 @@ type ClientManager struct {
 	// as elements. The priority value is rcFullIntValue which allows to quickly
 	// determine which client will first finish recharge.
 	rcQueue *prque.Prque
+}
+
+// TotalCapUpdate is sent to the client pool each time total capacity changes
+// significantly. If it is being reduced because of an overload (sumRecharge
+// greater than totalCapacity) then Overload flag is true.
+type TotalCapUpdate struct {
+	Capacity uint64
+	Overload bool
 }
 
 // NewClientManager returns a new client manager.
@@ -127,7 +135,7 @@ func (cm *ClientManager) SetRechargeCurve(curve PieceWiseLinear) {
 	} else {
 		cm.totalRecharge = 0
 	}
-	cm.refreshCapacity()
+	cm.refreshCapacity(false)
 }
 
 // connect should be called when a client is connected, before passing it to any
@@ -325,14 +333,14 @@ func (cm *ClientManager) updateCapFactor(now mclock.AbsTime, refresh bool) {
 			cm.capLogFactor = 0
 		}
 		if refresh {
-			cm.refreshCapacity()
+			cm.refreshCapacity(d < 0)
 		}
 	}
 }
 
 // refreshCapacity recalculates the total capacity value and sends an update to the subscription
 // channel if the relative change of the value since the last update is more than 0.1 percent
-func (cm *ClientManager) refreshCapacity() {
+func (cm *ClientManager) refreshCapacity(dropOverload bool) {
 	totalCapacity := float64(cm.totalRecharge) * math.Exp(cm.capLogFactor)
 	if totalCapacity >= cm.totalCapacity*0.999 && totalCapacity <= cm.totalCapacity*1.001 {
 		return
@@ -340,7 +348,7 @@ func (cm *ClientManager) refreshCapacity() {
 	cm.totalCapacity = totalCapacity
 	if cm.totalCapacityCh != nil {
 		select {
-		case cm.totalCapacityCh <- uint64(cm.totalCapacity):
+		case cm.totalCapacityCh <- TotalCapUpdate{uint64(cm.totalCapacity), dropOverload}:
 		default:
 		}
 	}
@@ -348,7 +356,7 @@ func (cm *ClientManager) refreshCapacity() {
 
 // SubscribeTotalCapacity returns all future updates to the total capacity value
 // through a channel and also returns the current value
-func (cm *ClientManager) SubscribeTotalCapacity(ch chan uint64) uint64 {
+func (cm *ClientManager) SubscribeTotalCapacity(ch chan TotalCapUpdate) uint64 {
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
@@ -398,4 +406,20 @@ func (pwl PieceWiseLinear) Valid() bool {
 		lastX = i.X
 	}
 	return true
+}
+
+// DropOverloadPriority returns a priority value for the client which is used
+// when some peers have to be dropped in an overload situation. Highest priority
+// is dropped first.
+func (node *ClientNode) DropOverloadPriority() float64 {
+	node.lock.Lock()
+	defer node.lock.Unlock()
+	node.cm.lock.Lock()
+	defer node.cm.lock.Unlock()
+
+	now := node.cm.clock.Now()
+	if time.Duration(now-node.cm.rcLastUpdate) > time.Millisecond {
+		node.cm.updateRecharge(now)
+	}
+	return float64(int64(node.params.BufLimit)-node.corrBufValue) / float64(node.params.BufLimit)
 }

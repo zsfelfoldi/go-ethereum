@@ -19,6 +19,7 @@ package les
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -220,9 +221,9 @@ func (v *priorityClientPool) unregisterPeer(p *peer) {
 	if !c.connected {
 		return
 	}
+	c.connected = false
+	v.clients[id] = c
 	if c.cap != 0 {
-		c.connected = false
-		v.clients[id] = c
 		v.priorityCount--
 		v.totalConnectedCap -= c.cap
 		if v.child != nil {
@@ -235,6 +236,66 @@ func (v *priorityClientPool) unregisterPeer(p *peer) {
 		delete(v.clients, id)
 	}
 }
+
+// dropOverload tries to drop some of the most aggressively requesting peers in
+// an overload situation. It tries to drop peers until the sum of the capacities
+// of dropped peers is at least dropCap or there are no more actively requesting
+// peers to drop. It tries to drop free clients first, then priority clients.
+func (v *priorityClientPool) dropOverload(dropCap uint64) {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
+	dropped := v.dropOverloadFrom(dropCap, false)
+	if dropped < dropCap && v.priorityCount != 0 {
+		v.dropOverloadFrom(dropCap-dropped, true)
+	}
+}
+
+// dropOverloadFrom tries to drop peers either from the free or the priority
+// client pool according to the priority flag.
+func (v *priorityClientPool) dropOverloadFrom(dropCap uint64, priority bool) (dropped uint64) {
+	drop := make(dropList, len(v.clients))
+	i := 0
+	for id, client := range v.clients {
+		if (client.connected && client.cap != 0) == priority {
+			p := client.peer.fcClient.DropOverloadPriority()
+			if p > 0 {
+				drop[i] = dropListItem{id: id, priority: p}
+				i++
+			}
+		}
+	}
+	if i == 0 {
+		return
+	}
+	drop = drop[:i]
+	sort.Sort(drop)
+	for _, d := range drop {
+		c := v.clients[d.id]
+		v.dropClient(d.id)
+		if priority {
+			dropped += c.cap
+		} else {
+			dropped += v.freeClientCap
+		}
+		if dropped >= dropCap {
+			return
+		}
+	}
+	return
+}
+
+type (
+	dropList     []dropListItem
+	dropListItem struct {
+		id       enode.ID
+		priority float64
+	}
+)
+
+func (a dropList) Len() int           { return len(a) }
+func (a dropList) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a dropList) Less(i, j int) bool { return a[i].priority > a[j].priority }
 
 // setLimits updates the allowed peer count and total capacity of the priority
 // client pool. Since the free client pool is a child of the priority pool the
@@ -299,11 +360,7 @@ func (v *priorityClientPool) setLimitsNow(count int, totalCap uint64) {
 	if v.priorityCount > count || v.totalConnectedCap > totalCap {
 		for id, c := range v.clients {
 			if c.connected {
-				c.connected = false
-				v.totalConnectedCap -= c.cap
-				v.priorityCount--
-				v.clients[id] = c
-				go v.ps.Unregister(c.peer.id)
+				v.dropClient(id)
 				if v.priorityCount <= count && v.totalConnectedCap <= totalCap {
 					break
 				}
@@ -315,6 +372,25 @@ func (v *priorityClientPool) setLimitsNow(count int, totalCap uint64) {
 	if v.child != nil {
 		v.child.setLimits(v.maxPeers-v.priorityCount, v.totalCap-v.totalConnectedCap)
 	}
+}
+
+// dropClient drops a client from either the free or the priority client pool
+func (v *priorityClientPool) dropClient(id enode.ID) {
+	c := v.clients[id]
+	if !c.connected {
+		return
+	}
+	c.connected = false
+	v.clients[id] = c
+	if c.cap != 0 {
+		v.totalConnectedCap -= c.cap
+		v.priorityCount--
+	} else {
+		if v.child != nil {
+			v.child.unregisterPeer(c.peer)
+		}
+	}
+	go v.ps.Unregister(c.peer.id)
 }
 
 // totalCapacity queries total available capacity for all clients

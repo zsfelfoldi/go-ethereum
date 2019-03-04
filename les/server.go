@@ -153,7 +153,7 @@ func (s *LesServer) startEventLoop() {
 	s.protocolManager.blockchain.(*core.BlockChain).SubscribeBlockProcessingEvent(blockProcFeed)
 	totalRechargeCh := make(chan uint64, 100)
 	totalRecharge := s.costTracker.subscribeTotalRecharge(totalRechargeCh)
-	totalCapacityCh := make(chan uint64, 100)
+	totalCapacityCh := make(chan flowcontrol.TotalCapUpdate, 100)
 	updateRecharge := func() {
 		if processing {
 			s.protocolManager.servingQueue.setThreads(s.thcBlockProcessing)
@@ -174,7 +174,11 @@ func (s *LesServer) startEventLoop() {
 				updateRecharge()
 			case totalRecharge = <-totalRechargeCh:
 				updateRecharge()
-			case totalCapacity = <-totalCapacityCh:
+			case update := <-totalCapacityCh:
+				if update.Overload && update.Capacity < totalCapacity {
+					s.priorityClientPool.dropOverload(totalCapacity - update.Capacity)
+				}
+				totalCapacity = update.Capacity
 				s.priorityClientPool.setLimits(s.maxPeers, totalCapacity)
 			case <-s.protocolManager.quitSync:
 				s.protocolManager.wg.Done()
