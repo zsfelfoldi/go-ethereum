@@ -47,9 +47,12 @@ type cmNodeFields struct {
 const FixedPointMultiplier = 1000000
 
 var (
-	capFactorDropTC         = 1 / float64(time.Second*10) // time constant for dropping the capacity factor
-	capFactorRaiseTC        = 1 / float64(time.Hour)      // time constant for raising the capacity factor
-	capFactorRaiseThreshold = 0.75                        // connected / total capacity ratio threshold for raising the capacity factor
+	sumRechargeFilterTC     = 1 / float64(time.Millisecond*100) // time constant of overload spike filter
+	capFactorStep           = time.Millisecond * 10             // spike filter time granularity (should be smaller than the time constant)
+	capFactorDropTC         = 1 / float64(time.Millisecond*500) // time constant for dropping the capacity factor
+	capFactorRaiseTC        = 1 / float64(time.Hour)            // time constant for raising the capacity factor
+	capFactorRaiseThreshold = 0.75                              // connected / total capacity ratio threshold for raising the capacity factor
+	maxCapLogFactor         = math.Log(5)                       // upper limit for capacity overbooking
 )
 
 // ClientManager controls the capacity assigned to the clients of a server.
@@ -62,11 +65,11 @@ type ClientManager struct {
 	lock      sync.Mutex
 	enabledCh chan struct{}
 
-	curve                                      PieceWiseLinear
-	sumRecharge, totalRecharge, totalConnected uint64
-	capLogFactor, totalCapacity                float64
-	capLastUpdate                              mclock.AbsTime
-	totalCapacityCh                            chan TotalCapUpdate
+	curve                                            PieceWiseLinear
+	sumRecharge, totalRecharge, totalConnected       uint64
+	capLogFactor, totalCapacity, sumRechargeFiltered float64
+	capLastUpdate                                    mclock.AbsTime
+	totalCapacityCh                                  chan TotalCapUpdate
 
 	// recharge integrator is increasing in each moment with a rate of
 	// (totalRecharge / sumRecharge)*FixedPointMultiplier or 0 if sumRecharge==0
@@ -216,7 +219,11 @@ func (cm *ClientManager) updateRecharge(now mclock.AbsTime) {
 	// updating is done in multiple steps if node buffers are filled and sumRecharge
 	// is decreased before the given target time
 	for cm.sumRecharge > 0 {
-		bonusRatio := cm.curve.ValueAt(cm.sumRecharge) / float64(cm.sumRecharge)
+		sumRecharge := cm.sumRecharge
+		if sumRecharge > cm.totalRecharge {
+			sumRecharge = cm.totalRecharge
+		}
+		bonusRatio := cm.curve.ValueAt(sumRecharge) / float64(sumRecharge)
 		if bonusRatio < 1 {
 			bonusRatio = 1
 		}
@@ -302,15 +309,35 @@ func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, params *Serve
 // totalCapacity*capFactorRaiseThreshold) and sumRecharge stays under
 // totalRecharge*totalConnected/totalCapacity.
 func (cm *ClientManager) updateCapFactor(now mclock.AbsTime, refresh bool) {
+	oldCapLogFactor := cm.capLogFactor
+	for cm.capLastUpdate != now {
+		next := now
+		if time.Duration(now-cm.capLastUpdate) > capFactorStep {
+			next = cm.capLastUpdate + mclock.AbsTime(capFactorStep)
+		}
+		cm.updateCapFactorStep(next)
+	}
+	if refresh && oldCapLogFactor != cm.capLogFactor {
+		cm.refreshCapacity(oldCapLogFactor > cm.capLogFactor)
+	}
+}
+
+// updateCapFactorStep calculates the value of the spike filtered sumRecharge at
+// the specified time and performs a single step of capLogFactor update
+func (cm *ClientManager) updateCapFactorStep(now mclock.AbsTime) {
 	if cm.totalRecharge == 0 {
 		return
 	}
 	dt := now - cm.capLastUpdate
 	cm.capLastUpdate = now
 
+	sumRecharge := float64(cm.sumRecharge)
+	totalRecharge := float64(cm.totalRecharge)
+	cm.sumRechargeFiltered = sumRecharge + (cm.sumRechargeFiltered-sumRecharge)*math.Exp(-float64(dt)*sumRechargeFilterTC)
+
 	var d float64
-	if cm.sumRecharge > cm.totalRecharge {
-		d = (1 - float64(cm.sumRecharge)/float64(cm.totalRecharge)) * capFactorDropTC
+	if cm.sumRechargeFiltered > totalRecharge {
+		d = (1 - cm.sumRechargeFiltered/totalRecharge) * capFactorDropTC
 	} else {
 		totalConnected := float64(cm.totalConnected)
 		var connRatio float64
@@ -320,10 +347,9 @@ func (cm *ClientManager) updateCapFactor(now mclock.AbsTime, refresh bool) {
 			connRatio = 1
 		}
 		if connRatio > capFactorRaiseThreshold {
-			sumRecharge := float64(cm.sumRecharge)
-			limit := float64(cm.totalRecharge) * connRatio
-			if sumRecharge < limit {
-				d = (1 - sumRecharge/limit) * (connRatio - capFactorRaiseThreshold) * (1 / (1 - capFactorRaiseThreshold)) * capFactorRaiseTC
+			limit := totalRecharge * connRatio
+			if cm.sumRechargeFiltered < limit {
+				d = (1 - cm.sumRechargeFiltered/limit) * (connRatio - capFactorRaiseThreshold) * (1 / (1 - capFactorRaiseThreshold)) * capFactorRaiseTC
 			}
 		}
 	}
@@ -332,8 +358,8 @@ func (cm *ClientManager) updateCapFactor(now mclock.AbsTime, refresh bool) {
 		if cm.capLogFactor < 0 {
 			cm.capLogFactor = 0
 		}
-		if refresh {
-			cm.refreshCapacity(d < 0)
+		if cm.capLogFactor > maxCapLogFactor {
+			cm.capLogFactor = maxCapLogFactor
 		}
 	}
 }
