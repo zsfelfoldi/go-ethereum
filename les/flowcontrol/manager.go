@@ -49,6 +49,7 @@ const FixedPointMultiplier = 1000000
 var (
 	sumRechargeFilterTC     = 1 / float64(time.Millisecond*100) // time constant of overload spike filter
 	capFactorStep           = time.Millisecond * 10             // spike filter time granularity (should be smaller than the time constant)
+	capFactorMaxStep        = 100                               // maximum spike filter step count (guarantees convergence to new input value)
 	capFactorDropTC         = 1 / float64(time.Millisecond*500) // time constant for dropping the capacity factor
 	capFactorRaiseTC        = 1 / float64(time.Hour)            // time constant for raising the capacity factor
 	capFactorRaiseThreshold = 0.75                              // connected / total capacity ratio threshold for raising the capacity factor
@@ -310,9 +311,11 @@ func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, params *Serve
 // totalRecharge*totalConnected/totalCapacity.
 func (cm *ClientManager) updateCapFactor(now mclock.AbsTime, refresh bool) {
 	oldCapLogFactor := cm.capLogFactor
+	stepCount := 0
 	for cm.capLastUpdate != now {
 		next := now
-		if time.Duration(now-cm.capLastUpdate) > capFactorStep {
+		stepCount++
+		if stepCount < capFactorMaxStep && time.Duration(now-cm.capLastUpdate) > capFactorStep {
 			next = cm.capLastUpdate + mclock.AbsTime(capFactorStep)
 		}
 		cm.updateCapFactorStep(next)
