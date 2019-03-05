@@ -24,6 +24,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/common/prque"
+	"github.com/ethereum/go-ethereum/les/csvlogger"
 )
 
 // cmNodeFields are ClientNode fields used by the client manager
@@ -72,6 +73,8 @@ type ClientManager struct {
 	capLastUpdate                                    mclock.AbsTime
 	totalCapacityCh                                  chan TotalCapUpdate
 
+	logSumRecharge, logSumRechargeFiltered, logTotalCap *csvlogger.Channel
+
 	// recharge integrator is increasing in each moment with a rate of
 	// (totalRecharge / sumRecharge)*FixedPointMultiplier or 0 if sumRecharge==0
 	rcLastUpdate   mclock.AbsTime // last time the recharge integrator was updated
@@ -113,11 +116,14 @@ type TotalCapUpdate struct {
 // starting from zero in order to not let a single low-priority client use up
 // the entire server capacity and thus ensure quick availability for others at
 // any moment.
-func NewClientManager(curve PieceWiseLinear, clock mclock.Clock) *ClientManager {
+func NewClientManager(curve PieceWiseLinear, clock mclock.Clock, logger *csvlogger.Logger) *ClientManager {
 	cm := &ClientManager{
-		clock:         clock,
-		rcQueue:       prque.New(func(a interface{}, i int) { a.(*ClientNode).queueIndex = i }),
-		capLastUpdate: clock.Now(),
+		clock:                  clock,
+		rcQueue:                prque.New(func(a interface{}, i int) { a.(*ClientNode).queueIndex = i }),
+		capLastUpdate:          clock.Now(),
+		logSumRecharge:         logger.NewMinMaxChannel("sumRecharge", false),
+		logSumRechargeFiltered: logger.NewMinMaxChannel("sumRechargeFiltered", false),
+		logTotalCap:            logger.NewChannel("totalCapacity", 0.01),
 	}
 	if curve != nil {
 		cm.SetRechargeCurve(curve)
@@ -320,6 +326,8 @@ func (cm *ClientManager) updateCapFactor(now mclock.AbsTime, refresh bool) {
 		}
 		cm.updateCapFactorStep(next)
 	}
+	cm.logSumRecharge.Update(float64(cm.sumRecharge))
+	cm.logSumRechargeFiltered.Update(cm.sumRechargeFiltered)
 	if refresh && oldCapLogFactor != cm.capLogFactor {
 		cm.refreshCapacity(oldCapLogFactor > cm.capLogFactor)
 	}
@@ -371,6 +379,7 @@ func (cm *ClientManager) updateCapFactorStep(now mclock.AbsTime) {
 // channel if the relative change of the value since the last update is more than 0.1 percent
 func (cm *ClientManager) refreshCapacity(dropOverload bool) {
 	totalCapacity := float64(cm.totalRecharge) * math.Exp(cm.capLogFactor)
+	cm.logTotalCap.Update(totalCapacity)
 	if totalCapacity >= cm.totalCapacity*0.999 && totalCapacity <= cm.totalCapacity*1.001 {
 		return
 	}

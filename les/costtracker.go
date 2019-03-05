@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/les/csvlogger"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/log"
 )
@@ -112,7 +113,7 @@ type costTracker struct {
 }
 
 // newCostTracker creates a cost tracker and loads the cost factor statistics from the database
-func newCostTracker(db ethdb.Database, config *eth.Config) *costTracker {
+func newCostTracker(db ethdb.Database, config *eth.Config, logger *csvlogger.Logger) *costTracker {
 	utilTarget := float64(config.LightServ) * flowcontrol.FixedPointMultiplier / 100
 	ct := &costTracker{
 		db:         db,

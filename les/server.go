@@ -19,6 +19,7 @@ package les
 import (
 	"crypto/ecdsa"
 	"sync"
+	//	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -26,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
+	"github.com/ethereum/go-ethereum/les/csvlogger"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
@@ -47,6 +49,7 @@ type LesServer struct {
 	privateKey   *ecdsa.PrivateKey
 	quitSync     chan struct{}
 	onlyAnnounce bool
+	csvLogger    *csvlogger.Logger
 
 	thcNormal, thcBlockProcessing int // serving thread count for normal operation and block processing mode
 
@@ -83,6 +86,8 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	for i, pv := range AdvertiseProtocolVersions {
 		lesTopics[i] = lesTopic(eth.BlockChain().Genesis().Hash(), pv)
 	}
+	var csvLogger *csvlogger.Logger
+	//csvLogger := csvlogger.NewLogger("/tmp/server.csv", time.Second*1)
 
 	srv := &LesServer{
 		lesCommons: lesCommons{
@@ -93,10 +98,11 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 			bloomTrieIndexer: light.NewBloomTrieIndexer(eth.ChainDb(), nil, params.BloomBitsBlocks, params.BloomTrieFrequency),
 			protocolManager:  pm,
 		},
-		costTracker:  newCostTracker(eth.ChainDb(), config),
+		costTracker:  newCostTracker(eth.ChainDb(), config, csvLogger),
 		quitSync:     quitSync,
 		lesTopics:    lesTopics,
 		onlyAnnounce: config.OnlyAnnounce,
+		csvLogger:    csvLogger,
 	}
 
 	logger := log.New()
@@ -106,7 +112,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 		srv.thcNormal = 4
 	}
 	srv.thcBlockProcessing = config.LightServ/100 + 1
-	srv.fcManager = flowcontrol.NewClientManager(nil, &mclock.System{})
+	srv.fcManager = flowcontrol.NewClientManager(nil, &mclock.System{}, csvLogger)
 
 	chtV1SectionCount, _, _ := srv.chtIndexer.Sections() // indexer still uses LES/1 4k section size for backwards server compatibility
 	chtV2SectionCount := chtV1SectionCount / (params.CHTFrequencyClient / params.CHTFrequencyServer)
@@ -127,6 +133,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 		logger.Info("Loaded bloom trie", "section", bloomTrieLastSection, "head", bloomTrieSectionHead, "root", bloomTrieRoot)
 	}
 
+	csvLogger.Start()
 	srv.chtIndexer.Start(eth.BlockChain())
 	return srv, nil
 }
@@ -249,6 +256,7 @@ func (s *LesServer) Stop() {
 	s.freeClientPool.stop()
 	s.costTracker.stop()
 	s.protocolManager.Stop()
+	s.csvLogger.Stop()
 }
 
 func (pm *ProtocolManager) blockLoop() {
