@@ -19,6 +19,7 @@ package les
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -146,6 +147,7 @@ type priorityClientPool struct {
 	totalCap, totalCapAnnounced      uint64
 	totalConnectedCap, freeClientCap uint64
 	maxPeers, priorityCount          int
+	logger                           *csvlogger.Logger
 	logTotalPriConn                  *csvlogger.Channel
 
 	subs            tcSubs
@@ -173,6 +175,7 @@ func newPriorityClientPool(freeClientCap uint64, ps *peerSet, child clientPool, 
 		freeClientCap:   freeClientCap,
 		ps:              ps,
 		child:           child,
+		logger:          logger,
 		logTotalPriConn: logger.NewChannel("totalPriConn", 0),
 	}
 }
@@ -196,6 +199,7 @@ func (v *priorityClientPool) registerPeer(p *peer) {
 		v.child.registerPeer(p)
 	}
 	if c.cap != 0 && v.totalConnectedCap+c.cap > v.totalCap {
+		v.logger.Event(fmt.Sprintf("priorityClientPool: rejected, %x", id))
 		go v.ps.Unregister(p.id)
 		return
 	}
@@ -206,6 +210,7 @@ func (v *priorityClientPool) registerPeer(p *peer) {
 	if c.cap != 0 {
 		v.priorityCount++
 		v.totalConnectedCap += c.cap
+		v.logger.Event(fmt.Sprintf("priorityClientPool: accepted with %d capacity, %x", c.cap, id))
 		v.logTotalPriConn.Update(float64(v.totalConnectedCap))
 		if v.child != nil {
 			v.child.setLimits(v.maxPeers-v.priorityCount, v.totalCap-v.totalConnectedCap)
@@ -277,6 +282,7 @@ func (v *priorityClientPool) dropOverloadFrom(dropCap uint64, priority bool) (dr
 	sort.Sort(drop)
 	for _, d := range drop {
 		c := v.clients[d.id]
+		v.logger.Event(fmt.Sprintf("priorityClientPool: dropOverload kicked out, %x", d.id))
 		v.dropClient(d.id)
 		if priority {
 			dropped += c.cap
@@ -365,6 +371,7 @@ func (v *priorityClientPool) setLimitsNow(count int, totalCap uint64) {
 	if v.priorityCount > count || v.totalConnectedCap > totalCap {
 		for id, c := range v.clients {
 			if c.connected {
+				v.logger.Event(fmt.Sprintf("priorityClientPool: setLimitsNow kicked out, %x", id))
 				v.dropClient(id)
 				if v.priorityCount <= count && v.totalConnectedCap <= totalCap {
 					break
@@ -456,6 +463,9 @@ func (v *priorityClientPool) setClientCapacity(id enode.ID, cap uint64) error {
 		v.clients[id] = c
 	} else {
 		delete(v.clients, id)
+	}
+	if c.connected {
+		v.logger.Event(fmt.Sprintf("priorityClientPool: changed capacity to %d, %x", cap, id))
 	}
 	return nil
 }

@@ -87,7 +87,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 		lesTopics[i] = lesTopic(eth.BlockChain().Genesis().Hash(), pv)
 	}
 	var csvLogger *csvlogger.Logger
-	csvLogger = csvlogger.NewLogger("/tmp/server.csv", time.Second*10)
+	csvLogger = csvlogger.NewLogger("/tmp/server.csv", time.Second*10, "event, peerId")
 
 	srv := &LesServer{
 		lesCommons: lesCommons{
@@ -107,6 +107,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 
 	logger := log.New()
 	pm.server = srv
+	pm.logger = csvLogger
 	srv.thcNormal = config.LightServ * 4 / 100
 	if srv.thcNormal < 4 {
 		srv.thcNormal = 4

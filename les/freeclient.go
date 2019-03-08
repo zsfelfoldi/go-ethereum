@@ -53,6 +53,7 @@ type freeClientPool struct {
 
 	connectedLimit, totalLimit int
 	freeClientCap              uint64
+	logger                     *csvlogger.Logger
 	logTotalFreeConn           *csvlogger.Channel
 
 	addressMap            map[string]*freeClientPoolEntry
@@ -77,6 +78,7 @@ func newFreeClientPool(db ethdb.Database, freeClientCap uint64, totalLimit int, 
 		disconnPool:      prque.New(poolSetIndex),
 		freeClientCap:    freeClientCap,
 		totalLimit:       totalLimit,
+		logger:           logger,
 		logTotalFreeConn: logger.NewChannel("totalFreeConn", 0),
 		removePeer:       removePeer,
 	}
@@ -110,7 +112,9 @@ func (f *freeClientPool) connect(address, id string) bool {
 		return false
 	}
 
+	f.logger.Event("freeClientPool: connecting from " + address + ", " + id)
 	if f.connectedLimit == 0 {
+		f.logger.Event("freeClientPool: rejected, " + id)
 		log.Debug("Client rejected", "address", address)
 		return false
 	}
@@ -122,6 +126,7 @@ func (f *freeClientPool) connect(address, id string) bool {
 		f.addressMap[address] = e
 	} else {
 		if e.connected {
+			f.logger.Event("freeClientPool: already connected, " + id)
 			log.Debug("Client already connected", "address", address)
 			return false
 		}
@@ -133,10 +138,12 @@ func (f *freeClientPool) connect(address, id string) bool {
 		i := f.connPool.PopItem().(*freeClientPoolEntry)
 		if e.linUsage+int64(connectedBias)-i.linUsage < 0 {
 			// kick it out and accept the new client
+			f.logger.Event("freeClientPool: kicking out, " + i.id)
 			f.dropClient(i, now)
 		} else {
 			// keep the old client and reject the new one
 			f.connPool.Push(i, i.linUsage)
+			f.logger.Event("freeClientPool: rejected, " + id)
 			log.Debug("Client rejected", "address", address)
 			return false
 		}
@@ -199,6 +206,7 @@ func (f *freeClientPool) setLimits(count int, totalCap uint64) {
 	for f.connPool.Size() > f.connectedLimit {
 		i := f.connPool.PopItem().(*freeClientPoolEntry)
 		f.dropClient(i, now)
+		f.logger.Event("freeClientPool: setLimits kicked out, " + i.id)
 	}
 }
 

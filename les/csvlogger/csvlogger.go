@@ -27,25 +27,27 @@ import (
 )
 
 type Logger struct {
-	file     *os.File
-	started  mclock.AbsTime
-	channels []*Channel
-	period   time.Duration
-	stopCh   chan chan struct{}
-	storeCh  chan struct{}
+	file            *os.File
+	started         mclock.AbsTime
+	channels        []*Channel
+	period          time.Duration
+	stopCh, stopped chan struct{}
+	storeCh         chan string
+	eventHeader     string
 }
 
-func NewLogger(fileName string, period time.Duration) *Logger {
+func NewLogger(fileName string, period time.Duration, eventHeader string) *Logger {
 	f, err := os.Create(fileName)
 	if err != nil {
 		log.Error("Error creating log file", "name", fileName, "error", err)
 		return nil
 	}
 	return &Logger{
-		file:    f,
-		period:  period,
-		stopCh:  make(chan chan struct{}),
-		storeCh: make(chan struct{}, 1),
+		file:        f,
+		period:      period,
+		stopCh:      make(chan struct{}),
+		storeCh:     make(chan string, 1),
+		eventHeader: eventHeader,
 	}
 }
 
@@ -76,10 +78,13 @@ func (l *Logger) NewMinMaxChannel(name string, zeroDefault bool) *Channel {
 	return c
 }
 
-func (l *Logger) store() {
+func (l *Logger) store(event string) {
 	s := fmt.Sprintf("%g", float64(mclock.Now()-l.started)/1000000000)
 	for _, ch := range l.channels {
 		s += ", " + ch.store()
+	}
+	if event != "" {
+		s += ", " + event
 	}
 	l.file.WriteString(s + "\n")
 	fmt.Println(s)
@@ -94,6 +99,9 @@ func (l *Logger) Start() {
 	for _, ch := range l.channels {
 		s += ", " + ch.header()
 	}
+	if l.eventHeader != "" {
+		s += ", " + l.eventHeader
+	}
 	l.file.WriteString(s + "\n")
 	fmt.Println(s)
 	go func() {
@@ -101,16 +109,16 @@ func (l *Logger) Start() {
 		for {
 			select {
 			case <-timer.C:
-				l.store()
+				l.store("")
 				timer.Reset(l.period)
-			case <-l.storeCh:
-				l.store()
+			case event := <-l.storeCh:
+				l.store(event)
 				if !timer.Stop() {
 					<-timer.C
 				}
 				timer.Reset(l.period)
-			case stop := <-l.stopCh:
-				close(stop)
+			case <-l.stopCh:
+				close(l.stopped)
 				return
 			}
 		}
@@ -121,10 +129,20 @@ func (l *Logger) Stop() {
 	if l == nil {
 		return
 	}
-	stop := make(chan struct{})
-	l.stopCh <- stop
-	<-stop
+	l.stopped = make(chan struct{})
+	close(l.stopCh)
+	<-l.stopped
 	l.file.Close()
+}
+
+func (l *Logger) Event(event string) {
+	if l == nil {
+		return
+	}
+	select {
+	case l.storeCh <- event:
+	case <-l.stopCh:
+	}
 }
 
 type Channel struct {
@@ -154,7 +172,7 @@ func (lc *Channel) Update(value float64) {
 	} else {
 		if value < lc.storeMin || value > lc.storeMax {
 			select {
-			case lc.logger.storeCh <- struct{}{}:
+			case lc.logger.storeCh <- "":
 			default:
 			}
 		}
