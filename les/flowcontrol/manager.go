@@ -316,6 +316,9 @@ func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, params *Serve
 // totalCapacity*capFactorRaiseThreshold) and sumRecharge stays under
 // totalRecharge*totalConnected/totalCapacity.
 func (cm *ClientManager) updateCapFactor(now mclock.AbsTime, refresh bool) {
+	if cm.totalRecharge == 0 {
+		return
+	}
 	oldCapLogFactor := cm.capLogFactor
 	stepCount := 0
 	for cm.capLastUpdate != now {
@@ -336,9 +339,6 @@ func (cm *ClientManager) updateCapFactor(now mclock.AbsTime, refresh bool) {
 // updateCapFactorStep calculates the value of the spike filtered sumRecharge at
 // the specified time and performs a single step of capLogFactor update
 func (cm *ClientManager) updateCapFactorStep(now mclock.AbsTime) {
-	if cm.totalRecharge == 0 {
-		return
-	}
 	dt := now - cm.capLastUpdate
 	cm.capLastUpdate = now
 
@@ -379,10 +379,10 @@ func (cm *ClientManager) updateCapFactorStep(now mclock.AbsTime) {
 // channel if the relative change of the value since the last update is more than 0.1 percent
 func (cm *ClientManager) refreshCapacity(dropOverload bool) {
 	totalCapacity := float64(cm.totalRecharge) * math.Exp(cm.capLogFactor)
-	cm.logTotalCap.Update(totalCapacity)
 	if totalCapacity >= cm.totalCapacity*0.999 && totalCapacity <= cm.totalCapacity*1.001 {
 		return
 	}
+	cm.logTotalCap.Update(totalCapacity)
 	cm.totalCapacity = totalCapacity
 	if cm.totalCapacityCh != nil {
 		select {

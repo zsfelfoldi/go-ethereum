@@ -109,16 +109,19 @@ type costTracker struct {
 	gfLock          sync.RWMutex
 	totalRechargeCh chan uint64
 
-	stats map[uint64][]uint64
+	stats                            map[uint64][]uint64
+	logRecentUsage, logTotalRecharge *csvlogger.Channel
 }
 
 // newCostTracker creates a cost tracker and loads the cost factor statistics from the database
 func newCostTracker(db ethdb.Database, config *eth.Config, logger *csvlogger.Logger) *costTracker {
 	utilTarget := float64(config.LightServ) * flowcontrol.FixedPointMultiplier / 100
 	ct := &costTracker{
-		db:         db,
-		stopCh:     make(chan chan struct{}),
-		utilTarget: utilTarget,
+		db:               db,
+		stopCh:           make(chan chan struct{}),
+		utilTarget:       utilTarget,
+		logRecentUsage:   logger.NewMinMaxChannel("recentUsage", true),
+		logTotalRecharge: logger.NewChannel("totalRecharge", 0.01),
 	}
 	if config.LightBandwidthIn > 0 {
 		ct.inSizeFactor = utilTarget / float64(config.LightBandwidthIn)
@@ -217,8 +220,11 @@ func (ct *costTracker) gfLoop() {
 				dt := float64(now - expUpdate)
 				expUpdate = now
 				gfUsage = gfUsage*math.Exp(-dt/float64(gfUsageTC)) + max*1000000/float64(gfUsageTC)
+				totalRecharge := ct.utilTarget * gf
+				ct.logRecentUsage.Update(gfUsage)
+				ct.logTotalRecharge.Update(totalRecharge)
 
-				if gfUsage >= gfUsageThreshold*ct.utilTarget*gf {
+				if gfUsage >= gfUsageThreshold*totalRecharge {
 					gfSum += r.avgTime
 					gfWeight += r.servingTime
 					if time.Duration(now-lastUpdate) > time.Second {
@@ -234,7 +240,7 @@ func (ct *costTracker) gfLoop() {
 						ct.gfLock.Unlock()
 						if ch != nil {
 							select {
-							case ct.totalRechargeCh <- uint64(ct.utilTarget * gf):
+							case ct.totalRechargeCh <- uint64(totalRecharge):
 							default:
 							}
 						}

@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/les/csvlogger"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 )
@@ -52,6 +53,7 @@ type freeClientPool struct {
 
 	connectedLimit, totalLimit int
 	freeClientCap              uint64
+	logTotalFreeConn           *csvlogger.Channel
 
 	addressMap            map[string]*freeClientPoolEntry
 	connPool, disconnPool *prque.Prque
@@ -66,16 +68,17 @@ const (
 )
 
 // newFreeClientPool creates a new free client pool
-func newFreeClientPool(db ethdb.Database, freeClientCap uint64, totalLimit int, clock mclock.Clock, removePeer func(string)) *freeClientPool {
+func newFreeClientPool(db ethdb.Database, freeClientCap uint64, totalLimit int, clock mclock.Clock, removePeer func(string), logger *csvlogger.Logger) *freeClientPool {
 	pool := &freeClientPool{
-		db:            db,
-		clock:         clock,
-		addressMap:    make(map[string]*freeClientPoolEntry),
-		connPool:      prque.New(poolSetIndex),
-		disconnPool:   prque.New(poolSetIndex),
-		freeClientCap: freeClientCap,
-		totalLimit:    totalLimit,
-		removePeer:    removePeer,
+		db:               db,
+		clock:            clock,
+		addressMap:       make(map[string]*freeClientPoolEntry),
+		connPool:         prque.New(poolSetIndex),
+		disconnPool:      prque.New(poolSetIndex),
+		freeClientCap:    freeClientCap,
+		totalLimit:       totalLimit,
+		logTotalFreeConn: logger.NewChannel("totalFreeConn", 0),
+		removePeer:       removePeer,
 	}
 	pool.loadFromDb()
 	return pool
@@ -142,6 +145,7 @@ func (f *freeClientPool) connect(address, id string) bool {
 	e.connected = true
 	e.id = id
 	f.connPool.Push(e, e.linUsage)
+	f.logTotalFreeConn.Update(float64(uint64(f.connPool.Size()) * f.freeClientCap))
 	if f.connPool.Size()+f.disconnPool.Size() > f.totalLimit {
 		f.disconnPool.Pop()
 	}
@@ -174,6 +178,7 @@ func (f *freeClientPool) disconnect(address string) {
 	}
 
 	f.connPool.Remove(e.index)
+	f.logTotalFreeConn.Update(float64(uint64(f.connPool.Size()) * f.freeClientCap))
 	f.calcLogUsage(e, now)
 	e.connected = false
 	f.disconnPool.Push(e, -e.logUsage)
@@ -201,6 +206,7 @@ func (f *freeClientPool) setLimits(count int, totalCap uint64) {
 // disconnected pool
 func (f *freeClientPool) dropClient(i *freeClientPoolEntry, now mclock.AbsTime) {
 	f.connPool.Remove(i.index)
+	f.logTotalFreeConn.Update(float64(uint64(f.connPool.Size()) * f.freeClientCap))
 	f.calcLogUsage(i, now)
 	i.connected = false
 	f.disconnPool.Push(i, -i.logUsage)

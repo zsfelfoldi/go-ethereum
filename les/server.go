@@ -19,7 +19,7 @@ package les
 import (
 	"crypto/ecdsa"
 	"sync"
-	//	"time"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -87,7 +87,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 		lesTopics[i] = lesTopic(eth.BlockChain().Genesis().Hash(), pv)
 	}
 	var csvLogger *csvlogger.Logger
-	//csvLogger := csvlogger.NewLogger("/tmp/server.csv", time.Second*1)
+	csvLogger = csvlogger.NewLogger("/tmp/server.csv", time.Second*10)
 
 	srv := &LesServer{
 		lesCommons: lesCommons{
@@ -133,7 +133,6 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 		logger.Info("Loaded bloom trie", "section", bloomTrieLastSection, "head", bloomTrieSectionHead, "root", bloomTrieRoot)
 	}
 
-	csvLogger.Start()
 	srv.chtIndexer.Start(eth.BlockChain())
 	return srv, nil
 }
@@ -220,10 +219,11 @@ func (s *LesServer) Start(srvr *p2p.Server) {
 		log.Warn("Light peer count limited", "specified", s.maxPeers, "allowed", freePeers)
 	}
 
-	s.freeClientPool = newFreeClientPool(s.chainDb, s.freeClientCap, 10000, mclock.System{}, func(id string) { go s.protocolManager.removePeer(id) })
-	s.priorityClientPool = newPriorityClientPool(s.freeClientCap, s.protocolManager.peers, s.freeClientPool)
+	s.freeClientPool = newFreeClientPool(s.chainDb, s.freeClientCap, 10000, mclock.System{}, func(id string) { go s.protocolManager.removePeer(id) }, s.csvLogger)
+	s.priorityClientPool = newPriorityClientPool(s.freeClientCap, s.protocolManager.peers, s.freeClientPool, s.csvLogger)
 
 	s.protocolManager.peers.notify(s.priorityClientPool)
+	s.csvLogger.Start()
 	s.startEventLoop()
 	s.protocolManager.Start(s.config.LightPeers)
 	if srvr.DiscV5 != nil {

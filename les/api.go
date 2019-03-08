@@ -25,6 +25,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/les/csvlogger"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/rpc"
 )
@@ -145,6 +146,7 @@ type priorityClientPool struct {
 	totalCap, totalCapAnnounced      uint64
 	totalConnectedCap, freeClientCap uint64
 	maxPeers, priorityCount          int
+	logTotalPriConn                  *csvlogger.Channel
 
 	subs            tcSubs
 	updateSchedule  []scheduledUpdate
@@ -165,12 +167,13 @@ type priorityClientInfo struct {
 }
 
 // newPriorityClientPool creates a new priority client pool
-func newPriorityClientPool(freeClientCap uint64, ps *peerSet, child clientPool) *priorityClientPool {
+func newPriorityClientPool(freeClientCap uint64, ps *peerSet, child clientPool, logger *csvlogger.Logger) *priorityClientPool {
 	return &priorityClientPool{
-		clients:       make(map[enode.ID]priorityClientInfo),
-		freeClientCap: freeClientCap,
-		ps:            ps,
-		child:         child,
+		clients:         make(map[enode.ID]priorityClientInfo),
+		freeClientCap:   freeClientCap,
+		ps:              ps,
+		child:           child,
+		logTotalPriConn: logger.NewChannel("totalPriConn", 0),
 	}
 }
 
@@ -203,6 +206,7 @@ func (v *priorityClientPool) registerPeer(p *peer) {
 	if c.cap != 0 {
 		v.priorityCount++
 		v.totalConnectedCap += c.cap
+		v.logTotalPriConn.Update(float64(v.totalConnectedCap))
 		if v.child != nil {
 			v.child.setLimits(v.maxPeers-v.priorityCount, v.totalCap-v.totalConnectedCap)
 		}
@@ -226,6 +230,7 @@ func (v *priorityClientPool) unregisterPeer(p *peer) {
 	if c.cap != 0 {
 		v.priorityCount--
 		v.totalConnectedCap -= c.cap
+		v.logTotalPriConn.Update(float64(v.totalConnectedCap))
 		if v.child != nil {
 			v.child.setLimits(v.maxPeers-v.priorityCount, v.totalCap-v.totalConnectedCap)
 		}
@@ -384,6 +389,7 @@ func (v *priorityClientPool) dropClient(id enode.ID) {
 	v.clients[id] = c
 	if c.cap != 0 {
 		v.totalConnectedCap -= c.cap
+		v.logTotalPriConn.Update(float64(v.totalConnectedCap))
 		v.priorityCount--
 	} else {
 		if v.child != nil {
@@ -432,6 +438,7 @@ func (v *priorityClientPool) setClientCapacity(id enode.ID, cap uint64) error {
 			v.priorityCount--
 		}
 		v.totalConnectedCap += cap - c.cap
+		v.logTotalPriConn.Update(float64(v.totalConnectedCap))
 		if v.child != nil {
 			v.child.setLimits(v.maxPeers-v.priorityCount, v.totalCap-v.totalConnectedCap)
 		}
