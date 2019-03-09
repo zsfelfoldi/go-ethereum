@@ -18,6 +18,7 @@ package les
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -109,8 +110,9 @@ type costTracker struct {
 	gfLock          sync.RWMutex
 	totalRechargeCh chan uint64
 
-	stats                            map[uint64][]uint64
-	logRecentUsage, logTotalRecharge *csvlogger.Channel
+	stats                                        map[uint64][]uint64
+	logger                                       *csvlogger.Logger
+	logRecentUsage, logTotalRecharge, logRelCost *csvlogger.Channel
 }
 
 // newCostTracker creates a cost tracker and loads the cost factor statistics from the database
@@ -120,6 +122,8 @@ func newCostTracker(db ethdb.Database, config *eth.Config, logger *csvlogger.Log
 		db:               db,
 		stopCh:           make(chan chan struct{}),
 		utilTarget:       utilTarget,
+		logger:           logger,
+		logRelCost:       logger.NewMinMaxChannel("relativeCost", true),
 		logRecentUsage:   logger.NewMinMaxChannel("recentUsage", true),
 		logTotalRecharge: logger.NewChannel("totalRecharge", 0.01),
 	}
@@ -214,6 +218,9 @@ func (ct *costTracker) gfLoop() {
 			case r := <-ct.gfUpdateCh:
 				now := mclock.Now()
 				max := r.servingTime * gf
+				if ct.logRelCost != nil && r.avgTime > 1e-20 {
+					ct.logRelCost.Update(max / r.avgTime)
+				}
 				if r.avgTime > max {
 					max = r.avgTime
 				}
@@ -223,6 +230,9 @@ func (ct *costTracker) gfLoop() {
 				totalRecharge := ct.utilTarget * gf
 				ct.logRecentUsage.Update(gfUsage)
 				ct.logTotalRecharge.Update(totalRecharge)
+				if r.servingTime > 1000000000 {
+					ct.logger.Event(fmt.Sprintf("Very long servingTime = %f  avgTime = %f  costFactor = %f", r.servingTime, r.avgTime, gf))
+				}
 
 				if gfUsage >= gfUsageThreshold*totalRecharge {
 					gfSum += r.avgTime
