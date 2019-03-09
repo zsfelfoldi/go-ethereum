@@ -96,7 +96,15 @@ func (f *freeClientPool) stop() {
 // registerPeer implements clientPool
 func (f *freeClientPool) registerPeer(p *peer) {
 	if addr, ok := p.RemoteAddr().(*net.TCPAddr); ok {
-		if !f.connect(addr.IP.String(), p.id) {
+		var s string
+		if addr.IP.IsLoopback() {
+			// using peer id instead of loopback ip address allows multiple free
+			// connections from local machine to own server
+			s = p.id
+		} else {
+			s = addr.IP.String()
+		}
+		if !f.connect(s, p.id) {
 			f.removePeer(p.id)
 		}
 	}
