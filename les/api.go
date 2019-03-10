@@ -192,6 +192,7 @@ func (v *priorityClientPool) registerPeer(p *peer) {
 
 	id := p.ID()
 	c := v.clients[id]
+	v.logger.Event(fmt.Sprintf("priorityClientPool: registerPeer  cap=%d  connected=%v, %x", c.cap, c.connected, id.Bytes()))
 	if c.connected {
 		return
 	}
@@ -227,12 +228,13 @@ func (v *priorityClientPool) unregisterPeer(p *peer) {
 
 	id := p.ID()
 	c := v.clients[id]
+	v.logger.Event(fmt.Sprintf("priorityClientPool: unregisterPeer  cap=%d  connected=%v, %x", c.cap, c.connected, id.Bytes()))
 	if !c.connected {
 		return
 	}
-	c.connected = false
-	v.clients[id] = c
 	if c.cap != 0 {
+		c.connected = false
+		v.clients[id] = c
 		v.priorityCount--
 		v.totalConnectedCap -= c.cap
 		v.logTotalPriConn.Update(float64(v.totalConnectedCap))
@@ -392,9 +394,9 @@ func (v *priorityClientPool) dropClient(id enode.ID) {
 	if !c.connected {
 		return
 	}
-	c.connected = false
-	v.clients[id] = c
 	if c.cap != 0 {
+		c.connected = false
+		v.clients[id] = c
 		v.totalConnectedCap -= c.cap
 		v.logTotalPriConn.Update(float64(v.totalConnectedCap))
 		v.priorityCount--
@@ -402,6 +404,7 @@ func (v *priorityClientPool) dropClient(id enode.ID) {
 		if v.child != nil {
 			v.child.unregisterPeer(c.peer)
 		}
+		delete(v.clients, id)
 	}
 	go v.ps.Unregister(c.peer.id)
 }

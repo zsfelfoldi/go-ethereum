@@ -146,8 +146,8 @@ func (f *freeClientPool) connect(address, id string) bool {
 		i := f.connPool.PopItem().(*freeClientPoolEntry)
 		if e.linUsage+int64(connectedBias)-i.linUsage < 0 {
 			// kick it out and accept the new client
-			f.logger.Event("freeClientPool: kicking out, " + i.id)
 			f.dropClient(i, now)
+			f.logger.Event("freeClientPool: kicked out, " + i.id)
 		} else {
 			// keep the old client and reject the new one
 			f.connPool.Push(i, i.linUsage)
@@ -164,6 +164,7 @@ func (f *freeClientPool) connect(address, id string) bool {
 	if f.connPool.Size()+f.disconnPool.Size() > f.totalLimit {
 		f.disconnPool.Pop()
 	}
+	f.logger.Event("freeClientPool: accepted, " + id)
 	log.Debug("Client accepted", "address", address)
 	return true
 }
@@ -197,6 +198,7 @@ func (f *freeClientPool) disconnect(address string) {
 	f.calcLogUsage(e, now)
 	e.connected = false
 	f.disconnPool.Push(e, -e.logUsage)
+	f.logger.Event("freeClientPool: disconnected, " + e.id)
 	log.Debug("Client disconnected", "address", address)
 }
 
