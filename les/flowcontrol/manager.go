@@ -69,7 +69,7 @@ type ClientManager struct {
 	capLastUpdate                              mclock.AbsTime
 	totalCapacityCh                            chan uint64
 
-	logSumRecharge, logSumRechargeFiltered, logTotalCap *csvlogger.Channel
+	logTotalCap *csvlogger.Channel
 
 	// recharge integrator is increasing in each moment with a rate of
 	// (totalRecharge / sumRecharge)*FixedPointMultiplier or 0 if sumRecharge==0
@@ -106,12 +106,10 @@ type ClientManager struct {
 // any moment.
 func NewClientManager(curve PieceWiseLinear, clock mclock.Clock, logger *csvlogger.Logger) *ClientManager {
 	cm := &ClientManager{
-		clock:                  clock,
-		rcQueue:                prque.New(func(a interface{}, i int) { a.(*ClientNode).queueIndex = i }),
-		capLastUpdate:          clock.Now(),
-		logSumRecharge:         logger.NewMinMaxChannel("sumRecharge", false),
-		logSumRechargeFiltered: logger.NewMinMaxChannel("sumRechargeFiltered", false),
-		logTotalCap:            logger.NewChannel("totalCapacity", 0.01),
+		clock:         clock,
+		rcQueue:       prque.New(func(a interface{}, i int) { a.(*ClientNode).queueIndex = i }),
+		capLastUpdate: clock.Now(),
+		logTotalCap:   logger.NewChannel("totalCapacity", 0.01),
 	}
 	if curve != nil {
 		cm.SetRechargeCurve(curve)
