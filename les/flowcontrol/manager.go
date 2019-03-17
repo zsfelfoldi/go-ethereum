@@ -34,6 +34,7 @@ type cmNodeFields struct {
 	rcLastIntValue int64 // past recharge integrator value when corrBufValue was last updated
 	rcFullIntValue int64 // future recharge integrator value when corrBufValue will reach maximum
 	queueIndex     int   // position in the recharge queue (-1 if not queued)
+	frozen         bool  // client is in frozen state
 }
 
 // FixedPointMultiplier is applied to the recharge integrator and the recharge curve.
@@ -48,9 +49,10 @@ type cmNodeFields struct {
 const FixedPointMultiplier = 1000000
 
 var (
-	capFactorDropTC         = 1 / float64(time.Second*10) // time constant for dropping the capacity factor
-	capFactorRaiseTC        = 1 / float64(time.Hour)      // time constant for raising the capacity factor
-	capFactorRaiseThreshold = 0.75                        // connected / total capacity ratio threshold for raising the capacity factor
+	capFactorDropTC            = 1 / float64(time.Second*10) // time constant for dropping the capacity factor
+	capFactorRaiseTC           = 1 / float64(time.Hour*10)   // time constant for raising the capacity factor
+	capFactorRaiseThresholdMul = 1.125                       // total/connected capacity ratio threshold for raising the capacity factor
+	maxCapLogFactor            = math.Log(5)                 // upper limit for capacity overbooking
 )
 
 // ClientManager controls the capacity assigned to the clients of a server.
@@ -63,11 +65,13 @@ type ClientManager struct {
 	lock      sync.Mutex
 	enabledCh chan struct{}
 
-	curve                                      PieceWiseLinear
-	sumRecharge, totalRecharge, totalConnected uint64
-	capLogFactor, totalCapacity                float64
-	capLastUpdate                              mclock.AbsTime
-	totalCapacityCh                            chan uint64
+	curve                                                      PieceWiseLinear
+	sumRecharge, totalRecharge, totalConnected, frozenCapacity uint64
+	capLogFactor, totalCapacity                                float64
+	capLogFactorRaiseLimit                                     float64
+	capFactorRaiseThresholdAdd                                 uint64
+	capLastUpdate                                              mclock.AbsTime
+	totalCapacityCh                                            chan uint64
 
 	logTotalCap *csvlogger.Channel
 
@@ -134,6 +138,14 @@ func (cm *ClientManager) SetRechargeCurve(curve PieceWiseLinear) {
 	cm.refreshCapacity()
 }
 
+// SetCapFactorRaiseThreshold sets a threshold value used for raising capFactor.
+// Either if the difference between total allowed and connected capacity is less
+// than the threshold or if their ratio is less than capFactorRaiseThresholdMul
+// then capFactor is allowed to slowly raise.
+func (cm *ClientManager) SetCapFactorRaiseThreshold(c uint64) {
+	cm.capFactorRaiseThresholdAdd = c
+}
+
 // connect should be called when a client is connected, before passing it to any
 // other ClientManager function
 func (cm *ClientManager) connect(node *ClientNode) {
@@ -147,6 +159,10 @@ func (cm *ClientManager) connect(node *ClientNode) {
 	node.queueIndex = -1
 	cm.updateCapFactor(now, true)
 	cm.totalConnected += node.params.MinRecharge
+	cm.updateRaiseLimit()
+	if node.frozen {
+		cm.frozenCapacity += node.params.MinRecharge
+	}
 }
 
 // disconnect should be called when a client is disconnected
@@ -158,6 +174,10 @@ func (cm *ClientManager) disconnect(node *ClientNode) {
 	cm.updateRecharge(cm.clock.Now())
 	cm.updateCapFactor(now, true)
 	cm.totalConnected -= node.params.MinRecharge
+	cm.updateRaiseLimit()
+	if node.frozen {
+		cm.frozenCapacity -= node.params.MinRecharge
+	}
 }
 
 // accepted is called when a request with given maximum cost is accepted.
@@ -201,7 +221,30 @@ func (cm *ClientManager) updateParams(node *ClientNode, params ServerParams, now
 	cm.updateRecharge(now)
 	cm.updateCapFactor(now, true)
 	cm.totalConnected += params.MinRecharge - node.params.MinRecharge
+	cm.updateRaiseLimit()
+	if node.frozen {
+		cm.frozenCapacity += params.MinRecharge - node.params.MinRecharge
+	}
 	cm.updateNodeRc(node, 0, &params, now)
+}
+
+// updateRaiseLimit recalculates the limiting value until which capLogFactor
+// can be raised when no client freeze events occur
+func (cm *ClientManager) updateRaiseLimit() {
+	if cm.capFactorRaiseThresholdAdd == 0 {
+		cm.capLogFactorRaiseLimit = 0
+		return
+	}
+	limit := float64(cm.totalConnected + cm.capFactorRaiseThresholdAdd)
+	limit2 := float64(cm.totalConnected) * capFactorRaiseThresholdMul
+	if limit2 > limit {
+		limit = limit2
+	}
+	if limit <= float64(cm.totalRecharge) || cm.totalRecharge == 0 {
+		cm.capLogFactorRaiseLimit = 0
+		return
+	}
+	cm.capLogFactorRaiseLimit = math.Log(limit / float64(cm.totalRecharge))
 }
 
 // updateRecharge updates the recharge integrator and checks the recharge queue
@@ -212,7 +255,11 @@ func (cm *ClientManager) updateRecharge(now mclock.AbsTime) {
 	// updating is done in multiple steps if node buffers are filled and sumRecharge
 	// is decreased before the given target time
 	for cm.sumRecharge > 0 {
-		bonusRatio := cm.curve.ValueAt(cm.sumRecharge) / float64(cm.sumRecharge)
+		sumRecharge := cm.sumRecharge
+		if sumRecharge > cm.totalRecharge {
+			sumRecharge = cm.totalRecharge
+		}
+		bonusRatio := cm.curve.ValueAt(sumRecharge) / float64(sumRecharge)
 		if bonusRatio < 1 {
 			bonusRatio = 1
 		}
@@ -232,7 +279,6 @@ func (cm *ClientManager) updateRecharge(now mclock.AbsTime) {
 		// finished recharging, update corrBufValue and sumRecharge if necessary and do next step
 		if rcqNode.corrBufValue < int64(rcqNode.params.BufLimit) {
 			rcqNode.corrBufValue = int64(rcqNode.params.BufLimit)
-			cm.updateCapFactor(lastUpdate, true)
 			cm.sumRecharge -= rcqNode.params.MinRecharge
 		}
 		cm.rcLastIntValue = rcqNode.rcFullIntValue
@@ -283,20 +329,36 @@ func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, params *Serve
 	}
 	if sumRecharge != cm.sumRecharge {
 		cm.updateCapFactor(now, true)
-		cm.sumRecharge = sumRecharge
 	}
 
 }
 
+// SetFrozenState is called when clients go into or out of frozen state
+func (cm *ClientManager) SetFrozenState(node *ClientNode, frozen bool) {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	if frozen == node.frozen {
+		return
+	}
+	now := cm.clock.Now()
+	cm.updateRecharge(now)
+	cm.updateCapFactor(now, true)
+	if frozen {
+		cm.frozenCapacity += node.params.MinRecharge
+	} else {
+		cm.frozenCapacity -= node.params.MinRecharge
+	}
+	node.frozen = frozen
+}
+
 // updateCapFactor updates the total capacity factor. The capacity factor allows
 // the total capacity of the system to go over the allowed total recharge value
-// if the sum of momentarily recharging clients only exceeds the total recharge
-// allowance in a very small fraction of time.
-// The capacity factor is dropped quickly (with a small time constant) if sumRecharge
-// exceeds totalRecharge. It is raised slowly (with a large time constant) if most
-// of the total capacity is used by connected clients (totalConnected is larger than
-// totalCapacity*capFactorRaiseThreshold) and sumRecharge stays under
-// totalRecharge*totalConnected/totalCapacity.
+// if clients go to frozen state sufficiently rarely.
+// The capacity factor is dropped quickly (with a small time constant) if some
+// clients are frozen. It is raised slowly (with a large time constant) if the
+// total connected capacity is close to the total allowed amount and no clients
+// are frozen.
 func (cm *ClientManager) updateCapFactor(now mclock.AbsTime, refresh bool) {
 	if cm.totalRecharge == 0 {
 		return
@@ -304,33 +366,22 @@ func (cm *ClientManager) updateCapFactor(now mclock.AbsTime, refresh bool) {
 	dt := now - cm.capLastUpdate
 	cm.capLastUpdate = now
 
-	var d float64
-	if cm.sumRecharge > cm.totalRecharge {
-		d = (1 - float64(cm.sumRecharge)/float64(cm.totalRecharge)) * capFactorDropTC
+	totalConnected := float64(cm.totalConnected)
+	if cm.frozenCapacity != 0 {
+		cm.capLogFactor -= float64(cm.frozenCapacity) / totalConnected * capFactorDropTC * float64(dt)
 	} else {
-		totalConnected := float64(cm.totalConnected)
-		var connRatio float64
-		if totalConnected < cm.totalCapacity {
-			connRatio = totalConnected / cm.totalCapacity
-		} else {
-			connRatio = 1
-		}
-		if connRatio > capFactorRaiseThreshold {
-			sumRecharge := float64(cm.sumRecharge)
-			limit := float64(cm.totalRecharge) * connRatio
-			if sumRecharge < limit {
-				d = (1 - sumRecharge/limit) * (connRatio - capFactorRaiseThreshold) * (1 / (1 - capFactorRaiseThreshold)) * capFactorRaiseTC
+		if cm.capLogFactor < cm.capLogFactorRaiseLimit {
+			cm.capLogFactor += capFactorRaiseTC * float64(dt)
+			if cm.capLogFactor > cm.capLogFactorRaiseLimit {
+				cm.capLogFactor = cm.capLogFactorRaiseLimit
 			}
 		}
 	}
-	if d != 0 {
-		cm.capLogFactor += d * float64(dt)
-		if cm.capLogFactor < 0 {
-			cm.capLogFactor = 0
-		}
-		if refresh {
-			cm.refreshCapacity()
-		}
+	if cm.capLogFactor > maxCapLogFactor {
+		cm.capLogFactor = maxCapLogFactor
+	}
+	if refresh {
+		cm.refreshCapacity()
 	}
 }
 
