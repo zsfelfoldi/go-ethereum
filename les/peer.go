@@ -130,6 +130,14 @@ func (p *peer) rejectUpdate(size uint64) bool {
 	return p.updateCounter > allowedUpdateBytes
 }
 
+func (p *peer) freeze() {
+
+}
+
+func (p *peer) isFrozen() bool {
+	return false
+}
+
 func (p *peer) canQueue() bool {
 	return p.sendQueue.canQueue()
 }

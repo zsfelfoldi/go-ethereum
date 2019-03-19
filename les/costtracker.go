@@ -366,7 +366,7 @@ type (
 )
 
 // getCost calculates the estimated cost for a given request type and amount
-func (table requestCostTable) getCost(code, amount uint64) uint64 {
+func (table requestCostTable) getMaxCost(code, amount uint64) uint64 {
 	costs := table[code]
 	return costs.baseCost + amount*costs.reqCost
 }

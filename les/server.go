@@ -81,6 +81,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	if err != nil {
 		return nil, err
 	}
+	pm.servingQueue = newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100)
 
 	lesTopics := make([]discv5.Topic, len(AdvertiseProtocolVersions))
 	for i, pv := range AdvertiseProtocolVersions {

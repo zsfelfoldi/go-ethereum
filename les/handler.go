@@ -164,8 +164,6 @@ func NewProtocolManager(
 	if odr != nil {
 		manager.retriever = odr.retriever
 		manager.reqDist = odr.retriever.dist
-	} else {
-		manager.servingQueue = newServingQueue(int64(time.Millisecond * 10))
 	}
 
 	if ulcConfig != nil {
@@ -363,7 +361,13 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if p.fcClient == nil || reqCnt > maxCnt {
 			return false
 		}
-		maxCost = p.fcCosts.getCost(msg.Code, reqCnt)
+		maxCost = p.fcCosts.getMaxCost(msg.Code, reqCnt)
+		gf := pm.server.costTracker.globalFactor()
+		if gf < 0.001 {
+			p.Log().Error("Invalid global cost factor", "globalFactor", gf)
+			gf = 0.001
+		}
+		maxTime := uint64(float64(maxCost) / gf)
 
 		if accepted, bufShort, servingPriority := p.fcClient.AcceptRequest(reqID, responseCount, maxCost); !accepted {
 			if bufShort > 0 {
@@ -371,7 +375,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			}
 			return false
 		} else {
-			task = pm.servingQueue.newTask(servingPriority)
+			task = pm.servingQueue.newTask(p, maxTime, servingPriority)
 		}
 		return task.start()
 	}

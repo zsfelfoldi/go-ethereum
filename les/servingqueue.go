@@ -17,7 +17,9 @@
 package les
 
 import (
+	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/common/prque"
@@ -26,7 +28,6 @@ import (
 // servingQueue allows running tasks in a limited number of threads and puts the
 // waiting tasks in a priority queue
 type servingQueue struct {
-	tokenCh                 chan runToken
 	queueAddCh, queueBestCh chan *servingTask
 	stopThreadCh, quit      chan struct{}
 	setThreadsCh            chan int
@@ -36,6 +37,10 @@ type servingQueue struct {
 	queue       *prque.Prque // priority queue for waiting or suspended tasks
 	best        *servingTask // the highest priority task (not included in the queue)
 	suspendBias int64        // priority bias against suspending an already running task
+
+	burstTime, burstLimit, burstDropLimit int64
+	burstDecRate                          float64
+	lastUpdate                            mclock.AbsTime
 }
 
 // servingTask represents a request serving task. Tasks can be implemented to
@@ -47,12 +52,13 @@ type servingQueue struct {
 // - run: execute a single step; return true if finished
 // - after: executed after run finishes or returns an error, receives the total serving time
 type servingTask struct {
-	sq          *servingQueue
-	servingTime uint64
-	priority    int64
-	biasAdded   bool
-	token       runToken
-	tokenCh     chan runToken
+	sq                              *servingQueue
+	servingTime, maxTime, timeAdded uint64
+	peer                            *peer
+	priority                        int64
+	biasAdded                       bool
+	token                           runToken
+	tokenCh                         chan runToken
 }
 
 // runToken received by servingTask.start allows the task to run. Closing the
@@ -63,20 +69,19 @@ type runToken chan struct{}
 // start blocks until the task can start and returns true if it is allowed to run.
 // Returning false means that the task should be cancelled.
 func (t *servingTask) start() bool {
+	if t.peer.isFrozen() {
+		return false
+	}
+	t.tokenCh = make(chan runToken, 1)
 	select {
-	case t.token = <-t.sq.tokenCh:
-	default:
-		t.tokenCh = make(chan runToken, 1)
-		select {
-		case t.sq.queueAddCh <- t:
-		case <-t.sq.quit:
-			return false
-		}
-		select {
-		case t.token = <-t.tokenCh:
-		case <-t.sq.quit:
-			return false
-		}
+	case t.sq.queueAddCh <- t:
+	case <-t.sq.quit:
+		return false
+	}
+	select {
+	case t.token = <-t.tokenCh:
+	case <-t.sq.quit:
+		return false
 	}
 	if t.token == nil {
 		return false
@@ -107,16 +112,19 @@ func (t *servingTask) waitOrStop() bool {
 }
 
 // newServingQueue returns a new servingQueue
-func newServingQueue(suspendBias int64) *servingQueue {
+func newServingQueue(suspendBias int64, utilTarget float64) *servingQueue {
 	sq := &servingQueue{
-		queue:        prque.New(nil),
-		suspendBias:  suspendBias,
-		tokenCh:      make(chan runToken),
-		queueAddCh:   make(chan *servingTask, 100),
-		queueBestCh:  make(chan *servingTask),
-		stopThreadCh: make(chan struct{}),
-		quit:         make(chan struct{}),
-		setThreadsCh: make(chan int, 10),
+		queue:          prque.New(nil),
+		suspendBias:    suspendBias,
+		queueAddCh:     make(chan *servingTask, 100),
+		queueBestCh:    make(chan *servingTask),
+		stopThreadCh:   make(chan struct{}),
+		quit:           make(chan struct{}),
+		setThreadsCh:   make(chan int, 10),
+		burstLimit:     int64(utilTarget * bufLimitRatio * 1000000),
+		burstDropLimit: int64(utilTarget * bufLimitRatio * 900000),
+		burstDecRate:   utilTarget,
+		lastUpdate:     mclock.Now(),
 	}
 	sq.wg.Add(2)
 	go sq.queueLoop()
@@ -125,9 +133,11 @@ func newServingQueue(suspendBias int64) *servingQueue {
 }
 
 // newTask creates a new task with the given priority
-func (sq *servingQueue) newTask(priority int64) *servingTask {
+func (sq *servingQueue) newTask(peer *peer, maxTime uint64, priority int64) *servingTask {
 	return &servingTask{
 		sq:       sq,
+		peer:     peer,
+		maxTime:  maxTime,
 		priority: priority,
 	}
 }
@@ -144,18 +154,12 @@ func (sq *servingQueue) threadController() {
 		select {
 		case best := <-sq.queueBestCh:
 			best.tokenCh <- token
-		default:
-			select {
-			case best := <-sq.queueBestCh:
-				best.tokenCh <- token
-			case sq.tokenCh <- token:
-			case <-sq.stopThreadCh:
-				sq.wg.Done()
-				return
-			case <-sq.quit:
-				sq.wg.Done()
-				return
-			}
+		case <-sq.stopThreadCh:
+			sq.wg.Done()
+			return
+		case <-sq.quit:
+			sq.wg.Done()
+			return
 		}
 		<-token
 		select {
@@ -170,8 +174,97 @@ func (sq *servingQueue) threadController() {
 	}
 }
 
+type (
+	peerTasks struct {
+		peer                   *peer
+		list                   []*servingTask
+		sumTime, worstPriority int64
+	}
+	peerList []*peerTasks
+)
+
+func (l peerList) Len() int {
+	return len(l)
+}
+
+func (l peerList) Less(i, j int) bool {
+	return (l[i].worstPriority - l[j].worstPriority) < 0
+}
+
+func (l peerList) Swap(i, j int) {
+	l[i], l[j] = l[j], l[i]
+}
+
+// freezePeers selects the peers with the worst priority queued tasks and freezes
+// them until burstTime goes under burstDropLimit or all peers are frozen
+func (sq *servingQueue) freezePeers() {
+	peerMap := make(map[*peer]*peerTasks)
+	var peerList peerList
+	for sq.queue.Size() > 0 {
+		task := sq.queue.PopItem().(*servingTask)
+		tasks := peerMap[task.peer]
+		if tasks == nil {
+			tasks = &peerTasks{
+				peer:          task.peer,
+				worstPriority: task.priority,
+			}
+			peerMap[task.peer] = tasks
+			peerList = append(peerList, tasks)
+		} else {
+			if tasks.worstPriority-task.priority > 0 {
+				tasks.worstPriority = task.priority
+			}
+		}
+		tasks.list = append(tasks.list, task)
+		tasks.sumTime += int64(task.timeAdded - task.servingTime)
+	}
+	sort.Sort(peerList)
+	drop := true
+	for _, tasks := range peerList {
+		if drop {
+			tasks.peer.freeze()
+			drop = atomic.AddInt64(&sq.burstTime, -tasks.sumTime) > sq.burstDropLimit
+		} else {
+			for _, task := range tasks.list {
+				sq.queue.Push(task, task.priority)
+			}
+		}
+	}
+}
+
 // addTask inserts a task into the priority queue
 func (sq *servingQueue) addTask(task *servingTask) {
+	//lastupdate dec...
+	now := mclock.Now()
+	dt := now - sq.lastUpdate
+	sq.lastUpdate = now
+	subTime := int64(float64(dt) * sq.burstDecRate)
+	maxTime := task.maxTime
+	if task.servingTime > maxTime {
+		maxTime = task.servingTime
+	}
+	addTime := int64(maxTime - task.timeAdded)
+	for {
+		oldValue := atomic.LoadInt64(&sq.burstTime)
+		newValue := oldValue - subTime
+		if newValue < 0 {
+			newValue = 0
+		}
+		if addTime > 0 {
+			newValue += addTime
+			task.timeAdded = maxTime
+		}
+		if atomic.CompareAndSwapInt64(&sq.burstTime, oldValue, newValue) {
+			if newValue > sq.burstLimit {
+				sq.freezePeers()
+			}
+			break
+		}
+	}
+	if task.peer.isFrozen() {
+		task.tokenCh <- nil
+		return
+	}
 	if sq.best == nil {
 		sq.best = task
 	} else if task.priority > sq.best.priority {
