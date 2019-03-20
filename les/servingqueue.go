@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/common/prque"
+	"github.com/ethereum/go-ethereum/les/csvlogger"
 )
 
 // servingQueue allows running tasks in a limited number of threads and puts the
@@ -41,6 +42,9 @@ type servingQueue struct {
 	burstTime, burstLimit, burstDropLimit int64
 	burstDecRate                          float64
 	lastUpdate                            mclock.AbsTime
+
+	logger       *csvlogger.Logger
+	logBurstTime *csvlogger.Channel
 }
 
 // servingTask represents a request serving task. Tasks can be implemented to
@@ -114,7 +118,7 @@ func (t *servingTask) waitOrStop() bool {
 }
 
 // newServingQueue returns a new servingQueue
-func newServingQueue(suspendBias int64, utilTarget float64) *servingQueue {
+func newServingQueue(suspendBias int64, utilTarget float64, logger *csvlogger.Logger) *servingQueue {
 	sq := &servingQueue{
 		queue:          prque.New(nil),
 		suspendBias:    suspendBias,
@@ -127,6 +131,8 @@ func newServingQueue(suspendBias int64, utilTarget float64) *servingQueue {
 		burstDropLimit: int64(utilTarget * bufLimitRatio * 1000000),
 		burstDecRate:   utilTarget,
 		lastUpdate:     mclock.Now(),
+		logger:         logger,
+		logBurstTime:   logger.NewMinMaxChannel("burstTime", false),
 	}
 	sq.wg.Add(2)
 	go sq.queueLoop()
@@ -225,6 +231,7 @@ func (sq *servingQueue) freezePeers() {
 	for _, tasks := range peerList {
 		if drop {
 			tasks.peer.freezeClient()
+			sq.logger.Event("freezing peer", tasks.peer.id)
 			drop = atomic.AddInt64(&sq.burstTime, -tasks.sumTime) > sq.burstDropLimit
 			for _, task := range tasks.list {
 				task.tokenCh <- nil
@@ -259,6 +266,7 @@ func (sq *servingQueue) addTask(task *servingTask) {
 			task.timeAdded = maxTime
 		}
 		if atomic.CompareAndSwapInt64(&sq.burstTime, oldValue, newValue) {
+			sq.logBurstTime.Update(float64(newValue) / 1000)
 			if newValue > sq.burstLimit {
 				sq.freezePeers()
 			}
