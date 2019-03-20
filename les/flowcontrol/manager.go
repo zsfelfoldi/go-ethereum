@@ -50,7 +50,7 @@ const FixedPointMultiplier = 1000000
 
 var (
 	capFactorDropTC            = 1 / float64(time.Second*10) // time constant for dropping the capacity factor
-	capFactorRaiseTC           = 1 / float64(time.Hour*10)   // time constant for raising the capacity factor
+	capFactorRaiseTC           = 1 / float64(time.Hour)      //!!!!!  // time constant for raising the capacity factor
 	capFactorRaiseThresholdMul = 1.125                       // total/connected capacity ratio threshold for raising the capacity factor
 	maxCapLogFactor            = math.Log(5)                 // upper limit for capacity overbooking
 )

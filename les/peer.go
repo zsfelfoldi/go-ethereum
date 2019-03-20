@@ -149,7 +149,7 @@ func (p *peer) freezeClient() {
 				if bufLimit == 0 {
 					return
 				}
-				if bufValue < bufLimit/2 {
+				if bufValue <= bufLimit/8 {
 					time.Sleep(freezeCheckPeriod)
 				} else {
 					atomic.StoreUint32(&p.frozen, 0)
