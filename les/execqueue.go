@@ -84,6 +84,13 @@ func (q *execQueue) queue(f func()) bool {
 	return ok
 }
 
+// clear drops all queued functions
+func (q *execQueue) clear() {
+	q.mu.Lock()
+	q.funcs = nil
+	q.mu.Unlock()
+}
+
 // quit stops the exec queue.
 // quit waits for the current execution to finish before returning.
 func (q *execQueue) quit() {

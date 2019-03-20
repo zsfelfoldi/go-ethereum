@@ -139,7 +139,7 @@ func (p *peer) rejectUpdate(size uint64) bool {
 	return p.updateCounter > allowedUpdateBytes
 }
 
-func (p *peer) freeze() {
+func (p *peer) freezeClient() {
 	if atomic.SwapUint32(&p.frozen, 1) == 0 {
 		go func() {
 			p.SendStop()
@@ -161,20 +161,22 @@ func (p *peer) freeze() {
 	}
 }
 
+func (p *peer) freezeServer(frozen bool) {
+	var f uint32
+	if frozen {
+		f = 1
+	}
+	if atomic.SwapUint32(&p.frozen, f) != f && frozen {
+		p.sendQueue.clear()
+	}
+}
+
 func (p *peer) isFrozen() bool {
 	return atomic.LoadUint32(&p.frozen) != 0
 }
 
-func (p *peer) SendStop() {
-	//qqq
-}
-
-func (p *peer) SendResume(bv uint64) {
-	//qqq
-}
-
 func (p *peer) canQueue() bool {
-	return p.sendQueue.canQueue()
+	return p.sendQueue.canQueue() && !p.isFrozen()
 }
 
 func (p *peer) queueSend(f func()) {
@@ -321,6 +323,14 @@ func (p *peer) HasBlock(hash common.Hash, number uint64, hasState bool) bool {
 // a hash notification.
 func (p *peer) SendAnnounce(request announceData) error {
 	return p2p.Send(p.rw, AnnounceMsg, request)
+}
+
+func (p *peer) SendStop() error {
+	return p2p.Send(p.rw, StopMsg, struct{}{})
+}
+
+func (p *peer) SendResume(bv uint64) error {
+	return p2p.Send(p.rw, ResumeMsg, bv)
 }
 
 // ReplyBlockHeaders creates a reply with a batch of block headers

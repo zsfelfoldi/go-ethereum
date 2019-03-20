@@ -377,7 +377,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		maxTime := uint64(float64(maxCost) / gf)
 
 		if accepted, bufShort, servingPriority := p.fcClient.AcceptRequest(reqID, responseCount, maxCost); !accepted {
-			p.freeze()
+			p.freezeClient()
 			p.Log().Warn("Request came too early", "remaining", common.PrettyDuration(time.Duration(bufShort*1000000/p.fcParams.MinRecharge)))
 			p.fcClient.OneTimeCost(inSizeCost())
 			return false
@@ -1208,6 +1208,24 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		}
 
 		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+
+	case StopMsg:
+		if pm.odr == nil {
+			return errResp(ErrUnexpectedResponse, "")
+		}
+		p.freezeServer(true)
+		p.Log().Warn("Service stopped")
+
+	case ResumeMsg:
+		if pm.odr == nil {
+			return errResp(ErrUnexpectedResponse, "")
+		}
+		var bv uint64
+		if err := msg.Decode(&bv); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		p.freezeServer(false)
+		p.Log().Warn("Service resumed")
 
 	default:
 		p.Log().Trace("Received unknown message", "code", msg.Code)

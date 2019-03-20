@@ -224,7 +224,7 @@ func (sq *servingQueue) freezePeers() {
 	drop := true
 	for _, tasks := range peerList {
 		if drop {
-			tasks.peer.freeze()
+			tasks.peer.freezeClient()
 			drop = atomic.AddInt64(&sq.burstTime, -tasks.sumTime) > sq.burstDropLimit
 			for _, task := range tasks.list {
 				task.tokenCh <- nil
