@@ -88,6 +88,16 @@ func (node *ClientNode) Disconnect() {
 	node.cm.disconnect(node)
 }
 
+func (node *ClientNode) BufferStatus() (uint64, uint64) {
+	//qqq
+	return 0, 0
+}
+
+func (node *ClientNode) AddCost(cost uint64) {
+	//qqq
+
+}
+
 // update recalculates the buffer value at a specified time while also performing
 // scheduled flow control parameter updates if necessary
 func (node *ClientNode) update(now mclock.AbsTime) {

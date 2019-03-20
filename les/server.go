@@ -88,7 +88,7 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 		lesTopics[i] = lesTopic(eth.BlockChain().Genesis().Hash(), pv)
 	}
 	var csvLogger *csvlogger.Logger
-	csvLogger = csvlogger.NewLogger("/tmp/server.csv", time.Second*10, "event, peerId")
+	csvLogger = csvlogger.NewLogger("/tmp/server.csv", time.Second*10, "event, peerId") //!!!!!!!!!!!!!
 
 	srv := &LesServer{
 		lesCommons: lesCommons{

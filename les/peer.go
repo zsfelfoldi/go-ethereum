@@ -20,7 +20,9 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -46,6 +48,12 @@ const maxResponseErrors = 50 // number of invalid responses tolerated (makes the
 const (
 	allowedUpdateBytes = 100000                // initial/maximum allowed update size
 	allowedUpdateRate  = time.Millisecond * 10 // time constant for recharging one byte of allowance
+)
+
+const (
+	freezeTimeBase    = time.Millisecond * 700
+	freezeTimeRandom  = time.Millisecond * 600
+	freezeCheckPeriod = time.Millisecond * 100
 )
 
 // if the total encoded size of a sent transaction batch is over txSizeCostLimit
@@ -87,6 +95,7 @@ type peer struct {
 	responseErrors int
 	updateCounter  uint64
 	updateTime     mclock.AbsTime
+	frozen         uint32
 
 	fcClient *flowcontrol.ClientNode // nil if the peer is server only
 	fcServer *flowcontrol.ServerNode // nil if the peer is client only
@@ -131,11 +140,37 @@ func (p *peer) rejectUpdate(size uint64) bool {
 }
 
 func (p *peer) freeze() {
-
+	if atomic.SwapUint32(&p.frozen, 1) == 0 {
+		go func() {
+			p.SendStop()
+			time.Sleep(freezeTimeBase + time.Duration(rand.Int63n(int64(freezeTimeRandom))))
+			for {
+				bufValue, bufLimit := p.fcClient.BufferStatus()
+				if bufLimit == 0 {
+					return
+				}
+				if bufValue < bufLimit/2 {
+					time.Sleep(freezeCheckPeriod)
+				} else {
+					atomic.StoreUint32(&p.frozen, 0)
+					p.SendResume(bufValue)
+					break
+				}
+			}
+		}()
+	}
 }
 
 func (p *peer) isFrozen() bool {
-	return false
+	return atomic.LoadUint32(&p.frozen) != 0
+}
+
+func (p *peer) SendStop() {
+	//qqq
+}
+
+func (p *peer) SendResume(bv uint64) {
+	//qqq
 }
 
 func (p *peer) canQueue() bool {

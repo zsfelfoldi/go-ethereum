@@ -95,6 +95,8 @@ func (t *servingTask) start() bool {
 func (t *servingTask) done() uint64 {
 	t.servingTime += uint64(mclock.Now())
 	close(t.token)
+	atomic.AddInt64(&t.sq.burstTime, int64(t.servingTime-t.timeAdded))
+	t.timeAdded = t.servingTime
 	return t.servingTime
 }
 
@@ -234,7 +236,6 @@ func (sq *servingQueue) freezePeers() {
 
 // addTask inserts a task into the priority queue
 func (sq *servingQueue) addTask(task *servingTask) {
-	//lastupdate dec...
 	now := mclock.Now()
 	dt := now - sq.lastUpdate
 	sq.lastUpdate = now
