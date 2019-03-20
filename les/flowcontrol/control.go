@@ -121,6 +121,13 @@ func (node *ClientNode) OneTimeCost(cost uint64) {
 	node.cm.updateBuffer(node, -int64(cost), now)
 }
 
+func (node *ClientNode) Freeze() {
+	node.lock.Lock()
+	frozenCap := node.params.MinRecharge
+	node.lock.Unlock()
+	node.cm.reduceTotalCap(frozenCap)
+}
+
 // update recalculates the buffer value at a specified time while also performing
 // scheduled flow control parameter updates if necessary
 func (node *ClientNode) update(now mclock.AbsTime) {

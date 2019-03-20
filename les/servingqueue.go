@@ -231,6 +231,7 @@ func (sq *servingQueue) freezePeers() {
 	for _, tasks := range peerList {
 		if drop {
 			tasks.peer.freezeClient()
+			tasks.peer.fcClient.Freeze()
 			sq.logger.Event("freezing peer, " + tasks.peer.id)
 			drop = atomic.AddInt64(&sq.burstTime, -tasks.sumTime) > sq.burstDropLimit
 			for _, task := range tasks.list {
