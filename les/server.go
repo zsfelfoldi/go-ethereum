@@ -60,6 +60,9 @@ type LesServer struct {
 }
 
 func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
+	var csvLogger *csvlogger.Logger
+	csvLogger = csvlogger.NewLogger("/tmp/server.csv", time.Second*10, "event, peerId") //!!!!!!!!!!!!!
+
 	quitSync := make(chan struct{})
 	pm, err := NewProtocolManager(
 		eth.BlockChain().Config(),
@@ -81,14 +84,12 @@ func NewLesServer(eth *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	if err != nil {
 		return nil, err
 	}
-	pm.servingQueue = newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100)
+	pm.servingQueue = newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100, csvLogger)
 
 	lesTopics := make([]discv5.Topic, len(AdvertiseProtocolVersions))
 	for i, pv := range AdvertiseProtocolVersions {
 		lesTopics[i] = lesTopic(eth.BlockChain().Genesis().Hash(), pv)
 	}
-	var csvLogger *csvlogger.Logger
-	csvLogger = csvlogger.NewLogger("/tmp/server.csv", time.Second*10, "event, peerId") //!!!!!!!!!!!!!
 
 	srv := &LesServer{
 		lesCommons: lesCommons{
