@@ -56,11 +56,12 @@ type scheduledUpdate struct {
 // (used in server mode only)
 type ClientNode struct {
 	params         ServerParams
-	bufValue       uint64
+	bufValue       int64
 	lastTime       mclock.AbsTime
 	updateSchedule []scheduledUpdate
 	sumCost        uint64            // sum of req costs received from this client
 	accepted       map[uint64]uint64 // value = sumCost after accepting the given req
+	connected      bool
 	lock           sync.Mutex
 	cm             *ClientManager
 	log            *logger
@@ -70,11 +71,12 @@ type ClientNode struct {
 // NewClientNode returns a new ClientNode
 func NewClientNode(cm *ClientManager, params ServerParams) *ClientNode {
 	node := &ClientNode{
-		cm:       cm,
-		params:   params,
-		bufValue: params.BufLimit,
-		lastTime: cm.clock.Now(),
-		accepted: make(map[uint64]uint64),
+		cm:        cm,
+		params:    params,
+		bufValue:  int64(params.BufLimit),
+		lastTime:  cm.clock.Now(),
+		accepted:  make(map[uint64]uint64),
+		connected: true,
 	}
 	if keepLogs > 0 {
 		node.log = newLogger(keepLogs)
@@ -85,17 +87,38 @@ func NewClientNode(cm *ClientManager, params ServerParams) *ClientNode {
 
 // Disconnect should be called when a client is disconnected
 func (node *ClientNode) Disconnect() {
+	node.lock.Lock()
+	defer node.lock.Unlock()
+
+	node.connected = false
 	node.cm.disconnect(node)
 }
 
 func (node *ClientNode) BufferStatus() (uint64, uint64) {
-	//qqq
-	return 0, 0
+	node.lock.Lock()
+	defer node.lock.Unlock()
+
+	if !node.connected {
+		return 0, 0
+	}
+	now := node.cm.clock.Now()
+	node.update(now)
+	node.cm.updateBuffer(node, 0, now)
+	bv := node.bufValue
+	if bv < 0 {
+		bv = 0
+	}
+	return uint64(bv), node.params.BufLimit
 }
 
-func (node *ClientNode) AddCost(cost uint64) {
-	//qqq
+func (node *ClientNode) OneTimeCost(cost uint64) {
+	node.lock.Lock()
+	defer node.lock.Unlock()
 
+	now := node.cm.clock.Now()
+	node.update(now)
+	node.bufValue -= int64(cost)
+	node.cm.updateBuffer(node, -int64(cost), now)
 }
 
 // update recalculates the buffer value at a specified time while also performing
@@ -115,9 +138,9 @@ func (node *ClientNode) recalcBV(now mclock.AbsTime) {
 	if now < node.lastTime {
 		dt = 0
 	}
-	node.bufValue += node.params.MinRecharge * dt / uint64(fcTimeConst)
-	if node.bufValue > node.params.BufLimit {
-		node.bufValue = node.params.BufLimit
+	node.bufValue += int64(node.params.MinRecharge * dt / uint64(fcTimeConst))
+	if node.bufValue > int64(node.params.BufLimit) {
+		node.bufValue = int64(node.params.BufLimit)
 	}
 	if node.log != nil {
 		node.log.add(now, fmt.Sprintf("updated  bv=%d  MRR=%d  BufLimit=%d", node.bufValue, node.params.MinRecharge, node.params.BufLimit))
@@ -149,11 +172,11 @@ func (node *ClientNode) UpdateParams(params ServerParams) {
 
 // updateParams updates the flow control parameters of the node
 func (node *ClientNode) updateParams(params ServerParams, now mclock.AbsTime) {
-	diff := params.BufLimit - node.params.BufLimit
-	if int64(diff) > 0 {
+	diff := int64(params.BufLimit - node.params.BufLimit)
+	if diff > 0 {
 		node.bufValue += diff
-	} else if node.bufValue > params.BufLimit {
-		node.bufValue = params.BufLimit
+	} else if node.bufValue > int64(params.BufLimit) {
+		node.bufValue = int64(params.BufLimit)
 	}
 	node.cm.updateParams(node, params, now)
 }
@@ -167,14 +190,14 @@ func (node *ClientNode) AcceptRequest(reqID, index, maxCost uint64) (accepted bo
 
 	now := node.cm.clock.Now()
 	node.update(now)
-	if maxCost > node.bufValue {
+	if int64(maxCost) > node.bufValue {
 		if node.log != nil {
 			node.log.add(now, fmt.Sprintf("rejected  reqID=%d  bv=%d  maxCost=%d", reqID, node.bufValue, maxCost))
 			node.log.dump(now)
 		}
-		return false, maxCost - node.bufValue, 0
+		return false, maxCost - uint64(node.bufValue), 0
 	}
-	node.bufValue -= maxCost
+	node.bufValue -= int64(maxCost)
 	node.sumCost += maxCost
 	if node.log != nil {
 		node.log.add(now, fmt.Sprintf("accepted  reqID=%d  bv=%d  maxCost=%d  sumCost=%d", reqID, node.bufValue, maxCost, node.sumCost))
@@ -184,19 +207,22 @@ func (node *ClientNode) AcceptRequest(reqID, index, maxCost uint64) (accepted bo
 }
 
 // RequestProcessed should be called when the request has been processed
-func (node *ClientNode) RequestProcessed(reqID, index, maxCost, realCost uint64) (bv uint64) {
+func (node *ClientNode) RequestProcessed(reqID, index, maxCost, realCost uint64) uint64 {
 	node.lock.Lock()
 	defer node.lock.Unlock()
 
 	now := node.cm.clock.Now()
 	node.update(now)
 	node.cm.processed(node, maxCost, realCost, now)
-	bv = node.bufValue + node.sumCost - node.accepted[index]
+	bv := node.bufValue + int64(node.sumCost-node.accepted[index])
 	if node.log != nil {
 		node.log.add(now, fmt.Sprintf("processed  reqID=%d  bv=%d  maxCost=%d  realCost=%d  sumCost=%d  oldSumCost=%d  reportedBV=%d", reqID, node.bufValue, maxCost, realCost, node.sumCost, node.accepted[index], bv))
 	}
 	delete(node.accepted, index)
-	return
+	if bv < 0 {
+		return 0
+	}
+	return uint64(bv)
 }
 
 // ServerNode is the flow control system's representation of a server

@@ -198,18 +198,22 @@ func (cm *ClientManager) accepted(node *ClientNode, maxCost uint64, now mclock.A
 //
 // Note: processed should always be called for all accepted requests
 func (cm *ClientManager) processed(node *ClientNode, maxCost, realCost uint64, now mclock.AbsTime) {
-	cm.lock.Lock()
-	defer cm.lock.Unlock()
-
 	if realCost > maxCost {
 		realCost = maxCost
 	}
-	cm.updateNodeRc(node, int64(maxCost-realCost), &node.params, now)
-	if uint64(node.corrBufValue) > node.bufValue {
+	cm.updateBuffer(node, int64(maxCost-realCost), now)
+}
+
+func (cm *ClientManager) updateBuffer(node *ClientNode, add int64, now mclock.AbsTime) {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	cm.updateNodeRc(node, add, &node.params, now)
+	if node.corrBufValue > node.bufValue {
 		if node.log != nil {
 			node.log.add(now, fmt.Sprintf("corrected  bv=%d  oldBv=%d", node.corrBufValue, node.bufValue))
 		}
-		node.bufValue = uint64(node.corrBufValue)
+		node.bufValue = node.corrBufValue
 	}
 }
 
@@ -299,9 +303,6 @@ func (cm *ClientManager) updateNodeRc(node *ClientNode, bvc int64, params *Serve
 		node.rcLastIntValue = cm.rcLastIntValue
 	}
 	node.corrBufValue += bvc
-	if node.corrBufValue < 0 {
-		node.corrBufValue = 0
-	}
 	diff := int64(params.BufLimit - node.params.BufLimit)
 	if diff > 0 {
 		node.corrBufValue += diff

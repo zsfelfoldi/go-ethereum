@@ -357,7 +357,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 	accept := func(reqID, reqCnt, maxCnt uint64) (result bool) {
 		defer func() {
 			if !result {
-				p.fcClient.AddCost(pm.server.costTracker.realCost(0, msg.Size, 0))
+				p.fcClient.OneTimeCost(pm.server.costTracker.realCost(0, msg.Size, 0))
 			}
 		}()
 
