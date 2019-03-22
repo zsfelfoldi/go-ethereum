@@ -59,7 +59,7 @@ const (
 	MaxTxSend                = 64  // Amount of transactions to be send per request
 	MaxTxStatus              = 256 // Amount of transactions to queried per request
 
-	disableClientRemovePeer = true //!!!!!
+	disableClientRemovePeer = false
 )
 
 func errResp(code errCode, format string, v ...interface{}) error {

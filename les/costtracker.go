@@ -221,6 +221,13 @@ func (ct *costTracker) gfLoop() {
 				if ct.logRelCost != nil && r.avgTime > 1e-20 {
 					ct.logRelCost.Update(max / r.avgTime)
 				}
+				if r.servingTime > 1000000000 {
+					ct.logger.Event(fmt.Sprintf("Very long servingTime = %f  avgTime = %f  costFactor = %f", r.servingTime, r.avgTime, gf))
+				}
+				if max > r.avgTime*maxCostFactor {
+					max = r.avgTime * maxCostFactor
+					r.servingTime = max / gf
+				}
 				if r.avgTime > max {
 					max = r.avgTime
 				}
@@ -230,9 +237,6 @@ func (ct *costTracker) gfLoop() {
 				totalRecharge := ct.utilTarget * gf
 				ct.logRecentUsage.Update(gfUsage)
 				ct.logTotalRecharge.Update(totalRecharge)
-				if r.servingTime > 1000000000 {
-					ct.logger.Event(fmt.Sprintf("Very long servingTime = %f  avgTime = %f  costFactor = %f", r.servingTime, r.avgTime, gf))
-				}
 
 				if gfUsage >= gfUsageThreshold*totalRecharge {
 					gfSum += r.avgTime

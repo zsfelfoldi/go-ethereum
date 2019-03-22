@@ -48,7 +48,7 @@ type cmNodeFields struct {
 const FixedPointMultiplier = 1000000
 
 var (
-	capFactorDrop              = 0.01
+	capFactorDrop              = 0.1
 	capFactorRaiseTC           = 1 / float64(time.Hour) //!!!!!  // time constant for raising the capacity factor
 	capFactorRaiseThresholdMul = 1.125                  // total/connected capacity ratio threshold for raising the capacity factor
 	minCapLogFactor            = math.Log(0.5)          // lower limit for capacity adjustment
