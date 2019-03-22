@@ -48,10 +48,11 @@ type cmNodeFields struct {
 const FixedPointMultiplier = 1000000
 
 var (
-	capFactorDrop              = 0.1
+	capFactorDrop              = 0.01
 	capFactorRaiseTC           = 1 / float64(time.Hour) //!!!!!  // time constant for raising the capacity factor
 	capFactorRaiseThresholdMul = 1.125                  // total/connected capacity ratio threshold for raising the capacity factor
-	maxCapLogFactor            = math.Log(5)            // upper limit for capacity overbooking
+	minCapLogFactor            = math.Log(0.5)          // lower limit for capacity adjustment
+	maxCapLogFactor            = math.Log(5)            // upper limit for capacity adjustment
 )
 
 // ClientManager controls the capacity assigned to the clients of a server.
@@ -336,6 +337,9 @@ func (cm *ClientManager) reduceTotalCap(frozenCap uint64) {
 	now := cm.clock.Now()
 	cm.updateCapFactor(now, false)
 	cm.capLogFactor -= capFactorDrop * f / cm.totalCapacity
+	if cm.capLogFactor < minCapLogFactor {
+		cm.capLogFactor = minCapLogFactor
+	}
 	cm.updateCapFactor(now, true)
 }
 

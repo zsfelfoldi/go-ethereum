@@ -208,6 +208,10 @@ func (l peerList) Swap(i, j int) {
 func (sq *servingQueue) freezePeers() {
 	peerMap := make(map[*peer]*peerTasks)
 	var peerList peerList
+	if sq.best != nil {
+		sq.queue.Push(sq.best, sq.best.priority)
+	}
+	sq.best = nil
 	for sq.queue.Size() > 0 {
 		task := sq.queue.PopItem().(*servingTask)
 		tasks := peerMap[task.peer]
@@ -232,8 +236,10 @@ func (sq *servingQueue) freezePeers() {
 		if drop {
 			tasks.peer.freezeClient()
 			tasks.peer.fcClient.Freeze()
-			sq.logger.Event("freezing peer, " + tasks.peer.id)
-			drop = atomic.AddInt64(&sq.burstTime, -tasks.sumTime) > sq.burstDropLimit
+			sq.logger.Event("freezing peer  sumTime=%d, %v", tasks.sumTime, tasks.peer.id)
+			newValue := atomic.AddInt64(&sq.burstTime, -tasks.sumTime)
+			sq.logBurstTime.Update(float64(newValue) / 1000)
+			drop = newValue > sq.burstDropLimit
 			for _, task := range tasks.list {
 				task.tokenCh <- nil
 			}
@@ -243,10 +249,22 @@ func (sq *servingQueue) freezePeers() {
 			}
 		}
 	}
+	if sq.queue.Size() > 0 {
+		sq.best = sq.queue.PopItem().(*servingTask)
+	}
 }
 
 // addTask inserts a task into the priority queue
 func (sq *servingQueue) addTask(task *servingTask) {
+	if sq.best == nil {
+		sq.best = task
+	} else if task.priority > sq.best.priority {
+		sq.queue.Push(sq.best, sq.best.priority)
+		sq.best = task
+		return
+	} else {
+		sq.queue.Push(task, task.priority)
+	}
 	now := mclock.Now()
 	dt := now - sq.lastUpdate
 	sq.lastUpdate = now
@@ -273,19 +291,6 @@ func (sq *servingQueue) addTask(task *servingTask) {
 			}
 			break
 		}
-	}
-	if task.peer.isFrozen() {
-		task.tokenCh <- nil
-		return
-	}
-	if sq.best == nil {
-		sq.best = task
-	} else if task.priority > sq.best.priority {
-		sq.queue.Push(sq.best, sq.best.priority)
-		sq.best = task
-		return
-	} else {
-		sq.queue.Push(task, task.priority)
 	}
 }
 
