@@ -30,6 +30,11 @@ import (
 // servingQueue allows running tasks in a limited number of threads and puts the
 // waiting tasks in a priority queue
 type servingQueue struct {
+	recentTime, queuedTime, servingTimeDiff uint64
+	burstLimit, burstDropLimit              uint64
+	burstDecRate                            float64
+	lastUpdate                              mclock.AbsTime
+
 	queueAddCh, queueBestCh chan *servingTask
 	stopThreadCh, quit      chan struct{}
 	setThreadsCh            chan int
@@ -39,11 +44,6 @@ type servingQueue struct {
 	queue       *prque.Prque // priority queue for waiting or suspended tasks
 	best        *servingTask // the highest priority task (not included in the queue)
 	suspendBias int64        // priority bias against suspending an already running task
-
-	recentTime, queuedTime, servingTimeDiff uint64
-	burstLimit, burstDropLimit              uint64
-	burstDecRate                            float64
-	lastUpdate                              mclock.AbsTime
 
 	logger        *csvlogger.Logger
 	logRecentTime *csvlogger.Channel
@@ -59,13 +59,13 @@ type servingQueue struct {
 // - run: execute a single step; return true if finished
 // - after: executed after run finishes or returns an error, receives the total serving time
 type servingTask struct {
-	sq                   *servingQueue
-	servingTime, maxTime uint64
-	peer                 *peer
-	priority             int64
-	biasAdded            bool
-	token                runToken
-	tokenCh              chan runToken
+	sq                                       *servingQueue
+	servingTime, timeAdded, maxTime, expTime uint64
+	peer                                     *peer
+	priority                                 int64
+	biasAdded                                bool
+	token                                    runToken
+	tokenCh                                  chan runToken
 }
 
 // runToken received by servingTask.start allows the task to run. Closing the
@@ -102,8 +102,13 @@ func (t *servingTask) start() bool {
 func (t *servingTask) done() uint64 {
 	t.servingTime += uint64(mclock.Now())
 	close(t.token)
-	if t.maxTime > t.servingTime {
-		atomic.AddUint64(&t.sq.servingTimeDiff, t.maxTime-t.servingTime)
+	diff := t.servingTime - t.timeAdded
+	t.timeAdded = t.servingTime
+	if t.expTime > diff {
+		t.expTime -= diff
+		atomic.AddUint64(&t.sq.servingTimeDiff, t.expTime)
+	} else {
+		t.expTime = 0
 	}
 	return t.servingTime
 }
@@ -151,6 +156,7 @@ func (sq *servingQueue) newTask(peer *peer, maxTime uint64, priority int64) *ser
 		sq:       sq,
 		peer:     peer,
 		maxTime:  maxTime,
+		expTime:  maxTime,
 		priority: priority,
 	}
 }
@@ -234,7 +240,7 @@ func (sq *servingQueue) freezePeers() {
 			}
 		}
 		tasks.list = append(tasks.list, task)
-		tasks.sumTime += task.maxTime
+		tasks.sumTime += task.expTime
 	}
 	sort.Sort(peerList)
 	drop := true
@@ -283,12 +289,11 @@ func (sq *servingQueue) addTask(task *servingTask) {
 	} else if task.priority > sq.best.priority {
 		sq.queue.Push(sq.best, sq.best.priority)
 		sq.best = task
-		return
 	} else {
 		sq.queue.Push(task, task.priority)
 	}
 	sq.updateRecentTime()
-	sq.queuedTime += task.maxTime
+	sq.queuedTime += task.expTime
 	sq.logRecentTime.Update(float64(sq.recentTime) / 1000)
 	sq.logQueuedTime.Update(float64(sq.queuedTime) / 1000)
 	if sq.recentTime+sq.queuedTime > sq.burstLimit {
@@ -302,13 +307,14 @@ func (sq *servingQueue) addTask(task *servingTask) {
 func (sq *servingQueue) queueLoop() {
 	for {
 		if sq.best != nil {
+			expTime := sq.best.expTime
 			select {
 			case task := <-sq.queueAddCh:
 				sq.addTask(task)
 			case sq.queueBestCh <- sq.best:
 				sq.updateRecentTime()
-				sq.queuedTime -= sq.best.maxTime
-				sq.recentTime += sq.best.maxTime
+				sq.queuedTime -= expTime
+				sq.recentTime += expTime
 				sq.logRecentTime.Update(float64(sq.recentTime) / 1000)
 				sq.logQueuedTime.Update(float64(sq.queuedTime) / 1000)
 				if sq.queue.Size() == 0 {
