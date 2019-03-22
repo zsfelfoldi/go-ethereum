@@ -17,6 +17,7 @@
 package les
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -39,12 +40,14 @@ type servingQueue struct {
 	best        *servingTask // the highest priority task (not included in the queue)
 	suspendBias int64        // priority bias against suspending an already running task
 
-	burstTime, burstLimit, burstDropLimit int64
-	burstDecRate                          float64
-	lastUpdate                            mclock.AbsTime
+	recentTime, queuedTime, servingTimeDiff uint64
+	burstLimit, burstDropLimit              uint64
+	burstDecRate                            float64
+	lastUpdate                              mclock.AbsTime
 
-	logger       *csvlogger.Logger
-	logBurstTime *csvlogger.Channel
+	logger        *csvlogger.Logger
+	logRecentTime *csvlogger.Channel
+	logQueuedTime *csvlogger.Channel
 }
 
 // servingTask represents a request serving task. Tasks can be implemented to
@@ -56,13 +59,13 @@ type servingQueue struct {
 // - run: execute a single step; return true if finished
 // - after: executed after run finishes or returns an error, receives the total serving time
 type servingTask struct {
-	sq                              *servingQueue
-	servingTime, maxTime, timeAdded uint64
-	peer                            *peer
-	priority                        int64
-	biasAdded                       bool
-	token                           runToken
-	tokenCh                         chan runToken
+	sq                   *servingQueue
+	servingTime, maxTime uint64
+	peer                 *peer
+	priority             int64
+	biasAdded            bool
+	token                runToken
+	tokenCh              chan runToken
 }
 
 // runToken received by servingTask.start allows the task to run. Closing the
@@ -99,8 +102,9 @@ func (t *servingTask) start() bool {
 func (t *servingTask) done() uint64 {
 	t.servingTime += uint64(mclock.Now())
 	close(t.token)
-	atomic.AddInt64(&t.sq.burstTime, int64(t.servingTime-t.timeAdded))
-	t.timeAdded = t.servingTime
+	if t.maxTime > t.servingTime {
+		atomic.AddUint64(&t.sq.servingTimeDiff, t.maxTime-t.servingTime)
+	}
 	return t.servingTime
 }
 
@@ -127,12 +131,13 @@ func newServingQueue(suspendBias int64, utilTarget float64, logger *csvlogger.Lo
 		stopThreadCh:   make(chan struct{}),
 		quit:           make(chan struct{}),
 		setThreadsCh:   make(chan int, 10),
-		burstLimit:     int64(utilTarget * bufLimitRatio * 1200000),
-		burstDropLimit: int64(utilTarget * bufLimitRatio * 1000000),
+		burstLimit:     uint64(utilTarget * bufLimitRatio * 1200000),
+		burstDropLimit: uint64(utilTarget * bufLimitRatio * 1000000),
 		burstDecRate:   utilTarget,
 		lastUpdate:     mclock.Now(),
 		logger:         logger,
-		logBurstTime:   logger.NewMinMaxChannel("burstTime", false),
+		logRecentTime:  logger.NewMinMaxChannel("recentTime", false),
+		logQueuedTime:  logger.NewMinMaxChannel("queuedTime", false),
 	}
 	sq.wg.Add(2)
 	go sq.queueLoop()
@@ -184,9 +189,10 @@ func (sq *servingQueue) threadController() {
 
 type (
 	peerTasks struct {
-		peer                   *peer
-		list                   []*servingTask
-		sumTime, worstPriority int64
+		peer          *peer
+		list          []*servingTask
+		sumTime       uint64
+		worstPriority int64
 	}
 	peerList []*peerTasks
 )
@@ -228,18 +234,19 @@ func (sq *servingQueue) freezePeers() {
 			}
 		}
 		tasks.list = append(tasks.list, task)
-		tasks.sumTime += int64(task.timeAdded - task.servingTime)
+		tasks.sumTime += task.maxTime
 	}
 	sort.Sort(peerList)
 	drop := true
+	sq.logger.Event("freezing peers")
 	for _, tasks := range peerList {
 		if drop {
 			tasks.peer.freezeClient()
 			tasks.peer.fcClient.Freeze()
-			sq.logger.Event("freezing peer  sumTime=%d, %v", tasks.sumTime, tasks.peer.id)
-			newValue := atomic.AddInt64(&sq.burstTime, -tasks.sumTime)
-			sq.logBurstTime.Update(float64(newValue) / 1000)
-			drop = newValue > sq.burstDropLimit
+			sq.queuedTime -= tasks.sumTime
+			sq.logQueuedTime.Update(float64(sq.queuedTime) / 1000)
+			sq.logger.Event(fmt.Sprintf("frozen peer  sumTime=%d, %v", tasks.sumTime, tasks.peer.id))
+			drop = sq.recentTime+sq.queuedTime > sq.burstDropLimit
 			for _, task := range tasks.list {
 				task.tokenCh <- nil
 			}
@@ -254,6 +261,21 @@ func (sq *servingQueue) freezePeers() {
 	}
 }
 
+func (sq *servingQueue) updateRecentTime() {
+	subTime := atomic.SwapUint64(&sq.servingTimeDiff, 0)
+	now := mclock.Now()
+	dt := now - sq.lastUpdate
+	sq.lastUpdate = now
+	if dt > 0 {
+		subTime += uint64(float64(dt) * sq.burstDecRate)
+	}
+	if sq.recentTime > subTime {
+		sq.recentTime -= subTime
+	} else {
+		sq.recentTime = 0
+	}
+}
+
 // addTask inserts a task into the priority queue
 func (sq *servingQueue) addTask(task *servingTask) {
 	if sq.best == nil {
@@ -265,32 +287,12 @@ func (sq *servingQueue) addTask(task *servingTask) {
 	} else {
 		sq.queue.Push(task, task.priority)
 	}
-	now := mclock.Now()
-	dt := now - sq.lastUpdate
-	sq.lastUpdate = now
-	subTime := int64(float64(dt) * sq.burstDecRate)
-	maxTime := task.maxTime
-	if task.servingTime > maxTime {
-		maxTime = task.servingTime
-	}
-	addTime := int64(maxTime - task.timeAdded)
-	for {
-		oldValue := atomic.LoadInt64(&sq.burstTime)
-		newValue := oldValue - subTime
-		if newValue < 0 {
-			newValue = 0
-		}
-		if addTime > 0 {
-			newValue += addTime
-			task.timeAdded = maxTime
-		}
-		if atomic.CompareAndSwapInt64(&sq.burstTime, oldValue, newValue) {
-			sq.logBurstTime.Update(float64(newValue) / 1000)
-			if newValue > sq.burstLimit {
-				sq.freezePeers()
-			}
-			break
-		}
+	sq.updateRecentTime()
+	sq.queuedTime += task.maxTime
+	sq.logRecentTime.Update(float64(sq.recentTime) / 1000)
+	sq.logQueuedTime.Update(float64(sq.queuedTime) / 1000)
+	if sq.recentTime+sq.queuedTime > sq.burstLimit {
+		sq.freezePeers()
 	}
 }
 
@@ -304,6 +306,11 @@ func (sq *servingQueue) queueLoop() {
 			case task := <-sq.queueAddCh:
 				sq.addTask(task)
 			case sq.queueBestCh <- sq.best:
+				sq.updateRecentTime()
+				sq.queuedTime -= sq.best.maxTime
+				sq.recentTime += sq.best.maxTime
+				sq.logRecentTime.Update(float64(sq.recentTime) / 1000)
+				sq.logQueuedTime.Update(float64(sq.queuedTime) / 1000)
 				if sq.queue.Size() == 0 {
 					sq.best = nil
 				} else {
