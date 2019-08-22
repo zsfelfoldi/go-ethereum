@@ -248,6 +248,7 @@ type ServerNode struct {
 	bufRecharge bool
 	lastTime    mclock.AbsTime
 	params      ServerParams
+	sumRecharge uint64
 	sumCost     uint64            // sum of req costs sent to this server
 	pending     map[uint64]uint64 // value = sumCost after sending the given req
 	log         *logger
@@ -293,12 +294,14 @@ func (node *ServerNode) recalcBLE(now mclock.AbsTime) {
 		return
 	}
 	if node.bufRecharge {
-		dt := uint64(now - node.lastTime)
-		node.bufEstimate += node.params.MinRecharge * dt / uint64(fcTimeConst)
+		addBuf := node.params.MinRecharge * uint64(now-node.lastTime) / uint64(fcTimeConst)
+		node.bufEstimate += addBuf
 		if node.bufEstimate >= node.params.BufLimit {
+			addBuf -= uint64(node.bufEstimate - node.params.BufLimit)
 			node.bufEstimate = node.params.BufLimit
 			node.bufRecharge = false
 		}
+		node.sumRecharge += addBuf
 	}
 	node.lastTime = now
 	if node.log != nil {
@@ -426,4 +429,11 @@ func (node *ServerNode) DumpLogs() {
 	if node.log != nil {
 		node.log.dump(node.clock.Now())
 	}
+}
+
+func (node *ServerNode) SumRecharge() {
+	node.lock.RLock()
+	defer node.lock.RUnlock()
+
+	return node.sumRecharge
 }
