@@ -167,7 +167,7 @@ type statValueWeights [timeStatLength]float64
 
 func (global *responseTimeStats) timePenalty(ratio float64) float64 {
 	var (
-		wsum float64
+		avgSum float64
 	)
 	sum := global.stats[0]
 	lastw := -global.sum
@@ -177,8 +177,8 @@ func (global *responseTimeStats) timePenalty(ratio float64) float64 {
 		t := statScaleToTime(float64(i))
 		sum += s
 		ft := float64(t)
-		wsum += s * ft
-		w := 2*(sum-wsum/ft) - global.sum
+		avgSum += s * ft
+		w := 2*(sum-avgSum/ft) - global.sum
 		if w > threshold {
 			dw := w - lastw
 			if dw < 1e-100 {
@@ -188,10 +188,10 @@ func (global *responseTimeStats) timePenalty(ratio float64) float64 {
 		}
 		lastw = w
 	}
-	if wsum < 1e-100 {
+	if avgSum < 1e-100 {
 		return 0
 	}
-	return (1 - ratio) * sum / wsum
+	return (1 - ratio) * sum / avgSum
 }
 
 func makeStatValueWeights(timePenalty float64) statValueWeights {
@@ -222,13 +222,13 @@ func (rt *responseTimeStats) value(weights *statValueWeights) float64 {
 const (
 	csVectorSize   = 20
 	csMaxDecayRate = 1 / float64(time.Second*30)
-	csMinDecayRate = csMaxDecayRate / float64(1<<(csVectorSize-2))
+	csMinDecayRate = csMaxDecayRate / float64(1<<(csVectorSize-1))
 )
 
 type (
 	csVector     [csVectorSize]float64
 	csVectorPair struct {
-		vec, wvec csVector
+		weight, sum csVector
 	}
 
 	csFilterVector struct {
@@ -244,9 +244,9 @@ func (fv *csFilterVector) update(now mclock.AbsTime) {
 		return
 	}
 	expm1 := math.Expm1(-dt * csMinDecayRate)
-	for i := 1; i < csVectorSize; i++ {
-		fv.vp.vec[i] += fv.vp.vec[i] * expm1
-		fv.vp.wvec[i] += fv.vp.wvec[i] * expm1
+	for i := 0; i < csVectorSize; i++ {
+		fv.vp.weight[i] += fv.vp.weight[i] * expm1
+		fv.vp.sum[i] += fv.vp.sum[i] * expm1
 		expm1 = expm1 * (expm1 + 2)
 	}
 }
@@ -259,63 +259,126 @@ func (fv *csFilterVector) get(now mclock.AbsTime) csVectorPair {
 func (fv *csFilterVector) add(now mclock.AbsTime, value float64) {
 	fv.update(now)
 	for i := 0; i < csVectorSize; i++ {
-		fv.vp.vec[i] += 1
-		fv.vp.wvec[i] += value
+		fv.vp.weight[i] += 1
+		fv.vp.sum[i] += value
 	}
 }
 
 const csDecayRate = 1 / float64(time.Day*100)
 
 type connectionStats struct {
-	sum, wsum, scaled, wscaled csVectorPair
-	lastExpDecay, lastScaled   mclock.AbsTime
+	average, weighted, scaled, wscaled    csVectorPair
+	totalWeight, totalValue, totalSquared float64
+	lastExpDecay, lastScaled              mclock.AbsTime
 }
 
-func (cs *connectionStats) update(now mclock.AbsTime, vp csVectorPair, value float64) {
+func (cs *connectionStats) update(now mclock.AbsTime, vp *csVectorPair, value, weight float64) {
 	dt := now - rt.lastExpDecay
 	rt.lastExpDecay = now
 	var exp float64
 	if dt > 0 {
-		dt = math.Exp(-dt * csDecayRate)
+		exp = math.Exp(-dt * csDecayRate)
 	} else {
-		dt = 1
+		exp = 1
 	}
+	value *= weight
 	for i := 0; i < csVectorSize; i++ {
-		cs.sum.vec[i] = cs.sum.vec[i]*exp + vp.vec[i]
-		cs.sum.wvec[i] = cs.sum.wvec[i]*exp + vp.wvec[i]
-		cs.wsum.vec[i] = cs.sum.vec[i]*exp + vp.vec[i]*value
-		cs.wsum.wvec[i] = cs.sum.wvec[i]*exp + vp.wvec[i]*value
+		cs.average.weight[i] = cs.average.weight[i]*exp + vp.weight[i]*weight
+		cs.average.sum[i] = cs.average.sum[i]*exp + vp.sum[i]*weight
+		if value != 0 {
+			cs.weighted.weight[i] = cs.average.weight[i]*exp + vp.weight[i]*value
+			cs.weighted.sum[i] = cs.average.sum[i]*exp + vp.sum[i]*value
+		}
 	}
+	cs.totalWeight += weight
+	cs.totalValue += value
+	cs.totalSquared += value * value
 }
 
 func scaleVectorPair(target, source, weights *csVectorPair) {
 	for i := 0; i < csVectorSize; i++ {
-		weight := weights.vec[i] + weights.wvec[i]*wmul
-		target.vec[i] = source.vec[i] * weight
-		target.wvec[i] = source.wvec[i] * weight
+		target.weight[i] = source.weight[i] * weights.weight[i]
+		target.sum[i] = source.sum[i] * weights.weight[i]
 	}
 }
 
-func (cs *connectionStats) score(now mclock.AbsTime, vp csVectorPair) float64 {
-	if cs.sum.wvec[0] < 1e-100 {
+func (cs *connectionStats) estimate(now mclock.AbsTime, vp *csVectorPair) float64 {
+	var avg, wavg float64
+	if (cs.totalWeight < 1e-100) || (cs.totalValue < 1e-100) {
 		return 0
 	}
-	wmul := cs.sum.vec[0] / cs.sum.wvec[0]
+	avg = cs.totalValue / cs.totalWeight
+	wavg = cs.totalSquared / cs.totalValue
+
 	if cs.lastScaled != now {
-		scaleVectorPair(&cs.scaled, &cs.sum, &cs.wsum)
-		scaleVectorPair(&cs.wscaled, &cs.wsum, &cs.sum)
+		scaleVectorPair(&cs.scaled, &cs.average, &cs.weighted)
+		scaleVectorPair(&cs.wscaled, &cs.weighted, &cs.average)
 		lastScaled = now
 	}
 	var scaled, wscaled, v csVectorPair
-	scaleVectorPair(&scaled, &cs.scaled, &vp)
-	scaleVectorPair(&wscaled, &cs.wscaled, &vp)
+	scaleVectorPair(&scaled, &cs.scaled, vp)
+	scaleVectorPair(&wscaled, &cs.wscaled, vp)
 	scaleVectorPair(&v, &vp, &cs.scaled)
 
-	var dotProduct, sqLen float64
+	var dotProduct, sqLen, x float64
 	for i := 0; i < csVectorSize; i++ {
-		wv := wscaled.wvec[i] - scaled.wvec[i]
-		dotProduct += (v.wvec[i] - scaled.wvec[i]) * wv
+		var scale float64
+		if v.weight[i] > 1e-100 {
+			w := math.Cbrt(v.weight[i])
+			scale = 1 / (w * w)
+		}
+
+		wv := (wscaled.sum[i] - scaled.sum[i]) * scale
+		dotProduct += (v.sum[i] - scaled.sum[i]) * scale * wv
 		sqLen += wv * wv
 	}
-	return dotProduct/sqLen*(sumVsq/sumV-sumV/N) + sumV/N
+	if sqLen > 1e-100 {
+		if dotProduct < -1000*sqLen {
+			x = -1000
+		} else {
+
+			if dotProduct > 1000*sqLen {
+				x = 1000
+			} else {
+				x = dotProduct / sqLen
+			}
+		}
+	}
+	return x*(wavg-avg) + avg
+}
+
+type connectionPredictor struct {
+	history                   *csFilterVector
+	nodeStats, globalStats    *connectionStats
+	lastVp                    csVectorPair
+	estNode, estGlobal, ratio float64
+}
+
+func (cp *connectionPredictor) predict() float64 {
+	now := mclock.Now()
+	cp.lastVp = cp.history.get(now)
+	cp.estNode = cp.nodeStats.estimate(now, &cp.lastVp)
+	cp.estGlobal = cp.globalStats.estimate(now, &cp.lastVp)
+	return cp.estNode*cp.ratio + cp.estGlobal*(1-cp.ratio)
+}
+
+func (cp *connectionPredictor) update(value, weight float64) {
+	now := mclock.Now()
+	cp.nodeStats.update(now, &cp.lastVp, value, weight)
+	cp.globalStats.update(now, &cp.lastVp, value, weight)
+	errNode = cp.estNode - value
+	errNode *= errNode
+	errGlobal = cp.estGlobal - value
+	errGlobal *= errGlobal
+	if errNode+errGlobal < 1e-100 {
+		return
+	}
+	step := errGlobal*2/(errNode+errGlobal) - 1
+	cp.ratio += step * 0.1 * weight
+	if cp.ratio < 0 {
+		cp.ratio = 0
+	}
+	if cp.ratio > 1 {
+		cp.ratio = 1
+	}
 }
