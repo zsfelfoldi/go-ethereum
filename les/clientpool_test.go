@@ -79,7 +79,7 @@ func testClientPool(t *testing.T, connLimit, clientCount, paidCount int, randomD
 		pool = newClientPool(db, 1, 10000, &clock, disconnFn)
 	)
 	pool.setLimits(connLimit, uint64(connLimit))
-	pool.setPriceFactors(priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
+	pool.setDefaultFactors(priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 
 	// pool should accept new peers up to its connected limit
 	for i := 0; i < connLimit; i++ {
@@ -104,7 +104,9 @@ func testClientPool(t *testing.T, connLimit, clientCount, paidCount int, randomD
 			// give a positive balance to some of the peers
 			amount := uint64(testClientPoolTicks / 2 * 1000000000) // enough for half of the simulation period
 			for i := 0; i < paidCount; i++ {
-				pool.addBalance(poolTestPeer(i).ID(), amount, false)
+				pool.forClients([]enode.ID{poolTestPeer(i).ID()}, func(client *clientInfo, id enode.ID) {
+					pool.addBalance(id, amount, false)
+				})
 			}
 		}
 

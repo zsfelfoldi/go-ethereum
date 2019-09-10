@@ -17,15 +17,407 @@
 package les
 
 import (
+	"context"
 	"errors"
+	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/p2p/enode"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 var (
-	errNoCheckpoint = errors.New("no local checkpoint provided")
-	errNotActivated = errors.New("checkpoint registrar is not activated")
+	errNoCheckpoint         = errors.New("no local checkpoint provided")
+	errNotActivated         = errors.New("checkpoint registrar is not activated")
+	errInvalidParam         = errors.New("invalid client parameter")
+	errInvalidValue         = errors.New("invalid parameter value")
+	errTotalCap             = errors.New("total capacity exceeded")
+	errUnknownBenchmarkType = errors.New("unknown benchmark type")
+	errMultiple             = errors.New("multiple errors")
+	errClientNotConnected   = errors.New("client is not connected")
+	errBalanceOverflow      = errors.New("balance overflow")
+	errNoPriority           = errors.New("not enough priority")
+
+	dropCapacityDelay = time.Second // delay applied to decreasing capacity changes
 )
+
+const maxBalance = 18000000000000000000
+
+type clientApiFields struct {
+	balanceUpdatePeriod uint64
+}
+
+// PrivateLightServerAPI provides an API to access the LES light server.
+type PrivateLightServerAPI struct {
+	server                               *LesServer
+	defaultPosFactors, defaultNegFactors priceFactors
+	subs                                 map[*eventSub]struct{}
+	lock                                 sync.Mutex
+}
+
+// NewPrivateLightServerAPI creates a new LES light server API.
+func NewPrivateLightServerAPI(server *LesServer) *PrivateLightServerAPI {
+	return &PrivateLightServerAPI{
+		server: server,
+		subs:   make(map[*eventSub]struct{}),
+	}
+}
+
+// ServerInfo returns global server parameters
+func (api *PrivateLightServerAPI) ServerInfo() map[string]interface{} {
+	res := make(map[string]interface{})
+	res["minimumCapacity"] = api.server.minCapacity
+	res["maximumCapacity"] = api.server.maxCapacity
+	res["freeClientCapacity"] = api.server.freeCapacity
+	res["totalCapacity"], res["totalConnectedCapacity"], res["priorityConnectedCapacity"] = api.server.clientPool.capacityInfo()
+	return res
+}
+
+// ClientInfo returns information about clients listed in the ids list or matching the given tags
+func (api *PrivateLightServerAPI) ClientInfo(ids []enode.ID) map[enode.ID]map[string]interface{} {
+	res := make(map[enode.ID]map[string]interface{})
+	api.server.clientPool.forClients(ids, func(client *clientInfo, id enode.ID) {
+		res[id] = api.clientInfo(client, id)
+	})
+	return res
+}
+
+// clientInfo creates a client info data structure
+func (api *PrivateLightServerAPI) clientInfo(c *clientInfo, id enode.ID) map[string]interface{} {
+	info := make(map[string]interface{})
+	if c != nil {
+		info["isConnected"] = true
+		info["capacity"] = c.capacity
+		info["pricing/balance"], info["pricing/negBalance"] = c.balanceTracker.getBalance(mclock.Now())
+	} else {
+		info["isConnected"] = false
+		info["pricing/balance"] = api.server.clientPool.getPosBalance(id).value
+	}
+	return info
+}
+
+// sendEvent sends an event to the subscribers interested in it. For global events client == nil.
+func (api *PrivateLightServerAPI) sendEvent(clientEvent string, client *clientInfo) {
+	if len(api.subs) == 0 {
+		return
+	}
+
+	event := make(map[string]interface{})
+	event["totalCapacity"], event["totalConnectedCapacity"], event["priorityConnectedCapacity"] = api.server.clientPool.capacityInfo()
+	if client != nil {
+		event["clientEvent"] = clientEvent
+		event["clientId"] = client.id
+		event["clientInfo"] = api.clientInfo(client, client.id)
+	}
+
+	for sub := range api.subs {
+		select {
+		case <-sub.rpcSub.Err():
+			delete(api.subs, sub)
+		case <-sub.notifier.Closed():
+			delete(api.subs, sub)
+		default:
+			sub.notifier.Notify(sub.rpcSub.ID, event)
+		}
+	}
+}
+
+// SetClientParams sets client parameters for all clients listed in the ids list or matching the given tags
+func (api *PrivateLightServerAPI) SetClientParams(ids []enode.ID, params map[string]interface{}) error {
+	updateFactorsWithParam := func(name string, value interface{}, posFactors, negFactors *priceFactors) (bool, error) {
+		var err error
+		switch name {
+		case "pricing/timeFactor":
+			if val, ok := value.(float64); ok && val >= 0 {
+				posFactors.timeFactor = val / 1000000000
+			} else {
+				err = errInvalidValue
+			}
+		case "pricing/capacityFactor":
+			if val, ok := value.(float64); ok && val >= 0 {
+				posFactors.capacityFactor = val / 1000000000
+			} else {
+				err = errInvalidValue
+			}
+		case "pricing/requestCostFactor":
+			if val, ok := value.(float64); ok && val >= 0 {
+				posFactors.requestFactor = val / 1000000000
+			} else {
+				err = errInvalidValue
+			}
+		case "pricing/negative/timeFactor":
+			if val, ok := value.(float64); ok && val >= 0 {
+				negFactors.timeFactor = val / 1000000000
+			} else {
+				err = errInvalidValue
+			}
+		case "pricing/negative/capacityFactor":
+			if val, ok := value.(float64); ok && val >= 0 {
+				negFactors.capacityFactor = val / 1000000000
+			} else {
+				err = errInvalidValue
+			}
+		case "pricing/negative/requestCostFactor":
+			if val, ok := value.(float64); ok && val >= 0 {
+				negFactors.requestFactor = val / 1000000000
+			} else {
+				err = errInvalidValue
+			}
+		default:
+			return false, nil
+		}
+		return err == nil, err
+	}
+
+	var finalErr error
+	if len(ids) == 0 {
+		// update default price factors
+		var update bool
+		for name, value := range params {
+			u, err := updateFactorsWithParam(name, value, &api.defaultPosFactors, &api.defaultNegFactors)
+			update = update || u
+			if err != nil {
+				if finalErr == nil || finalErr == err {
+					finalErr = err
+				} else {
+					finalErr = errMultiple
+				}
+			}
+		}
+		if update {
+			api.server.clientPool.setDefaultFactors(api.defaultPosFactors, api.defaultNegFactors)
+		}
+	}
+	api.server.clientPool.forClients(ids, func(client *clientInfo, id enode.ID) {
+		var (
+			err            error
+			updatePrice, u bool
+		)
+		for name, value := range params {
+			if client != nil {
+				if u, err = updateFactorsWithParam(name, value, &client.posFactors, &client.negFactors); u {
+					updatePrice = true
+				}
+			} else {
+				var dummy priceFactors
+				if u, err = updateFactorsWithParam(name, value, &dummy, &dummy); u {
+					err = errClientNotConnected
+				}
+			}
+			if !u && err == nil {
+				switch name {
+				case "capacity":
+					if client != nil {
+						if capacity, ok := value.(float64); ok && (capacity == 0 || uint64(capacity) >= api.server.minCapacity) {
+							err = api.server.clientPool.setCapacity(client, uint64(capacity))
+							updatePrice = true
+						} else {
+							err = errInvalidValue
+						}
+					} else {
+						err = errClientNotConnected
+					}
+				case "pricing/alert":
+					if client != nil {
+						if val, ok := value.(float64); ok && val >= 0 {
+							api.setBalanceUpdate(client, uint64(val), false)
+						} else {
+							err = errInvalidValue
+						}
+					} else {
+						err = errClientNotConnected
+					}
+				case "pricing/periodicUpdate":
+					if client != nil {
+						if val, ok := value.(float64); ok && val >= 0 {
+							api.setBalanceUpdate(client, uint64(val), true)
+						} else {
+							err = errInvalidValue
+						}
+					} else {
+						err = errClientNotConnected
+					}
+				case "pricing/totalFunds":
+					if val, ok := value.(float64); ok && val >= 0 && val <= maxBalance {
+						v := uint64(val)
+						api.server.clientPool.addBalance(id, v, true)
+					} else {
+						err = errInvalidValue
+					}
+				case "pricing/addBalance":
+					if val, ok := value.(float64); ok && val >= 0 && val <= maxBalance {
+						v := uint64(val)
+						api.server.clientPool.addBalance(id, v, false)
+					} else {
+						err = errInvalidValue
+					}
+				default:
+					err = errInvalidParam
+				}
+			}
+			if err != nil {
+				if finalErr == nil || finalErr == err {
+					finalErr = err
+				} else {
+					finalErr = errMultiple
+				}
+			}
+		}
+		if updatePrice {
+			client.updatePriceFactors()
+		}
+	})
+	return finalErr
+}
+
+// balanceUpdate sends a price update client event and schedules a new update with the
+// price tracker if necessary.
+func (api *PrivateLightServerAPI) balanceUpdate(client *clientInfo) {
+	api.lock.Lock()
+	defer api.lock.Unlock()
+
+	api.sendEvent("balanceUpdate", client)
+	if client.balanceUpdatePeriod != 0 {
+		api.setBalanceUpdate(client, client.balanceUpdatePeriod, true)
+	}
+}
+
+// setBalanceUpdate schedules a price update when the balance reaches the given limit.
+// If periodic is false then the limit is interpreted as an absolute value while if true
+// it is relative to the current totalAmount value or the its value at the last future update.
+func (api *PrivateLightServerAPI) setBalanceUpdate(client *clientInfo, value uint64, periodic bool) {
+	balance := balance{pos: value}
+	if periodic {
+		client.balanceUpdatePeriod = value
+		balance.pos, _ = client.balanceTracker.getBalance(mclock.Now())
+		if balance.pos > value {
+			balance.pos -= value
+		} else {
+			balance.pos = 0
+		}
+	} else {
+		client.balanceUpdatePeriod = 0
+	}
+	client.balanceTracker.addCallback(balanceCallbackApi, client.balanceTracker.balanceToPriority(balance), func() { api.balanceUpdate(client) })
+}
+
+// eventSub represents an event subscription
+type eventSub struct {
+	notifier *rpc.Notifier
+	rpcSub   *rpc.Subscription
+}
+
+// SubscribeEvent subscribes to global events and client events related to the clients matching the given tags.
+// If totalCapUnderrun is true then totalCapacity updates are only sent when totalCapacity drops under totalConnectedCapacity.
+func (api *PrivateLightServerAPI) SubscribeEvent(ctx context.Context) (*rpc.Subscription, error) {
+	notifier, supported := rpc.NotifierFromContext(ctx)
+	if !supported {
+		return &rpc.Subscription{}, rpc.ErrNotificationsUnsupported
+	}
+	rpcSub := notifier.CreateSubscription()
+	api.subs[&eventSub{notifier, rpcSub}] = struct{}{}
+	return rpcSub, nil
+}
+
+// Benchmark runs a request performance benchmark with a given set of measurement setups
+// in multiple passes specified by passCount. The measurement time for each setup in each
+// pass is specified in milliseconds by length.
+//
+// Note: measurement time is adjusted for each pass depending on the previous ones.
+// Therefore a controlled total measurement time is achievable in multiple passes.
+func (api *PrivateLightServerAPI) Benchmark(setups []map[string]interface{}, passCount, length int) ([]map[string]interface{}, error) {
+	benchmarks := make([]requestBenchmark, len(setups))
+	for i, setup := range setups {
+		if t, ok := setup["type"].(string); ok {
+			getInt := func(field string, def int) int {
+				if value, ok := setup[field].(float64); ok {
+					return int(value)
+				}
+				return def
+			}
+			getBool := func(field string, def bool) bool {
+				if value, ok := setup[field].(bool); ok {
+					return value
+				}
+				return def
+			}
+			switch t {
+			case "header":
+				benchmarks[i] = &benchmarkBlockHeaders{
+					amount:  getInt("amount", 1),
+					skip:    getInt("skip", 1),
+					byHash:  getBool("byHash", false),
+					reverse: getBool("reverse", false),
+				}
+			case "body":
+				benchmarks[i] = &benchmarkBodiesOrReceipts{receipts: false}
+			case "receipts":
+				benchmarks[i] = &benchmarkBodiesOrReceipts{receipts: true}
+			case "proof":
+				benchmarks[i] = &benchmarkProofsOrCode{code: false}
+			case "code":
+				benchmarks[i] = &benchmarkProofsOrCode{code: true}
+			case "cht":
+				benchmarks[i] = &benchmarkHelperTrie{
+					bloom:    false,
+					reqCount: getInt("amount", 1),
+				}
+			case "bloom":
+				benchmarks[i] = &benchmarkHelperTrie{
+					bloom:    true,
+					reqCount: getInt("amount", 1),
+				}
+			case "txSend":
+				benchmarks[i] = &benchmarkTxSend{}
+			case "txStatus":
+				benchmarks[i] = &benchmarkTxStatus{}
+			default:
+				return nil, errUnknownBenchmarkType
+			}
+		} else {
+			return nil, errUnknownBenchmarkType
+		}
+	}
+	rs := api.server.handler.runBenchmark(benchmarks, passCount, time.Millisecond*time.Duration(length))
+	result := make([]map[string]interface{}, len(setups))
+	for i, r := range rs {
+		res := make(map[string]interface{})
+		if r.err == nil {
+			res["totalCount"] = r.totalCount
+			res["avgTime"] = r.avgTime
+			res["maxInSize"] = r.maxInSize
+			res["maxOutSize"] = r.maxOutSize
+		} else {
+			res["error"] = r.err.Error()
+		}
+		result[i] = res
+	}
+	return result, nil
+}
+
+// PrivateDebugAPI provides an API to debug LES light server functionality.
+type PrivateDebugAPI struct {
+	server *LesServer
+}
+
+// NewPrivateDebugAPI creates a new LES light server debug API.
+func NewPrivateDebugAPI(server *LesServer) *PrivateDebugAPI {
+	return &PrivateDebugAPI{
+		server: server,
+	}
+}
+
+// FreezeClient forces a temporary client freeze which normally happens when the server is overloaded
+func (api *PrivateDebugAPI) FreezeClient(id enode.ID) error {
+	err := errClientNotConnected
+	api.server.clientPool.forClients([]enode.ID{id}, func(c *clientInfo, id enode.ID) {
+		c.peer.freezeClient()
+		err = nil
+	})
+	return err
+}
 
 // PrivateLightAPI provides an API to access the LES light server or light client.
 type PrivateLightAPI struct {
