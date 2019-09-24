@@ -65,6 +65,8 @@ func (i poolTestPeer) freeClientId() string {
 
 func (i poolTestPeer) updateCapacity(uint64) {}
 
+func (i poolTestPeer) freezeClient() {}
+
 func testClientPool(t *testing.T, connLimit, clientCount, paidCount int, randomDisconnect bool) {
 	rand.Seed(time.Now().UnixNano())
 	var (
