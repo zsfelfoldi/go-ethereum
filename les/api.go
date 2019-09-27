@@ -32,13 +32,10 @@ import (
 var (
 	errNoCheckpoint         = errors.New("no local checkpoint provided")
 	errNotActivated         = errors.New("checkpoint registrar is not activated")
-	errTotalCap             = errors.New("total capacity exceeded")
 	errUnknownBenchmarkType = errors.New("unknown benchmark type")
 	errClientNotConnected   = errors.New("client is not connected")
 	errBalanceOverflow      = errors.New("balance overflow")
 	errNoPriority           = errors.New("not enough priority")
-
-	dropCapacityDelay = time.Second // delay applied to decreasing capacity changes
 )
 
 const maxBalance = 9000000000000000000
