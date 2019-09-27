@@ -57,10 +57,14 @@ type PrivateLightServerAPI struct {
 
 // NewPrivateLightServerAPI creates a new LES light server API.
 func NewPrivateLightServerAPI(server *LesServer) *PrivateLightServerAPI {
-	return &PrivateLightServerAPI{
-		server: server,
-		subs:   make(map[*eventSub]struct{}),
+	api := &PrivateLightServerAPI{
+		server:            server,
+		defaultPosFactors: server.clientPool.defaultPosFactors,
+		defaultNegFactors: server.clientPool.defaultNegFactors,
+		subs:              make(map[*eventSub]struct{}),
 	}
+	server.clientPool.eventHook = api.sendEvent
+	return api
 }
 
 // ServerInfo returns global server parameters
@@ -82,6 +86,12 @@ func (api *PrivateLightServerAPI) ClientInfo(ids []enode.ID) map[enode.ID]map[st
 	return res
 }
 
+// PriorityClientInfo returns information about clients with a positive balance
+// in the given ID range (stop excluded). If stop is null then the iterator stops
+// only at the end of the ID space. MaxCount limits the number of results returned.
+// If maxCount limit is applied but there are more potential results then the ID
+// of the next potential result is included in the map with an empty structure
+// assigned to it.
 func (api *PrivateLightServerAPI) PriorityClientInfo(start, stop enode.ID, maxCount int) map[enode.ID]map[string]interface{} {
 	res := make(map[enode.ID]map[string]interface{})
 	ids := api.server.clientPool.getPosBalanceIDs(start, stop, maxCount+1)
@@ -137,6 +147,8 @@ func (api *PrivateLightServerAPI) sendEvent(clientEvent string, client *clientIn
 	}
 }
 
+// setParams either sets the given parameters for a single client (if ID is specified)
+// or the default parameters applicable to clients connected in the future
 func (api *PrivateLightServerAPI) setParams(params map[string]interface{}, client *clientInfo, id enode.ID, posFactors, negFactors *priceFactors) (updateFactors bool, err error) {
 	if client != nil {
 		posFactors, negFactors = &client.posFactors, &client.negFactors
@@ -223,11 +235,14 @@ loop:
 	return updateFactors, err
 }
 
+// UpdateBalance updates the balance of a client (either overwrites it or adds to it).
+// It also updates the balance meta info string.
 func (api *PrivateLightServerAPI) UpdateBalance(id enode.ID, value int64, add bool, meta string) error {
 	return api.server.clientPool.updateBalance(id, value, add, meta)
 }
 
-// SetClientParams sets client parameters for all clients listed in the ids list or matching the given tags
+// SetClientParams sets client parameters for all clients listed in the ids list
+// or all connected clients if the list is empty
 func (api *PrivateLightServerAPI) SetClientParams(ids []enode.ID, params map[string]interface{}) error {
 	var finalErr error
 	api.server.clientPool.forClients(ids, func(client *clientInfo, id enode.ID) {
@@ -242,6 +257,7 @@ func (api *PrivateLightServerAPI) SetClientParams(ids []enode.ID, params map[str
 	return finalErr
 }
 
+// SetDefaultParams sets the default parameters applicable to clients connected in the future
 func (api *PrivateLightServerAPI) SetDefaultParams(params map[string]interface{}) error {
 	update, err := api.setParams(params, nil, enode.ID{}, &api.defaultPosFactors, &api.defaultNegFactors)
 	if update {
