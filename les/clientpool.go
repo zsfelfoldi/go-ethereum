@@ -622,7 +622,7 @@ func (f *clientPool) getPosBalance(id enode.ID) *posBalance {
 	return balance
 }
 
-// getPosBalanceIDs returns a lexicographically ordered list of IDs of accounts
+// getPosBalanceIDs returns a lexicographically ordered list of IDs from accounts
 // with a positive balance
 func (f *clientPool) getPosBalanceIDs(start, stop enode.ID, maxCount int) (result []enode.ID) {
 	if maxCount <= 0 {

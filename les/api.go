@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -38,7 +39,7 @@ var (
 	errNoPriority           = errors.New("not enough priority")
 )
 
-const maxBalance = 9000000000000000000
+const maxBalance = math.MaxInt64
 
 type clientApiFields struct {
 	balanceUpdatePeriod uint64
@@ -154,12 +155,12 @@ func (api *PrivateLightServerAPI) setParams(params map[string]interface{}, clien
 loop:
 	for name, value := range params {
 		errValue := func() error {
-			return errors.New(fmt.Sprintf("invalid value for parameter '%s'", name))
+			return fmt.Errorf("invalid value for parameter '%s'", name)
 		}
 		setFactor := func(v *float64) {
 			if posFactors != nil {
 				if val, ok := value.(float64); ok && val >= 0 {
-					*v = val / 1000000000
+					*v = val / float64(time.Second)
 					updateFactors = true
 				} else {
 					err = errValue()
@@ -186,7 +187,7 @@ loop:
 		default:
 			processed = false
 			if defParams {
-				err = errors.New(fmt.Sprintf("invalid default parameter '%s'", name))
+				err = fmt.Errorf("invalid default parameter '%s'", name)
 				continue loop
 			}
 		}
@@ -226,7 +227,7 @@ loop:
 				err = errClientNotConnected
 			}
 		default:
-			err = errors.New(fmt.Sprintf("invalid client parameter '%s'", name))
+			err = fmt.Errorf("invalid client parameter '%s'", name)
 		}
 	}
 	return updateFactors, err
