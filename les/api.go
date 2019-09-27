@@ -19,6 +19,7 @@ package les
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -31,11 +32,8 @@ import (
 var (
 	errNoCheckpoint         = errors.New("no local checkpoint provided")
 	errNotActivated         = errors.New("checkpoint registrar is not activated")
-	errInvalidParam         = errors.New("invalid client parameter")
-	errInvalidValue         = errors.New("invalid parameter value")
 	errTotalCap             = errors.New("total capacity exceeded")
 	errUnknownBenchmarkType = errors.New("unknown benchmark type")
-	errMultiple             = errors.New("multiple errors")
 	errClientNotConnected   = errors.New("client is not connected")
 	errBalanceOverflow      = errors.New("balance overflow")
 	errNoPriority           = errors.New("not enough priority")
@@ -43,7 +41,7 @@ var (
 	dropCapacityDelay = time.Second // delay applied to decreasing capacity changes
 )
 
-const maxBalance = 18000000000000000000
+const maxBalance = 9000000000000000000
 
 type clientApiFields struct {
 	balanceUpdatePeriod uint64
@@ -84,6 +82,19 @@ func (api *PrivateLightServerAPI) ClientInfo(ids []enode.ID) map[enode.ID]map[st
 	return res
 }
 
+func (api *PrivateLightServerAPI) PriorityClientInfo(start, stop enode.ID, maxCount int) map[enode.ID]map[string]interface{} {
+	res := make(map[enode.ID]map[string]interface{})
+	ids := api.server.clientPool.getPosBalanceIDs(start, stop, maxCount+1)
+	if len(ids) > maxCount {
+		res[ids[maxCount]] = make(map[string]interface{})
+		ids = ids[:maxCount]
+	}
+	api.server.clientPool.forClients(ids, func(client *clientInfo, id enode.ID) {
+		res[id] = api.clientInfo(client, id)
+	})
+	return res
+}
+
 // clientInfo creates a client info data structure
 func (api *PrivateLightServerAPI) clientInfo(c *clientInfo, id enode.ID) map[string]interface{} {
 	info := make(map[string]interface{})
@@ -91,9 +102,11 @@ func (api *PrivateLightServerAPI) clientInfo(c *clientInfo, id enode.ID) map[str
 		info["isConnected"] = true
 		info["capacity"] = c.capacity
 		info["pricing/balance"], info["pricing/negBalance"] = c.balanceTracker.getBalance(mclock.Now())
+		info["pricing/balanceMeta"] = c.balanceMetaInfo
 	} else {
 		info["isConnected"] = false
-		info["pricing/balance"] = api.server.clientPool.getPosBalance(id).value
+		pb := api.server.clientPool.getPosBalance(id)
+		info["pricing/balance"], info["pricing/balanceMeta"] = pb.value, pb.meta
 	}
 	return info
 }
@@ -124,152 +137,117 @@ func (api *PrivateLightServerAPI) sendEvent(clientEvent string, client *clientIn
 	}
 }
 
-// SetClientParams sets client parameters for all clients listed in the ids list or matching the given tags
-func (api *PrivateLightServerAPI) SetClientParams(ids []enode.ID, params map[string]interface{}) error {
-	updateFactorsWithParam := func(name string, value interface{}, posFactors, negFactors *priceFactors) (bool, error) {
-		var err error
+func (api *PrivateLightServerAPI) setParams(params map[string]interface{}, client *clientInfo, id enode.ID, posFactors, negFactors *priceFactors) (updateFactors bool, err error) {
+	if client != nil {
+		posFactors, negFactors = &client.posFactors, &client.negFactors
+	}
+	defParams := id == enode.ID{}
+loop:
+	for name, value := range params {
+		errValue := func() error {
+			return errors.New(fmt.Sprintf("invalid value for parameter '%s'", name))
+		}
+		setFactor := func(v *float64) {
+			if posFactors != nil {
+				if val, ok := value.(float64); ok && val >= 0 {
+					*v = val / 1000000000
+					updateFactors = true
+				} else {
+					err = errValue()
+				}
+			} else {
+				err = errClientNotConnected
+			}
+		}
+
+		processed := true
 		switch name {
 		case "pricing/timeFactor":
-			if val, ok := value.(float64); ok && val >= 0 {
-				posFactors.timeFactor = val / 1000000000
-			} else {
-				err = errInvalidValue
-			}
+			setFactor(&posFactors.timeFactor)
 		case "pricing/capacityFactor":
-			if val, ok := value.(float64); ok && val >= 0 {
-				posFactors.capacityFactor = val / 1000000000
-			} else {
-				err = errInvalidValue
-			}
+			setFactor(&posFactors.capacityFactor)
 		case "pricing/requestCostFactor":
-			if val, ok := value.(float64); ok && val >= 0 {
-				posFactors.requestFactor = val / 1000000000
-			} else {
-				err = errInvalidValue
-			}
+			setFactor(&posFactors.requestFactor)
 		case "pricing/negative/timeFactor":
-			if val, ok := value.(float64); ok && val >= 0 {
-				negFactors.timeFactor = val / 1000000000
-			} else {
-				err = errInvalidValue
-			}
+			setFactor(&negFactors.timeFactor)
 		case "pricing/negative/capacityFactor":
-			if val, ok := value.(float64); ok && val >= 0 {
-				negFactors.capacityFactor = val / 1000000000
-			} else {
-				err = errInvalidValue
-			}
+			setFactor(&negFactors.capacityFactor)
 		case "pricing/negative/requestCostFactor":
-			if val, ok := value.(float64); ok && val >= 0 {
-				negFactors.requestFactor = val / 1000000000
+			setFactor(&negFactors.requestFactor)
+		default:
+			processed = false
+			if defParams {
+				err = errors.New(fmt.Sprintf("invalid default parameter '%s'", name))
+				continue loop
+			}
+		}
+		if processed {
+			continue loop
+		}
+		switch name {
+		case "capacity":
+			if client != nil {
+				if capacity, ok := value.(float64); ok && (capacity == 0 || uint64(capacity) >= api.server.minCapacity) {
+					err = api.server.clientPool.setCapacity(client, uint64(capacity))
+					updateFactors = true
+				} else {
+					err = errValue()
+				}
 			} else {
-				err = errInvalidValue
+				err = errClientNotConnected
+			}
+		case "pricing/alert":
+			if client != nil {
+				if val, ok := value.(float64); ok && val >= 0 {
+					api.setBalanceUpdate(client, uint64(val), false)
+				} else {
+					err = errValue()
+				}
+			} else {
+				err = errClientNotConnected
+			}
+		case "pricing/periodicUpdate":
+			if client != nil {
+				if val, ok := value.(float64); ok && val >= 0 {
+					api.setBalanceUpdate(client, uint64(val), true)
+				} else {
+					err = errValue()
+				}
+			} else {
+				err = errClientNotConnected
 			}
 		default:
-			return false, nil
+			err = errors.New(fmt.Sprintf("invalid client parameter '%s'", name))
 		}
-		return err == nil, err
 	}
+	return updateFactors, err
+}
 
+func (api *PrivateLightServerAPI) UpdateBalance(id enode.ID, value int64, add bool, meta string) error {
+	return api.server.clientPool.updateBalance(id, value, add, meta)
+}
+
+// SetClientParams sets client parameters for all clients listed in the ids list or matching the given tags
+func (api *PrivateLightServerAPI) SetClientParams(ids []enode.ID, params map[string]interface{}) error {
 	var finalErr error
-	if len(ids) == 0 {
-		// update default price factors
-		var update bool
-		for name, value := range params {
-			u, err := updateFactorsWithParam(name, value, &api.defaultPosFactors, &api.defaultNegFactors)
-			update = update || u
-			if err != nil {
-				if finalErr == nil || finalErr == err {
-					finalErr = err
-				} else {
-					finalErr = errMultiple
-				}
-			}
+	api.server.clientPool.forClients(ids, func(client *clientInfo, id enode.ID) {
+		update, err := api.setParams(params, client, id, nil, nil)
+		if err != nil {
+			finalErr = err
 		}
 		if update {
-			api.server.clientPool.setDefaultFactors(api.defaultPosFactors, api.defaultNegFactors)
-		}
-	}
-	api.server.clientPool.forClients(ids, func(client *clientInfo, id enode.ID) {
-		var (
-			err            error
-			updatePrice, u bool
-		)
-		for name, value := range params {
-			if client != nil {
-				if u, err = updateFactorsWithParam(name, value, &client.posFactors, &client.negFactors); u {
-					updatePrice = true
-				}
-			} else {
-				var dummy priceFactors
-				if u, err = updateFactorsWithParam(name, value, &dummy, &dummy); u {
-					err = errClientNotConnected
-				}
-			}
-			if !u && err == nil {
-				switch name {
-				case "capacity":
-					if client != nil {
-						if capacity, ok := value.(float64); ok && (capacity == 0 || uint64(capacity) >= api.server.minCapacity) {
-							err = api.server.clientPool.setCapacity(client, uint64(capacity))
-							updatePrice = true
-						} else {
-							err = errInvalidValue
-						}
-					} else {
-						err = errClientNotConnected
-					}
-				case "pricing/alert":
-					if client != nil {
-						if val, ok := value.(float64); ok && val >= 0 {
-							api.setBalanceUpdate(client, uint64(val), false)
-						} else {
-							err = errInvalidValue
-						}
-					} else {
-						err = errClientNotConnected
-					}
-				case "pricing/periodicUpdate":
-					if client != nil {
-						if val, ok := value.(float64); ok && val >= 0 {
-							api.setBalanceUpdate(client, uint64(val), true)
-						} else {
-							err = errInvalidValue
-						}
-					} else {
-						err = errClientNotConnected
-					}
-				case "pricing/totalFunds":
-					if val, ok := value.(float64); ok && val >= 0 && val <= maxBalance {
-						v := uint64(val)
-						api.server.clientPool.addBalance(id, v, true)
-					} else {
-						err = errInvalidValue
-					}
-				case "pricing/addBalance":
-					if val, ok := value.(float64); ok && val >= 0 && val <= maxBalance {
-						v := uint64(val)
-						api.server.clientPool.addBalance(id, v, false)
-					} else {
-						err = errInvalidValue
-					}
-				default:
-					err = errInvalidParam
-				}
-			}
-			if err != nil {
-				if finalErr == nil || finalErr == err {
-					finalErr = err
-				} else {
-					finalErr = errMultiple
-				}
-			}
-		}
-		if updatePrice {
 			client.updatePriceFactors()
 		}
 	})
 	return finalErr
+}
+
+func (api *PrivateLightServerAPI) SetDefaultParams(params map[string]interface{}) error {
+	update, err := api.setParams(params, nil, enode.ID{}, &api.defaultPosFactors, &api.defaultNegFactors)
+	if update {
+		api.server.clientPool.setDefaultFactors(api.defaultPosFactors, api.defaultNegFactors)
+	}
+	return err
 }
 
 // balanceUpdate sends a price update client event and schedules a new update with the

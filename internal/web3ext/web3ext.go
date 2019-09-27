@@ -809,9 +809,24 @@ web3._extend({
 			params: 1
 		}),
 		new web3._extend.Method({
+			name: 'priorityClientInfo',
+			call: 'les_priorityClientInfo',
+			params: 3
+		}),
+		new web3._extend.Method({
 			name: 'setClientParams',
 			call: 'les_setClientParams',
 			params: 2
+		}),
+		new web3._extend.Method({
+			name: 'setDefaultParams',
+			call: 'les_setDefaultParams',
+			params: 1
+		}),
+		new web3._extend.Method({
+			name: 'updateBalance',
+			call: 'les_updateBalance',
+			params: 4
 		}),
 	],
 	properties:

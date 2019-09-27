@@ -17,6 +17,7 @@
 package les
 
 import (
+	"bytes"
 	"io"
 	"math"
 	"sync"
@@ -103,6 +104,7 @@ type clientInfo struct {
 	queueIndex             int // position in connectedQueue
 	balanceTracker         balanceTracker
 	posFactors, negFactors priceFactors
+	balanceMetaInfo        string
 	clientApiFields
 }
 
@@ -204,21 +206,23 @@ func (f *clientPool) connect(peer clientPeer, capacity uint64) bool {
 	// Create a clientInfo but do not add it yet
 	now := f.clock.Now()
 
-	posBalance := f.getPosBalance(id).value
+	pb := f.getPosBalance(id)
+	posBalance := pb.value
 	var negBalance uint64
 	nb := f.negBalanceMap[freeID]
 	if nb != nil {
 		negBalance = uint64(math.Exp(float64(nb.logValue-f.logOffset(now)) / fixedPointMultiplier))
 	}
 	e := &clientInfo{
-		pool:       f,
-		peer:       peer,
-		address:    freeID,
-		queueIndex: -1,
-		id:         id,
-		priority:   posBalance != 0,
-		posFactors: f.defaultPosFactors,
-		negFactors: f.defaultNegFactors,
+		pool:            f,
+		peer:            peer,
+		address:         freeID,
+		queueIndex:      -1,
+		id:              id,
+		priority:        posBalance != 0,
+		posFactors:      f.defaultPosFactors,
+		negFactors:      f.defaultNegFactors,
+		balanceMetaInfo: pb.meta,
 	}
 	// If the client is a free client, assign with a low free capacity,
 	// Otherwise assign with the given value(priority client)
@@ -313,6 +317,9 @@ func (f *clientPool) disconnect(p clientPeer) {
 	f.dropClient(e, f.clock.Now(), false)
 }
 
+// forClients iterates through a list of clients, calling the callback for each one.
+// If a client is not connected then clientInfo is nil. If the specified list is empty
+// then the callback is called for all connected clients.
 func (f *clientPool) forClients(ids []enode.ID, callback func(*clientInfo, enode.ID)) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
@@ -328,6 +335,7 @@ func (f *clientPool) forClients(ids []enode.ID, callback func(*clientInfo, enode
 	}
 }
 
+// setDefaultFactors sets the default price factors applied to subsequently connected clients
 func (f *clientPool) setDefaultFactors(posFactors, negFactors priceFactors) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
@@ -360,6 +368,8 @@ func (f *clientPool) dropClient(e *clientInfo, now mclock.AbsTime, kick bool) {
 	}
 }
 
+// capacityInfo returns the total capacity allowance, the total capacity of connected
+// clients and the total capacity of connected and prioritized clients
 func (f *clientPool) capacityInfo() (uint64, uint64, uint64) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
@@ -427,6 +437,7 @@ func (f *clientPool) setLimits(count int, totalCap uint64) {
 	}
 }
 
+// setCapacity sets the assigned capacity of a connected client
 func (f *clientPool) setCapacity(c *clientInfo, capacity uint64) error {
 	if f.connectedMap[c.id] != c {
 		return errClientNotConnected
@@ -595,29 +606,68 @@ func (f *clientPool) getPosBalance(id enode.ID) *posBalance {
 	return balance
 }
 
-// addBalance updates the positive balance of a client.
-// If setTotal is false then the given amount is added to the balance.
-// If setTotal is true then amount represents the total amount ever added to the
-// given ID and positive balance is increased by (amount-lastTotal) while lastTotal
-// is updated to amount. This method also allows removing positive balance.
-func (f *clientPool) addBalance(id enode.ID, amount uint64, setTotal bool) {
+// getPosBalanceIDs returns a lexicographically ordered list of IDs of accounts
+// with a positive balance
+func (f *clientPool) getPosBalanceIDs(start, stop enode.ID, maxCount int) (result []enode.ID) {
+	if maxCount <= 0 {
+		return
+	}
+	it := f.db.NewIteratorWithStart(append(clientBalanceDbKey, start[:]...))
+	defer it.Release()
+	for i := len(stop[:]) - 1; i >= 0; i-- {
+		stop[i]--
+		if stop[i] != 255 {
+			break
+		}
+	}
+	stopKey := append(clientBalanceDbKey, stop[:]...)
+
+	for it.Next() {
+		var id enode.ID
+		if len(it.Key()) != len(id[:])+len(clientBalanceDbKey) || bytes.Compare(it.Key(), stopKey) == 1 {
+			return
+		}
+		copy(id[:], it.Key()[len(clientBalanceDbKey):])
+		result = append(result, id)
+		if len(result) == maxCount {
+			return
+		}
+	}
+	return
+}
+
+// updateBalance updates the balance of a client (either overwrites it or adds to it).
+// It also updates the balance meta info string.
+func (f *clientPool) updateBalance(id enode.ID, amount int64, add bool, meta string) error {
 	pb := f.getPosBalance(id)
 	c := f.connectedMap[id]
 	var negBalance uint64
 	if c != nil {
 		pb.value, negBalance = c.balanceTracker.getBalance(f.clock.Now())
 	}
-	if setTotal {
-		if pb.value+amount > pb.lastTotal {
-			pb.value += amount - pb.lastTotal
+	if add {
+		if amount > 0 {
+			if amount > maxBalance || pb.value > maxBalance-uint64(amount) {
+				return errBalanceOverflow
+			}
+			pb.value += uint64(amount)
 		} else {
-			pb.value = 0
+			if uint64(-amount) > pb.value {
+				pb.value = 0
+			} else {
+				pb.value -= uint64(-amount)
+			}
 		}
-		pb.lastTotal = amount
 	} else {
-		pb.value += amount
-		pb.lastTotal += amount
+		if amount > maxBalance {
+			return errBalanceOverflow
+		}
+		if amount < 0 {
+			amount = 0
+		}
+		pb.value = uint64(amount)
 	}
+	pb.meta = meta
 	f.storePosBalance(pb)
 	if c != nil {
 		c.balanceTracker.setBalance(pb.value, negBalance)
@@ -628,32 +678,36 @@ func (f *clientPool) addBalance(id enode.ID, amount uint64, setTotal bool) {
 			}
 			c.balanceTracker.addCallback(balanceCallbackZero, 0, func() { f.balanceExhausted(id) })
 		}
+		c.balanceMetaInfo = meta
 	}
+	return nil
 }
 
 // posBalance represents a recently accessed positive balance entry
 type posBalance struct {
-	id                           enode.ID
-	value, lastStored, lastTotal uint64
-	queueIndex                   int // position in posBalanceQueue
+	id                enode.ID
+	value, lastStored uint64
+	meta              string
+	queueIndex        int // position in posBalanceQueue
 }
 
 // EncodeRLP implements rlp.Encoder
 func (e *posBalance) EncodeRLP(w io.Writer) error {
-	return rlp.Encode(w, []interface{}{e.value, e.lastTotal})
+	return rlp.Encode(w, []interface{}{e.value, e.meta})
 }
 
 // DecodeRLP implements rlp.Decoder
 func (e *posBalance) DecodeRLP(s *rlp.Stream) error {
 	var entry struct {
-		Value, LastTotal uint64
+		Value uint64
+		Meta  string
 	}
 	if err := s.Decode(&entry); err != nil {
 		return err
 	}
 	e.value = entry.Value
 	e.lastStored = entry.Value
-	e.lastTotal = entry.LastTotal
+	e.meta = entry.Meta
 	return nil
 }
 
