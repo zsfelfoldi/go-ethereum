@@ -104,10 +104,10 @@ func testClientPool(t *testing.T, connLimit, clientCount, paidCount int, randomD
 
 		if tickCounter == testClientPoolTicks/4 {
 			// give a positive balance to some of the peers
-			amount := uint64(testClientPoolTicks / 2 * 1000000000) // enough for half of the simulation period
+			amount := int64(testClientPoolTicks / 2 * 1000000000) // enough for half of the simulation period
 			for i := 0; i < paidCount; i++ {
 				pool.forClients([]enode.ID{poolTestPeer(i).ID()}, func(client *clientInfo, id enode.ID) {
-					pool.addBalance(id, amount, false)
+					pool.updateBalance(id, amount, true, "")
 				})
 			}
 		}
