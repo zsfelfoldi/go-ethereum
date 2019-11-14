@@ -42,6 +42,7 @@ type LesServer struct {
 	handler     *serverHandler
 	lesTopics   []discv5.Topic
 	privateKey  *ecdsa.PrivateKey
+	srvr        *p2p.Server
 
 	// Flow control and capacity management
 	fcManager    *flowcontrol.ClientManager
@@ -49,6 +50,7 @@ type LesServer struct {
 	defParams    flowcontrol.ServerParams
 	servingQueue *servingQueue
 	clientPool   *clientPool
+	tokenSale    *tokenSale
 
 	minCapacity, maxCapacity, freeCapacity uint64
 	threadsIdle                            int // Request serving threads count when system is idle.
@@ -114,8 +116,9 @@ func NewLesServer(e *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 		srv.maxCapacity = totalRecharge
 	}
 	srv.fcManager.SetCapacityLimits(srv.freeCapacity, srv.maxCapacity, srv.freeCapacity*2)
-	srv.clientPool = newClientPool(srv.chainDb, srv.freeCapacity, mclock.System{}, func(id enode.ID) { go srv.peers.Unregister(peerIdToString(id)) })
+	srv.clientPool = newClientPool(srv.chainDb, srv.minCapacity, srv.freeCapacity, mclock.System{}, func(id enode.ID) { go srv.peers.Disconnect(peerIdToString(id)) })
 	srv.clientPool.setDefaultFactors(priceFactors{0, 1, 1}, priceFactors{0, 1, 1})
+	srv.tokenSale = newTokenSale(srv.clientPool, 0.1)
 
 	checkpoint := srv.latestLocalCheckpoint()
 	if !checkpoint.Empty() {
@@ -146,6 +149,12 @@ func (s *LesServer) APIs() []rpc.API {
 			Service:   NewPrivateDebugAPI(s),
 			Public:    false,
 		},
+		{
+			Namespace: "lespay",
+			Version:   "1.0",
+			Service:   NewPrivateLespayAPI(s.lesCommons.peers, nil, s.srvr.DiscV5, s.tokenSale),
+			Public:    false,
+		},
 	}
 }
 
@@ -165,6 +174,7 @@ func (s *LesServer) Protocols() []p2p.Protocol {
 
 // Start starts the LES server
 func (s *LesServer) Start(srvr *p2p.Server) {
+	s.srvr = srvr
 	s.privateKey = srvr.PrivateKey
 	s.handler.start()
 
@@ -172,6 +182,7 @@ func (s *LesServer) Start(srvr *p2p.Server) {
 	go s.capacityManagement()
 
 	if srvr.DiscV5 != nil {
+		srvr.DiscV5.RegisterTalkHandler("lespay", s.handler.talkRequestHandler)
 		for _, topic := range s.lesTopics {
 			topic := topic
 			go func() {
@@ -188,6 +199,11 @@ func (s *LesServer) Start(srvr *p2p.Server) {
 // Stop stops the LES service
 func (s *LesServer) Stop() {
 	close(s.closeCh)
+
+	if s.srvr.DiscV5 != nil {
+		s.srvr.DiscV5.RemoveTalkHandler("lespay")
+	}
+	s.tokenSale.stop()
 
 	// Disconnect existing sessions.
 	// This also closes the gate for any new registrations on the peer set.

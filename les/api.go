@@ -17,14 +17,17 @@
 package les
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"math"
+	"reflect"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/p2p/discv5"
 	"github.com/ethereum/go-ethereum/p2p/enode"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 var (
@@ -34,8 +37,6 @@ var (
 	errBalanceOverflow      = errors.New("balance overflow")
 	errNoPriority           = errors.New("priority too low to raise capacity")
 )
-
-const maxBalance = math.MaxInt64
 
 // PrivateLightServerAPI provides an API to access the LES light server.
 type PrivateLightServerAPI struct {
@@ -150,7 +151,7 @@ func (api *PrivateLightServerAPI) setParams(params map[string]interface{}, clien
 			setFactor(&negFactors.requestFactor)
 		case !defParams && name == "capacity":
 			if capacity, ok := value.(float64); ok && uint64(capacity) >= api.server.minCapacity {
-				err = api.server.clientPool.setCapacity(client, uint64(capacity))
+				_, _, err = api.server.clientPool.setCapacity(client.id, client.freeID, uint64(capacity), 0, true)
 				// Don't have to call factor update explicitly. It's already done
 				// in setCapacity function.
 			} else {
@@ -184,7 +185,7 @@ func (api *PrivateLightServerAPI) SetClientParams(ids []enode.ID, params map[str
 		if client != nil {
 			update, err := api.setParams(params, client, nil, nil)
 			if update {
-				client.updatePriceFactors()
+				updatePriceFactors(&client.balanceTracker, client.posFactors, client.negFactors, client.capacity)
 			}
 			return err
 		} else {
@@ -351,4 +352,167 @@ func (api *PrivateLightAPI) GetCheckpointContractAddress() (string, error) {
 		return "", errNotActivated
 	}
 	return api.backend.oracle.config.Address.Hex(), nil
+}
+
+type PrivateLespayAPI struct {
+	peerSet       *peerSet
+	clientHandler *clientHandler
+	dht           *discv5.Network
+	tokenSale     *tokenSale
+}
+
+// NewPrivateLespayAPI creates a new LESPAY API.
+func NewPrivateLespayAPI(peerSet *peerSet, clientHandler *clientHandler, dht *discv5.Network, tokenSale *tokenSale) *PrivateLespayAPI {
+	return &PrivateLespayAPI{
+		peerSet:       peerSet,
+		clientHandler: clientHandler,
+		dht:           dht,
+		tokenSale:     tokenSale,
+	}
+}
+
+func (api *PrivateLespayAPI) makeCall(ctx context.Context, remote bool, nodeStr string, cmd []byte) ([]byte, error) {
+	var (
+		id     enode.ID
+		freeID string
+		peer   *peer
+		node   *enode.Node
+		err    error
+	)
+	if nodeStr != "" {
+		if id, err = enode.ParseID(nodeStr); err == nil {
+			if peer = api.peerSet.Peer(peerIdToString(id)); peer == nil {
+				return nil, errors.New("peer not connected")
+			}
+			freeID = peer.freeClientId()
+		} else {
+			var err error
+			if node, err = enode.Parse(enode.ValidSchemes, nodeStr); err == nil {
+				id = node.ID()
+				freeID = node.IP().String()
+			} else {
+				return nil, err
+			}
+		}
+	}
+
+	if remote {
+		var (
+			reply    []byte
+			cancelFn func() bool
+		)
+		delivered := make(chan struct{})
+		if peer != nil {
+			// remote call to a connected peer through LES
+			if api.clientHandler == nil {
+				return nil, errors.New("client handler not available")
+			}
+			cancelFn = api.clientHandler.makeLespayCall(peer, cmd, func(r []byte) bool {
+				reply = r
+				close(delivered)
+				return reply != nil
+			})
+		} else {
+			// remote call through UDP TALK
+			if api.dht == nil {
+				return nil, errors.New("UDP DHT not available")
+			}
+			cancelFn = api.dht.SendTalkRequest(node, "lespay", [][]byte{cmd}, func(payload interface{}) bool {
+				fmt.Println("dht delivered", payload, reflect.TypeOf(payload))
+				if replies, ok := payload.([]interface{}); ok && len(replies) == 1 {
+					reply, ok = replies[0].([]byte)
+				}
+				close(delivered)
+				return reply != nil
+			})
+		}
+		select {
+		case <-time.After(time.Second * 5):
+			cancelFn()
+			return nil, errors.New("timeout")
+		case <-ctx.Done():
+			cancelFn()
+			return nil, ctx.Err()
+		case <-delivered:
+			if len(reply) == 0 {
+				return nil, errors.New("unknown command")
+			}
+			return reply, nil
+		}
+	} else {
+		if api.tokenSale == nil {
+			return nil, errors.New("token sale module not available")
+		}
+		// execute call locally
+		return api.tokenSale.runCommand(cmd, id, freeID), nil
+	}
+
+}
+
+func (api *PrivateLespayAPI) Connection(ctx context.Context, remote bool, node string, requestedCapacity, stayConnected uint64, paymentModule []string, setCap bool) (results tsConnectionResults, err error) {
+	params := tsConnectionParams{requestedCapacity, stayConnected, paymentModule, setCap}
+	enc, _ := rlp.EncodeToBytes(&params)
+	var resEnc []byte
+	resEnc, err = api.makeCall(ctx, remote, node, append([]byte{tsConnection}, enc...))
+	if err != nil {
+		return
+	}
+	err = rlp.DecodeBytes(resEnc, &results)
+	return
+}
+
+func (api *PrivateLespayAPI) Deposit(ctx context.Context, remote bool, node string, paymentModule string, proofOfPayment []byte) (results tsDepositResults, err error) {
+	params := tsDepositParams{paymentModule, proofOfPayment}
+	enc, _ := rlp.EncodeToBytes(&params)
+	var resEnc []byte
+	resEnc, err = api.makeCall(ctx, remote, node, append([]byte{tsDeposit}, enc...))
+	if err != nil {
+		return
+	}
+	err = rlp.DecodeBytes(resEnc, &results)
+	return
+}
+
+func (api *PrivateLespayAPI) BuyTokens(ctx context.Context, remote bool, node string, maxSpend, minReceive uint64, relative, spendAll bool) (results tsBuyTokensResults, err error) {
+	params := tsBuyTokensParams{maxSpend, minReceive, relative, spendAll}
+	enc, _ := rlp.EncodeToBytes(&params)
+	var resEnc []byte
+	resEnc, err = api.makeCall(ctx, remote, node, append([]byte{tsBuyTokens}, enc...))
+	if err != nil {
+		return
+	}
+	err = rlp.DecodeBytes(resEnc, &results)
+	return
+}
+
+func (api *PrivateLespayAPI) GetBalance(ctx context.Context, remote bool, node string) (results tsGetBalanceResults, err error) {
+	var resEnc []byte
+	resEnc, err = api.makeCall(ctx, remote, node, []byte{tsGetBalance})
+	if err != nil {
+		return
+	}
+	err = rlp.DecodeBytes(resEnc, &results)
+	return
+}
+
+func (api *PrivateLespayAPI) Info(ctx context.Context, remote bool, node string) (results tsInfoResults, err error) {
+	var resEnc []byte
+	resEnc, err = api.makeCall(ctx, remote, node, []byte{tsInfo})
+	if err != nil {
+		return
+	}
+	err = rlp.DecodeBytes(resEnc, &results)
+	return
+}
+
+func (api *PrivateLespayAPI) ReceiverInfo(ctx context.Context, remote bool, node string, receiverIDs []string) (results tsReceiverInfoResults, err error) {
+	params := tsReceiverInfoParams(receiverIDs)
+	enc, _ := rlp.EncodeToBytes(&params)
+	var resEnc []byte
+	resEnc, err = api.makeCall(ctx, remote, node, append([]byte{tsReceiverInfo}, enc...))
+	if err != nil {
+		return
+	}
+	err = rlp.DecodeBytes(resEnc, &results)
+	return
 }
