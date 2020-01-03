@@ -54,6 +54,7 @@ type LightEthereum struct {
 	lesCommons
 
 	peers          *serverPeerSet
+	srvr           *p2p.Server
 	reqDist        *requestDistributor
 	retriever      *retrieveManager
 	odr            *LesOdr
@@ -259,6 +260,12 @@ func (s *LightEthereum) APIs() []rpc.API {
 			Service:   lpc.NewPrivateClientAPI(s.valueTracker),
 			Public:    false,
 		},
+		{
+			Namespace: "lespay",
+			Version:   "1.0",
+			Service:   NewPrivateLespayAPI(nil, s.peers, s.handler, s.srvr.DiscV5, nil),
+			Public:    false,
+		},
 	}...)
 }
 
@@ -288,6 +295,7 @@ func (s *LightEthereum) Protocols() []p2p.Protocol {
 // light ethereum protocol implementation.
 func (s *LightEthereum) Start(srvr *p2p.Server) error {
 	log.Warn("Light client mode is an experimental feature")
+	s.srvr = srvr
 
 	s.ns.Start() // start before subscribers
 	s.serverPool.start()

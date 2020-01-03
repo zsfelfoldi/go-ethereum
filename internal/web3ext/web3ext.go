@@ -878,6 +878,41 @@ web3._extend({
 			call: 'lespay_value',
 			params: 2
 		}),
+		new web3._extend.Method({
+			name: 'connection',
+			call: 'lespay_connection',
+			params: 6
+		}),
+		new web3._extend.Method({
+			name: 'deposit',
+			call: 'lespay_deposit',
+			params: 4
+		}),
+		new web3._extend.Method({
+			name: 'buyTokens',
+			call: 'lespay_buyTokens',
+			params: 6
+		}),
+		new web3._extend.Method({
+			name: 'sellTokens',
+			call: 'lespay_sellTokens',
+			params: 6
+		}),
+		new web3._extend.Method({
+			name: 'getBalance',
+			call: 'lespay_getBalance',
+			params: 2
+		}),
+		new web3._extend.Method({
+			name: 'info',
+			call: 'lespay_info',
+			params: 2
+		}),
+		new web3._extend.Method({
+			name: 'receiverInfo',
+			call: 'lespay_receiverInfo',
+			params: 3
+		}),
 	],
 	properties:
 	[
