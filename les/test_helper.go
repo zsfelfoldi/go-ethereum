@@ -78,10 +78,10 @@ var (
 	processConfirms = big.NewInt(1)
 
 	// The token bucket buffer limit for testing purpose.
-	testBufLimit = uint64(1000000)
+	testBufLimit = uint64(6000)
 
 	// The buffer recharging speed for testing purpose.
-	testBufRecharge = uint64(1000)
+	testBufRecharge = uint64(1)
 )
 
 /*
@@ -281,7 +281,7 @@ func newTestServerHandler(blocks int, indexers []*core.ChainIndexer, db ethdb.Da
 	}
 	server.costTracker, server.freeCapacity = newCostTracker(db, server.config)
 	server.costTracker.testCostList = testCostList(0) // Disable flow control mechanism.
-	server.clientPool = newClientPool(db, 1, clock, nil)
+	server.clientPool = newClientPool(db, 1, 1, clock, nil)
 	server.clientPool.setLimits(10000, 10000) // Assign enough capacity for clientpool
 	server.handler = newServerHandler(server, simulation.Blockchain(), db, txpool, func() bool { return true })
 	if server.oracle != nil {
@@ -309,7 +309,8 @@ func newTestPeer(t *testing.T, name string, version int, handler *serverHandler,
 	// Generate a random id and create the peer
 	var id enode.ID
 	rand.Read(id[:])
-	peer := newClientPeer(version, NetworkId, p2p.NewPeer(id, name, nil), net)
+	cpeer := newClientPeer(version, NetworkId, p2p.NewPeer(id, name, nil), net)
+	speer := newServerPeer(version, NetworkId, false, p2p.NewPeer(id, name, nil), app)
 
 	// Start the peer on a new thread
 	errCh := make(chan error, 1)
@@ -317,13 +318,14 @@ func newTestPeer(t *testing.T, name string, version int, handler *serverHandler,
 		select {
 		case <-handler.closeCh:
 			errCh <- p2p.DiscQuitting
-		case errCh <- handler.handle(peer):
+		case errCh <- handler.handle(cpeer):
 		}
 	}()
 	tp := &testPeer{
 		app:   app,
 		net:   net,
-		cpeer: peer,
+		cpeer: cpeer,
+		speer: speer,
 	}
 	// Execute any implicitly requested handshakes and return
 	if shake {
@@ -395,8 +397,13 @@ func (p *testPeer) handshake(t *testing.T, td *big.Int, head common.Hash, headNu
 	expList = expList.add("serveStateSince", uint64(0))
 	expList = expList.add("serveRecentState", uint64(core.TriesInMemory-4))
 	expList = expList.add("txRelay", nil)
-	expList = expList.add("flowControl/BL", testBufLimit)
-	expList = expList.add("flowControl/MRR", testBufRecharge)
+	if p.cpeer.version >= lpv4 {
+		expList = expList.add("flowControl/BL", uint64(0))
+		expList = expList.add("flowControl/MRR", uint64(0))
+	} else {
+		expList = expList.add("flowControl/BL", testBufLimit)
+		expList = expList.add("flowControl/MRR", testBufRecharge)
+	}
 	expList = expList.add("flowControl/MRC", costList)
 
 	if err := p2p.ExpectMsg(p.app, StatusMsg, expList); err != nil {
@@ -405,9 +412,16 @@ func (p *testPeer) handshake(t *testing.T, td *big.Int, head common.Hash, headNu
 	if err := p2p.Send(p.app, StatusMsg, sendList); err != nil {
 		t.Fatalf("status send: %v", err)
 	}
-	p.cpeer.fcParams = flowcontrol.ServerParams{
-		BufLimit:    testBufLimit,
-		MinRecharge: testBufRecharge,
+}
+
+func (p *testPeer) expectCapUpdate(t *testing.T) {
+	if p.cpeer.version >= lpv4 {
+		var expList keyValueList
+		expList = expList.add("flowControl/BL", testBufLimit)
+		expList = expList.add("flowControl/MRR", testBufRecharge)
+		if err := p2p.ExpectMsg(p.app, AnnounceMsg, announceData{Update: expList}); err != nil {
+			t.Fatalf("status recv: %v", err)
+		}
 	}
 }
 
@@ -438,7 +452,7 @@ type testServer struct {
 	bloomTrieIndexer *core.ChainIndexer
 }
 
-func newServerEnv(t *testing.T, blocks int, protocol int, callback indexerCallback, simClock bool, newPeer bool, testCost uint64) (*testServer, func()) {
+func newServerEnv(t *testing.T, blocks int, protocol int, callback indexerCallback, simClock bool, newPeer bool, testCost uint64, expectCapUpdate bool) (*testServer, func()) {
 	db := rawdb.NewMemoryDatabase()
 	indexers := testIndexers(db, nil, light.TestServerIndexerConfig)
 
@@ -479,6 +493,9 @@ func newServerEnv(t *testing.T, blocks int, protocol int, callback indexerCallba
 		}
 		cIndexer.Close()
 		bIndexer.Close()
+	}
+	if expectCapUpdate {
+		server.peer.expectCapUpdate(t)
 	}
 	return server, teardown
 }
