@@ -96,6 +96,9 @@ var AppHelpFlagGroups = []flagGroup{
 			utils.UltraLightServersFlag,
 			utils.UltraLightFractionFlag,
 			utils.UltraLightOnlyAnnounceFlag,
+			utils.ServiceChargeFlag,
+			utils.ServicePaymentFlag,
+			utils.LightAddressFlag,
 		},
 	},
 	{

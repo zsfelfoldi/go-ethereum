@@ -19,6 +19,7 @@ package les
 import (
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -576,13 +577,19 @@ func (f *lightFetcher) processResponse(req fetchRequest, resp fetchResponse) boo
 		headers[int(req.amount)-1-i] = header
 	}
 
-	if _, err := f.chain.InsertHeaderChain(headers, 1); err != nil {
+	_, err := f.chain.InsertHeaderChain(headers, 1)
+	if err != nil {
 		if err == consensus.ErrFutureBlock {
 			return true
 		}
 		log.Debug("Failed to insert header chain", "err", err)
 		return false
 	}
+	// Mark local node synced on any fetcher import.
+	// todo(rjl493456442) it's super ugly to set status here,
+	// please refactor the whole fetcher soon.
+	atomic.StoreUint32(&f.handler.synced, 1)
+
 	tds := make([]*big.Int, len(headers))
 	for i, header := range headers {
 		td := f.chain.GetTd(header.Hash(), header.Number.Uint64())

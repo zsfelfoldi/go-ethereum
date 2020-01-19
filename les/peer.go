@@ -34,6 +34,8 @@ import (
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	lpc "github.com/ethereum/go-ethereum/les/lespay/client"
 	"github.com/ethereum/go-ethereum/les/utils"
+	"github.com/ethereum/go-ethereum/les/payment"
+	"github.com/ethereum/go-ethereum/les/payment/lotterypmt"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -139,6 +141,9 @@ type peerCommons struct {
 	// Flow control agreement.
 	fcParams flowcontrol.ServerParams // The config for token bucket.
 	fcCosts  requestCostTable         // The Maximum request cost table.
+
+	// Payment relative fields
+	routes map[string]payment.PaymentRoute // Established different payment routes
 
 	closeCh chan struct{}
 	lock    sync.RWMutex // Lock used to protect all thread-sensitive fields.
@@ -360,6 +365,7 @@ func newServerPeer(version int, network uint64, trusted bool, p *p2p.Peer, rw p2
 			version:   version,
 			network:   network,
 			sendQueue: utils.NewExecQueue(100),
+			routes:    make(map[string]payment.PaymentRoute),
 			closeCh:   make(chan struct{}),
 		},
 		trusted: trusted,
@@ -564,7 +570,7 @@ func (p *serverPeer) updateFlowControl(update keyValueMap) {
 
 // Handshake executes the les protocol handshake, negotiating version number,
 // network IDs, difficulties, head and genesis blocks.
-func (p *serverPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis common.Hash, server *LesServer) error {
+func (p *serverPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis common.Hash, backend *LightEthereum) error {
 	return p.handshake(td, head, headNum, genesis, func(lists *keyValueList) {
 		// Add some client-specific handshake fields
 		//
@@ -574,6 +580,10 @@ func (p *serverPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 			p.announceType = announceTypeSigned
 		}
 		*lists = (*lists).add("announceType", p.announceType)
+		// Add local supported payment schemas
+		if len(backend.schemas) > 0 {
+			*lists = (*lists).add("payment/schemas", backend.schemas)
+		}
 	}, func(recv keyValueMap) error {
 		if recv.get("serveChainSince", &p.chainSince) != nil {
 			p.onlyAnnounce = true
@@ -616,6 +626,24 @@ func (p *serverPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 			for msgCode := range reqAvgTimeCost {
 				if p.fcCosts[msgCode] == nil {
 					return errResp(ErrUselessPeer, "peer does not support message %d", msgCode)
+				}
+			}
+		}
+		// Parse payment relative handshake
+		var schemas []payment.SchemaRLP
+		if err := recv.get("payment/schemas", &schemas); err == nil {
+			for _, s := range schemas {
+				switch {
+				case s.Key == lotterypmt.Identity && backend.lmgr != nil:
+					schema, err := backend.lmgr.ResolveSchema(s.Value)
+					if err != nil {
+						continue
+					}
+					route, err := backend.lmgr.OpenRoute(schema, p, nil)
+					if err != nil {
+						continue
+					}
+					p.routes[schema.Identity()] = route
 				}
 			}
 		}
@@ -704,6 +732,11 @@ func (p *serverPeer) answeredRequest(id uint64) {
 	vt.Served(nvt, vtReqs[:reqCount], dt)
 }
 
+// SendPayment sends a payment proof to this peer.
+func (p *serverPeer) SendPayment(proofOfPayment []byte, identity string) error {
+	return p2p.Send(p.rw, PaymentMsg, payment.PaymentPacket{Identity: identity, ProofOfPayment: proofOfPayment})
+}
+
 // clientPeer represents each node to which the les server is connected.
 // The node here refers to the light client.
 type clientPeer struct {
@@ -728,6 +761,7 @@ func newClientPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWrite
 			version:   version,
 			network:   network,
 			sendQueue: utils.NewExecQueue(100),
+			routes:    make(map[string]payment.PaymentRoute),
 			closeCh:   make(chan struct{}),
 		},
 		errCh: make(chan error, 1),
@@ -955,6 +989,10 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 				*lists = (*lists).add("checkpoint/registerHeight", height)
 			}
 		}
+		// Add local supported payment schemas
+		if len(server.schemas) > 0 {
+			*lists = (*lists).add("payment/schemas", server.schemas)
+		}
 	}, func(recv keyValueMap) error {
 		p.server = recv.get("flowControl/MRR", nil) == nil
 		if p.server {
@@ -965,9 +1003,34 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 				p.announceType = announceTypeSimple
 			}
 			p.fcClient = flowcontrol.NewClientNode(server.fcManager, server.defParams)
+
+			// Parse payment relative handshake
+			var schemas []payment.SchemaRLP
+			if err := recv.get("payment/schemas", &schemas); err == nil {
+				for _, s := range schemas {
+					switch {
+					case s.Key == lotterypmt.Identity && server.lmgr != nil:
+						schema, err := server.lmgr.ResolveSchema(s.Value)
+						if err != nil {
+							continue
+						}
+						route, err := server.lmgr.OpenRoute(schema, nil, p)
+						if err != nil {
+							continue
+						}
+						p.routes[schema.Identity()] = route
+					}
+				}
+			}
 		}
 		return nil
 	})
+}
+
+// Only for debugging
+func (p *clientPeer) ReceivePayment(amount uint64) error {
+	fmt.Printf("[Add balance] add %d for %s\n", amount, p.id)
+	return nil
 }
 
 // serverPeerSubscriber is an interface to notify services about added or

@@ -20,6 +20,7 @@ package les
 import (
 	"fmt"
 	"time"
+	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -39,6 +40,7 @@ import (
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/les/checkpointoracle"
 	lpc "github.com/ethereum/go-ethereum/les/lespay/client"
+	"github.com/ethereum/go-ethereum/les/payment/lotterypmt"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
@@ -66,11 +68,10 @@ type LightEthereum struct {
 	bloomRequests chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bloomIndexer  *core.ChainIndexer             // Bloom indexer operating during block imports
 
-	ApiBackend     *LesApiBackend
-	eventMux       *event.TypeMux
-	engine         consensus.Engine
-	accountManager *accounts.Manager
-	netRPCService  *ethapi.PublicNetAPI
+	ApiBackend    *LesApiBackend
+	eventMux      *event.TypeMux
+	engine        consensus.Engine
+	netRPCService *ethapi.PublicNetAPI
 }
 
 func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
@@ -97,11 +98,11 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 			iConfig:     light.DefaultClientIndexerConfig,
 			chainDb:     chainDb,
 			closeCh:     make(chan struct{}),
+			am:          ctx.AccountManager,
 		},
 		peers:          peers,
 		eventMux:       ctx.EventMux,
 		reqDist:        newRequestDistributor(peers, &mclock.System{}),
-		accountManager: ctx.AccountManager,
 		engine:         eth.CreateConsensusEngine(ctx, chainConfig, &config.Ethash, nil, false, chainDb),
 		bloomRequests:  make(chan chan *bloombits.Retrieval),
 		bloomIndexer:   eth.NewBloomIndexer(chainDb, params.BloomBitsBlocksClient, params.HelperTrieConfirmations),
@@ -167,6 +168,15 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 	if leth.handler.ulc != nil {
 		log.Warn("Ultra light client is enabled", "trustedNodes", len(leth.handler.ulc.keys), "minTrustedFraction", leth.handler.ulc.fraction)
 		leth.blockchain.DisableCheckFreq()
+	}
+	if config.LightServicePay {
+		paymentDb, err := ctx.OpenDatabase("paymentdata", 0, 0, "eth/db/paymentdata") // How to disable metrics?
+		if err != nil {
+			return nil, err
+		}
+		leth.paymentDb = paymentDb
+		leth.address = config.LightAddress
+		log.Warn("Please never delete paymentdb", "path", ctx.ResolvePath("eth/db/paymentdata"))
 	}
 	return leth, nil
 }
@@ -260,6 +270,7 @@ func (s *LightEthereum) Engine() consensus.Engine           { return s.engine }
 func (s *LightEthereum) LesVersion() int                    { return int(ClientProtocolVersions[0]) }
 func (s *LightEthereum) Downloader() *downloader.Downloader { return s.handler.downloader }
 func (s *LightEthereum) EventMux() *event.TypeMux           { return s.eventMux }
+func (s *LightEthereum) Synced() bool                       { return atomic.LoadUint32(&s.handler.synced) == 1 }
 
 // Protocols implements node.Service, returning all the currently configured
 // network protocols to start.
@@ -304,15 +315,53 @@ func (s *LightEthereum) Stop() error {
 	s.engine.Close()
 	s.eventMux.Stop()
 	s.chainDb.Close()
+	if s.paymentDb != nil {
+		s.paymentDb.Close()
+	}
 	s.wg.Wait()
 	log.Info("Light ethereum stopped")
 	return nil
 }
 
-// SetClient sets the rpc client and binds the registrar contract.
-func (s *LightEthereum) SetContractBackend(backend bind.ContractBackend) {
-	if s.oracle == nil {
-		return
+// SetClient sets the rpc client and binds the built-in contracts.
+func (s *LightEthereum) SetBackends(contract bind.ContractBackend, deploy bind.DeployBackend) {
+	if s.oracle != nil {
+		s.oracle.Start(contract)
 	}
-	s.oracle.Start(backend)
+	if s.config.LightServicePay {
+		go func() {
+			// Ensure the payment contract is deployed.
+			paymentContract, exist := params.PaymentContracts[s.genesis]
+			if !exist {
+				return
+			}
+			if s.address == (common.Address{}) {
+				log.Warn("Failed to setup payment manager", "error", "empty sender address")
+				return
+			}
+			account := accounts.Account{Address: s.address}
+			wallet, err := s.am.Find(account)
+			if err != nil {
+				log.Warn("Failed to setup payment manager", "error", err)
+				return
+			}
+			chequeSigner := func(data []byte) ([]byte, error) {
+				return wallet.SignData(account, accounts.MimetypeDataWithValidator, data)
+			}
+			mgr, err := lotterypmt.NewManager(lotterypmt.DefaultSenderConfig, s.chainReader, bind.NewRawTransactor(wallet.SignTx, account), chequeSigner, s.address, paymentContract, contract, deploy, s.paymentDb)
+			if err != nil {
+				log.Warn("Failed to setup payment manager", "error", err)
+				return
+			}
+			s.lmgr = mgr
+			schema, err := mgr.LocalSchema()
+			if err != nil {
+				log.Warn("Invalid payment schema", "error", err)
+				return
+			}
+			s.schemas = append(s.schemas, schema)
+			atomic.StoreUint32(&s.paymentInited, 1) // Mark payment channel is available now
+			log.Info("Succeed to setup payment manager", "address", s.address)
+		}()
+	}
 }

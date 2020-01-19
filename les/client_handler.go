@@ -17,6 +17,7 @@
 package les
 
 import (
+	"errors"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/downloader"
+	"github.com/ethereum/go-ethereum/les/payment/lotterypmt"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -35,6 +37,7 @@ import (
 // clientHandler is responsible for receiving and processing all incoming server
 // responses.
 type clientHandler struct {
+	synced     uint32 // Flag whether we are considered synchronised
 	ulc        *ulc
 	checkpoint *params.TrustedCheckpoint
 	fetcher    *lightFetcher
@@ -95,6 +98,10 @@ func (h *clientHandler) handle(p *serverPeer) error {
 	if h.backend.peers.len() >= h.backend.config.LightPeers && !p.Peer.Info().Network.Trusted {
 		return p2p.DiscTooManyPeers
 	}
+	// Reject les server if payment module is still initializing.
+	if h.backend.config.LightServicePay && atomic.LoadUint32(&h.backend.paymentInited) == 0 {
+		return errors.New("payment hasn't been initialized")
+	}
 	p.Log().Debug("Light Ethereum peer connected", "name", p.Name())
 
 	// Execute the LES handshake
@@ -104,7 +111,7 @@ func (h *clientHandler) handle(p *serverPeer) error {
 		number = head.Number.Uint64()
 		td     = h.backend.blockchain.GetTd(hash, number)
 	)
-	if err := p.Handshake(td, hash, number, h.backend.blockchain.Genesis().Hash(), nil); err != nil {
+	if err := p.Handshake(td, hash, number, h.backend.blockchain.Genesis().Hash(), h.backend); err != nil {
 		p.Log().Debug("Light Ethereum handshake failed", "err", err)
 		return err
 	}
@@ -120,6 +127,16 @@ func (h *clientHandler) handle(p *serverPeer) error {
 		h.backend.peers.unregister(p.id)
 		connectionTimer.Update(time.Duration(mclock.Now() - connectedAt))
 		serverConnectionGauge.Update(int64(h.backend.peers.len()))
+
+		p.lock.Lock()
+		for identity, route := range p.routes {
+			switch identity {
+			case lotterypmt.Identity:
+				_, receiver, _ := route.Info()
+				h.backend.lmgr.CloseRoute(receiver)
+			}
+		}
+		p.lock.Unlock()
 	}()
 
 	h.fetcher.announce(p, &announceData{Hash: p.headInfo.Hash, Number: p.headInfo.Number, Td: p.headInfo.Td})
@@ -128,6 +145,41 @@ func (h *clientHandler) handle(p *serverPeer) error {
 	atomic.StoreUint32(&p.serving, 1)
 	defer atomic.StoreUint32(&p.serving, 0)
 
+	// Testing code.
+	closed := make(chan struct{})
+	defer close(closed)
+	go func() {
+		ticker := time.NewTicker(time.Second * 5)
+		defer ticker.Stop()
+
+		p.lock.RLock()
+		route := p.routes[lotterypmt.Identity]
+		p.lock.Unlock()
+		if route == nil {
+			return
+		}
+		_, receiver, _ := route.Info()
+		deposit, err := h.backend.lmgr.DepositAndWait([]common.Address{receiver}, []uint64{10000000})
+		if err != nil {
+			log.Error("Failed to deposit", "err", err)
+		}
+
+		for {
+			select {
+			case <-ticker.C:
+				if deposit != nil {
+					continue
+				}
+				if err := route.Pay(100); err != nil {
+					log.Error("Failed to pay", "error", err)
+				}
+			case <-deposit:
+				deposit = nil
+			case <-closed:
+				return
+			}
+		}
+	}()
 	// Spawn a main loop to handle all incoming messages.
 	for {
 		if err := h.handleMsg(p); err != nil {
