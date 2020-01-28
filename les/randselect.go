@@ -92,6 +92,36 @@ func (w *weightedRandomSelect) choose() wrsItem {
 	}
 }
 
+func wrsMultiChoose(wrs []*weightedRandomSelect) wrsItem {
+	for {
+		var sumWeight int64
+		for _, w := range wrs {
+			sumWeight += w.root.sumWeight
+		}
+		if sumWeight == 0 {
+			return nil
+		}
+		val := rand.Int63n(sumWeight)
+		var w *weightedRandomSelect
+		for _, ww := range wrs {
+			if val >= ww.root.sumWeight {
+				val -= ww.root.sumWeight
+			} else {
+				w = ww
+				break
+			}
+		}
+		choice, lastWeight := w.root.choose(val)
+		weight := choice.Weight()
+		if weight != lastWeight {
+			w.setWeight(choice, weight)
+		}
+		if weight >= lastWeight || rand.Int63n(lastWeight) < weight {
+			return choice
+		}
+	}
+}
+
 const wrsBranches = 8 // max number of branches in the wrsNode tree
 
 // wrsNode is a node of a tree structure that can store wrsItems or further wrsNodes.
