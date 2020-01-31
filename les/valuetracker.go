@@ -17,24 +17,26 @@
 package les
 
 import (
-	"encoding/binary"
 	"math"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
-	"github.com/ethereum/go-ethereum/eth"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/les/flowcontrol"
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/metrics"
 )
 
 const (
 	capValueFilterCount = 16
 	minExpRT            = time.Millisecond * 100
 	maxExpRT            = time.Second * 5
+
+	valueExpPeriod        = time.Minute * 10
+	valueExpTC            = 1 / float64(time.Hour*1000)
+	tokensExpectedTimeout = time.Second * 30
+	vtRequestQueueLimit   = 64
+	vtRequestBurstGap     = time.Second * 2
+	bufferPeakTC          = 1 / float64(time.Minute*2)
+	vtUpdatePeriod        = time.Second * 10
+	refBasketUpdatePeriod = time.Minute * 10
 )
 
 var (
@@ -54,46 +56,255 @@ func cvfIndex(expRT time.Duration) float64 {
 }
 
 type valueTracker struct {
-	maxBufLimit        [capValueFilterCount]float64
-	maxBufLimitLastExp mclock.AbsTime
+	lock sync.Mutex
 
-	costList                      RequestCostList
+	bufferPeak        [capValueFilterCount]float64
+	bufferPeakLastExp mclock.AbsTime
+	reqQueue          []vtRequestInfo
+	reqBurstStart     mclock.AbsTime
+
 	capFactor, cvFactor, rvFactor float64
 	capacity                      uint64
+	basket                        requestBasket
+	capacityUsed                  basketItem
 
-	paidTotal, freeTotal, freeExtra, expired, failed float64
-	delivered                                        responseTimeStats
-	vtLastExp                                        mclock.AbsTime
+	// these values are nominated in request value (token * rvFactor)
+	// a uniform exponential expiration is applied
+	paidTotal, freeTotal, freeCredited tokenValue
+	delivered, expired, failed         tokenValue
+	capValue                           [capValueFilterCount]uint64
+	rtStats                            responseTimeStats
+	lastValueExp, capValueLastUpdate   mclock.AbsTime
+
+	// tokenMirror tracks service token balance according to the costs and
+	// constants published by the server and is expected to closely match the
+	// balance values reported by the server.
+	// if rvFactor is updated then balance * rvFactor is expected to not change.
+	// Request value of unexpected increases is added to freeTotal, decreases
+	// are counted as failed promise value.
+	tokenMirror, tokensExpected                  uint64
+	tokenMirrorExpRate                           float64
+	tokenMirrorExpAllowed                        bool
+	tokenMirrorLastUpdate, tokensExpectedTimeout mclock.AbsTime
+
+	// accessed directly by globalValueTracker
+	lastCostList  RequestCostList
+	lastCapFactor float64
 }
 
-type reqValue struct {
-	value, maxValue uint64
-	lastExp         mclock.AbsTime
-	expRate         float64
+type tokenValue struct {
+	tokens, reqValue uint64
+}
+
+func (tv *tokenValue) value(rvFactor float64) uint64 {
+	if tv.tokens == 0 {
+		return tv.reqValue
+	}
+	t := uint64(float64(tv.tokens) * rvFactor)
+	return t + tv.reqValue
+}
+
+func (tv *tokenValue) moveToValue(rvFactor float64) {
+	if tv.tokens == 0 {
+		return
+	}
+	t := uint64(float64(tv.tokens) * rvFactor)
+	tv.tokens = 0
+	tv.reqValue += t
+}
+
+func (vt *valueTracker) capValueAt(expRT time.Duration) float64 {
+	i := cvfIndex(expRT)
+	if i < 0 {
+		i = 0
+	}
+	if i > capValueFilterCount-1 {
+		i = capValueFilterCount - 1
+	}
+	index := int(i)
+	subPos := i - float64(index)
+	vi := float64(vt.capValue[index])
+	var vd float64
+	if index < capValueFilterCount-1 {
+		vd = float64(vt.capValue[index+1]) - vi
+	}
+	return vi + vd*subPos
+}
+
+func (vt *valueTracker) periodicUpdate() {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	now := mclock.Now()
+	vt.updateCapValue(now)
+	dt := time.Duration(now - vt.lastValueExp)
+	if dt >= valueExpPeriod {
+		vt.expireValues(dt)
+		vt.lastValueExp = now
+	}
+}
+
+func (vt *valueTracker) totalValue(expRT time.Duration) float64 {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	return vt.totalValueLocked(expRT)
+}
+
+func (vt *valueTracker) totalValueLocked(expRT time.Duration) float64 {
+	now := mclock.Now()
+	vt.update(now)
+	vt.checkTokensExpected(now)
+	vt.updateCapValue(now)
+
+	tv := float64(vt.delivered.value(vt.rvFactor))*vt.rtStats.valueFactor(expRT) + vt.capValueAt(expRT) - float64(vt.failed.value(vt.rvFactor))
+	if tv < 0 {
+		return 0
+	}
+	return tv
+}
+
+func (vt *valueTracker) maxPurchase(expRT time.Duration) uint64 {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	return uint64(vt.totalValueLocked(expRT) / vt.rvFactor)
+}
+
+func (vt *valueTracker) expectedTokenValueFactor(expRT time.Duration, buyAmount uint64) (expValue float64, paid func()) {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	totalValue := vt.totalValue(expRT) // evaluate first to update values
+	tokensSpent := float64(vt.freeTotal.value(vt.rvFactor)+vt.paidTotal.value(vt.rvFactor))/vt.rvFactor - float64(vt.tokenMirror)
+	if tokensSpent < 1 || buyAmount < 1 {
+		return 0, nil
+	}
+	// calculate average token value factor for all previous tokens (purchased and received for free)
+	avgFactor := totalValue / tokensSpent
+	// give credit for a limited amount of free service in order to estimate service received after
+	// the potential token purchase
+	var (
+		freeCreditRatio    float64
+		freeCreditReqValue uint64
+	)
+	ft, fc := vt.freeTotal.value(vt.rvFactor), vt.freeCredited.value(vt.rvFactor)
+	if ft > fc {
+		buyReqValue := float64(buyAmount) * vt.rvFactor
+		freeCreditReqValue = ft - fc
+		freeCreditRatio = float64(freeCreditReqValue) / buyReqValue
+		if freeCreditRatio > 1 {
+			freeCreditRatio = 2 - 1/freeCreditRatio
+			freeCreditReqValue = uint64(freeCreditRatio * buyReqValue)
+		}
+	}
+	oldRvFactor := vt.rvFactor
+	return avgFactor * float64(buyAmount) * (1 + freeCreditRatio), func() {
+		// offer accepted, expect tokens
+		if oldRvFactor != vt.rvFactor {
+			buyAmount = uint64(float64(buyAmount) * oldRvFactor / vt.rvFactor)
+		}
+		vt.paidTotal.tokens += buyAmount
+		vt.tokensExpected += buyAmount
+		vt.tokensExpectedTimeout = mclock.Now() + mclock.AbsTime(tokensExpectedTimeout)
+		vt.freeCredited.reqValue += freeCreditReqValue
+	}
+}
+
+func (vt *valueTracker) expireValues(dt time.Duration) {
+	exp := -math.Expm1(-float64(dt) * valueExpTC)
+	vt.expireValue(&vt.paidTotal, exp)
+	vt.expireValue(&vt.freeTotal, exp)
+	vt.expireValue(&vt.freeCredited, exp)
+	vt.expireValue(&vt.delivered, exp)
+	vt.expireValue(&vt.expired, exp)
+	vt.expireValue(&vt.failed, exp)
+	for i, cv := range vt.capValue[:] {
+		vt.capValue[i] = cv - uint64(float64(cv)*exp)
+	}
+	vt.rtStats.expire(exp)
+}
+
+func (vt *valueTracker) expireValue(tv *tokenValue, exp float64) {
+	tv.moveToValue(vt.rvFactor)
+	tv.reqValue -= uint64(float64(tv.reqValue) * exp)
 }
 
 func (vt *valueTracker) setExpRate(expRate float64) {
-	vt.applyContinuousCosts(mclock.Now())
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	now := mclock.Now()
+	vt.update(now)
+	vt.checkTokensExpected(now)
 	vt.tokenMirrorExpRate = expRate
 }
 
 func (vt *valueTracker) setCapacity(capacity uint64) {
-	vt.applyContinuousCosts(mclock.Now())
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	now := mclock.Now()
+	vt.update(now)
+	vt.updateCapValue(now)
 	vt.capacity = capacity
 	vt.tokenMirrorExpAllowed = capacity != 0
 }
 
-func (vt *valueTracker) updateCostTable(cl RequestCostList, capFactor float64) {
-	vt.capFactor = capFactor
-	vt.costList = costList
-	oldCvFactor := vt.cvFactor
-	vt.recalcCvFactor()
-	if vt.cvFactor > oldCvFactor {
-		scaleDown := oldCvFactor / vt.cvFactor
-		for i, v := range vt.maxBufLimit[:] {
-			vt.maxBufLimit[i] = v * scaleDown
+// assumes that cvf/rvf are not extremely large or small
+func (vt *valueTracker) setFactors(cvf, rvf, capFactor float64, external bool) {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	now := mclock.Now()
+	if capFactor != vt.capFactor {
+		vt.update(now)
+		vt.updateCapValue(now)
+		vt.capFactor = capFactor
+	}
+
+	if cvf < vt.cvFactor && external {
+		vt.updateCapValue(mclock.Now())
+		scaleDown := cvf / vt.cvFactor
+		for i, v := range vt.bufferPeak[:] {
+			vt.bufferPeak[i] = v * scaleDown
 		}
 	}
+	vt.cvFactor = cvf
+
+	if rvf < vt.rvFactor && external {
+		// raise token expectations if token unit value drops
+		// do not lower them if token value raises; discourage significant changes
+		// to unit value while there are unfulfilled promises nominated in it
+		vt.tokenMirror = uint64(float64(vt.tokenMirror) * vt.rvFactor / rvf)
+		vt.tokensExpected = uint64(float64(vt.tokensExpected) * vt.rvFactor / rvf)
+	}
+	vt.paidTotal.moveToValue(vt.rvFactor)
+	vt.freeTotal.moveToValue(vt.rvFactor)
+	vt.freeCredited.moveToValue(vt.rvFactor)
+	vt.delivered.moveToValue(vt.rvFactor)
+	vt.expired.moveToValue(vt.rvFactor)
+	vt.failed.moveToValue(vt.rvFactor)
+	vt.rvFactor = rvf
+}
+
+// should be called before updating rvFactor
+func (vt *valueTracker) recentBasket() (requestBasket, basketItem) {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	vt.update(mclock.Now())
+	b := vt.basket
+	vt.basket = make(requestBasket)
+	for rt, item := range b {
+		item.first.value = uint64(float64(item.first.value) * vt.rvFactor)
+		item.rest.value = uint64(float64(item.rest.value) * vt.rvFactor)
+		b[rt] = item
+	}
+	rcr := vt.capacityUsed
+	vt.capacityUsed = basketItem{}
+	rcr.value = uint64(float64(rcr.value) * vt.rvFactor)
+	return b, rcr
 }
 
 type vtRequestInfo struct {
@@ -103,18 +314,22 @@ type vtRequestInfo struct {
 }
 
 // assumes that realCost <= maxCost
-func (vt *valueTracker) addRequest(maxCost, realCost, balance, bufMissing uint64, respTime time.Duration) {
+func (vt *valueTracker) addRequest(reqType, reqAmount uint32, baseCost, reqCost, realCost, balance, bufMissing uint64, respTime time.Duration) {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
 	now := mclock.Now()
-	vt.checkProcessRequestQueue()
+	vt.basket.addRequest(reqType, reqAmount, baseCost+reqCost, reqCost)
+	vt.checkProcessRequestQueue(now)
 	if len(vt.reqQueue) >= vtRequestQueueLimit {
 		dt := (now - vt.reqBurstStart) / vtRequestQueueLimit
 		vt.reqBurstStart += dt
-		vt.updateRespTimeStats(&vt.reqQueue[0], float64(dt)/float64(vtRequestBurstGap))
+		vt.updateRespTimeStats(now, &vt.reqQueue[0], float64(dt)/float64(vtRequestBurstGap))
 		vt.reqQueue = vt.reqQueue[1:]
 	}
 	req := vtRequestInfo{
 		at:         now,
-		maxCost:    maxCost,
+		maxCost:    baseCost + uint64(reqAmount)*reqCost,
 		realCost:   realCost,
 		balance:    balance,
 		bufMissing: bufMissing,
@@ -127,97 +342,228 @@ func (vt *valueTracker) addRequest(maxCost, realCost, balance, bufMissing uint64
 	vt.reqQueue = append(vt.reqQueue, req)
 }
 
-func (vt *valueTracker) checkProcessRequestQueue() {
+func (vt *valueTracker) checkProcessRequestQueue(now mclock.AbsTime) {
 	if len(vt.reqQueue) != 0 && time.Duration(now-vt.reqQueue[len(vt.reqQueue)-1].at) >= vtRequestBurstGap {
 		dt := time.Duration(vt.reqQueue[len(vt.reqQueue)-1].at-vt.reqBurstStart) + vtRequestBurstGap
 		rtWeight := float64(dt) / float64(vtRequestBurstGap*time.Duration(len(vt.reqQueue)))
 		for i, _ := range vt.reqQueue {
-			vt.updateRespTimeStats(&vt.reqQueue[i], rtWeight)
+			vt.updateRespTimeStats(now, &vt.reqQueue[i], rtWeight)
 		}
 		vt.reqQueue = nil
 	}
 }
+func (vt *valueTracker) checkTokensExpected(now mclock.AbsTime) {
+	if vt.tokensExpected != 0 && now >= vt.tokensExpectedTimeout {
+		vt.failed.tokens += vt.tokensExpected
+		vt.tokensExpected = 0
+	}
+}
 
-func (vt *valueTracker) applyContinuousCosts(now mclock.AbsTime) {
+func (vt *valueTracker) update(now mclock.AbsTime) {
 	dt := now - vt.tokenMirrorLastUpdate
 	vt.tokenMirrorLastUpdate = now
 	if dt <= 0 {
 		return
 	}
-
 	var sub uint64
 	dtf := float64(dt)
 	if vt.capacity != 0 {
-		sub += uint64(float64(vt.capacity) * vt.capFactor * dtf)
+		c := float64(vt.capacity) / 1000000 * dtf
+		capCost := uint64(c * vt.capFactor)
+		vt.capacityUsed.amount += uint64(c)
+		vt.capacityUsed.value += capCost
+		vt.delivered.tokens += capCost
+		sub = capCost
 	}
-	if tokenMirrorExpAllowed {
-		sub += uint64(-float64(vt.tokenMirror) * math.Expm1(-dtf*vt.tokenMirrorExpRate))
+	if vt.tokenMirrorExpAllowed {
+		expCost := uint64(-float64(vt.tokenMirror) * math.Expm1(-dtf*vt.tokenMirrorExpRate))
+		vt.expired.tokens += expCost
+		sub += expCost
 	}
 
-	if sub < vt.tokenMirror {
+	if vt.tokenMirror >= sub {
 		vt.tokenMirror -= sub
 	} else {
+		vt.freeTotal.tokens += sub - vt.tokenMirror
 		vt.tokenMirror = 0
 	}
 }
 
 func (vt *valueTracker) updateTokenMirror(req *vtRequestInfo) {
 	// update token mirror
-	vt.applyContinuousCosts(req.at)
-	balanceBefore := req.balance + req.realCost
-	if vt.tokenMirror < balanceBefore {
-		vt.tokenDiscount += balanceBefore - vt.tokenMirror
+	vt.update(req.at)
+	vt.freeTotal.tokens += req.maxCost - req.realCost
+	if vt.tokenMirror >= req.realCost {
+		vt.tokenMirror -= req.realCost
 	} else {
-		vt.tokensLost += vt.tokenMirror - balanceBefore
+		vt.freeTotal.tokens += req.realCost - vt.tokenMirror
+		vt.tokenMirror = 0
 	}
-	if req.realCost < req.maxCost {
-		vt.tokenDiscount += req.maxCost - req.realCost
+	tolerance := req.balance / 1000
+	minTm := req.balance - tolerance
+	maxTm := req.balance + tolerance
+	if vt.tokensExpected > 0 && req.balance > vt.tokenMirror {
+		diff := req.balance - vt.tokenMirror
+		if vt.tokensExpected > diff {
+			vt.tokensExpected -= diff
+			vt.tokenMirror += diff
+		} else {
+			vt.tokenMirror += vt.tokensExpected
+			vt.tokensExpected = 0
+		}
 	}
-	vt.tokensSpent += req.realCost
-	vt.tokenMirror = req.balance
+	if vt.tokenMirror > maxTm {
+		vt.failed.tokens += vt.tokenMirror - maxTm
+		vt.tokenMirror = maxTm
+	}
+	if vt.tokenMirror < minTm {
+		vt.freeTotal.tokens += minTm - vt.tokenMirror
+		vt.tokenMirror = minTm
+	}
+	vt.delivered.tokens += req.maxCost
+	vt.checkTokensExpected(req.at)
 }
 
-func (vt *valueTracker) updateRespTimeStats(req *vtRequestInfo, rtWeight float64) {
+// call every 10s
+// call when updating: cvFactor, capacity
+func (vt *valueTracker) updateCapValue(now mclock.AbsTime) {
+	dtc := float64(now - vt.capValueLastUpdate)
+	vt.capValueLastUpdate = now
+	if dtc < float64(time.Second) {
+		return
+	}
+	dtb := float64(now - vt.bufferPeakLastExp)
+	if dtb < 0 {
+		dtb = 0
+	}
+	bpMul := math.Exp((dtc/2-dtb)*bufferPeakTC) * 2 * dtc
+	maxValue := uint64(float64(vt.capacity) * bufLimitRatio * vt.cvFactor * dtc)
+
+	for i, bp := range vt.bufferPeak[:] {
+		value := uint64(bp * bpMul)
+		if value > maxValue {
+			value = maxValue
+		}
+		vt.capValue[i] += value
+	}
+}
+
+func (vt *valueTracker) updateRespTimeStats(now mclock.AbsTime, req *vtRequestInfo, rtWeight float64) {
 	// update response time stats
-	vt.rtStats.add(respTime, rtWeight)
+	vt.rtStats.add(req.respTime, rtWeight)
 	// update capValue filters
-	dt := now - vt.maxBufLimitLastExp
+	dt := now - vt.bufferPeakLastExp
 	if dt < 0 {
 		dt = 0
-		vt.maxBufLimitLastExp = now
+		vt.bufferPeakLastExp = now
 	}
-	expCorr := math.Exp(float64(dt) * cvfTC)
+	expCorr := math.Exp(float64(dt) * bufferPeakTC)
 	if expCorr > 100 {
-		for i, v := range vt.maxBufLimit[:] {
-			vt.maxBufLimit[i] = v / expCorr
+		for i, v := range vt.bufferPeak[:] {
+			vt.bufferPeak[i] = v / expCorr
 		}
 		expCorr = 1
-		vt.maxBufLimitLastExp = now
+		vt.bufferPeakLastExp = now
 	}
-	bl := float64(bufMissing) * expCorr
+	bm := float64(req.bufMissing) * vt.cvFactor * expCorr
 
 	for i, expRT := range cvfExpRTs[:] {
-		mbl := vt.maxBufLimit[i]
-		rtFactor := 1 - float64(respTime)/expRT
+		bp := vt.bufferPeak[i]
+		rtFactor := 1 - float64(req.respTime)/expRT
 		if rtFactor < -1 {
 			rtFactor = -1
 		}
 		neg := rtFactor < 0
-		if neg == (bl < mbl) {
-			step := (bl - mbl) * rtFactor * rtWeight * vtBufLimitUpdateRate
+		if neg == (bm < bp) {
+			step := (bm - bp) * rtFactor * rtWeight
+			oldBp := bp
 			if neg {
-				mbl -= step
+				bp -= step
+				if bp < 0 {
+					bp = 0
+				}
 			} else {
-				mbl += step
+				bp += step
+			}
+			if oldBp != bp {
+				vt.updateCapValue(now)
+				vt.bufferPeak[i] = bp
 			}
 		}
 	}
 }
 
-type globalValueTracker struct {
-	refBasket, newBasket requestBasket
-	refCapReq, newCapReq basketItem
-	refValueMul          float64
+const (
+	minResponseTime = time.Millisecond * 50
+	maxResponseTime = time.Second * 10
+	timeStatLength  = 32
+)
+
+var timeStatsLogFactor = (timeStatLength - 1) / (math.Log(float64(maxResponseTime)/float64(minResponseTime)) + 1)
+
+type responseTimeStats struct {
+	stats [timeStatLength]uint64
+}
+
+func timeToStatScale(d time.Duration) float64 {
+	if d < 0 {
+		return 0
+	}
+	r := float64(d) / float64(minResponseTime)
+	if r > 1 {
+		r = math.Log(r) + 1
+	}
+	r *= timeStatsLogFactor
+	if r > timeStatLength-1 {
+		return timeStatLength - 1
+	}
+	return r
+}
+
+func statScaleToTime(r float64) time.Duration {
+	r /= timeStatsLogFactor
+	if r > 1 {
+		r = math.Exp(r - 1)
+	}
+	return time.Duration(r * float64(minResponseTime))
+}
+
+func (rt *responseTimeStats) add(respTime time.Duration, weight float64) {
+	r := timeToStatScale(respTime)
+	i := int(r)
+	r -= float64(i)
+	r1 := 1 - r
+	w := weight * 0x1000000
+	rt.stats[i] += uint64(w * r1)
+	if i < timeStatLength-1 {
+		rt.stats[i+1] += uint64(w * r)
+	}
+}
+
+func (rt *responseTimeStats) valueFactor(expRT time.Duration) float64 {
+	var (
+		v   float64
+		sum uint64
+	)
+	for i, s := range rt.stats[:] {
+		sum += s
+		t := statScaleToTime(float64(i))
+		w := 1 - float64(t)/float64(expRT)
+		if w < -1 {
+			w = -1
+		}
+		v += float64(s) * w
+	}
+	if sum == 0 {
+		return 0
+	}
+	return v / float64(sum)
+}
+
+func (rt *responseTimeStats) expire(exp float64) {
+	for i, s := range rt.stats[:] {
+		rt.stats[i] = s - uint64(float64(s)*exp)
+	}
 }
 
 type (
@@ -230,35 +576,94 @@ type (
 	}
 )
 
-func (rb requestBasket) addRequest(reqType, reqAmount uint32, baseValue, reqValue uint64) {
+func (rb requestBasket) addRequest(reqType, reqAmount uint32, firstValue, restValue uint64) {
 	a := rb[reqType]
-	a.totalCount++
-	a.totalAmount += uint64(reqAmount)
-	a.baseValue += baseValue
-	a.reqValue += reqValue
+	a.first.amount++
+	a.first.value += firstValue
+	if reqAmount > 1 {
+		ra := uint64(reqAmount - 1)
+		a.rest.amount += ra
+		a.rest.value += ra * restValue
+	}
 	rb[reqType] = a
 }
 
 func (rb requestBasket) addBasket(ab requestBasket) {
-	for rt, aa := range ab {
+	for reqType, aa := range ab {
 		a := rb[reqType]
-		a.totalCount += aa.totalCount
-		a.totalAmount += aa.totalAmount
-		a.baseValue += aa.baseValue
-		a.reqValue += aa.reqValue
+		a.first.addItem(aa.first)
+		a.rest.addItem(aa.rest)
 		rb[reqType] = a
 	}
 }
 
+func (a *basketItem) addItem(b basketItem) {
+	a.amount += b.amount
+	a.value += b.value
+}
+
+type globalValueTracker struct {
+	connected map[*valueTracker]struct{}
+	quit      chan chan struct{}
+	lock      sync.Mutex
+
+	refBasket, newBasket      requestBasket
+	refCapReq, newCapReq      basketItem
+	refValueMul               float64
+	lastReferenceBasketUpdate mclock.AbsTime
+}
+
+func newGlobalValueTracker() *globalValueTracker {
+	gv := &globalValueTracker{
+		connected: make(map[*valueTracker]struct{}),
+		quit:      make(chan chan struct{}),
+		lastReferenceBasketUpdate: mclock.Now(),
+	}
+	go func() {
+		for {
+			select {
+			case <-time.After(vtUpdatePeriod):
+				gv.periodicUpdate()
+			case quit := <-gv.quit:
+				close(quit)
+				return
+			}
+		}
+	}()
+	return gv
+}
+
+func (gv *globalValueTracker) stop() {
+	quit := make(chan struct{})
+	gv.quit <- quit
+	<-quit
+}
+
+func (gv *globalValueTracker) register(vt *valueTracker) {
+	gv.lock.Lock()
+	defer gv.lock.Unlock()
+
+	gv.connected[vt] = struct{}{}
+	// ??init
+}
+
+func (gv *globalValueTracker) unregister(vt *valueTracker) {
+	gv.lock.Lock()
+	defer gv.lock.Unlock()
+
+	delete(gv.connected, vt)
+	// ??save
+}
+
 // assumes that cost list contains all necessary request types
-func (gv *globalValueTracker) valueFactors(costs RequestCostList, capCost float64) (cvf, rvf float64) {
+func (gv *globalValueTracker) valueFactors(costs RequestCostList, capFactor float64) (cvf, rvf float64) {
 	var sum float64
 	for _, req := range costs {
-		if ref, ok := gv.refBasket[req.MsgCode]; ok {
+		if ref, ok := gv.refBasket[uint32(req.MsgCode)]; ok {
 			sum += float64(req.BaseCost)*float64(ref.first.amount) + float64(req.ReqCost)*float64(ref.first.amount+ref.rest.amount)
 		}
 	}
-	sum2 := sum + capCost*gv.refCapReq.amount
+	sum2 := sum + capFactor*float64(gv.refCapReq.amount)
 	sum *= gv.refValueMul
 	if sum < 1e-100 {
 		sum = 1e-100
@@ -272,8 +677,8 @@ func (gv *globalValueTracker) valueFactors(costs RequestCostList, capCost float6
 
 // assumes that old basket contains all necessary request types
 func (gv *globalValueTracker) updateReferenceBasket() {
-	for vt, _ := range gv.servers {
-		rb, rcr := vt.getBasket()
+	for vt, _ := range gv.connected {
+		rb, rcr := vt.recentBasket()
 		gv.newBasket.addBasket(rb)
 		gv.newCapReq.addItem(rcr)
 	}
@@ -287,6 +692,7 @@ func (gv *globalValueTracker) updateReferenceBasket() {
 			oldSum += float64(a.amount) * avg
 			newSum += float64(b.amount) * avg
 		}
+		return
 	}
 
 	for rt, a := range gv.refBasket {
@@ -301,16 +707,35 @@ func (gv *globalValueTracker) updateReferenceBasket() {
 		gv.refValueMul *= oldSum / (oldSum + newSum)
 	}
 
-	for vt, _ := range gv.servers {
-		cvf, rvf := gv.valueFactors(vt.costList, vt.capCost)
-		vt.setValueFactors(cvf, rvf)
+	for vt, _ := range gv.connected {
+		cvf, rvf := gv.valueFactors(vt.lastCostList, vt.lastCapFactor)
+		vt.setFactors(cvf, rvf, vt.lastCapFactor, false)
 	}
 }
 
-func (gv *globalValueTracker) xxx() {
+func (gv *globalValueTracker) updateServerPrices(vt *valueTracker, costList RequestCostList, capFactor float64) {
+	gv.lock.Lock()
+	defer gv.lock.Unlock()
 
+	rb, rcr := vt.recentBasket()
+	gv.newBasket.addBasket(rb)
+	gv.newCapReq.addItem(rcr)
+
+	cvf, rvf := gv.valueFactors(costList, capFactor)
+	vt.setFactors(cvf, rvf, capFactor, true)
+	vt.lastCostList, vt.lastCapFactor = costList, capFactor
 }
 
-func (gv *globalValueTracker) xxx() {
+func (gv *globalValueTracker) periodicUpdate() {
+	gv.lock.Lock()
+	defer gv.lock.Unlock()
 
+	now := mclock.Now()
+	for vt, _ := range gv.connected {
+		vt.periodicUpdate()
+	}
+	if now > gv.lastReferenceBasketUpdate+mclock.AbsTime(refBasketUpdatePeriod) {
+		gv.updateReferenceBasket()
+		gv.lastReferenceBasketUpdate = now
+	}
 }
