@@ -17,6 +17,8 @@
 package les
 
 import (
+	"fmt"
+	"io"
 	"math"
 	"sync"
 	"time"
@@ -30,6 +32,7 @@ import (
 )
 
 const (
+	vtVersion           = 1
 	capValueFilterCount = 16
 	minExpRT            = time.Millisecond * 100
 	maxExpRT            = time.Second * 5
@@ -118,6 +121,108 @@ type valueTracker struct {
 	// accessed directly by globalValueTracker
 	lastCostList  RequestCostList
 	lastCapFactor float64
+}
+
+type valueTrackerEnc struct {
+	BufferPeak                         [capValueFilterCount]uint64
+	PaidTotal, FreeTotal, FreeCredited uint64
+	Delivered, Expired, Failed         uint64
+	CapValue                           [capValueFilterCount]uint64
+	RtStats                            responseTimeStats
+	SavedAt                            uint64
+	TokenMirror, TokensExpected        uint64
+	TokenMirrorExpRate                 uint64
+	LastCostList                       RequestCostList
+	LastCapFactor                      uint64
+}
+
+// EncodeRLP implements rlp.Encoder
+func (vt *valueTracker) EncodeRLP(w io.Writer) error {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	version := uint(vtVersion)
+	if err := rlp.Encode(w, &version); err != nil {
+		return err
+	}
+	now := mclock.Now()
+	vt.update(now)
+	vt.checkTokensExpected(now)
+	vt.updateCapValue(now)
+	dt := time.Duration(now - vt.lastValueExp)
+	if dt < 0 {
+		dt = 0
+	}
+	// we expire values even if dt==0 because it calls moveToValue
+	vt.expireValues(dt)
+
+	vte := valueTrackerEnc{
+		PaidTotal:          vt.paidTotal.reqValue,
+		FreeTotal:          vt.freeTotal.reqValue,
+		FreeCredited:       vt.freeCredited.reqValue,
+		Delivered:          vt.delivered.reqValue,
+		Expired:            vt.expired.reqValue,
+		Failed:             vt.failed.reqValue,
+		CapValue:           vt.capValue,
+		RtStats:            vt.rtStats,
+		SavedAt:            uint64(time.Now().Unix()),
+		TokenMirror:        vt.tokenMirror,
+		TokensExpected:     vt.tokensExpected,
+		TokenMirrorExpRate: math.Float64bits(vt.tokenMirrorExpRate),
+		LastCostList:       vt.lastCostList,
+		LastCapFactor:      math.Float64bits(vt.lastCapFactor),
+	}
+	for i, v := range vt.bufferPeak {
+		vte.BufferPeak[i] = math.Float64bits(v)
+	}
+	return rlp.Encode(w, &vte)
+}
+
+// DecodeRLP implements rlp.Decoder
+func (vt *valueTracker) DecodeRLP(s *rlp.Stream) error {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	var version uint
+	if err := s.Decode(&version); err != nil {
+		return err
+	}
+	if version != vtVersion {
+		return fmt.Errorf("Unknown valueTracker version %d (current version is %d)", version, vtVersion)
+	}
+
+	var vte valueTrackerEnc
+	if err := s.Decode(&vte); err != nil {
+		return err
+	}
+	now := mclock.Now()
+	for i, v := range vte.BufferPeak {
+		vt.bufferPeak[i] = math.Float64frombits(v)
+	}
+	vt.bufferPeakLastExp = now
+	vt.paidTotal.reqValue = vte.PaidTotal
+	vt.freeTotal.reqValue = vte.FreeTotal
+	vt.freeCredited.reqValue = vte.FreeCredited
+	vt.delivered.reqValue = vte.Delivered
+	vt.expired.reqValue = vte.Expired
+	vt.failed.reqValue = vte.Failed
+	vt.capValue = vte.CapValue
+	vt.rtStats = vte.RtStats
+	unixNow := uint64(time.Now().Unix())
+	if unixNow > vte.SavedAt {
+		dt := time.Second * time.Duration(unixNow-vte.SavedAt)
+		vt.expireValues(dt)
+	}
+	vt.lastValueExp = now
+	vt.capValueLastUpdate = now
+	vt.tokenMirror = vte.TokenMirror
+	vt.tokensExpected = vte.TokensExpected
+	vt.tokenMirrorExpRate = math.Float64frombits(vte.TokenMirrorExpRate)
+	vt.tokensExpectedTimeout = now
+	vt.lastCostList = vte.LastCostList
+	vt.lastCapFactor = math.Float64frombits(vte.LastCapFactor)
+	vt.capFactor = vt.lastCapFactor
+	return nil
 }
 
 func (vt *valueTracker) capValueAt(expRT time.Duration) float64 {
@@ -514,9 +619,7 @@ const (
 
 var timeStatsLogFactor = (timeStatLength - 1) / (math.Log(float64(maxResponseTime)/float64(minResponseTime)) + 1)
 
-type responseTimeStats struct {
-	stats [timeStatLength]uint64
-}
+type responseTimeStats [timeStatLength]uint64
 
 func timeToStatScale(d time.Duration) float64 {
 	if d < 0 {
@@ -547,9 +650,9 @@ func (rt *responseTimeStats) add(respTime time.Duration, weight float64) {
 	r -= float64(i)
 	r1 := 1 - r
 	w := weight * 0x1000000
-	rt.stats[i] += uint64(w * r1)
+	rt[i] += uint64(w * r1)
 	if i < timeStatLength-1 {
-		rt.stats[i+1] += uint64(w * r)
+		rt[i+1] += uint64(w * r)
 	}
 }
 
@@ -558,7 +661,7 @@ func (rt *responseTimeStats) valueFactor(expRT time.Duration) float64 {
 		v   float64
 		sum uint64
 	)
-	for i, s := range rt.stats[:] {
+	for i, s := range rt[:] {
 		sum += s
 		t := statScaleToTime(float64(i))
 		w := 1 - float64(t)/float64(expRT)
@@ -574,8 +677,8 @@ func (rt *responseTimeStats) valueFactor(expRT time.Duration) float64 {
 }
 
 func (rt *responseTimeStats) expire(exp float64) {
-	for i, s := range rt.stats[:] {
-		rt.stats[i] = s - uint64(float64(s)*exp)
+	for i, s := range rt[:] {
+		rt[i] = s - uint64(float64(s)*exp)
 	}
 }
 
@@ -587,7 +690,50 @@ type (
 	requestItem struct {
 		first, rest basketItem
 	}
+	requestItemEnc struct {
+		ReqType     uint32
+		First, Rest basketItem
+	}
 )
+
+// EncodeRLP implements rlp.Encoder
+func (rb *requestBasket) EncodeRLP(w io.Writer) error {
+	list := make([]requestItemEnc, 0, len(*rb))
+	for rt, i := range *rb {
+		list = append(list, requestItemEnc{rt, i.first, i.rest})
+	}
+	return rlp.Encode(w, list)
+}
+
+// DecodeRLP implements rlp.Decoder
+func (rb *requestBasket) DecodeRLP(s *rlp.Stream) error {
+	var list []requestItemEnc
+	if err := s.Decode(&list); err != nil {
+		return err
+	}
+	*rb = make(requestBasket)
+	for _, item := range list {
+		(*rb)[item.ReqType] = requestItem{item.First, item.Rest}
+	}
+	return nil
+}
+
+// EncodeRLP implements rlp.Encoder
+func (b *basketItem) EncodeRLP(w io.Writer) error {
+	return rlp.Encode(w, []interface{}{b.amount, b.value})
+}
+
+// DecodeRLP implements rlp.Decoder
+func (b *basketItem) DecodeRLP(s *rlp.Stream) error {
+	var item struct {
+		Amount, Value uint64
+	}
+	if err := s.Decode(&item); err != nil {
+		return err
+	}
+	b.amount, b.value = item.Amount, item.Value
+	return nil
+}
 
 func (rb requestBasket) addRequest(reqType, reqAmount uint32, firstValue, restValue uint64) {
 	a := rb[reqType]
@@ -630,8 +776,8 @@ type globalValueTracker struct {
 
 func newGlobalValueTracker(db ethdb.Database) *globalValueTracker {
 	gv := &globalValueTracker{
-		connected: make(map[enode.ID]*valueTracker),
-		quit:      make(chan chan struct{}),
+		connected:                 make(map[enode.ID]*valueTracker),
+		quit:                      make(chan chan struct{}),
 		lastReferenceBasketUpdate: mclock.Now(),
 	}
 	go func() {
@@ -674,9 +820,11 @@ func (gv *globalValueTracker) loadOrNew(id enode.ID) *valueTracker {
 	if item, ok := gv.vtCache.Get(string(key)); ok {
 		return item.(*valueTracker)
 	}
+	vt := &valueTracker{}
 	if enc, err := gv.db.Get(key); err == nil {
-		vt := &valueTracker{}
 		if err := rlp.DecodeBytes(enc, vt); err == nil {
+			cvf, rvf := gv.valueFactors(vt.lastCostList, vt.lastCapFactor)
+			vt.setFactors(cvf, rvf, vt.lastCapFactor, false)
 			return vt
 		} else {
 			log.Error("Failed to decode valueTracker", "err", err)
