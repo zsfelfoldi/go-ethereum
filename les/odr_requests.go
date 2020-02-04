@@ -46,7 +46,7 @@ var (
 )
 
 type LesOdrRequest interface {
-	GetCost(*peer) uint64
+	Info(*peer) (reqType, reqAmount uint32, maxCost uint64)
 	CanSend(*peer) bool
 	Request(uint64, *peer) error
 	Validate(ethdb.Database, *Msg) error
@@ -78,8 +78,8 @@ type BlockRequest light.BlockRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *BlockRequest) GetCost(peer *peer) uint64 {
-	return peer.GetRequestCost(GetBlockBodiesMsg, 1)
+func (r *BlockRequest) Info(peer *peer) (reqType, reqAmount uint32, maxCost uint64) {
+	return GetBlockBodiesMsg, 1, peer.GetRequestCost(GetBlockBodiesMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -90,7 +90,7 @@ func (r *BlockRequest) CanSend(peer *peer) bool {
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
 func (r *BlockRequest) Request(reqID uint64, peer *peer) error {
 	peer.Log().Debug("Requesting block body", "hash", r.Hash)
-	return peer.RequestBodies(reqID, r.GetCost(peer), []common.Hash{r.Hash})
+	return peer.RequestBodies(reqID, []common.Hash{r.Hash})
 }
 
 // Valid processes an ODR request reply message from the LES network
@@ -134,8 +134,8 @@ type ReceiptsRequest light.ReceiptsRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *ReceiptsRequest) GetCost(peer *peer) uint64 {
-	return peer.GetRequestCost(GetReceiptsMsg, 1)
+func (r *ReceiptsRequest) Info(peer *peer) (reqType, reqAmount uint32, maxCost uint64) {
+	return GetReceiptsMsg, 1, peer.GetRequestCost(GetReceiptsMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -146,7 +146,7 @@ func (r *ReceiptsRequest) CanSend(peer *peer) bool {
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
 func (r *ReceiptsRequest) Request(reqID uint64, peer *peer) error {
 	peer.Log().Debug("Requesting block receipts", "hash", r.Hash)
-	return peer.RequestReceipts(reqID, r.GetCost(peer), []common.Hash{r.Hash})
+	return peer.RequestReceipts(reqID, []common.Hash{r.Hash})
 }
 
 // Valid processes an ODR request reply message from the LES network
@@ -191,8 +191,8 @@ type TrieRequest light.TrieRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *TrieRequest) GetCost(peer *peer) uint64 {
-	return peer.GetRequestCost(GetProofsV2Msg, 1)
+func (r *TrieRequest) Info(peer *peer) (reqType, reqAmount uint32, maxCost uint64) {
+	return GetProofsV2Msg, 1, peer.GetRequestCost(GetProofsV2Msg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -208,7 +208,7 @@ func (r *TrieRequest) Request(reqID uint64, peer *peer) error {
 		AccKey: r.Id.AccKey,
 		Key:    r.Key,
 	}
-	return peer.RequestProofs(reqID, r.GetCost(peer), []ProofReq{req})
+	return peer.RequestProofs(reqID, []ProofReq{req})
 }
 
 // Valid processes an ODR request reply message from the LES network
@@ -245,8 +245,8 @@ type CodeRequest light.CodeRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *CodeRequest) GetCost(peer *peer) uint64 {
-	return peer.GetRequestCost(GetCodeMsg, 1)
+func (r *CodeRequest) Info(peer *peer) (reqType, reqAmount uint32, maxCost uint64) {
+	return GetCodeMsg, 1, peer.GetRequestCost(GetCodeMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -261,7 +261,7 @@ func (r *CodeRequest) Request(reqID uint64, peer *peer) error {
 		BHash:  r.Id.BlockHash,
 		AccKey: r.Id.AccKey,
 	}
-	return peer.RequestCode(reqID, r.GetCost(peer), []CodeReq{req})
+	return peer.RequestCode(reqID, []CodeReq{req})
 }
 
 // Valid processes an ODR request reply message from the LES network
@@ -316,8 +316,8 @@ type ChtRequest light.ChtRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *ChtRequest) GetCost(peer *peer) uint64 {
-	return peer.GetRequestCost(GetHelperTrieProofsMsg, 1)
+func (r *ChtRequest) Info(peer *peer) (reqType, reqAmount uint32, maxCost uint64) {
+	return GetHelperTrieProofsMsg, 1, peer.GetRequestCost(GetHelperTrieProofsMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -343,7 +343,7 @@ func (r *ChtRequest) Request(reqID uint64, peer *peer) error {
 		Key:     encNum[:],
 		AuxReq:  auxHeader,
 	}
-	return peer.RequestHelperTrieProofs(reqID, r.GetCost(peer), []HelperTrieReq{req})
+	return peer.RequestHelperTrieProofs(reqID, []HelperTrieReq{req})
 }
 
 // Valid processes an ODR request reply message from the LES network
@@ -413,8 +413,8 @@ type BloomRequest light.BloomRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *BloomRequest) GetCost(peer *peer) uint64 {
-	return peer.GetRequestCost(GetHelperTrieProofsMsg, len(r.SectionIndexList))
+func (r *BloomRequest) Info(peer *peer) (reqType, reqAmount uint32, maxCost uint64) {
+	return GetHelperTrieProofsMsg, uint32(len(r.SectionIndexList)), peer.GetRequestCost(GetHelperTrieProofsMsg, len(r.SectionIndexList))
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -444,7 +444,7 @@ func (r *BloomRequest) Request(reqID uint64, peer *peer) error {
 			Key:     common.CopyBytes(encNumber[:]),
 		}
 	}
-	return peer.RequestHelperTrieProofs(reqID, r.GetCost(peer), reqs)
+	return peer.RequestHelperTrieProofs(reqID, reqs)
 }
 
 // Valid processes an ODR request reply message from the LES network
@@ -489,8 +489,8 @@ type TxStatusRequest light.TxStatusRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *TxStatusRequest) GetCost(peer *peer) uint64 {
-	return peer.GetRequestCost(GetTxStatusMsg, len(r.Hashes))
+func (r *TxStatusRequest) Info(peer *peer) (reqType, reqAmount uint32, maxCost uint64) {
+	return GetTxStatusMsg, uint32(len(r.Hashes)), peer.GetRequestCost(GetTxStatusMsg, len(r.Hashes))
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
@@ -501,7 +501,7 @@ func (r *TxStatusRequest) CanSend(peer *peer) bool {
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
 func (r *TxStatusRequest) Request(reqID uint64, peer *peer) error {
 	peer.Log().Debug("Requesting transaction status", "count", len(r.Hashes))
-	return peer.RequestTxStatus(reqID, r.GetCost(peer), r.Hashes)
+	return peer.RequestTxStatus(reqID, r.Hashes)
 }
 
 // Valid processes an ODR request reply message from the LES network

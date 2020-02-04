@@ -549,7 +549,8 @@ func (f *lightFetcher) newFetcherDistReq(bestHash common.Hash, reqID uint64, bes
 			f.lock.Unlock()
 
 			cost := p.GetRequestCost(GetBlockHeadersMsg, int(bestAmount))
-			p.fcServer.QueuedRequest(reqID, cost)
+			bufMissing := p.fcServer.QueuedRequest(reqID, cost)
+			p.valueTracker.sentRequest(reqID, GetBlockHeadersMsg, uint32(bestAmount), cost, bufMissing)
 			f.reqMu.Lock()
 			f.requested[reqID] = fetchRequest{hash: bestHash, amount: bestAmount, peer: p, sent: mclock.Now()}
 			f.reqMu.Unlock()
@@ -557,7 +558,7 @@ func (f *lightFetcher) newFetcherDistReq(bestHash common.Hash, reqID uint64, bes
 				time.Sleep(hardRequestTimeout)
 				f.timeoutChn <- reqID
 			}()
-			return func() { p.RequestHeadersByHash(reqID, cost, bestHash, int(bestAmount), 0, true) }
+			return func() { p.RequestHeadersByHash(reqID, bestHash, int(bestAmount), 0, true) }
 		},
 	}
 }

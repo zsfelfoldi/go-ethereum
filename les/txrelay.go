@@ -135,8 +135,9 @@ func (ltrx *lesTxRelay) send(txs types.Transactions, count int) {
 			request: func(dp distPeer) func() {
 				peer := dp.(*peer)
 				cost := peer.GetTxRelayCost(len(ll), len(enc))
-				peer.fcServer.QueuedRequest(reqID, cost)
-				return func() { peer.SendTxs(reqID, cost, enc) }
+				bufMissing := peer.fcServer.QueuedRequest(reqID, cost)
+				peer.valueTracker.sentRequest(reqID, SendTxV2Msg, uint32(len(ll)), cost, bufMissing)
+				return func() { peer.SendTxs(reqID, enc) }
 			},
 		}
 		go ltrx.retriever.retrieve(context.Background(), reqID, rq, func(p distPeer, msg *Msg) error { return nil }, ltrx.stop)

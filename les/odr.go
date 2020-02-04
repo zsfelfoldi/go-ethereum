@@ -106,7 +106,8 @@ func (odr *LesOdr) Retrieve(ctx context.Context, req light.OdrRequest) (err erro
 	reqID := genReqID()
 	rq := &distReq{
 		getCost: func(dp distPeer) uint64 {
-			return lreq.GetCost(dp.(*peer))
+			_, _, cost := lreq.Info(dp.(*peer))
+			return cost
 		},
 		canSend: func(dp distPeer) bool {
 			p := dp.(*peer)
@@ -117,8 +118,9 @@ func (odr *LesOdr) Retrieve(ctx context.Context, req light.OdrRequest) (err erro
 		},
 		request: func(dp distPeer) func() {
 			p := dp.(*peer)
-			cost := lreq.GetCost(p)
-			p.fcServer.QueuedRequest(reqID, cost)
+			reqType, reqAmount, cost := lreq.Info(p)
+			bufMissing := p.fcServer.QueuedRequest(reqID, cost)
+			p.valueTracker.sentRequest(reqID, reqType, reqAmount, cost, bufMissing)
 			return func() { lreq.Request(reqID, p) }
 		},
 	}

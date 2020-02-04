@@ -91,7 +91,8 @@ type valueTracker struct {
 
 	bufferPeak        [capValueFilterCount]float64
 	bufferPeakLastExp mclock.AbsTime
-	reqQueue          []vtRequestInfo
+	sentRequests      map[uint64]vtSentRequest
+	reqQueue          []vtAnsweredRequest
 	reqBurstStart     mclock.AbsTime
 
 	capFactor, cvFactor, rvFactor float64
@@ -422,22 +423,45 @@ func (vt *valueTracker) recentBasket() (requestBasket, basketItem) {
 	return b, rcr
 }
 
-type vtRequestInfo struct {
-	at                                     mclock.AbsTime
-	maxCost, realCost, balance, bufMissing uint64
-	respTime                               time.Duration
+type (
+	vtSentRequest struct {
+		sentAt              mclock.AbsTime
+		maxCost, bufMissing uint64
+	}
+	vtAnsweredRequest struct {
+		vtSentRequest
+		answeredAt        mclock.AbsTime
+		realCost, balance uint64
+	}
+)
+
+func (vt *valueTracker) sentRequest(reqID uint64, reqType, reqAmount uint32, maxCost, bufMissing uint64) {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	//vt.basket.addRequest(reqType, reqAmount, baseCost+reqCost, reqCost)
+	if vt.sentRequests == nil {
+		vt.sentRequests = make(map[uint64]vtSentRequest)
+	}
+	vt.sentRequests[reqID] = vtSentRequest{
+		sentAt:     mclock.Now(),
+		maxCost:    maxCost,
+		bufMissing: bufMissing,
+	}
 }
 
-// assumes that realCost <= maxCost
-func (vt *valueTracker) addRequest(reqType, reqAmount uint32, baseCost, reqCost, realCost, balance, bufMissing uint64, respTime time.Duration) {
+func (vt *valueTracker) answeredRequest(reqID, realCost, balance uint64) {
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 
 	now := mclock.Now()
+	sentReq, ok := vt.sentRequests[reqID]
+	if !ok {
+		return
+	}
 	if vt.basket == nil {
 		vt.basket = make(requestBasket)
 	}
-	vt.basket.addRequest(reqType, reqAmount, baseCost+reqCost, reqCost)
 	vt.checkProcessRequestQueue(now)
 	if len(vt.reqQueue) >= vtRequestQueueLimit {
 		dt := (now - vt.reqBurstStart) / vtRequestQueueLimit
@@ -445,13 +469,11 @@ func (vt *valueTracker) addRequest(reqType, reqAmount uint32, baseCost, reqCost,
 		vt.updateRespTimeStats(now, &vt.reqQueue[0], float64(dt)/float64(vtRequestBurstGap))
 		vt.reqQueue = vt.reqQueue[1:]
 	}
-	req := vtRequestInfo{
-		at:         now,
-		maxCost:    baseCost + uint64(reqAmount)*reqCost,
-		realCost:   realCost,
-		balance:    balance,
-		bufMissing: bufMissing,
-		respTime:   respTime,
+	req := vtAnsweredRequest{
+		vtSentRequest: sentReq,
+		answeredAt:    now,
+		realCost:      realCost,
+		balance:       balance,
 	}
 	vt.updateTokenMirror(&req)
 	if len(vt.reqQueue) == 0 {
@@ -461,8 +483,8 @@ func (vt *valueTracker) addRequest(reqType, reqAmount uint32, baseCost, reqCost,
 }
 
 func (vt *valueTracker) checkProcessRequestQueue(now mclock.AbsTime) {
-	if len(vt.reqQueue) != 0 && time.Duration(now-vt.reqQueue[len(vt.reqQueue)-1].at) >= vtRequestBurstGap {
-		dt := time.Duration(vt.reqQueue[len(vt.reqQueue)-1].at-vt.reqBurstStart) + vtRequestBurstGap
+	if len(vt.reqQueue) != 0 && time.Duration(now-vt.reqQueue[len(vt.reqQueue)-1].answeredAt) >= vtRequestBurstGap {
+		dt := time.Duration(vt.reqQueue[len(vt.reqQueue)-1].answeredAt-vt.reqBurstStart) + vtRequestBurstGap
 		rtWeight := float64(dt) / float64(vtRequestBurstGap*time.Duration(len(vt.reqQueue)))
 		for i, _ := range vt.reqQueue {
 			vt.updateRespTimeStats(now, &vt.reqQueue[i], rtWeight)
@@ -507,9 +529,9 @@ func (vt *valueTracker) update(now mclock.AbsTime) {
 	}
 }
 
-func (vt *valueTracker) updateTokenMirror(req *vtRequestInfo) {
+func (vt *valueTracker) updateTokenMirror(req *vtAnsweredRequest) {
 	// update token mirror
-	vt.update(req.at)
+	vt.update(req.answeredAt)
 	vt.freeTotal.tokens += req.maxCost - req.realCost
 	if vt.tokenMirror >= req.realCost {
 		vt.tokenMirror -= req.realCost
@@ -539,7 +561,7 @@ func (vt *valueTracker) updateTokenMirror(req *vtRequestInfo) {
 		vt.tokenMirror = minTm
 	}
 	vt.delivered.tokens += req.maxCost
-	vt.checkTokensExpected(req.at)
+	vt.checkTokensExpected(req.answeredAt)
 }
 
 // call every 10s
@@ -566,9 +588,10 @@ func (vt *valueTracker) updateCapValue(now mclock.AbsTime) {
 	}
 }
 
-func (vt *valueTracker) updateRespTimeStats(now mclock.AbsTime, req *vtRequestInfo, rtWeight float64) {
+func (vt *valueTracker) updateRespTimeStats(now mclock.AbsTime, req *vtAnsweredRequest, rtWeight float64) {
 	// update response time stats
-	vt.rtStats.add(req.respTime, rtWeight)
+	respTime := time.Duration(req.answeredAt - req.sentAt)
+	vt.rtStats.add(respTime, rtWeight)
 	// update capValue filters
 	dt := now - vt.bufferPeakLastExp
 	if dt < 0 {
@@ -587,7 +610,7 @@ func (vt *valueTracker) updateRespTimeStats(now mclock.AbsTime, req *vtRequestIn
 
 	for i, expRT := range cvfExpRTs[:] {
 		bp := vt.bufferPeak[i]
-		rtFactor := 1 - float64(req.respTime)/expRT
+		rtFactor := 1 - float64(respTime)/expRT
 		if rtFactor < -1 {
 			rtFactor = -1
 		}

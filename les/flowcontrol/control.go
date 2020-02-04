@@ -347,7 +347,7 @@ func (node *ServerNode) CanSend(maxCost uint64) (time.Duration, float64) {
 // QueuedRequest should be called when the request has been assigned to the given
 // server node, before putting it in the send queue. It is mandatory that requests
 // are sent in the same order as the QueuedRequest calls are made.
-func (node *ServerNode) QueuedRequest(reqID, maxCost uint64) {
+func (node *ServerNode) QueuedRequest(reqID, maxCost uint64) uint64 {
 	node.lock.Lock()
 	defer node.lock.Unlock()
 
@@ -366,6 +366,11 @@ func (node *ServerNode) QueuedRequest(reqID, maxCost uint64) {
 	node.pending[reqID] = node.sumCost
 	if node.log != nil {
 		node.log.add(now, fmt.Sprintf("queued  reqID=%d  bufEst=%d  maxCost=%d  sumCost=%d", reqID, node.bufEstimate, maxCost, node.sumCost))
+	}
+	if node.bufEstimate < node.params.BufLimit {
+		return node.params.BufLimit - node.bufEstimate
+	} else {
+		return 0
 	}
 }
 

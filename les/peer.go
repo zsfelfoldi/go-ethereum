@@ -104,6 +104,7 @@ type peer struct {
 	active               bool
 	activate, deactivate func()
 
+	valueTracker   *valueTracker
 	poolEntry      *poolEntry
 	hasBlock       func(common.Hash, uint64, bool) bool
 	responseErrors int
@@ -321,7 +322,7 @@ func (p *peer) responseID() uint64 {
 	return p.responseCount
 }
 
-func sendRequest(w p2p.MsgWriter, msgcode, reqID, cost uint64, data interface{}) error {
+func sendRequest(w p2p.MsgWriter, msgcode, reqID uint64, data interface{}) error {
 	type req struct {
 		ReqID uint64
 		Data  interface{}
@@ -471,72 +472,72 @@ func (p *peer) ReplyTxStatus(reqID uint64, stats []light.TxStatus) *reply {
 
 // RequestHeadersByHash fetches a batch of blocks' headers corresponding to the
 // specified header query, based on the hash of an origin block.
-func (p *peer) RequestHeadersByHash(reqID, cost uint64, origin common.Hash, amount int, skip int, reverse bool) error {
+func (p *peer) RequestHeadersByHash(reqID uint64, origin common.Hash, amount int, skip int, reverse bool) error {
 	p.Log().Debug("Fetching batch of headers", "count", amount, "fromhash", origin, "skip", skip, "reverse", reverse)
-	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, cost, &getBlockHeadersData{Origin: hashOrNumber{Hash: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
+	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, &getBlockHeadersData{Origin: hashOrNumber{Hash: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
 }
 
 // RequestHeadersByNumber fetches a batch of blocks' headers corresponding to the
 // specified header query, based on the number of an origin block.
-func (p *peer) RequestHeadersByNumber(reqID, cost, origin uint64, amount int, skip int, reverse bool) error {
+func (p *peer) RequestHeadersByNumber(reqID, origin uint64, amount int, skip int, reverse bool) error {
 	p.Log().Debug("Fetching batch of headers", "count", amount, "fromnum", origin, "skip", skip, "reverse", reverse)
-	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, cost, &getBlockHeadersData{Origin: hashOrNumber{Number: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
+	return sendRequest(p.rw, GetBlockHeadersMsg, reqID, &getBlockHeadersData{Origin: hashOrNumber{Number: origin}, Amount: uint64(amount), Skip: uint64(skip), Reverse: reverse})
 }
 
 // RequestBodies fetches a batch of blocks' bodies corresponding to the hashes
 // specified.
-func (p *peer) RequestBodies(reqID, cost uint64, hashes []common.Hash) error {
+func (p *peer) RequestBodies(reqID uint64, hashes []common.Hash) error {
 	p.Log().Debug("Fetching batch of block bodies", "count", len(hashes))
-	return sendRequest(p.rw, GetBlockBodiesMsg, reqID, cost, hashes)
+	return sendRequest(p.rw, GetBlockBodiesMsg, reqID, hashes)
 }
 
 // RequestCode fetches a batch of arbitrary data from a node's known state
 // data, corresponding to the specified hashes.
-func (p *peer) RequestCode(reqID, cost uint64, reqs []CodeReq) error {
+func (p *peer) RequestCode(reqID uint64, reqs []CodeReq) error {
 	p.Log().Debug("Fetching batch of codes", "count", len(reqs))
-	return sendRequest(p.rw, GetCodeMsg, reqID, cost, reqs)
+	return sendRequest(p.rw, GetCodeMsg, reqID, reqs)
 }
 
 // RequestReceipts fetches a batch of transaction receipts from a remote node.
-func (p *peer) RequestReceipts(reqID, cost uint64, hashes []common.Hash) error {
+func (p *peer) RequestReceipts(reqID uint64, hashes []common.Hash) error {
 	p.Log().Debug("Fetching batch of receipts", "count", len(hashes))
-	return sendRequest(p.rw, GetReceiptsMsg, reqID, cost, hashes)
+	return sendRequest(p.rw, GetReceiptsMsg, reqID, hashes)
 }
 
 // RequestProofs fetches a batch of merkle proofs from a remote node.
-func (p *peer) RequestProofs(reqID, cost uint64, reqs []ProofReq) error {
+func (p *peer) RequestProofs(reqID uint64, reqs []ProofReq) error {
 	p.Log().Debug("Fetching batch of proofs", "count", len(reqs))
-	return sendRequest(p.rw, GetProofsV2Msg, reqID, cost, reqs)
+	return sendRequest(p.rw, GetProofsV2Msg, reqID, reqs)
 }
 
 // RequestHelperTrieProofs fetches a batch of HelperTrie merkle proofs from a remote node.
-func (p *peer) RequestHelperTrieProofs(reqID, cost uint64, reqs []HelperTrieReq) error {
+func (p *peer) RequestHelperTrieProofs(reqID uint64, reqs []HelperTrieReq) error {
 	p.Log().Debug("Fetching batch of HelperTrie proofs", "count", len(reqs))
-	return sendRequest(p.rw, GetHelperTrieProofsMsg, reqID, cost, reqs)
+	return sendRequest(p.rw, GetHelperTrieProofsMsg, reqID, reqs)
 }
 
 // RequestTxStatus fetches a batch of transaction status records from a remote node.
-func (p *peer) RequestTxStatus(reqID, cost uint64, txHashes []common.Hash) error {
+func (p *peer) RequestTxStatus(reqID uint64, txHashes []common.Hash) error {
 	p.Log().Debug("Requesting transaction status", "count", len(txHashes))
-	return sendRequest(p.rw, GetTxStatusMsg, reqID, cost, txHashes)
+	return sendRequest(p.rw, GetTxStatusMsg, reqID, txHashes)
 }
 
 // SendTxStatus creates a reply with a batch of transactions to be added to the remote transaction pool.
-func (p *peer) SendTxs(reqID, cost uint64, txs rlp.RawValue) error {
+func (p *peer) SendTxs(reqID uint64, txs rlp.RawValue) error {
 	p.Log().Debug("Sending batch of transactions", "size", len(txs))
-	return sendRequest(p.rw, SendTxV2Msg, reqID, cost, txs)
+	return sendRequest(p.rw, SendTxV2Msg, reqID, txs)
 }
 
 // SendLespay sends a set of commands to the service token sale module
 func (p *peer) SendLespay(reqID uint64, cmd []byte) error {
 	p.Log().Debug("Sending batch of lespay commands", "size", len(cmd))
-	return sendRequest(p.rw, LespayMsg, reqID, 0, cmd)
+	return sendRequest(p.rw, LespayMsg, reqID, cmd)
 }
 
 // ReplyLespay sends a set of replies to lespay commands
 func (p *peer) ReplyLespay(reqID uint64, reply []byte, delay uint) error {
 	p.Log().Debug("Sending batch of lespay replies", "size", len(reply))
-	return sendRequest(p.rw, LespayReplyMsg, reqID, 0, lespayReply{reply, delay})
+	return sendRequest(p.rw, LespayReplyMsg, reqID, lespayReply{reply, delay})
 }
 
 type keyValueEntry struct {

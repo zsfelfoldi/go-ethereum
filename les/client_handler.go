@@ -228,6 +228,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		p.fcServer.ReceivedReply(resp.ReqID, resp.SF.BV)
+		p.valueTracker.answeredRequest(resp.ReqID, resp.SF.RealCost, resp.SF.TokenBalance)
 		if h.fetcher.requestedID(resp.ReqID) {
 			h.fetcher.deliverHeaders(p, resp.ReqID, resp.Headers)
 		} else {
@@ -247,6 +248,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		p.fcServer.ReceivedReply(resp.ReqID, resp.SF.BV)
+		p.valueTracker.answeredRequest(resp.ReqID, resp.SF.RealCost, resp.SF.TokenBalance)
 		deliverMsg = &Msg{
 			MsgType: MsgBlockBodies,
 			ReqID:   resp.ReqID,
@@ -264,6 +266,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		p.fcServer.ReceivedReply(resp.ReqID, resp.SF.BV)
+		p.valueTracker.answeredRequest(resp.ReqID, resp.SF.RealCost, resp.SF.TokenBalance)
 		deliverMsg = &Msg{
 			MsgType: MsgCode,
 			ReqID:   resp.ReqID,
@@ -281,6 +284,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		p.fcServer.ReceivedReply(resp.ReqID, resp.SF.BV)
+		p.valueTracker.answeredRequest(resp.ReqID, resp.SF.RealCost, resp.SF.TokenBalance)
 		deliverMsg = &Msg{
 			MsgType: MsgReceipts,
 			ReqID:   resp.ReqID,
@@ -298,6 +302,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		p.fcServer.ReceivedReply(resp.ReqID, resp.SF.BV)
+		p.valueTracker.answeredRequest(resp.ReqID, resp.SF.RealCost, resp.SF.TokenBalance)
 		deliverMsg = &Msg{
 			MsgType: MsgProofsV2,
 			ReqID:   resp.ReqID,
@@ -315,6 +320,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		p.fcServer.ReceivedReply(resp.ReqID, resp.SF.BV)
+		p.valueTracker.answeredRequest(resp.ReqID, resp.SF.RealCost, resp.SF.TokenBalance)
 		deliverMsg = &Msg{
 			MsgType: MsgHelperTrieProofs,
 			ReqID:   resp.ReqID,
@@ -332,6 +338,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		p.fcServer.ReceivedReply(resp.ReqID, resp.SF.BV)
+		p.valueTracker.answeredRequest(resp.ReqID, resp.SF.RealCost, resp.SF.TokenBalance)
 		deliverMsg = &Msg{
 			MsgType: MsgTxStatus,
 			ReqID:   resp.ReqID,
@@ -441,8 +448,9 @@ func (pc *peerConnection) RequestHeadersByHash(origin common.Hash, amount int, s
 			reqID := genReqID()
 			peer := dp.(*peer)
 			cost := peer.GetRequestCost(GetBlockHeadersMsg, amount)
-			peer.fcServer.QueuedRequest(reqID, cost)
-			return func() { peer.RequestHeadersByHash(reqID, cost, origin, amount, skip, reverse) }
+			bufMissing := peer.fcServer.QueuedRequest(reqID, cost)
+			peer.valueTracker.sentRequest(reqID, GetBlockHeadersMsg, uint32(amount), cost, bufMissing)
+			return func() { peer.RequestHeadersByHash(reqID, origin, amount, skip, reverse) }
 		},
 	}
 	_, ok := <-pc.handler.backend.reqDist.queue(rq)
@@ -465,8 +473,9 @@ func (pc *peerConnection) RequestHeadersByNumber(origin uint64, amount int, skip
 			reqID := genReqID()
 			peer := dp.(*peer)
 			cost := peer.GetRequestCost(GetBlockHeadersMsg, amount)
-			peer.fcServer.QueuedRequest(reqID, cost)
-			return func() { peer.RequestHeadersByNumber(reqID, cost, origin, amount, skip, reverse) }
+			bufMissing := peer.fcServer.QueuedRequest(reqID, cost)
+			peer.valueTracker.sentRequest(reqID, GetBlockHeadersMsg, uint32(amount), cost, bufMissing)
+			return func() { peer.RequestHeadersByNumber(reqID, origin, amount, skip, reverse) }
 		},
 	}
 	_, ok := <-pc.handler.backend.reqDist.queue(rq)
