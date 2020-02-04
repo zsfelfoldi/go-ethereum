@@ -198,9 +198,12 @@ func newClientPool(db ethdb.Database, freeClientCap uint64, clock mclock.Clock, 
 // stop shuts the client pool down
 func (f *clientPool) stop() {
 	close(f.stopCh)
+	fmt.Println("waiting 11")
 	f.lock.Lock()
+	fmt.Println("locked 11")
 	f.closed = true
 	f.lock.Unlock()
+	fmt.Println("unlocked 11")
 	f.ndb.setCumulativeTime(f.logOffset(f.clock.Now()))
 	f.ndb.close()
 }
@@ -208,8 +211,11 @@ func (f *clientPool) stop() {
 // connect should be called after a successful handshake. If the connection was
 // rejected, there is no need to call disconnect.
 func (f *clientPool) connect(peer clientPeer, capacity uint64) bool {
+	fmt.Println("waiting 10")
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	fmt.Println("locked 10")
+	defer fmt.Println("unlocked 10")
 
 	// Short circuit if clientPool is already closed.
 	if f.closed {
@@ -323,8 +329,11 @@ func (f *clientPool) connect(peer clientPeer, capacity uint64) bool {
 // was initiated by the pool itself using disconnectFn then calling disconnect is
 // not necessary but permitted.
 func (f *clientPool) disconnect(p clientPeer) {
+	fmt.Println("waiting 9")
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	fmt.Println("locked 9")
+	defer fmt.Println("unlocked 9")
 
 	// Short circuit if client pool is already closed.
 	if f.closed {
@@ -343,8 +352,11 @@ func (f *clientPool) disconnect(p clientPeer) {
 // If a client is not connected then clientInfo is nil. If the specified list is empty
 // then the callback is called for all connected clients.
 func (f *clientPool) forClients(ids []enode.ID, callback func(*clientInfo, enode.ID) error) error {
+	fmt.Println("waiting 8")
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	fmt.Println("locked 8")
+	defer fmt.Println("unlocked 8")
 
 	if len(ids) > 0 {
 		for _, id := range ids {
@@ -364,8 +376,11 @@ func (f *clientPool) forClients(ids []enode.ID, callback func(*clientInfo, enode
 
 // setDefaultFactors sets the default price factors applied to subsequently connected clients
 func (f *clientPool) setDefaultFactors(posFactors, negFactors priceFactors) {
+	fmt.Println("waiting 7")
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	fmt.Println("locked 7")
+	defer fmt.Println("unlocked 7")
 
 	f.defaultPosFactors = posFactors
 	f.defaultNegFactors = negFactors
@@ -398,8 +413,11 @@ func (f *clientPool) dropClient(e *clientInfo, now mclock.AbsTime, kick bool) {
 // capacityInfo returns the total capacity allowance, the total capacity of connected
 // clients and the total capacity of connected and prioritized clients
 func (f *clientPool) capacityInfo() (uint64, uint64, uint64) {
+	fmt.Println("waiting 6")
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	fmt.Println("locked 6")
+	defer fmt.Println("unlocked 6")
 
 	return f.capLimit, f.connectedCap, f.priorityConnected
 }
@@ -426,8 +444,11 @@ func (f *clientPool) finalizeBalance(c *clientInfo, now mclock.AbsTime) {
 // balanceExhausted callback is called by balanceTracker when positive balance is exhausted.
 // It revokes priority status and also reduces the client capacity if necessary.
 func (f *clientPool) balanceExhausted(id enode.ID) {
+	fmt.Println("waiting 5")
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	fmt.Println("locked 5")
+	defer fmt.Println("unlocked 5")
 
 	c := f.connectedMap[id]
 	if c == nil || !c.priority {
@@ -452,8 +473,11 @@ func (f *clientPool) balanceExhausted(id enode.ID) {
 // setConnLimit sets the maximum number and total capacity of connected clients,
 // dropping some of them if necessary.
 func (f *clientPool) setLimits(totalConn int, totalCap uint64) {
+	fmt.Println("waiting 4")
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	fmt.Println("locked 4")
+	defer fmt.Println("unlocked 4")
 
 	f.connLimit = totalConn
 	f.capLimit = totalCap
@@ -517,8 +541,11 @@ func (f *clientPool) setCapacity(c *clientInfo, capacity uint64) error {
 
 // requestCost feeds request cost after serving a request from the given peer.
 func (f *clientPool) requestCost(p *peer, cost uint64) {
+	fmt.Println("waiting 3")
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	fmt.Println("locked 3")
+	defer fmt.Println("unlocked 3")
 
 	info, exist := f.connectedMap[p.ID()]
 	if !exist || f.closed {
@@ -547,8 +574,11 @@ func (c *clientInfo) updatePriceFactors() {
 
 // getPosBalance retrieves a single positive balance entry from cache or the database
 func (f *clientPool) getPosBalance(id enode.ID) posBalance {
+	fmt.Println("waiting 2")
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	fmt.Println("locked 2")
+	defer fmt.Println("unlocked 2")
 
 	return f.ndb.getOrNewPB(id)
 }
@@ -556,18 +586,24 @@ func (f *clientPool) getPosBalance(id enode.ID) posBalance {
 // addBalance updates the balance of a client (either overwrites it or adds to it).
 // It also updates the balance meta info string.
 func (f *clientPool) addBalance(id enode.ID, amount int64, meta string) (uint64, uint64, error) {
+	fmt.Println("waiting 1")
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	fmt.Println("locked 1")
+	defer fmt.Println("unlocked 1")
 
 	pb := f.ndb.getOrNewPB(id)
+	fmt.Println("addBalance 1")
 	var negBalance uint64
 	c := f.connectedMap[id]
 	if c != nil {
 		pb.value, negBalance = c.balanceTracker.getBalance(f.clock.Now())
 	}
+	fmt.Println("addBalance 2")
 	oldBalance := pb.value
 	if amount > 0 {
 		if amount > maxBalance || pb.value > maxBalance-uint64(amount) {
+			fmt.Println("addBalance 3")
 			return oldBalance, oldBalance, errBalanceOverflow
 		}
 		pb.value += uint64(amount)
@@ -578,9 +614,12 @@ func (f *clientPool) addBalance(id enode.ID, amount int64, meta string) (uint64,
 			pb.value -= uint64(-amount)
 		}
 	}
+	fmt.Println("addBalance 4")
 	pb.meta = meta
 	f.ndb.setPB(id, pb)
+	fmt.Println("addBalance 5")
 	if c != nil {
+		fmt.Println("addBalance 6")
 		c.balanceTracker.setBalance(pb.value, negBalance)
 		if !c.priority && pb.value > 0 {
 			// The capacity should be adjusted based on the requirement,
@@ -588,12 +627,14 @@ func (f *clientPool) addBalance(id enode.ID, amount int64, meta string) (uint64,
 			// call to udpate it.
 			c.priority = true
 			f.priorityConnected += c.capacity
+			fmt.Println("addBalance 7")
 			c.balanceTracker.addCallback(balanceCallbackZero, 0, func() { f.balanceExhausted(id) })
 		}
 		// if balance is set to zero then reverting to non-priority status
 		// is handled by the balanceExhausted callback
 		c.balanceMetaInfo = meta
 	}
+	fmt.Println("addBalance 8")
 	return oldBalance, pb.value, nil
 }
 
