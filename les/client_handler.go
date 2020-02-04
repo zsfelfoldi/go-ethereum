@@ -25,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/downloader"
+	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -34,11 +35,12 @@ import (
 // clientHandler is responsible for receiving and processing all incoming server
 // responses.
 type clientHandler struct {
-	ulc        *ulc
-	checkpoint *params.TrustedCheckpoint
-	fetcher    *lightFetcher
-	downloader *downloader.Downloader
-	backend    *LightEthereum
+	ulc                *ulc
+	checkpoint         *params.TrustedCheckpoint
+	fetcher            *lightFetcher
+	downloader         *downloader.Downloader
+	backend            *LightEthereum
+	globalValueTracker *globalValueTracker
 
 	lespayReplyHandlers map[uint64]func([]byte, uint) bool
 	lespayReplyLock     sync.Mutex
@@ -54,6 +56,7 @@ func newClientHandler(ulcServers []string, ulcFraction int, checkpoint *params.T
 		backend:             backend,
 		closeCh:             make(chan struct{}),
 		lespayReplyHandlers: make(map[uint64]func([]byte, uint) bool),
+		globalValueTracker:  newGlobalValueTracker(backend.chainDb),
 	}
 	if ulcServers != nil {
 		ulc, err := newULC(ulcServers, ulcFraction)
@@ -93,7 +96,9 @@ func (h *clientHandler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter)
 	}
 	h.wg.Add(1)
 	defer h.wg.Done()
+	peer.valueTracker = h.globalValueTracker.register(peer.ID())
 	err := h.handle(peer)
+	h.globalValueTracker.unregister(peer.ID())
 	h.backend.serverPool.disconnect(peer.poolEntry)
 	return err
 }
@@ -115,6 +120,12 @@ func (h *clientHandler) handle(p *peer) error {
 		p.Log().Debug("Light Ethereum handshake failed", "err", err)
 		return err
 	}
+	capacity := p.fcParams.BufLimit / bufLimitRatio
+	if p.fcParams.MinRecharge < capacity {
+		capacity = p.fcParams.MinRecharge
+	}
+	p.valueTracker.setCapacity(capacity)
+	h.globalValueTracker.updateServerPrices(p.valueTracker, p.fcCosts.encode(), 1) //TODO: use actual capFactor
 
 	var (
 		connectedAt mclock.AbsTime
@@ -165,6 +176,40 @@ func (h *clientHandler) handle(p *peer) error {
 	}
 }
 
+// updateFlowControl updates the flow control parameters belonging to the server
+// node if the announced key/value set contains relevant fields
+func (h *clientHandler) updateFlowControl(p *peer, update keyValueMap) {
+	if p.fcServer == nil {
+		return
+	}
+	// If any of the flow control params is nil, refuse to update.
+	var params flowcontrol.ServerParams
+	updated := false
+	if update.get("flowControl/BL", &params.BufLimit) == nil && update.get("flowControl/MRR", &params.MinRecharge) == nil {
+		// todo can light client set a minimal acceptable flow control params?
+		p.fcParams = params
+		p.fcServer.UpdateParams(params)
+		capacity := params.BufLimit / bufLimitRatio
+		if params.MinRecharge < capacity {
+			capacity = params.MinRecharge
+		}
+		p.valueTracker.setCapacity(capacity)
+		updated = true
+	}
+	var MRC RequestCostList
+	if update.get("flowControl/MRC", &MRC) == nil {
+		costUpdate := MRC.decode(ProtocolLengths[uint(p.version)])
+		for code, cost := range costUpdate {
+			p.fcCosts[code] = cost
+		}
+		h.globalValueTracker.updateServerPrices(p.valueTracker, p.fcCosts.encode(), 1) //TODO: use actual capFactor
+		updated = true
+	}
+	if updated {
+		p.active = p.paramsUseful()
+	}
+}
+
 // handleMsg is invoked whenever an inbound message is received from a remote
 // peer. The remote connection is torn down upon returning any error.
 func (h *clientHandler) handleMsg(p *peer) error {
@@ -200,7 +245,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 		if p.rejectUpdate(size) {
 			return errResp(ErrRequestRejected, "")
 		}
-		p.updateFlowControl(update)
+		h.updateFlowControl(p, update)
 
 		if req.Hash != (common.Hash{}) {
 			if p.announceType == announceTypeNone {

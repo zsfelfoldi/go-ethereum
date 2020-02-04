@@ -783,34 +783,6 @@ func (p *peer) Handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 	return nil
 }
 
-// updateFlowControl updates the flow control parameters belonging to the server
-// node if the announced key/value set contains relevant fields
-func (p *peer) updateFlowControl(update keyValueMap) {
-	if p.fcServer == nil {
-		return
-	}
-	// If any of the flow control params is nil, refuse to update.
-	var params flowcontrol.ServerParams
-	updated := false
-	if update.get("flowControl/BL", &params.BufLimit) == nil && update.get("flowControl/MRR", &params.MinRecharge) == nil {
-		// todo can light client set a minimal acceptable flow control params?
-		p.fcParams = params
-		p.fcServer.UpdateParams(params)
-		updated = true
-	}
-	var MRC RequestCostList
-	if update.get("flowControl/MRC", &MRC) == nil {
-		costUpdate := MRC.decode(ProtocolLengths[uint(p.version)])
-		for code, cost := range costUpdate {
-			p.fcCosts[code] = cost
-		}
-		updated = true
-	}
-	if updated {
-		p.active = p.paramsUseful()
-	}
-}
-
 // paramsUseful returns true if the server parameters ensure the minimum required
 // buffer limit and recharge
 func (p *peer) paramsUseful() bool {

@@ -469,6 +469,14 @@ type (
 	}
 )
 
+func (table requestCostTable) encode() RequestCostList {
+	list := make(RequestCostList, 0, len(table))
+	for rt, c := range table {
+		list = append(list, requestCostListItem{rt, c.baseCost, c.reqCost})
+	}
+	return list
+}
+
 // getMaxCost calculates the estimated cost for a given request type and amount
 func (table requestCostTable) getMaxCost(code, amount uint32) uint64 {
 	costs := table[code]

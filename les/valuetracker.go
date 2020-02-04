@@ -444,6 +444,9 @@ func (vt *valueTracker) sentRequest(reqID uint64, reqType, reqAmount uint32, max
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 
+	if vt.basket == nil {
+		vt.basket = make(requestBasket)
+	}
 	vt.basket.addRequest(reqType, reqAmount)
 	if vt.sentRequests == nil {
 		vt.sentRequests = make(map[uint64]vtSentRequest)
@@ -463,9 +466,6 @@ func (vt *valueTracker) answeredRequest(reqID, realCost, balance uint64) {
 	sentReq, ok := vt.sentRequests[reqID]
 	if !ok {
 		return
-	}
-	if vt.basket == nil {
-		vt.basket = make(requestBasket)
 	}
 	vt.checkProcessRequestQueue(now)
 	if len(vt.reqQueue) >= vtRequestQueueLimit {
@@ -800,10 +800,15 @@ type globalValueTracker struct {
 }
 
 func newGlobalValueTracker(db ethdb.Database) *globalValueTracker {
+	vtCache, _ := lru.New(100)
 	gv := &globalValueTracker{
 		connected:                 make(map[enode.ID]*valueTracker),
 		quit:                      make(chan chan struct{}),
 		lastReferenceBasketUpdate: mclock.Now(),
+		vtCache:                   vtCache,
+		db:                        db,
+		refBasket:                 make(requestBasket),
+		newBasket:                 make(requestBasket),
 	}
 	go func() {
 		for {
@@ -825,11 +830,13 @@ func (gv *globalValueTracker) stop() {
 	<-quit
 }
 
-func (gv *globalValueTracker) register(id enode.ID) {
+func (gv *globalValueTracker) register(id enode.ID) *valueTracker {
 	gv.lock.Lock()
 	defer gv.lock.Unlock()
 
-	gv.connected[id] = gv.loadOrNew(id)
+	vt := gv.loadOrNew(id)
+	gv.connected[id] = vt
+	return vt
 }
 
 func (gv *globalValueTracker) unregister(id enode.ID) {
@@ -840,7 +847,17 @@ func (gv *globalValueTracker) unregister(id enode.ID) {
 	delete(gv.connected, id)
 }
 
+func (gv *globalValueTracker) getTracker(id enode.ID) *valueTracker {
+	gv.lock.Lock()
+	defer gv.lock.Unlock()
+
+	return gv.loadOrNew(id)
+}
+
 func (gv *globalValueTracker) loadOrNew(id enode.ID) *valueTracker {
+	if vt, ok := gv.connected[id]; ok {
+		return vt
+	}
 	key := append(vtKey, id[:]...)
 	if item, ok := gv.vtCache.Get(string(key)); ok {
 		return item.(*valueTracker)
