@@ -354,7 +354,7 @@ func (r *reply) size() uint32 {
 	return uint32(len(r.data))
 }
 
-func (p *peer) GetRequestCost(msgcode uint64, amount int) uint64 {
+func (p *peer) GetRequestCost(msgcode uint32, amount int) uint64 {
 	p.lock.RLock()
 	defer p.lock.RUnlock()
 

@@ -68,7 +68,7 @@ var (
 		GetTxStatusMsg:         {0, 100},
 	}
 	// request amounts that have to fit into the minimum buffer size minBufferMultiplier times
-	minBufferReqAmount = map[uint64]uint64{
+	minBufferReqAmount = map[uint32]uint64{
 		GetBlockHeadersMsg:     192,
 		GetBlockBodiesMsg:      1,
 		GetReceiptsMsg:         1,
@@ -128,7 +128,7 @@ type costTracker struct {
 	reqInfoCh       chan reqInfo
 	totalRechargeCh chan uint64
 
-	stats map[uint64][]uint64 // Used for testing purpose.
+	stats map[uint32][]uint64 // Used for testing purpose.
 
 	// TestHooks
 	testing      bool            // Disable real cost evaluation for testing purpose.
@@ -152,7 +152,7 @@ func newCostTracker(db ethdb.Database, config *eth.Config) (*costTracker, uint64
 		ct.outSizeFactor = utilTarget / float64(config.LightEgress)
 	}
 	if makeCostStats {
-		ct.stats = make(map[uint64][]uint64)
+		ct.stats = make(map[uint32][]uint64)
 		for code := range reqAvgTimeCost {
 			ct.stats[code] = make([]uint64, 10)
 		}
@@ -223,7 +223,7 @@ type reqInfo struct {
 	servingTime float64
 
 	// msgCode indicates the type of request.
-	msgCode uint64
+	msgCode uint32
 }
 
 // gfLoop starts an event loop which updates the global cost factor which is
@@ -402,9 +402,9 @@ func (ct *costTracker) subscribeTotalRecharge(ch chan uint64) uint64 {
 
 // updateStats updates the global cost factor and (if enabled) the real cost vs.
 // average estimate statistics
-func (ct *costTracker) updateStats(code, amount, servingTime, realCost uint64) {
+func (ct *costTracker) updateStats(code, amount uint32, servingTime, realCost uint64) {
 	avg := reqAvgTimeCost[code]
-	avgTimeCost := avg.baseCost + amount*avg.reqCost
+	avgTimeCost := avg.baseCost + uint64(amount)*avg.reqCost
 	select {
 	case ct.reqInfoCh <- reqInfo{float64(avgTimeCost), float64(servingTime), code}:
 	default:
@@ -455,7 +455,7 @@ type (
 	// requestCostTable assigns a cost estimate function to each request type
 	// which is a linear function of the requested amount
 	// (cost = baseCost + reqCost * amount)
-	requestCostTable map[uint64]*requestCosts
+	requestCostTable map[uint32]*requestCosts
 	requestCosts     struct {
 		baseCost, reqCost uint64
 	}
@@ -464,14 +464,15 @@ type (
 	// database storage and communication through the network
 	RequestCostList     []requestCostListItem
 	requestCostListItem struct {
-		MsgCode, BaseCost, ReqCost uint64
+		MsgCode           uint32
+		BaseCost, ReqCost uint64
 	}
 )
 
 // getMaxCost calculates the estimated cost for a given request type and amount
-func (table requestCostTable) getMaxCost(code, amount uint64) uint64 {
+func (table requestCostTable) getMaxCost(code, amount uint32) uint64 {
 	costs := table[code]
-	return costs.baseCost + amount*costs.reqCost
+	return costs.baseCost + uint64(amount)*costs.reqCost
 }
 
 func (table requestCostTable) reqParams() (minRecharge, minBufLimit uint64) {
@@ -491,7 +492,7 @@ func (table requestCostTable) reqParams() (minRecharge, minBufLimit uint64) {
 }
 
 // decode converts a cost list to a cost table
-func (list RequestCostList) decode(protocolLength uint64) requestCostTable {
+func (list RequestCostList) decode(protocolLength uint32) requestCostTable {
 	table := make(requestCostTable)
 	for _, e := range list {
 		if e.MsgCode < protocolLength {
@@ -507,14 +508,14 @@ func (list RequestCostList) decode(protocolLength uint64) requestCostTable {
 // testCostList returns a dummy request cost list used by tests
 func testCostList(testCost uint64) RequestCostList {
 	cl := make(RequestCostList, len(reqAvgTimeCost))
-	var max uint64
+	var max uint32
 	for code := range reqAvgTimeCost {
 		if code > max {
 			max = code
 		}
 	}
 	i := 0
-	for code := uint64(0); code <= max; code++ {
+	for code := uint32(0); code <= max; code++ {
 		if _, ok := reqAvgTimeCost[code]; ok {
 			cl[i].MsgCode = code
 			cl[i].BaseCost = testCost

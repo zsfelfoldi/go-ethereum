@@ -44,7 +44,7 @@ var (
 )
 
 // Number of implemented message corresponding to different protocol versions.
-var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 26}
+var ProtocolLengths = map[uint]uint32{lpv2: 22, lpv3: 24, lpv4: 26}
 
 const (
 	NetworkId          = 1
@@ -85,7 +85,7 @@ type requestInfo struct {
 	maxCount uint64
 }
 
-var requests = map[uint64]requestInfo{
+var requests = map[uint32]requestInfo{
 	GetBlockHeadersMsg:     {"GetBlockHeaders", MaxHeaderFetch},
 	GetBlockBodiesMsg:      {"GetBlockBodies", MaxBodyFetch},
 	GetReceiptsMsg:         {"GetReceipts", MaxReceiptFetch},

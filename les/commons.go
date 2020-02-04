@@ -88,7 +88,7 @@ func (c *lesCommons) makeProtocols(versions []uint, runPeer func(version uint, p
 		protos[i] = p2p.Protocol{
 			Name:     "les",
 			Version:  version,
-			Length:   ProtocolLengths[version],
+			Length:   uint64(ProtocolLengths[version]),
 			NodeInfo: c.nodeInfo,
 			Run: func(peer *p2p.Peer, rw p2p.MsgReadWriter) error {
 				return runPeer(version, peer, rw)

@@ -236,7 +236,7 @@ func (h *serverHandler) handleMsg(p *peer, wg *sync.WaitGroup) error {
 			return false
 		}
 		// Prepaid max cost units before request been serving.
-		maxCost = p.fcCosts.getMaxCost(msg.Code, reqCnt)
+		maxCost = p.fcCosts.getMaxCost(uint32(msg.Code), uint32(reqCnt))
 		accepted, bufShort, priority := p.fcClient.AcceptRequest(reqID, responseCount, maxCost)
 		if !accepted {
 			p.freezeClient()
@@ -287,7 +287,7 @@ func (h *serverHandler) handleMsg(p *peer, wg *sync.WaitGroup) error {
 		bv := p.fcClient.RequestProcessed(reqID, responseCount, maxCost, realCost)
 		if amount != 0 {
 			// Feed cost tracker request serving statistic.
-			h.server.costTracker.updateStats(msg.Code, amount, servingTime, realCost)
+			h.server.costTracker.updateStats(uint32(msg.Code), uint32(amount), servingTime, realCost)
 			// Reduce priority "balance" for the specific peer.
 			balance = h.server.clientPool.requestCost(p, realCost)
 		}

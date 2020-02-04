@@ -97,6 +97,7 @@ type valueTracker struct {
 
 	capFactor, cvFactor, rvFactor float64
 	capacity                      uint64
+	reqCostTable                  requestCostTable
 	basket                        requestBasket
 	capacityUsed                  basketItem
 
@@ -365,7 +366,7 @@ func (vt *valueTracker) setCapacity(capacity uint64) {
 }
 
 // assumes that cvf/rvf are not extremely large or small
-func (vt *valueTracker) setFactors(cvf, rvf, capFactor float64, external bool) {
+func (vt *valueTracker) setFactors(cvf, rvf, capFactor float64, rct requestCostTable, external bool) {
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 
@@ -374,6 +375,9 @@ func (vt *valueTracker) setFactors(cvf, rvf, capFactor float64, external bool) {
 		vt.update(now)
 		vt.updateCapValue(now)
 		vt.capFactor = capFactor
+	}
+	if rct != nil {
+		vt.reqCostTable = rct
 	}
 
 	if cvf < vt.cvFactor && external {
@@ -413,8 +417,9 @@ func (vt *valueTracker) recentBasket() (requestBasket, basketItem) {
 		b = make(requestBasket)
 	}
 	for rt, item := range b {
-		item.first.value = uint64(float64(item.first.value) * vt.rvFactor)
-		item.rest.value = uint64(float64(item.rest.value) * vt.rvFactor)
+		costs := vt.reqCostTable[rt]
+		item.first.value = uint64(float64(item.first.amount*(costs.baseCost+costs.reqCost)) * vt.rvFactor)
+		item.rest.value = uint64(float64(item.rest.value*costs.reqCost) * vt.rvFactor)
 		b[rt] = item
 	}
 	rcr := vt.capacityUsed
@@ -439,7 +444,7 @@ func (vt *valueTracker) sentRequest(reqID uint64, reqType, reqAmount uint32, max
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 
-	//vt.basket.addRequest(reqType, reqAmount, baseCost+reqCost, reqCost)
+	vt.basket.addRequest(reqType, reqAmount)
 	if vt.sentRequests == nil {
 		vt.sentRequests = make(map[uint64]vtSentRequest)
 	}
@@ -758,14 +763,11 @@ func (b *basketItem) DecodeRLP(s *rlp.Stream) error {
 	return nil
 }
 
-func (rb requestBasket) addRequest(reqType, reqAmount uint32, firstValue, restValue uint64) {
+func (rb requestBasket) addRequest(reqType, reqAmount uint32) {
 	a := rb[reqType]
 	a.first.amount++
-	a.first.value += firstValue
 	if reqAmount > 1 {
-		ra := uint64(reqAmount - 1)
-		a.rest.amount += ra
-		a.rest.value += ra * restValue
+		a.rest.amount += uint64(reqAmount - 1)
 	}
 	rb[reqType] = a
 }
@@ -847,7 +849,7 @@ func (gv *globalValueTracker) loadOrNew(id enode.ID) *valueTracker {
 	if enc, err := gv.db.Get(key); err == nil {
 		if err := rlp.DecodeBytes(enc, vt); err == nil {
 			cvf, rvf := gv.valueFactors(vt.lastCostList, vt.lastCapFactor)
-			vt.setFactors(cvf, rvf, vt.lastCapFactor, false)
+			vt.setFactors(cvf, rvf, vt.lastCapFactor, vt.lastCostList.decode(ProtocolLengths[uint(len(ProtocolLengths)-1)]), false)
 			return vt
 		} else {
 			log.Error("Failed to decode valueTracker", "err", err)
@@ -920,7 +922,7 @@ func (gv *globalValueTracker) updateReferenceBasket() {
 
 	for _, vt := range gv.connected {
 		cvf, rvf := gv.valueFactors(vt.lastCostList, vt.lastCapFactor)
-		vt.setFactors(cvf, rvf, vt.lastCapFactor, false)
+		vt.setFactors(cvf, rvf, vt.lastCapFactor, nil, false)
 	}
 }
 
@@ -933,7 +935,7 @@ func (gv *globalValueTracker) updateServerPrices(vt *valueTracker, costList Requ
 	gv.newCapReq.addItem(rcr)
 
 	cvf, rvf := gv.valueFactors(costList, capFactor)
-	vt.setFactors(cvf, rvf, capFactor, true)
+	vt.setFactors(cvf, rvf, capFactor, costList.decode(ProtocolLengths[uint(len(ProtocolLengths)-1)]), true)
 	vt.lastCostList, vt.lastCapFactor = costList, capFactor
 }
 
