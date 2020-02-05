@@ -51,7 +51,20 @@ var (
 	cvfExpRTs  [capValueFilterCount]float64
 	cvfLogStep float64
 
-	vtKey = []byte("vt:")
+	vtKey    = []byte("vt:")
+	vtRefKey = []byte("vt.reference")
+
+	initRefBasket = map[uint32]struct{ first, rest uint64 }{
+		GetBlockHeadersMsg:     {10, 1000},
+		GetBlockBodiesMsg:      {1, 0},
+		GetReceiptsMsg:         {1, 0},
+		GetCodeMsg:             {1, 0},
+		GetProofsV2Msg:         {10, 0},
+		GetHelperTrieProofsMsg: {10, 100},
+		SendTxV2Msg:            {1, 0},
+		GetTxStatusMsg:         {10, 0},
+	}
+	initCapReq = basketItem{}
 )
 
 func init() {
@@ -123,6 +136,24 @@ type valueTracker struct {
 	// accessed directly by globalValueTracker
 	lastCostList  RequestCostList
 	lastCapFactor float64
+}
+
+func (vt *valueTracker) normalizedRtStats() []float64 {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	res := make([]float64, timeStatLength)
+	var sum uint64
+	for _, d := range vt.rtStats {
+		sum += d
+	}
+	if sum > 0 {
+		s := float64(sum)
+		for i, d := range vt.rtStats {
+			res[i] = float64(d) / s
+		}
+	}
+	return res
 }
 
 type valueTrackerEnc struct {
@@ -418,6 +449,10 @@ func (vt *valueTracker) recentBasket() (requestBasket, basketItem) {
 	}
 	for rt, item := range b {
 		costs := vt.reqCostTable[rt]
+		if costs == nil {
+			log.Error("Entry missing from request cost table", "reqType", rt)
+			continue
+		}
 		item.first.value = uint64(float64(item.first.amount*(costs.baseCost+costs.reqCost)) * vt.rvFactor)
 		item.rest.value = uint64(float64(item.rest.value*costs.reqCost) * vt.rvFactor)
 		b[rt] = item
@@ -763,6 +798,12 @@ func (b *basketItem) DecodeRLP(s *rlp.Stream) error {
 	return nil
 }
 
+type refBasketEnc struct {
+	Basket   requestBasket
+	CapReq   basketItem
+	ValueMul uint64
+}
+
 func (rb requestBasket) addRequest(reqType, reqAmount uint32) {
 	a := rb[reqType]
 	a.first.amount++
@@ -807,9 +848,24 @@ func newGlobalValueTracker(db ethdb.Database) *globalValueTracker {
 		lastReferenceBasketUpdate: mclock.Now(),
 		vtCache:                   vtCache,
 		db:                        db,
-		refBasket:                 make(requestBasket),
 		newBasket:                 make(requestBasket),
 	}
+
+	if gv.loadRefBasket() != nil {
+		gv.refBasket = make(requestBasket)
+		for rt, a := range initRefBasket {
+			c := reqAvgTimeCost[rt]
+			var r requestItem
+			r.first.amount = a.first
+			r.first.value = a.first * (c.baseCost + c.reqCost)
+			r.rest.amount = a.rest
+			r.rest.value = a.rest * c.reqCost
+			gv.refBasket[rt] = r
+		}
+		gv.refCapReq = initCapReq
+		gv.refValueMul = 1
+	}
+
 	go func() {
 		for {
 			select {
@@ -824,7 +880,42 @@ func newGlobalValueTracker(db ethdb.Database) *globalValueTracker {
 	return gv
 }
 
+func (gv *globalValueTracker) loadRefBasket() error {
+	enc, err := gv.db.Get(vtRefKey)
+	if err != nil {
+		return err
+	}
+	var ref refBasketEnc
+	if err := rlp.DecodeBytes(enc, &ref); err != nil {
+		log.Error("Decoding value tracker reference basket failed", "err", err)
+		return err
+	}
+	gv.refBasket = ref.Basket
+	gv.refCapReq = ref.CapReq
+	gv.refValueMul = math.Float64frombits(ref.ValueMul)
+	return nil
+}
+
+func (gv *globalValueTracker) saveRefBasket() {
+	var ref refBasketEnc
+	ref.Basket = gv.refBasket
+	ref.CapReq = gv.refCapReq
+	ref.ValueMul = math.Float64bits(gv.refValueMul)
+	enc, err := rlp.EncodeToBytes(&ref)
+	if err != nil {
+		log.Error("Encoding value tracker reference basket failed", "err", err)
+		return
+	}
+	if err := gv.db.Put(vtRefKey, enc); err != nil {
+		log.Error("Saving value tracker reference basket failed", "err", err)
+	}
+}
+
 func (gv *globalValueTracker) stop() {
+	gv.lock.Lock()
+	gv.updateReferenceBasket()
+	gv.lock.Unlock()
+
 	quit := make(chan struct{})
 	gv.quit <- quit
 	<-quit
@@ -878,7 +969,9 @@ func (gv *globalValueTracker) loadOrNew(id enode.ID) *valueTracker {
 func (gv *globalValueTracker) save(id enode.ID, vt *valueTracker) {
 	key := append(vtKey, id[:]...)
 	if enc, err := rlp.EncodeToBytes(vt); err == nil {
-		gv.db.Put(key, enc)
+		if err := gv.db.Put(key, enc); err != nil {
+			log.Error("Failed to save valueTracker", "err", err)
+		}
 	} else {
 		log.Error("Failed to encode valueTracker", "err", err)
 	}
@@ -907,6 +1000,7 @@ func (gv *globalValueTracker) valueFactors(costs RequestCostList, capFactor floa
 
 // assumes that old basket contains all necessary request types
 func (gv *globalValueTracker) updateReferenceBasket() {
+	gv.lastReferenceBasketUpdate = mclock.Now()
 	for _, vt := range gv.connected {
 		rb, rcr := vt.recentBasket()
 		gv.newBasket.addBasket(rb)
@@ -936,11 +1030,14 @@ func (gv *globalValueTracker) updateReferenceBasket() {
 	if oldSum > 1e-10 {
 		gv.refValueMul *= oldSum / (oldSum + newSum)
 	}
+	gv.newBasket = make(requestBasket)
+	gv.newCapReq = basketItem{}
 
 	for _, vt := range gv.connected {
 		cvf, rvf := gv.valueFactors(vt.lastCostList, vt.lastCapFactor)
 		vt.setFactors(cvf, rvf, vt.lastCapFactor, nil, false)
 	}
+	gv.saveRefBasket()
 }
 
 func (gv *globalValueTracker) updateServerPrices(vt *valueTracker, costList RequestCostList, capFactor float64) {
@@ -966,6 +1063,15 @@ func (gv *globalValueTracker) periodicUpdate() {
 	}
 	if now > gv.lastReferenceBasketUpdate+mclock.AbsTime(refBasketUpdatePeriod) {
 		gv.updateReferenceBasket()
-		gv.lastReferenceBasketUpdate = now
 	}
+}
+
+func (gv *globalValueTracker) referenceBasket() (requestBasket, basketItem) {
+	gv.lock.Lock()
+	defer gv.lock.Unlock()
+
+	gv.updateReferenceBasket()
+	ref := make(requestBasket)
+	ref.addBasket(gv.refBasket)
+	return ref, gv.refCapReq
 }

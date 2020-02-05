@@ -562,3 +562,57 @@ func (api *PrivateLespayAPI) ReceiverInfo(ctx context.Context, remote bool, node
 	err = rlp.DecodeBytes(resEnc, &results)
 	return
 }
+
+type PrivateStatsAPI struct {
+	gv *globalValueTracker
+}
+
+func NewPrivateStatsAPI(gv *globalValueTracker) *PrivateStatsAPI {
+	return &PrivateStatsAPI{gv}
+}
+
+func (api *PrivateStatsAPI) ResponseTimes(id enode.ID) [][2]float64 {
+	stats := api.gv.getTracker(id).normalizedRtStats()
+	res := make([][2]float64, len(stats))
+	for i, d := range stats {
+		res[i] = [2]float64{float64(statScaleToTime(float64(i))) / float64(time.Second), d}
+	}
+	return res
+}
+
+type apiBasketItem struct {
+	Amount   uint64
+	AvgValue float64
+}
+
+type apiRequestItem struct {
+	Name  string
+	First apiBasketItem
+	Rest  apiBasketItem
+}
+
+func (api *PrivateStatsAPI) ReferenceBasket() map[uint32]apiRequestItem {
+	res := make(map[uint32]apiRequestItem)
+	basket, capreq := api.gv.referenceBasket()
+	conv := func(b basketItem) apiBasketItem {
+		if b.amount == 0 {
+			return apiBasketItem{}
+		}
+		return apiBasketItem{
+			Amount:   b.amount,
+			AvgValue: float64(b.value) / float64(b.amount),
+		}
+	}
+	res[0] = apiRequestItem{
+		Name:  "capacity",
+		First: conv(capreq),
+	}
+	for rt, r := range basket {
+		res[rt] = apiRequestItem{
+			Name:  requests[rt].name,
+			First: conv(r.first),
+			Rest:  conv(r.rest),
+		}
+	}
+	return res
+}

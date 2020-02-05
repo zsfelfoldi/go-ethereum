@@ -206,8 +206,12 @@ func (s *LightEthereum) APIs() []rpc.API {
 			Version:   "1.0",
 			Service:   NewPrivateLightAPI(&s.lesCommons),
 			Public:    false,
-		},
-		{
+		}, {
+			Namespace: "les",
+			Version:   "1.0",
+			Service:   NewPrivateStatsAPI(s.handler.globalValueTracker),
+			Public:    false,
+		}, {
 			Namespace: "lespay",
 			Version:   "1.0",
 			Service:   NewPrivateLespayAPI(s.lesCommons.peers, s.handler, s.srvr.DiscV5, nil),
