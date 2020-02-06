@@ -160,7 +160,7 @@ func newCostTracker(db ethdb.Database, config *eth.Config) (*costTracker, uint64
 	ct.gfLoop()
 	costList := ct.makeCostList(ct.globalFactor() * 1.25)
 	var minRecharge uint64
-	ct.minBufLimit, minRecharge = costList.decode(ProtocolLengths[ServerProtocolVersions[len(ServerProtocolVersions)-1]]).reqParams()
+	minRecharge, ct.minBufLimit = costList.decode(ProtocolLengths[ServerProtocolVersions[len(ServerProtocolVersions)-1]]).reqParams()
 	return ct, minRecharge
 }
 

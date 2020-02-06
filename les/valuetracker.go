@@ -454,12 +454,12 @@ func (vt *valueTracker) recentBasket() (requestBasket, basketItem) {
 			continue
 		}
 		item.first.value = uint64(float64(item.first.amount*(costs.baseCost+costs.reqCost)) * vt.rvFactor)
-		item.rest.value = uint64(float64(item.rest.value*costs.reqCost) * vt.rvFactor)
+		item.rest.value = uint64(float64(item.rest.amount*costs.reqCost) * vt.rvFactor)
 		b[rt] = item
 	}
 	rcr := vt.capacityUsed
-	vt.capacityUsed = basketItem{}
 	rcr.value = uint64(float64(rcr.value) * vt.rvFactor)
+	vt.capacityUsed = basketItem{}
 	return b, rcr
 }
 
@@ -548,9 +548,12 @@ func (vt *valueTracker) update(now mclock.AbsTime) {
 	var sub uint64
 	dtf := float64(dt)
 	if vt.capacity != 0 {
-		c := float64(vt.capacity) / 1000000 * dtf
-		capCost := uint64(c * vt.capFactor)
-		vt.capacityUsed.amount += uint64(c)
+		c := float64(vt.capacity) * dtf
+		capCost := uint64(c * 1e-6 * vt.capFactor)
+		vt.capacityUsed.amount += uint64(c * bufLimitRatio * vt.cvFactor * 1e-9)
+		if dtf > 1e9 {
+			fmt.Println("update", vt.capacity, dtf, vt.cvFactor)
+		}
 		vt.capacityUsed.value += capCost
 		vt.delivered.tokens += capCost
 		sub = capCost
@@ -853,6 +856,7 @@ func newGlobalValueTracker(db ethdb.Database) *globalValueTracker {
 
 	if gv.loadRefBasket() != nil {
 		gv.refBasket = make(requestBasket)
+		var sumValue uint64
 		for rt, a := range initRefBasket {
 			c := reqAvgTimeCost[rt]
 			var r requestItem
@@ -860,9 +864,18 @@ func newGlobalValueTracker(db ethdb.Database) *globalValueTracker {
 			r.first.value = a.first * (c.baseCost + c.reqCost)
 			r.rest.amount = a.rest
 			r.rest.value = a.rest * c.reqCost
+			sumValue += r.first.value + r.rest.value
 			gv.refBasket[rt] = r
 		}
 		gv.refCapReq = initCapReq
+		sumValue += gv.refCapReq.value
+		vmul := 1000000000 / float64(sumValue)
+		for rt, r := range gv.refBasket {
+			r.first.value = uint64(float64(r.first.value) * vmul)
+			r.rest.value = uint64(float64(r.rest.value) * vmul)
+			gv.refBasket[rt] = r
+		}
+		gv.refCapReq.value = uint64(float64(gv.refCapReq.value) * vmul)
 		gv.refValueMul = 1
 	}
 
@@ -995,7 +1008,9 @@ func (gv *globalValueTracker) valueFactors(costs RequestCostList, capFactor floa
 	if sum2 < 1e-100 {
 		sum2 = 1e-100
 	}
-	return 1 / sum, 1 / sum2
+	cvf, rvf = 1000000000/sum, 1000000000/sum2
+	fmt.Println("factors", cvf, rvf, sum, sum2)
+	return
 }
 
 // assumes that old basket contains all necessary request types
@@ -1021,6 +1036,7 @@ func (gv *globalValueTracker) updateReferenceBasket() {
 
 	for rt, a := range gv.refBasket {
 		b := gv.newBasket[rt]
+		fmt.Println("ub", rt, a, b)
 		gv.refBasket[rt] = requestItem{
 			first: addItem(a.first, b.first),
 			rest:  addItem(a.rest, b.rest),
@@ -1030,6 +1046,7 @@ func (gv *globalValueTracker) updateReferenceBasket() {
 	if oldSum > 1e-10 {
 		gv.refValueMul *= oldSum / (oldSum + newSum)
 	}
+	fmt.Println("updateRB", oldSum, newSum, gv.refValueMul)
 	gv.newBasket = make(requestBasket)
 	gv.newCapReq = basketItem{}
 
