@@ -844,6 +844,16 @@ web3._extend({
 			call: 'les_responseTimes',
 			params: 1
 		}),
+		new web3._extend.Method({
+			name: 'capacityValues',
+			call: 'les_capacityValues',
+			params: 1
+		}),
+		new web3._extend.Method({
+			name: 'requestValues',
+			call: 'les_requestValues',
+			params: 1
+		}),
 	],
 	properties:
 	[

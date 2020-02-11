@@ -616,3 +616,18 @@ func (api *PrivateStatsAPI) ReferenceBasket() map[uint32]apiRequestItem {
 	}
 	return res
 }
+
+func (api *PrivateStatsAPI) CapacityValues(id enode.ID) [][2]float64 {
+	cvs := api.gv.getTracker(id).capacityValues()
+	res := make([][2]float64, len(cvs))
+	for i, v := range cvs {
+		res[i] = [2]float64{float64(cvfExpRT(float64(i))) / float64(time.Second), float64(v)}
+	}
+	return res
+}
+
+func (api *PrivateStatsAPI) RequestValues(id enode.ID) map[string]uint64 {
+	res := make(map[string]uint64)
+	res["paidTotal"], res["freeTotal"], res["freeCredited"], res["delivered"], res["expired"], res["failed"] = api.gv.getTracker(id).requestValues()
+	return res
+}

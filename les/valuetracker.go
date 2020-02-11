@@ -78,6 +78,10 @@ func cvfIndex(expRT time.Duration) float64 {
 	return math.Log(float64(expRT)/float64(minExpRT)) / cvfLogStep
 }
 
+func cvfExpRT(pos float64) time.Duration {
+	return time.Duration(math.Exp(pos*cvfLogStep) * float64(minExpRT))
+}
+
 type tokenValue struct {
 	tokens, reqValue uint64
 }
@@ -154,6 +158,27 @@ func (vt *valueTracker) normalizedRtStats() []float64 {
 		}
 	}
 	return res
+}
+
+func (vt *valueTracker) capacityValues() [capValueFilterCount]uint64 {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	vt.updateValues()
+	return vt.capValue
+}
+
+func (vt *valueTracker) requestValues() (paidTotal, freeTotal, freeCredited, delivered, expired, failed uint64) {
+	vt.lock.Lock()
+	defer vt.lock.Unlock()
+
+	vt.updateValues()
+	return vt.paidTotal.reqValue,
+		vt.freeTotal.reqValue,
+		vt.freeCredited.reqValue,
+		vt.delivered.reqValue,
+		vt.expired.reqValue,
+		vt.failed.reqValue
 }
 
 type valueTrackerEnc struct {
@@ -280,13 +305,18 @@ func (vt *valueTracker) periodicUpdate() {
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 
+	vt.updateValues()
+}
+
+func (vt *valueTracker) updateValues() {
 	now := mclock.Now()
 	vt.updateCapValue(now)
 	dt := time.Duration(now - vt.lastValueExp)
-	if dt >= valueExpPeriod {
-		vt.expireValues(dt)
-		vt.lastValueExp = now
+	if dt < 0 {
+		dt = 0
 	}
+	vt.expireValues(dt) // always call expireValues to ensure correct reqValue
+	vt.lastValueExp = now
 }
 
 func (vt *valueTracker) totalValue(expRT time.Duration) float64 {
