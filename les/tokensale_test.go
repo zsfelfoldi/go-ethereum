@@ -24,9 +24,9 @@ import (
 func TestTokenPriceCalculation(t *testing.T) {
 	var totalLimit, totalAmount uint64
 	ts := &tokenSale{
-		basePrice:        1,
-		totalTokenLimit:  func() uint64 { return totalLimit },
-		totalTokenAmount: func() uint64 { return totalAmount },
+		basePrice:   1,
+		tokenLimit:  func() uint64 { return totalLimit },
+		tokenAmount: func() uint64 { return totalAmount },
 	}
 	totalLimit = 1000000000000
 	maxDiff := int64(totalLimit / 1000000)
@@ -42,12 +42,12 @@ func TestTokenPriceCalculation(t *testing.T) {
 		// buy (start-stop) tokens in two steps
 		mid := start + uint64(rand.Int63n(int64(stop-start+1)))
 		totalAmount = start
-		cost, ok := ts.tokenPrice(mid-start, true)
+		cost, ok := ts.tokenCost(mid-start, true)
 		if !ok {
 			t.Fatalf("Failed to buy tokens")
 		}
 		totalAmount = mid
-		cost2, ok := ts.tokenPrice(stop-mid, true)
+		cost2, ok := ts.tokenCost(stop-mid, true)
 		if !ok {
 			t.Fatalf("Failed to buy tokens")
 		}
@@ -56,12 +56,12 @@ func TestTokenPriceCalculation(t *testing.T) {
 		// sell the same amount of tokens in two steps
 		mid = start + uint64(rand.Int63n(int64(stop-start+1)))
 		totalAmount = stop
-		refund, ok := ts.tokenPrice(stop-mid, false)
+		refund, ok := ts.tokenCost(stop-mid, false)
 		if !ok {
 			t.Fatalf("Failed to sell tokens")
 		}
 		totalAmount = mid
-		refund2, ok := ts.tokenPrice(mid-start, false)
+		refund2, ok := ts.tokenCost(mid-start, false)
 		if !ok {
 			t.Fatalf("Failed to sell tokens")
 		}
@@ -106,9 +106,9 @@ func TestTokenPriceCalculation(t *testing.T) {
 func TestSingleTokenPrice(t *testing.T) {
 	var totalLimit, totalAmount uint64
 	ts := &tokenSale{
-		basePrice:        1,
-		totalTokenLimit:  func() uint64 { return totalLimit },
-		totalTokenAmount: func() uint64 { return totalAmount },
+		basePrice:   1,
+		tokenLimit:  func() uint64 { return totalLimit },
+		tokenAmount: func() uint64 { return totalAmount },
 	}
 	totalLimit = 1000000000000
 	buyLimit := uint64(float64(totalLimit) * tokenSellMaxRatio)
@@ -123,7 +123,7 @@ func TestSingleTokenPrice(t *testing.T) {
 			expPrice = 0.5 / (1 - relAmount)
 			maxDiff = 0.001 * expPrice
 		}
-		price, ok := ts.tokenPrice(1, true)
+		price, ok := ts.tokenCost(1, true)
 		if !ok {
 			t.Fatalf("Failed to buy tokens")
 		}
@@ -131,7 +131,7 @@ func TestSingleTokenPrice(t *testing.T) {
 			t.Fatalf("Token price mismatch")
 		}
 
-		price, ok = ts.tokenPrice(1, false)
+		price, ok = ts.tokenCost(1, false)
 		if !ok {
 			t.Fatalf("Failed to sell tokens")
 		}

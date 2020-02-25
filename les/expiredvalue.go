@@ -34,8 +34,8 @@ import "math"
 //
 // e.g.
 // t0: V = 100
-// t1: add 30, inflationary value is: 100 + 30/0.3, 0.3 is the decay coefficient
-// t2: get value, decay coefficient is 0.2 now, final result is: 200*0.2 = 40
+// t1: add 30, inflationary value is: 100 + 30/0.3, 0.3 is the decay coeff
+// t2: get value, decay coeff is 0.2 now, final result is: 200*0.2 = 40
 type expiredValue struct {
 	base, exp uint64
 }

@@ -104,6 +104,7 @@ var (
 	sqQueuedGauge        = metrics.NewRegisteredGauge("les/server/servingQueue/queued", nil)
 
 	clientConnectedMeter    = metrics.NewRegisteredMeter("les/server/clientEvent/connected", nil)
+	clientActivatedMeter    = metrics.NewRegisteredMeter("les/server/clientEvent/activated", nil)
 	clientRejectedMeter     = metrics.NewRegisteredMeter("les/server/clientEvent/rejected", nil)
 	clientKickedMeter       = metrics.NewRegisteredMeter("les/server/clientEvent/kicked", nil)
 	clientDisconnectedMeter = metrics.NewRegisteredMeter("les/server/clientEvent/disconnected", nil)

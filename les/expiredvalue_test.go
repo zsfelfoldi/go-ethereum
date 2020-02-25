@@ -114,3 +114,14 @@ func TestExpiredValueSubtraction(t *testing.T) {
 		}
 	}
 }
+
+func TestExpiredValueAddSub(t *testing.T) {
+	a := expiredValue{base: 128, exp: 0}
+	b := expiredValue{base: 64, exp: 0}
+	c := expiredValue{base: 128, exp: 0}
+	a.addExp(b)
+	a.subExp(b)
+	if a.value(1) != c.value(1) {
+		t.Fatal("Value shouldn't be changed")
+	}
+}

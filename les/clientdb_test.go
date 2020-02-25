@@ -72,10 +72,9 @@ func TestNodeDB(t *testing.T) {
 	if pos, neg := ndb.getExpiration(); pos != posExp || neg != negExp {
 		t.Fatalf("Expiration mismatch, want %v / %v, got %v / %v", posExp, negExp, pos, neg)
 	}
-	curBalance := currencyBalance{typ: "ETH", amount: 10000}
-	ndb.setCurrencyBalance(enode.ID{0x01, 0x02}, curBalance)
-	if got := ndb.getCurrencyBalance(enode.ID{0x01, 0x02}); !reflect.DeepEqual(got, curBalance) {
-		t.Fatalf("Currency balance mismatch, want %v, got %v", curBalance, got)
+	ndb.setCurrencyBalance(enode.ID{0x01, 0x02}, 10000)
+	if got := ndb.getCurrencyBalance(enode.ID{0x01, 0x02}); got != 10000 {
+		t.Fatalf("Currency balance mismatch, want %v, got %v", 10000, got)
 	}
 }
 

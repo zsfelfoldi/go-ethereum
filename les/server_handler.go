@@ -102,9 +102,7 @@ func (h *serverHandler) stop() {
 func (h *serverHandler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter) error {
 	peer := newClientPeer(int(version), h.server.config.NetworkId, p, newMeteredMsgWriter(rw, int(version)))
 	defer peer.close()
-	peer.getBalance = func() uint64 {
-		return h.server.clientPool.getPosBalance(p.ID()).value.value(h.server.clientPool.posExpiration(mclock.Now()))
-	}
+	peer.getBalance = func() uint64 { return h.server.clientPool.getBalanceLocked(p.ID(), p.ID().Bytes(), false) }
 	h.wg.Add(1)
 	defer h.wg.Done()
 	return h.handle(peer)
@@ -138,7 +136,7 @@ func (h *serverHandler) handle(p *clientPeer) error {
 
 	var (
 		connectedAt mclock.AbsTime
-		wg          *sync.WaitGroup // Wait group used to track all in-flight task routines.
+		wg          sync.WaitGroup // Wait group used to track all in-flight task routines.
 	)
 	p.activate = func() {
 		// Register the peer locally
@@ -149,7 +147,6 @@ func (h *serverHandler) handle(p *clientPeer) error {
 		}
 		clientConnectionGauge.Update(int64(h.server.peers.len()))
 		connectedAt = mclock.Now()
-		wg = new(sync.WaitGroup)
 		p.active = true
 	}
 	p.deactivate = func() {
@@ -164,31 +161,36 @@ func (h *serverHandler) handle(p *clientPeer) error {
 	if p.active {
 		p.activate()
 	}
-
-	if capacity, err := h.server.clientPool.connect(p, 0); err != nil {
-		// Disconnect the inbound peer if it's rejected by clientPool
-		p.Log().Debug("Light Ethereum peer registration failed", "err", err)
-		return err
-	} else if capacity != p.fcParams.MinRecharge {
-		if p.version < lpv4 {
-			h.server.peers.disconnect(p.id)
-		} else {
-			p.updateCapacity(capacity)
-		}
-	}
-
 	defer func() {
 		wg.Wait() // Ensure all background task routines have exited.
 		h.server.clientPool.disconnect(p)
-		p.responseLock.Lock()
 		if p.active {
 			p.deactivate()
 		}
 		p.activate = nil
 		p.deactivate = nil
-		p.responseLock.Unlock()
 		h.server.peers.disconnect(p.id)
 	}()
+	// Check whether the clientpool agrees the accept client.
+	// Before les4, the client will be rejected if there is not enough
+	// capacity available. However les4 introduces the notion of `inactive`
+	// client its capacity is zero(no service guaranteed but connection
+	// is kept).
+	capacity, err := h.server.clientPool.connect(p, 0)
+	if err != nil {
+		// Disconnect the inbound peer if it's rejected by clientPool
+		p.Log().Debug("Light Ethereum peer registration failed", "err", err)
+		return err
+	}
+	if p.version < lpv4 {
+		if capacity != p.fcParams.MinRecharge {
+			h.server.peers.disconnect(p.id) // No capacity avaiblable
+		}
+	} else {
+		if capacity != 0 {
+			p.updateCapacity(capacity) // Capacity is granted
+		}
+	}
 
 	// Spawn a main loop to handle all incoming messages.
 	for {
@@ -198,7 +200,7 @@ func (h *serverHandler) handle(p *clientPeer) error {
 			return err
 		default:
 		}
-		if err := h.handleMsg(p, wg); err != nil {
+		if err := h.handleMsg(p, &wg); err != nil {
 			p.Log().Debug("Light Ethereum message handling failed", "err", err)
 			return err
 		}
@@ -291,7 +293,7 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 			// Feed cost tracker request serving statistic.
 			h.server.costTracker.updateStats(msg.Code, amount, servingTime, realCost)
 			// Reduce priority "balance" for the specific peer.
-			balance = h.server.clientPool.requestCost(p, realCost)
+			balance, _ = h.server.clientPool.requestCost(p, realCost)
 		}
 		sf := stateFeedback{
 			protocolVersion: p.version,

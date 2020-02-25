@@ -855,7 +855,6 @@ func (p *clientPeer) updateCapacity(cap uint64) {
 	if p.active && cap == 0 && p.deactivate != nil {
 		p.deactivate()
 	}
-
 }
 
 // Handshake executes the les protocol handshake, negotiating version number,

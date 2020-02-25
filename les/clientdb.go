@@ -59,30 +59,6 @@ func (b *tokenBalance) DecodeRLP(s *rlp.Stream) error {
 	return nil
 }
 
-// currencyBalance represents the client's currency balance.
-type currencyBalance struct {
-	amount uint64
-	typ    string
-}
-
-// EncodeRLP implements rlp.Encoder
-func (b *currencyBalance) EncodeRLP(w io.Writer) error {
-	return rlp.Encode(w, []interface{}{b.amount, b.typ})
-}
-
-// DecodeRLP implements rlp.Decoder
-func (b *currencyBalance) DecodeRLP(s *rlp.Stream) error {
-	var entry struct {
-		Amount uint64
-		Type   string
-	}
-	if err := s.Decode(&entry); err != nil {
-		return err
-	}
-	b.amount, b.typ = entry.Amount, entry.Type
-	return nil
-}
-
 const (
 	// nodeDBVersion is the version identifier of the node data in db
 	//
@@ -205,24 +181,18 @@ func (db *nodeDB) setExpiration(pos, neg fixed64) {
 	db.db.Put(expirationKey, buff[:16])
 }
 
-func (db *nodeDB) getCurrencyBalance(id enode.ID) currencyBalance {
-	var b currencyBalance
+func (db *nodeDB) getCurrencyBalance(id enode.ID) uint64 {
 	enc, err := db.db.Get(append(curBalancePrefix, id.Bytes()...))
 	if err != nil || len(enc) == 0 {
-		return b
+		return 0
 	}
-	if err := rlp.DecodeBytes(enc, &b); err != nil {
-		log.Crit("Failed to decode positive balance", "err", err)
-	}
-	return b
+	return binary.BigEndian.Uint64(enc)
 }
 
-func (db *nodeDB) setCurrencyBalance(id enode.ID, b currencyBalance) {
-	enc, err := rlp.EncodeToBytes(&(b))
-	if err != nil {
-		log.Crit("Failed to encode currency balance", "err", err)
-	}
-	db.writer(id.Bytes()).Put(append(curBalancePrefix, id.Bytes()...), enc)
+func (db *nodeDB) setCurrencyBalance(id enode.ID, b uint64) {
+	var buff [8]byte
+	binary.BigEndian.PutUint64(buff[:], b)
+	db.writer(id.Bytes()).Put(append(curBalancePrefix, id.Bytes()...), buff[:])
 }
 
 func (db *nodeDB) getOrNewBalance(id []byte, neg bool) tokenBalance {

@@ -37,8 +37,8 @@ const (
 	tsMaxBurst        = 16              // maximum commands processed in a row before the recommended delay has elapsed
 )
 
-// paymentReceiver processes incoming payments and can be implemented using different
-// payment technologies
+// paymentReceiver processes incoming payments and can be implemented using
+// different payment technologies.
 type paymentReceiver interface {
 	info() keyValueList
 	receivePayment(from enode.ID, proofOfPayment []byte, reader ethdb.KeyValueReader, writer ethdb.KeyValueWriter) (value uint64, err error)
@@ -48,13 +48,13 @@ type paymentReceiver interface {
 // tokenSale handles client balance deposits, conversion to and from service tokens
 // and granting connections and capacity changes through a set of commands called "lespay".
 type tokenSale struct {
-	lock                              sync.Mutex
-	clientPool                        *clientPool
-	stopCh                            chan struct{}
-	receivers                         map[string]paymentReceiver
-	receiverNames                     []string
-	basePrice, minBasePrice           float64
-	totalTokenLimit, totalTokenAmount func() uint64
+	lock                    sync.Mutex
+	clientPool              *clientPool
+	stopCh                  chan struct{}
+	receivers               map[string]paymentReceiver
+	receiverNames           []string
+	basePrice, minBasePrice float64
+	tokenLimit, tokenAmount func() uint64
 
 	qlock                            sync.Mutex
 	sq                               *servingQueue
@@ -66,19 +66,19 @@ type tokenSale struct {
 // newTokenSale creates a new token sale module instance
 func newTokenSale(clientPool *clientPool, minBasePrice float64, talkSpeed int) *tokenSale {
 	t := &tokenSale{
-		clientPool:       clientPool,
-		receivers:        make(map[string]paymentReceiver),
-		basePrice:        minBasePrice,
-		minBasePrice:     minBasePrice,
-		totalTokenLimit:  clientPool.totalTokenLimit,
-		totalTokenAmount: clientPool.totalTokenAmount,
-		stopCh:           make(chan struct{}),
-		sq:               newServingQueue(0, 0),
-		sources:          make(map[string]*cmdSource),
-		delayFactorZero:  mclock.Now(),
-		delayFactorLast:  mclock.Now(),
-		tsProcessDelay:   time.Second / time.Duration(talkSpeed),
-		tsTargetPeriod:   5 * time.Second / time.Duration(talkSpeed),
+		clientPool:      clientPool,
+		receivers:       make(map[string]paymentReceiver),
+		basePrice:       minBasePrice,
+		minBasePrice:    minBasePrice,
+		tokenLimit:      clientPool.totalTokenLimit,
+		tokenAmount:     clientPool.totalTokenAmount,
+		stopCh:          make(chan struct{}),
+		sq:              newServingQueue(0, 0),
+		sources:         make(map[string]*cmdSource),
+		delayFactorZero: mclock.Now(),
+		delayFactorLast: mclock.Now(),
+		tsProcessDelay:  time.Second / time.Duration(talkSpeed),
+		tsTargetPeriod:  5 * time.Second / time.Duration(talkSpeed),
 	}
 	t.sq.setThreads(1)
 	go func() {
@@ -87,7 +87,7 @@ func newTokenSale(clientPool *clientPool, minBasePrice float64, talkSpeed int) *
 			select {
 			case <-time.After(time.Second * 10):
 				t.lock.Lock()
-				cost, ok := t.tokenPrice(1, true)
+				cost, ok := t.tokenCost(1, true)
 				if cost > t.basePrice*10 || !ok {
 					cost = t.basePrice * 10
 				}
@@ -259,7 +259,7 @@ func (t *tokenSale) addReceiver(id string, r paymentReceiver) {
 	t.receiverNames = append(t.receiverNames, id)
 }
 
-// tokenPrice returns the PC units required to buy the specified amount of service
+// tokenCost returns the PC units required to buy the specified amount of service
 // tokens or the PC units received when selling the given amount of tokens.
 // Returns false if not possible.
 //
@@ -268,14 +268,14 @@ func (t *tokenSale) addReceiver(id string, r paymentReceiver) {
 // infinity as tokenAmount approaches tokenLimit.
 //
 // if 0 <= tokenAmount <= tokenLimit/2:
-//   tokenPrice = basePrice*tokenAmount/(tokenLimit/2)
+//   price = basePrice*tokenAmount/(tokenLimit/2)
 // if tokenLimit/2 <= tokenAmount < tokenLimit:
-//   tokenPrice = basePrice*tokenLimit/2/(tokenLimit-tokenAmount)
+//   price = basePrice*tokenLimit/2/(tokenLimit-tokenAmount)
 //
-// The price of multiple tokens is calculated as an integral based on the above formula.
-func (t *tokenSale) tokenPrice(buySellAmount uint64, buy bool) (float64, bool) {
-	tokenLimit := t.totalTokenLimit()
-	tokenAmount := t.totalTokenAmount()
+// The cost of multiple tokens is calculated as an integral based on the above formula.
+func (t *tokenSale) tokenCost(buySellAmount uint64, buy bool) (float64, bool) {
+	tokenLimit := t.tokenLimit()
+	tokenAmount := t.tokenAmount()
 	if buy {
 		if tokenAmount+buySellAmount >= tokenLimit {
 			return 0, false
@@ -324,14 +324,14 @@ func (t *tokenSale) tokenPrice(buySellAmount uint64, buy bool) (float64, bool) {
 
 // tokenBuyAmount returns the service token amount currently available for the given
 // sum of PC units
-func (t *tokenSale) tokenBuyAmount(price float64) uint64 {
-	tokenLimit := t.totalTokenLimit()
-	tokenAmount := t.totalTokenAmount()
+func (t *tokenSale) tokenBuyAmount(units float64) uint64 {
+	tokenLimit := t.tokenLimit()
+	tokenAmount := t.tokenAmount()
 	if tokenLimit <= tokenAmount {
 		return 0
 	}
 	r := float64(tokenAmount) / float64(tokenLimit)
-	c := price / (t.basePrice * float64(tokenLimit))
+	c := units / (t.basePrice * float64(tokenLimit))
 	var relTokens float64
 	if r < 0.5 {
 		// first purchased token is in the linear range
@@ -355,14 +355,14 @@ func (t *tokenSale) tokenBuyAmount(price float64) uint64 {
 
 // tokenSellAmount returns the service token amount that needs to be sold in order
 // to receive the given sum of PC units. Returns false if not possible.
-func (t *tokenSale) tokenSellAmount(price float64) (uint64, bool) {
-	tokenLimit := t.totalTokenLimit()
-	tokenAmount := t.totalTokenAmount()
+func (t *tokenSale) tokenSellAmount(units float64) (uint64, bool) {
+	tokenLimit := t.tokenLimit()
+	tokenAmount := t.tokenAmount()
 	r := float64(tokenAmount) / float64(tokenLimit)
 	if r > tokenSellMaxRatio {
 		r = tokenSellMaxRatio
 	}
-	c := price / (t.basePrice * float64(tokenLimit))
+	c := units / (t.basePrice * float64(tokenLimit))
 	var relTokens float64
 	if r > 0.5 {
 		// first sold token is in the 1/x range
@@ -394,46 +394,27 @@ func (t *tokenSale) tokenSellAmount(price float64) (uint64, bool) {
 // of time. If it is possible and setCap is also true then the client is activated of the
 // capacity change is performed. If not then returns how many tokens are missing and how
 // much that would currently cost using the specified payment module(s).
-func (t *tokenSale) connection(id enode.ID, freeID string, requestedCapacity uint64, stayConnected time.Duration, paymentModule []string, setCap bool) (availableCapacity, tokenBalance, tokensMissing, pcBalance, pcMissing uint64, paymentRequired []uint64, err error) {
+func (t *tokenSale) connection(id enode.ID, freeID string, requestedCapacity uint64, stayConnected time.Duration, paymentModule []string, setCap bool) (availableCapacity, tokenBalance, tokenMissing, pcBalance, pcMissing uint64, paymentRequired []uint64, err error) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	tokensMissing, availableCapacity, err = t.clientPool.setCapacityLocked(id, freeID, requestedCapacity, stayConnected, setCap)
-	pb := t.clientPool.getPosBalance(id)
-	tokenBalance = pb.value.value(t.clientPool.posExpiration(mclock.Now()))
-	cb := t.clientPool.ndb.getCurrencyBalance(id)
-	pcBalance = cb.amount
-	if tokensMissing == 0 {
+	tokenBalance = t.clientPool.getBalanceLocked(id, id.Bytes(), false)
+	pcBalance = t.clientPool.ndb.getCurrencyBalance(id)
+	paymentRequired = make([]uint64, len(paymentModule)) // default value
+	if tokenMissing, availableCapacity, err = t.clientPool.setCapacity(id, freeID, requestedCapacity, stayConnected, setCap); err != nil || tokenMissing == 0 {
 		return
 	}
-	tokenLimit := t.clientPool.totalTokenLimit()
-	tokenAmount := t.clientPool.totalTokenAmount()
-	if tokenLimit <= tokenAmount || tokenLimit-tokenAmount <= tokensMissing {
+	c, canBuy := t.tokenCost(tokenMissing, true)
+	if !canBuy {
 		pcMissing = math.MaxUint64
-	} else {
-		tokensAvailable := tokenLimit - tokenAmount
-		pcr := -math.Log(float64(tokensAvailable-tokensMissing)/float64(tokensAvailable)) * t.basePrice
-		if pcr > 0 {
-			if pcr > maxBalance {
-				pcMissing = math.MaxUint64
-			} else {
-				pcMissing = uint64(pcr)
-				if pcMissing > maxBalance {
-					pcMissing = math.MaxUint64
-				} else {
-					if pcMissing > pcBalance {
-						pcMissing -= pcBalance
-					} else {
-						pcMissing = 0
-					}
-				}
-			}
-		}
-	}
-	if pcMissing == 0 {
 		return
 	}
-	paymentRequired = make([]uint64, len(paymentModule))
+	cost := uint64(math.Ceil(c))
+	if pcBalance >= cost {
+		return
+	}
+	pcMissing = cost - pcBalance
+
 	for i, recID := range paymentModule {
 		if rec, ok := t.receivers[recID]; !ok || pcMissing == math.MaxUint64 {
 			paymentRequired[i] = math.MaxUint64
@@ -453,11 +434,10 @@ func (t *tokenSale) deposit(id enode.ID, paymentModule string, proofOfPayment []
 		t.clientPool.ndb.atomicWriteUnlock(id.Bytes())
 	}()
 
-	cb := t.clientPool.ndb.getCurrencyBalance(id)
-	pcBalance = cb.amount
+	pcBalance = t.clientPool.ndb.getCurrencyBalance(id)
 	pm := t.receivers[paymentModule]
 	if pm == nil {
-		return 0, pcBalance, fmt.Errorf("Unknown payment receiver '%s'", paymentModule)
+		return 0, pcBalance, fmt.Errorf("unknown payment receiver '%s'", paymentModule)
 	}
 	prefix := receiverPrefix(id, paymentModule)
 	pcValue, err = pm.receivePayment(id, proofOfPayment, newReaderTable(t.clientPool.ndb.db, prefix), newWriterTable(writer, prefix))
@@ -465,8 +445,7 @@ func (t *tokenSale) deposit(id enode.ID, paymentModule string, proofOfPayment []
 		return 0, pcBalance, err
 	}
 	pcBalance += pcValue
-	cb.amount = pcBalance
-	t.clientPool.ndb.setCurrencyBalance(id, cb)
+	t.clientPool.ndb.setCurrencyBalance(id, pcBalance)
 	return
 }
 
@@ -491,10 +470,8 @@ func (t *tokenSale) buyTokens(id enode.ID, maxSpend, minReceive uint64, relative
 		t.clientPool.ndb.atomicWriteUnlock(id.Bytes())
 	}()
 
-	pb := t.clientPool.getPosBalance(id)
-	tokenBalance = pb.value.value(t.clientPool.posExpiration(mclock.Now()))
-	cb := t.clientPool.ndb.getCurrencyBalance(id)
-	pcBalance = cb.amount
+	tokenBalance = t.clientPool.getBalanceLocked(id, id.Bytes(), false)
+	pcBalance = t.clientPool.ndb.getCurrencyBalance(id)
 	if relative {
 		if pcBalance > maxSpend {
 			maxSpend = pcBalance - maxSpend
@@ -507,7 +484,6 @@ func (t *tokenSale) buyTokens(id enode.ID, maxSpend, minReceive uint64, relative
 			minReceive = 0
 		}
 	}
-
 	if maxSpend > pcBalance {
 		maxSpend = pcBalance
 	}
@@ -517,7 +493,7 @@ func (t *tokenSale) buyTokens(id enode.ID, maxSpend, minReceive uint64, relative
 		success = receive >= minReceive
 	} else {
 		receive = minReceive
-		if cost, ok := t.tokenPrice(receive, true); ok {
+		if cost, ok := t.tokenCost(receive, true); ok {
 			spend = uint64(cost) + 1 // ensure that we don't sell small amounts for free
 		} else {
 			spend = math.MaxUint64
@@ -526,9 +502,8 @@ func (t *tokenSale) buyTokens(id enode.ID, maxSpend, minReceive uint64, relative
 	}
 	if success {
 		pcBalance -= spend
-		cb.amount = pcBalance
 		tokenBalance += receive
-		t.clientPool.ndb.setCurrencyBalance(id, cb)
+		t.clientPool.ndb.setCurrencyBalance(id, pcBalance)
 		t.clientPool.addBalance(id, int64(receive))
 	}
 	return
@@ -544,10 +519,8 @@ func (t *tokenSale) sellTokens(id enode.ID, maxSell, minRefund uint64, relative,
 		t.clientPool.ndb.atomicWriteUnlock(id.Bytes())
 	}()
 
-	pb := t.clientPool.getPosBalance(id)
-	tokenBalance = pb.value.value(t.clientPool.posExpiration(mclock.Now()))
-	cb := t.clientPool.ndb.getCurrencyBalance(id)
-	pcBalance = cb.amount
+	tokenBalance = t.clientPool.getBalanceLocked(id, id.Bytes(), false)
+	pcBalance = t.clientPool.ndb.getCurrencyBalance(id)
 	if relative {
 		if pcBalance < minRefund {
 			minRefund -= pcBalance
@@ -560,13 +533,12 @@ func (t *tokenSale) sellTokens(id enode.ID, maxSell, minRefund uint64, relative,
 			maxSell = 0
 		}
 	}
-
 	if maxSell > tokenBalance {
 		maxSell = tokenBalance
 	}
 	if sellAll {
 		sell = maxSell
-		if r, ok := t.tokenPrice(sell, false); ok {
+		if r, ok := t.tokenCost(sell, false); ok {
 			refund = uint64(r)
 			success = refund >= minRefund
 		}
@@ -582,8 +554,7 @@ func (t *tokenSale) sellTokens(id enode.ID, maxSell, minRefund uint64, relative,
 	if success {
 		pcBalance += refund
 		tokenBalance -= sell
-		cb.amount = pcBalance
-		t.clientPool.ndb.setCurrencyBalance(id, cb)
+		t.clientPool.ndb.setCurrencyBalance(id, pcBalance)
 		t.clientPool.addBalance(id, -int64(sell))
 	}
 	return
@@ -594,9 +565,7 @@ func (t *tokenSale) getBalance(id enode.ID) (pcBalance, tokenBalance uint64) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	pb := t.clientPool.getPosBalance(id)
-	cb := t.clientPool.ndb.getCurrencyBalance(id)
-	return pb.value.value(t.clientPool.posExpiration(mclock.Now())), cb.amount
+	return t.clientPool.ndb.getCurrencyBalance(id), t.clientPool.getBalanceLocked(id, id.Bytes(), false)
 }
 
 // info returns general information about the server, including version info of the

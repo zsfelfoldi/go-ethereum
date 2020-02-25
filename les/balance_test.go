@@ -25,13 +25,7 @@ import (
 
 type zeroExpCtrl struct{}
 
-func (z zeroExpCtrl) posExpiration(mclock.AbsTime) fixed64 {
-	return 0
-}
-
-func (z zeroExpCtrl) negExpiration(mclock.AbsTime) fixed64 {
-	return 0
-}
+func (z zeroExpCtrl) expiration(mclock.AbsTime) fixed64 { return 0 }
 
 func expval(v uint64) expiredValue {
 	return expiredValue{base: v}
@@ -46,9 +40,8 @@ func TestSetBalance(t *testing.T) {
 		{expval(0), expval(1000)},
 		{expval(1000), expval(1000)},
 	}
-
-	tracker := balanceTracker{exp: zeroExpCtrl{}}
-	tracker.init(clock, 1000)
+	tracker := newBalanceTracker(zeroExpCtrl{}, zeroExpCtrl{}, clock, 1000, expval(0), expval(0), priceFactors{}, priceFactors{})
+	tracker.activate()
 	defer tracker.stop(clock.Now())
 
 	for _, i := range inputs {
@@ -66,14 +59,12 @@ func TestSetBalance(t *testing.T) {
 func TestBalanceTimeCost(t *testing.T) {
 	var (
 		clock   = &mclock.Simulated{}
-		tracker = balanceTracker{exp: zeroExpCtrl{}}
+		tracker = newBalanceTracker(zeroExpCtrl{}, zeroExpCtrl{}, clock, 1000, expval(0), expval(0), priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 	)
-	tracker.init(clock, 1000)
+	tracker.activate()
 	defer tracker.stop(clock.Now())
-	tracker.setFactors(priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 
 	tracker.setBalance(expval(uint64(time.Minute)), expval(0)) // 1 minute time allowance
-
 	var inputs = []struct {
 		runTime time.Duration
 		expPos  uint64
@@ -93,7 +84,6 @@ func TestBalanceTimeCost(t *testing.T) {
 			t.Fatalf("Negative balance mismatch, want %v, got %v", i.expNeg, neg)
 		}
 	}
-
 	tracker.setBalance(expval(uint64(time.Minute)), expval(0)) // Refill 1 minute time allowance
 	for _, i := range inputs {
 		clock.Run(i.runTime)
@@ -109,11 +99,10 @@ func TestBalanceTimeCost(t *testing.T) {
 func TestBalanceReqCost(t *testing.T) {
 	var (
 		clock   = &mclock.Simulated{}
-		tracker = balanceTracker{exp: zeroExpCtrl{}}
+		tracker = newBalanceTracker(zeroExpCtrl{}, zeroExpCtrl{}, clock, 1000, expval(0), expval(0), priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 	)
-	tracker.init(clock, 1000)
+	tracker.activate()
 	defer tracker.stop(clock.Now())
-	tracker.setFactors(priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 
 	tracker.setBalance(expval(uint64(time.Minute)), expval(0)) // 1 minute time serving time allowance
 	var inputs = []struct {
@@ -140,11 +129,10 @@ func TestBalanceReqCost(t *testing.T) {
 func TestBalanceToPriority(t *testing.T) {
 	var (
 		clock   = &mclock.Simulated{}
-		tracker = balanceTracker{exp: zeroExpCtrl{}}
+		tracker = newBalanceTracker(zeroExpCtrl{}, zeroExpCtrl{}, clock, 1000, expval(0), expval(0), priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 	)
-	tracker.init(clock, 1000) // cap = 1000
+	tracker.activate()
 	defer tracker.stop(clock.Now())
-	tracker.setFactors(priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 
 	var inputs = []struct {
 		pos      uint64
@@ -168,11 +156,10 @@ func TestBalanceToPriority(t *testing.T) {
 func TestEstimatedPriority(t *testing.T) {
 	var (
 		clock   = &mclock.Simulated{}
-		tracker = balanceTracker{exp: zeroExpCtrl{}}
+		tracker = newBalanceTracker(zeroExpCtrl{}, zeroExpCtrl{}, clock, 1000000000, expval(0), expval(0), priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 	)
-	tracker.init(clock, 1000000000) // cap = 1000,000,000
+	tracker.testActivate()
 	defer tracker.stop(clock.Now())
-	tracker.setFactors(priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 
 	tracker.setBalance(expval(uint64(time.Minute)), expval(0))
 	var inputs = []struct {
@@ -185,18 +172,15 @@ func TestEstimatedPriority(t *testing.T) {
 		{0, time.Second, 0, -58},
 
 		// 2 seconds time cost, 1 second estimated time cost, 10^9 request cost,
-		// 10^9 estimated request cost per second.
-		{time.Second, time.Second, 1000000000, -55},
+		// 2*10^9 estimated request cost per second.
+		{time.Second, time.Second, 1000000000, -54},
 
-		// 3 seconds time cost, 3 second estimated time cost, 10^9*2 request cost,
-		// 4*10^9 estimated request cost.
-		{time.Second, 3 * time.Second, 1000000000, -48},
+		// 3 seconds time cost, 3 second estimated time cost, 2*10^9 request cost,
+		// 6*10^9 estimated request cost.
+		{time.Second, 3 * time.Second, 1000000000, -46},
 
 		// All positive balance is used up
 		{time.Second * 55, 0, 0, 0},
-
-		// 1 minute estimated time cost, 4/58 * 10^9 estimated request cost per sec.
-		{0, time.Minute, 0, int64(time.Minute) + int64(time.Second)*120/29},
 	}
 	for _, i := range inputs {
 		clock.Run(i.runTime)
@@ -211,11 +195,10 @@ func TestEstimatedPriority(t *testing.T) {
 func TestCallbackChecking(t *testing.T) {
 	var (
 		clock   = &mclock.Simulated{}
-		tracker = balanceTracker{exp: zeroExpCtrl{}}
+		tracker = newBalanceTracker(zeroExpCtrl{}, zeroExpCtrl{}, clock, 1000000, expval(0), expval(0), priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 	)
-	tracker.init(clock, 1000000) // cap = 1000,000
+	tracker.activate()
 	defer tracker.stop(clock.Now())
-	tracker.setFactors(priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 
 	var inputs = []struct {
 		priority int64
@@ -237,11 +220,10 @@ func TestCallbackChecking(t *testing.T) {
 func TestCallback(t *testing.T) {
 	var (
 		clock   = &mclock.Simulated{}
-		tracker = balanceTracker{exp: zeroExpCtrl{}}
+		tracker = newBalanceTracker(zeroExpCtrl{}, zeroExpCtrl{}, clock, 1000, expval(0), expval(0), priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 	)
-	tracker.init(clock, 1000) // cap = 1000
+	tracker.activate()
 	defer tracker.stop(clock.Now())
-	tracker.setFactors(priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
 
 	callCh := make(chan struct{}, 1)
 	tracker.setBalance(expval(uint64(time.Minute)), expval(0))
@@ -263,5 +245,93 @@ func TestCallback(t *testing.T) {
 	case <-callCh:
 		t.Fatalf("Callback shouldn't be called")
 	case <-time.NewTimer(time.Millisecond * 100).C:
+	}
+}
+
+func TestBalanceMissing(t *testing.T) {
+	var (
+		clock   = &mclock.Simulated{}
+		tracker = newBalanceTracker(zeroExpCtrl{}, zeroExpCtrl{}, clock, 1, expval(0), expval(0), priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
+	)
+	defer tracker.stop(clock.Now())
+
+	var inputs = []struct {
+		pos, neg expiredValue
+		priority int64
+		capacity uint64
+		after    time.Duration
+		expect   uint64
+	}{
+		// even tracker is inactive the API still works
+		{expval(uint64(time.Second * 2)), expval(0), 0, 1, time.Second, 0},
+		{expval(uint64(time.Second * 2)), expval(0), -1e9, 1, time.Second, 1},
+		{expval(uint64(time.Second * 2)), expval(0), -1e9, 1, 2 * time.Second, uint64(time.Second) + 1},
+		{expval(0), expval(0), -1e9, 1, time.Second, uint64(2*time.Second) + 1},
+		{expval(0), expval(0), 1e9, 1, time.Second, 1},
+	}
+	for _, i := range inputs {
+		tracker.setBalance(i.pos, i.neg)
+		got := tracker.posBalanceMissing(i.priority, i.capacity, i.after)
+		if i.expect != got {
+			t.Fatalf("Missing balance mismatch, want %v, got %v", i.expect, got)
+		}
+	}
+}
+
+func TestStatusSwitch(t *testing.T) {
+	var (
+		clock   = &mclock.Simulated{}
+		tracker = newBalanceTracker(zeroExpCtrl{}, zeroExpCtrl{}, clock, 1, expval(0), expval(0), priceFactors{1, 0, 1}, priceFactors{1, 0, 1})
+	)
+	defer tracker.stop(clock.Now())
+
+	var steps = []struct {
+		run      func()
+		pos, neg expiredValue
+	}{
+		// Tracker is not activated, no time cost is added
+		{
+			func() {
+				tracker.setBalance(expval(uint64(time.Second)), expval(0))
+				clock.Run(time.Second)
+			},
+			expval(uint64(time.Second)), expval(0),
+		},
+		// Tracker is activated, time cost is added
+		{
+			func() {
+				tracker.setBalance(expval(uint64(time.Second)), expval(0))
+				tracker.activate()
+				clock.Run(time.Second)
+			},
+			expval(0), expval(0),
+		},
+		// Tracker is deactivated, no time cost is added
+		{
+			func() {
+				clock.Run(time.Second)
+				tracker.deactivate()
+				clock.Run(time.Second)
+			},
+			expval(0), expval(uint64(time.Second)),
+		},
+		// Tracker is deactivated, request cost is still added
+		{
+			func() {
+				tracker.requestCost(uint64(time.Second))
+				clock.Run(time.Second)
+			},
+			expval(0), expval(uint64(2 * time.Second)),
+		},
+	}
+	for _, step := range steps {
+		step.run()
+		pos, neg := tracker.getBalance(clock.Now())
+		if pos != step.pos {
+			t.Fatalf("Positive balance mismatch, want=%v, got=%v", step.pos, pos)
+		}
+		if neg != step.neg {
+			t.Fatalf("Negative balance mismatch, want=%v, got=%v", step.neg, neg)
+		}
 	}
 }

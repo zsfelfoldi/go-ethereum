@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/metrics"
 )
 
 const maxBalance = math.MaxInt64
@@ -32,11 +33,9 @@ const (
 	balanceCallbackCount
 )
 
-// expirationController controls the exponential expiration of positive and negative
-// balances
+// expirationController controls the exponential expiration of token balance.
 type expirationController interface {
-	posExpiration(mclock.AbsTime) fixed64
-	negExpiration(mclock.AbsTime) fixed64
+	expiration(mclock.AbsTime) fixed64
 }
 
 // priceFactors determine the pricing policy (may apply either to positive or
@@ -48,30 +47,49 @@ type priceFactors struct {
 	timeFactor, capacityFactor, requestFactor float64
 }
 
+// timePrice returns the price per nanosecond based on the given capacity.
 func (p priceFactors) timePrice(cap uint64) float64 {
 	return p.timeFactor + float64(cap)*p.capacityFactor/1000000
 }
 
+// reqPrice returns the price per request cost.
 func (p priceFactors) reqPrice() float64 {
 	return p.requestFactor
 }
 
+type estimator interface {
+	Rate5() float64
+	Mark(int64)
+}
+
+type noopEstimator struct {
+	value float64
+}
+
+func (e *noopEstimator) Rate5() float64 { return e.value }
+func (e *noopEstimator) Mark(v int64)   { e.value = float64(v) }
+
 // balanceTracker keeps track of the positive and negative balances of a connected
 // client and calculates actual and projected future priority values required by
 // prque.LazyQueue.
+//
+// balanceTracker can be either active or inactive. The default status is inactive.
+// The balance updating is only enabled when the status is active but balance
+// expiration is happened all the time.
 type balanceTracker struct {
-	lock                             sync.Mutex
-	clock                            mclock.Clock
-	exp                              expirationController
-	stopped                          bool
-	capacity                         uint64
-	balance                          balance
-	posFactor, negFactor             priceFactors
-	sumReqCost                       uint64
-	lastUpdate, nextUpdate, initTime mclock.AbsTime
-	updateEvent                      mclock.Timer
-	// since only a limited and fixed number of callbacks are needed, they are
-	// stored in a fixed size array ordered by priority threshold.
+	lock                   sync.Mutex
+	clock                  mclock.Clock
+	posExp, negExp         expirationController
+	stopped                bool
+	active                 bool
+	capacity               uint64
+	balance                balance
+	posFactor, negFactor   priceFactors
+	reqEstimator           estimator
+	lastUpdate, nextUpdate mclock.AbsTime
+	updateEvent            mclock.Timer
+	// since only a limited and fixed number of callbacks are needed, they
+	// are stored in a fixed size array ordered by priority threshold.
 	callbacks [balanceCallbackCount]balanceCallback
 	// callbackIndex maps balanceCallback constants to callbacks array indexes (-1 if not active)
 	callbackIndex [balanceCallbackCount]int
@@ -91,15 +109,57 @@ type balanceCallback struct {
 	callback  func()
 }
 
-// init initializes balanceTracker
-// Note: capacity should never be zero
-func (bt *balanceTracker) init(clock mclock.Clock, capacity uint64) {
-	bt.clock = clock
-	bt.initTime, bt.lastUpdate = clock.Now(), clock.Now() // Init timestamps
+// newBalanceTracker creates a balance tracker with given parameters.
+// The balance accounting is disabled by default unless activate is
+// called explicitly.
+func newBalanceTracker(posExp, negExp expirationController, clock mclock.Clock, capacity uint64, pos, neg expiredValue, posFactor, negFactor priceFactors) balanceTracker {
+	bt := balanceTracker{
+		clock:     clock,
+		posExp:    posExp,
+		negExp:    negExp,
+		capacity:  capacity,
+		balance:   balance{pos: pos, neg: neg},
+		posFactor: posFactor,
+		negFactor: negFactor,
+	}
 	for i := range bt.callbackIndex {
 		bt.callbackIndex[i] = -1
 	}
-	bt.capacity = capacity
+	return bt
+}
+
+// activate marks the active as true and starts balance updating.
+func (bt *balanceTracker) activate() {
+	bt.lock.Lock()
+	defer bt.lock.Unlock()
+
+	bt.lastUpdate = bt.clock.Now()
+	bt.active = true
+	// The default request usage estimator is five-minute exponentially-weighted
+	// moving average. In general, the larger the coeff of EWMA, the smoother
+	// its sampling, but there will be a delay between the sampled value and the
+	// latest change trend. 5 minute time window is large enough for sampling.
+	bt.reqEstimator = metrics.NewMeterForced()
+}
+
+// testActivate marks the active as true and starts balance updating.
+// It's only used in testing.
+func (bt *balanceTracker) testActivate() {
+	bt.lock.Lock()
+	defer bt.lock.Unlock()
+
+	bt.lastUpdate = bt.clock.Now()
+	bt.active = true
+	bt.reqEstimator = &noopEstimator{}
+}
+
+// activate marks the active as false and stop balance updating.
+func (bt *balanceTracker) deactivate() {
+	bt.lock.Lock()
+	defer bt.lock.Unlock()
+
+	bt.updateBalance(bt.clock.Now())
+	bt.active = false
 }
 
 // stop shuts down the balance tracker
@@ -107,8 +167,9 @@ func (bt *balanceTracker) stop(now mclock.AbsTime) {
 	bt.lock.Lock()
 	defer bt.lock.Unlock()
 
+	bt.updateBalance(now)
 	bt.stopped = true
-	bt.addBalance(now)
+	bt.active = false
 	bt.posFactor = priceFactors{0, 0, 0}
 	bt.negFactor = priceFactors{0, 0, 0}
 	if bt.updateEvent != nil {
@@ -117,30 +178,108 @@ func (bt *balanceTracker) stop(now mclock.AbsTime) {
 	}
 }
 
-// balanceToPriority converts a balance to a priority value. Higher priority means
-// first to disconnect. Positive balance translates to negative priority. If positive
-// balance is zero then negative balance translates to a positive priority.
-func (bt *balanceTracker) balanceToPriority(b balance) int64 {
-	if b.pos.base > 0 {
-		return -int64(b.pos.value(bt.exp.posExpiration(bt.clock.Now())) / bt.capacity)
+// SETTERS
+
+// setFactors sets the price factors.
+func (bt *balanceTracker) setFactors(posFactor, negFactor priceFactors) {
+	bt.lock.Lock()
+	defer bt.lock.Unlock()
+
+	if bt.stopped {
+		return
 	}
-	return int64(b.neg.value(bt.exp.negExpiration(bt.clock.Now())))
+	now := bt.clock.Now()
+	bt.updateBalance(now)
+	bt.posFactor, bt.negFactor = posFactor, negFactor
+	bt.checkCallbacks(now) // Priority changed, check callbacks
+}
+
+// setBalance sets the positive and negative balance to the given values
+func (bt *balanceTracker) setBalance(pos, neg expiredValue) {
+	bt.lock.Lock()
+	defer bt.lock.Unlock()
+
+	now := bt.clock.Now()
+	bt.updateBalance(now)
+	bt.balance.pos = pos
+	bt.balance.neg = neg
+	bt.checkCallbacks(now) // Priority changed, check callbacks
+}
+
+// setCapacity updates the capacity value used for priority calculation
+// Note: capacity should never be zero
+func (bt *balanceTracker) setCapacity(capacity uint64) {
+	bt.lock.Lock()
+	defer bt.lock.Unlock()
+
+	bt.capacity = capacity
+	bt.checkCallbacks(bt.clock.Now()) // Priority changed, check callbacks
+}
+
+// GETTERS
+
+// getFactors returns the price factors.
+func (bt *balanceTracker) getFactors() (priceFactors, priceFactors) {
+	bt.lock.Lock()
+	defer bt.lock.Unlock()
+
+	return bt.posFactor, bt.negFactor
+}
+
+// getBalance returns the current positive and negative balance
+func (bt *balanceTracker) getBalance(now mclock.AbsTime) (expiredValue, expiredValue) {
+	bt.lock.Lock()
+	defer bt.lock.Unlock()
+
+	bt.updateBalance(now)
+	return bt.balance.pos, bt.balance.neg
+}
+
+// getPriority returns the actual priority based on the current balance
+func (bt *balanceTracker) getPriority(now mclock.AbsTime) int64 {
+	bt.lock.Lock()
+	defer bt.lock.Unlock()
+
+	bt.updateBalance(now)
+	return bt.balanceToPriority(bt.balance)
+}
+
+// estimatedPriority gives an upper estimate for the priority at a given time in the future.
+// If addReqCost is true then an average request cost per time is assumed that is twice the
+// average cost per time in the current session. If false, zero request cost is assumed.
+func (bt *balanceTracker) estimatedPriority(at mclock.AbsTime, addReqCost bool) int64 {
+	bt.lock.Lock()
+	defer bt.lock.Unlock()
+
+	if !bt.active {
+		return bt.balanceToPriority(bt.balance)
+	}
+	var avgReqCost float64
+	if addReqCost {
+		avgReqCost = 2 * bt.reqEstimator.Rate5() / float64(time.Millisecond)
+	}
+	return bt.balanceToPriority(bt.reducedBalance(at, avgReqCost))
 }
 
 // posBalanceMissing calculates the missing amount of positive balance in order to
 // connect at targetCapacity, stay connected for the given amount of time and then
-// still have a priority of targetPriority
+// still have a priority of targetPriority.
+//
+// Note using real cost calculation no matter the status is active or not.
 func (bt *balanceTracker) posBalanceMissing(targetPriority int64, targetCapacity uint64, after time.Duration) uint64 {
+	bt.lock.Lock()
+	defer bt.lock.Unlock()
+
 	now := bt.clock.Now()
 	if targetPriority > 0 {
-		timePrice := bt.negFactor.timePrice(targetCapacity)
-		timeCost := uint64(float64(after) * timePrice)
-		negBalance := bt.balance.neg.value(bt.exp.negExpiration(now))
-		if timeCost+negBalance < uint64(targetPriority) {
+		price := bt.negFactor.timePrice(targetCapacity)
+		cost := uint64(float64(after) * price)
+		neg := bt.balance.neg.value(bt.negExp.expiration(now))
+		if cost+neg < uint64(targetPriority) {
 			return 0
 		}
-		if uint64(targetPriority) > negBalance && timePrice > 1e-100 {
-			if negTime := time.Duration(float64(uint64(targetPriority)-negBalance) / timePrice); negTime < after {
+		if uint64(targetPriority) > neg && price > 1e-100 {
+			if negTime := time.Duration(float64(uint64(targetPriority)-neg) / price); negTime < after {
 				after -= negTime
 			} else {
 				after = 0
@@ -148,16 +287,36 @@ func (bt *balanceTracker) posBalanceMissing(targetPriority int64, targetCapacity
 		}
 		targetPriority = 0
 	}
-	timePrice := bt.posFactor.timePrice(targetCapacity)
-	posRequired := uint64(float64(-targetPriority)*float64(targetCapacity)+float64(after)*timePrice) + 1
-	if posRequired >= maxBalance {
+	price := bt.posFactor.timePrice(targetCapacity)
+	required := uint64(float64(-targetPriority)*float64(targetCapacity)+float64(after)*price) + 1
+	if required >= maxBalance {
 		return math.MaxUint64 // target not reachable
 	}
-	posBalance := bt.balance.pos.value(bt.exp.posExpiration(now))
-	if posRequired > posBalance {
-		return posRequired - posBalance
+	pos := bt.balance.pos.value(bt.posExp.expiration(now))
+	if required > pos {
+		return required - pos
 	}
 	return 0
+}
+
+// INTERNALS
+
+// updateBalance updates balance based on the time factor
+func (bt *balanceTracker) updateBalance(now mclock.AbsTime) {
+	if bt.active && now > bt.lastUpdate {
+		bt.balance = bt.reducedBalance(now, 0)
+		bt.lastUpdate = now
+	}
+}
+
+// balanceToPriority converts a balance to a priority value. Higher priority means
+// first to disconnect. Positive balance translates to negative priority. If positive
+// balance is zero then negative balance translates to a positive priority.
+func (bt *balanceTracker) balanceToPriority(b balance) int64 {
+	if b.pos.base > 0 {
+		return -int64(b.pos.value(bt.posExp.expiration(bt.clock.Now())) / bt.capacity)
+	}
+	return int64(b.neg.value(bt.negExp.expiration(bt.clock.Now())))
 }
 
 // reducedBalance estimates the reduced balance at a given time in the fututre based
@@ -168,7 +327,7 @@ func (bt *balanceTracker) reducedBalance(at mclock.AbsTime, avgReqCost float64) 
 	if b.pos.base != 0 {
 		factor := bt.posFactor.timePrice(bt.capacity) + bt.posFactor.reqPrice()*avgReqCost
 		diff := -int64(dt * factor)
-		dd := b.pos.add(diff, bt.exp.posExpiration(at))
+		dd := b.pos.add(diff, bt.posExp.expiration(at))
 		if dd == diff {
 			dt = 0
 		} else {
@@ -177,7 +336,7 @@ func (bt *balanceTracker) reducedBalance(at mclock.AbsTime, avgReqCost float64) 
 	}
 	if dt > 0 {
 		factor := bt.negFactor.timePrice(bt.capacity) + bt.negFactor.reqPrice()*avgReqCost
-		b.neg.add(int64(dt*factor), bt.exp.negExpiration(at))
+		b.neg.add(int64(dt*factor), bt.negExp.expiration(at))
 	}
 	return b
 }
@@ -191,20 +350,20 @@ func (bt *balanceTracker) timeUntil(priority int64) (time.Duration, bool) {
 	now := bt.clock.Now()
 	var dt float64
 	if bt.balance.pos.base != 0 {
-		posBalance := bt.balance.pos.value(bt.exp.posExpiration(now))
-		timePrice := bt.posFactor.timePrice(bt.capacity)
-		if timePrice < 1e-100 {
+		pos := bt.balance.pos.value(bt.posExp.expiration(now))
+		price := bt.posFactor.timePrice(bt.capacity)
+		if price < 1e-100 {
 			return 0, false
 		}
 		if priority < 0 {
 			newBalance := uint64(-priority) * bt.capacity
-			if newBalance > posBalance {
+			if newBalance > pos {
 				return 0, false
 			}
-			dt = float64(posBalance-newBalance) / timePrice
+			dt = float64(pos-newBalance) / price
 			return time.Duration(dt), true
 		} else {
-			dt = float64(posBalance) / timePrice
+			dt = float64(pos) / price
 		}
 	} else {
 		if priority < 0 {
@@ -212,58 +371,15 @@ func (bt *balanceTracker) timeUntil(priority int64) (time.Duration, bool) {
 		}
 	}
 	// if we have a positive balance then dt equals the time needed to get it to zero
-	negBalance := bt.balance.neg.value(bt.exp.negExpiration(now))
-	timePrice := bt.negFactor.timePrice(bt.capacity)
+	negBalance := bt.balance.neg.value(bt.negExp.expiration(now))
+	price := bt.negFactor.timePrice(bt.capacity)
 	if uint64(priority) > negBalance {
-		if timePrice < 1e-100 {
+		if price < 1e-100 {
 			return 0, false
 		}
-		dt += float64(uint64(priority)-negBalance) / timePrice
+		dt += float64(uint64(priority)-negBalance) / price
 	}
 	return time.Duration(dt), true
-}
-
-// setCapacity updates the capacity value used for priority calculation
-// Note: capacity should never be zero
-func (bt *balanceTracker) setCapacity(capacity uint64) {
-	bt.lock.Lock()
-	defer bt.lock.Unlock()
-
-	bt.capacity = capacity
-}
-
-// getPriority returns the actual priority based on the current balance
-func (bt *balanceTracker) getPriority(now mclock.AbsTime) int64 {
-	bt.lock.Lock()
-	defer bt.lock.Unlock()
-
-	bt.addBalance(now)
-	return bt.balanceToPriority(bt.balance)
-}
-
-// estimatedPriority gives an upper estimate for the priority at a given time in the future.
-// If addReqCost is true then an average request cost per time is assumed that is twice the
-// average cost per time in the current session. If false, zero request cost is assumed.
-func (bt *balanceTracker) estimatedPriority(at mclock.AbsTime, addReqCost bool) int64 {
-	bt.lock.Lock()
-	defer bt.lock.Unlock()
-
-	var avgReqCost float64
-	if addReqCost {
-		dt := time.Duration(bt.lastUpdate - bt.initTime)
-		if dt > time.Second {
-			avgReqCost = float64(bt.sumReqCost) * 2 / float64(dt)
-		}
-	}
-	return bt.balanceToPriority(bt.reducedBalance(at, avgReqCost))
-}
-
-// addBalance updates balance based on the time factor
-func (bt *balanceTracker) addBalance(now mclock.AbsTime) {
-	if now > bt.lastUpdate {
-		bt.balance = bt.reducedBalance(now, 0)
-		bt.lastUpdate = now
-	}
 }
 
 // checkCallbacks checks whether the threshold of any of the active callbacks
@@ -272,36 +388,41 @@ func (bt *balanceTracker) addBalance(now mclock.AbsTime) {
 // threshold has been reached.
 // Note: checkCallbacks assumes that the balance has been recently updated.
 func (bt *balanceTracker) checkCallbacks(now mclock.AbsTime) {
+	// Short circuit if nothing to check.
 	if bt.callbackCount == 0 {
 		return
 	}
+	// Spin up all callable callbacks.
 	pri := bt.balanceToPriority(bt.balance)
 	for bt.callbackCount != 0 && bt.callbacks[bt.callbackCount-1].threshold <= pri {
 		bt.callbackCount--
 		bt.callbackIndex[bt.callbacks[bt.callbackCount].id] = -1
 		go bt.callbacks[bt.callbackCount].callback()
 	}
-	if bt.callbackCount != 0 {
-		d, ok := bt.timeUntil(bt.callbacks[bt.callbackCount-1].threshold)
-		if !ok {
-			bt.nextUpdate = 0
-			bt.updateAfter(0)
-			return
-		}
-		if bt.nextUpdate == 0 || bt.nextUpdate > now+mclock.AbsTime(d) {
-			if d > time.Second {
-				// Note: if the scheduled update is not in the very near future then we
-				// schedule the update a bit earlier. This way we do need to update a few
-				// extra times but don't need to reschedule every time a processed request
-				// brings the expected firing time a little bit closer.
-				d = ((d - time.Second) * 7 / 8) + time.Second
-			}
-			bt.nextUpdate = now + mclock.AbsTime(d)
-			bt.updateAfter(d)
-		}
-	} else {
+	if bt.callbackCount == 0 {
 		bt.nextUpdate = 0
 		bt.updateAfter(0)
+		return
+	}
+	// Note the status of tracker can be inactive, but we still
+	// need to check the callbacks since expiration is still in
+	// progress.
+	d, ok := bt.timeUntil(bt.callbacks[bt.callbackCount-1].threshold)
+	if !ok {
+		bt.nextUpdate = 0
+		bt.updateAfter(0)
+		return
+	}
+	if bt.nextUpdate == 0 || bt.nextUpdate > now+mclock.AbsTime(d) {
+		if d > time.Second {
+			// Note: if the scheduled update is not in the very near future then we
+			// schedule the update a bit earlier. This way we do need to update a few
+			// extra times but don't need to reschedule every time a processed request
+			// brings the expected firing time a little bit closer.
+			d = ((d - time.Second) * 7 / 8) + time.Second
+		}
+		bt.nextUpdate = now + mclock.AbsTime(d)
+		bt.updateAfter(d)
 	}
 }
 
@@ -310,93 +431,61 @@ func (bt *balanceTracker) updateAfter(dt time.Duration) {
 	if bt.updateEvent == nil || bt.updateEvent.Stop() {
 		if dt == 0 {
 			bt.updateEvent = nil
-		} else {
-			bt.updateEvent = bt.clock.AfterFunc(dt, func() {
-				bt.lock.Lock()
-				defer bt.lock.Unlock()
-
-				if bt.callbackCount != 0 {
-					now := bt.clock.Now()
-					bt.addBalance(now)
-					bt.checkCallbacks(now)
-				}
-			})
+			return
 		}
-	}
-}
+		bt.updateEvent = bt.clock.AfterFunc(dt, func() {
+			bt.lock.Lock()
+			defer bt.lock.Unlock()
 
-// requestCost should be called after serving a request for the given peer
-func (bt *balanceTracker) requestCost(cost uint64) uint64 {
-	bt.lock.Lock()
-	defer bt.lock.Unlock()
-
-	if bt.stopped {
-		return 0
-	}
-	now := bt.clock.Now()
-	bt.addBalance(now)
-	fcost := float64(cost)
-
-	posExp := bt.exp.posExpiration(now)
-	if bt.balance.pos.base != 0 {
-		if bt.posFactor.reqPrice() != 0 {
-			c := -int64(fcost * bt.posFactor.reqPrice())
-			cc := bt.balance.pos.add(c, posExp)
-			if c == cc {
-				fcost = 0
-			} else {
-				fcost *= 1 - float64(cc)/float64(c)
+			if bt.callbackCount != 0 {
+				now := bt.clock.Now()
+				bt.updateBalance(now)
+				bt.checkCallbacks(now)
 			}
-			bt.checkCallbacks(now)
-		} else {
-			fcost = 0
-		}
+		})
 	}
-	if fcost > 0 {
-		if bt.negFactor.reqPrice() != 0 {
-			bt.balance.neg.add(int64(fcost*bt.negFactor.reqPrice()), bt.exp.negExpiration(now))
-			bt.checkCallbacks(now)
-		}
-	}
-	bt.sumReqCost += cost
-	return bt.balance.pos.value(posExp)
 }
 
-// getBalance returns the current positive and negative balance
-func (bt *balanceTracker) getBalance(now mclock.AbsTime) (expiredValue, expiredValue) {
-	bt.lock.Lock()
-	defer bt.lock.Unlock()
-
-	bt.addBalance(now)
-	return bt.balance.pos, bt.balance.neg
-}
-
-// setBalance sets the positive and negative balance to the given values
-func (bt *balanceTracker) setBalance(pos, neg expiredValue) error {
-	bt.lock.Lock()
-	defer bt.lock.Unlock()
-
-	now := bt.clock.Now()
-	bt.addBalance(now)
-	bt.balance.pos = pos
-	bt.balance.neg = neg
-	bt.checkCallbacks(now)
-	return nil
-}
-
-// setFactors sets the price factors. timeFactor is the price of a nanosecond of
-// connection while requestFactor is the price of a "realCost" unit.
-func (bt *balanceTracker) setFactors(posFactor, negFactor priceFactors) {
+// requestCost should be called after serving a request for the given peer.
+// Returns the latest positive and negative balance.
+func (bt *balanceTracker) requestCost(cost uint64) (uint64, uint64) {
 	bt.lock.Lock()
 	defer bt.lock.Unlock()
 
 	if bt.stopped {
-		return
+		return 0, 0
 	}
 	now := bt.clock.Now()
-	bt.addBalance(now)
-	bt.posFactor, bt.negFactor = posFactor, negFactor
-	bt.checkCallbacks(now)
+	bt.updateBalance(now)
+	bt.reqEstimator.Mark(int64(cost / uint64(time.Microsecond)))
+
+	var (
+		updated bool
+		fcost   = float64(cost)
+		posExp  = bt.posExp.expiration(now)
+		negExp  = bt.negExp.expiration(now)
+	)
+	if bt.balance.pos.base != 0 {
+		if bt.posFactor.reqPrice() == 0 {
+			return bt.balance.pos.value(posExp), bt.balance.neg.value(negExp)
+		}
+		c := -int64(fcost * bt.posFactor.reqPrice())
+		cc := bt.balance.pos.add(c, posExp)
+		if c == cc {
+			fcost = 0
+		} else {
+			fcost *= 1 - float64(cc)/float64(c)
+		}
+		updated = true
+	}
+	if fcost > 0 && bt.negFactor.reqPrice() != 0 {
+		bt.balance.neg.add(int64(fcost*bt.negFactor.reqPrice()), negExp)
+		updated = true
+	}
+	if updated {
+		bt.checkCallbacks(now)
+	}
+	return bt.balance.pos.value(posExp), bt.balance.neg.value(negExp)
 }
 
 // setCallback sets up a one-time callback to be called when priority reaches
@@ -419,7 +508,7 @@ func (bt *balanceTracker) addCallback(id int, threshold int64, callback func()) 
 	bt.callbackIndex[id] = idx
 	bt.callbacks[idx] = balanceCallback{id, threshold, callback}
 	now := bt.clock.Now()
-	bt.addBalance(now)
+	bt.updateBalance(now)
 	bt.checkCallbacks(now)
 }
 
