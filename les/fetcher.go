@@ -187,7 +187,7 @@ func (f *lightFetcher) syncLoop() {
 			}
 			f.reqMu.Unlock()
 			if ok {
-				f.handler.backend.serverPool.adjustResponseTime(req.peer.poolEntry, time.Duration(mclock.Now()-req.sent), true)
+				//f.handler.backend.serverPool.adjustResponseTime(req.peer.poolEntry, time.Duration(mclock.Now()-req.sent), true)
 				req.peer.Log().Debug("Fetching data timed out hard")
 				go f.handler.removePeer(req.peer.id)
 			}
@@ -201,9 +201,9 @@ func (f *lightFetcher) syncLoop() {
 				delete(f.requested, resp.reqID)
 			}
 			f.reqMu.Unlock()
-			if ok {
+			/*if ok {
 				f.handler.backend.serverPool.adjustResponseTime(req.peer.poolEntry, time.Duration(mclock.Now()-req.sent), req.timeout)
-			}
+			}*/
 			f.lock.Lock()
 			if !ok || !(f.syncing || f.processResponse(req, resp)) {
 				resp.peer.Log().Debug("Failed processing response")
@@ -879,12 +879,12 @@ func (f *lightFetcher) checkUpdateStats(p *serverPeer, newEntry *updateStatsEntr
 		fp.firstUpdateStats = newEntry
 	}
 	for fp.firstUpdateStats != nil && fp.firstUpdateStats.time <= now-mclock.AbsTime(blockDelayTimeout) {
-		f.handler.backend.serverPool.adjustBlockDelay(p.poolEntry, blockDelayTimeout)
+		//f.handler.backend.serverPool.adjustBlockDelay(p.poolEntry, blockDelayTimeout)
 		fp.firstUpdateStats = fp.firstUpdateStats.next
 	}
 	if fp.confirmedTd != nil {
 		for fp.firstUpdateStats != nil && fp.firstUpdateStats.td.Cmp(fp.confirmedTd) <= 0 {
-			f.handler.backend.serverPool.adjustBlockDelay(p.poolEntry, time.Duration(now-fp.firstUpdateStats.time))
+			//f.handler.backend.serverPool.adjustBlockDelay(p.poolEntry, time.Duration(now-fp.firstUpdateStats.time))
 			fp.firstUpdateStats = fp.firstUpdateStats.next
 		}
 	}

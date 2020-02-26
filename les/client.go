@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/bloombits"
+	"github.com/ethereum/go-ethereum/core/forkid"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth"
@@ -57,7 +58,8 @@ type LightEthereum struct {
 	handler    *clientHandler
 	txPool     *light.TxPool
 	blockchain *light.LightChain
-	serverPool *serverPool
+	//serverPool     *serverPool
+	dialCandidates enode.Iterator
 
 	bloomRequests chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bloomIndexer  *core.ChainIndexer             // Bloom indexer operating during block imports
@@ -98,9 +100,9 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 		engine:         eth.CreateConsensusEngine(ctx, chainConfig, &config.Ethash, nil, false, chainDb),
 		bloomRequests:  make(chan chan *bloombits.Retrieval),
 		bloomIndexer:   eth.NewBloomIndexer(chainDb, params.BloomBitsBlocksClient, params.HelperTrieConfirmations),
-		serverPool:     newServerPool(chainDb, config.UltraLightServers),
+		//serverPool:     newServerPool(chainDb, config.UltraLightServers),
 	}
-	leth.retriever = newRetrieveManager(peers, leth.reqDist, leth.serverPool)
+	leth.retriever = newRetrieveManager(peers, leth.reqDist /*, leth.serverPool*/)
 	leth.relay = newLesTxRelay(peers, leth.retriever)
 
 	leth.odr = NewLesOdr(chainDb, light.DefaultClientIndexerConfig, leth.retriever)
@@ -150,6 +152,25 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 		gpoParams.Default = config.Miner.GasPrice
 	}
 	leth.ApiBackend.gpo = gasprice.NewOracle(leth.ApiBackend, gpoParams)
+
+	dnsdisc, err := leth.setupDiscovery(&ctx.Config.P2P)
+	if err != nil {
+		return nil, err
+	}
+	forkFilter := forkid.NewFilter(leth.blockchain)
+	leth.dialCandidates = enode.Filter(dnsdisc, func(node *enode.Node) bool {
+		enr := node.Record()
+		ethEntry := &eth.EthEntry{}
+		enr.Load(ethEntry)
+		return forkFilter(ethEntry.ForkID) == nil && enr.Load(&lesEntry{}) == nil
+	})
+
+	/*go func() {
+		for leth.dialCandidates.Next() {
+			node := leth.dialCandidates.Node()
+			fmt.Println(node.ID())
+		}
+	}()*/
 
 	return leth, nil
 }
@@ -230,7 +251,7 @@ func (s *LightEthereum) Protocols() []p2p.Protocol {
 			return p.Info()
 		}
 		return nil
-	})
+	}, s.dialCandidates)
 }
 
 // Start implements node.Service, starting all internal goroutines needed by the
@@ -245,8 +266,8 @@ func (s *LightEthereum) Start(srvr *p2p.Server) error {
 	s.netRPCService = ethapi.NewPublicNetAPI(srvr, s.config.NetworkId)
 
 	// clients are searching for the first advertised protocol in the list
-	protocolVersion := AdvertiseProtocolVersions[0]
-	s.serverPool.start(srvr, lesTopic(s.blockchain.Genesis().Hash(), protocolVersion))
+	//protocolVersion := AdvertiseProtocolVersions[0]
+	//s.serverPool.start(srvr, lesTopic(s.blockchain.Genesis().Hash(), protocolVersion))
 	return nil
 }
 
@@ -265,7 +286,7 @@ func (s *LightEthereum) Stop() error {
 	s.txPool.Stop()
 	s.engine.Close()
 	s.eventMux.Stop()
-	s.serverPool.stop()
+	//s.serverPool.stop()
 	s.chainDb.Close()
 	s.wg.Wait()
 	log.Info("Light ethereum stopped")
