@@ -18,6 +18,7 @@
 package les
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/accounts"
@@ -50,16 +51,17 @@ import (
 type LightEthereum struct {
 	lesCommons
 
-	peers      *serverPeerSet
-	reqDist    *requestDistributor
-	retriever  *retrieveManager
-	odr        *LesOdr
-	relay      *lesTxRelay
-	handler    *clientHandler
-	txPool     *light.TxPool
-	blockchain *light.LightChain
-	//serverPool     *serverPool
-	dialCandidates enode.Iterator
+	peers           *serverPeerSet
+	reqDist         *requestDistributor
+	retriever       *retrieveManager
+	odr             *LesOdr
+	relay           *lesTxRelay
+	handler         *clientHandler
+	txPool          *light.TxPool
+	blockchain      *light.LightChain
+	serverPool      *serverPool
+	dialCandidates  enode.Iterator
+	persistentClock mclock.System
 
 	bloomRequests chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bloomIndexer  *core.ChainIndexer             // Bloom indexer operating during block imports
@@ -158,12 +160,20 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 		return nil, err
 	}
 	forkFilter := forkid.NewFilter(leth.blockchain)
-	leth.dialCandidates = enode.Filter(dnsdisc, func(node *enode.Node) bool {
+	dnsFiltered := enode.Filter(dnsdisc, func(node *enode.Node) bool {
 		enr := node.Record()
 		ethEntry := &eth.EthEntry{}
 		enr.Load(ethEntry)
 		return forkFilter(ethEntry.ForkID) == nil && enr.Load(&lesEntry{}) == nil
 	})
+	if data, _ := chainDb.Get([]byte("persistentClock")); len(data) == 8 {
+		leth.persistentClock.SetAbsTime(mclock.AbsTime(binary.BigEndian.Uint64(data)))
+	} else {
+		leth.persistentClock.SetAbsTime(0)
+	}
+	leth.serverPool = newServerPool(chainDb, []byte("serverpool:"), dnsFiltered, leth.persistentClock)
+	peers.subscribe(leth.serverPool)
+	leth.dialCandidates = leth.serverPool.dialIterator
 
 	/*go func() {
 		for leth.dialCandidates.Next() {
@@ -274,6 +284,10 @@ func (s *LightEthereum) Start(srvr *p2p.Server) error {
 // Stop implements node.Service, terminating all internal goroutines used by the
 // Ethereum protocol.
 func (s *LightEthereum) Stop() error {
+	var data [8]byte
+	binary.BigEndian.PutUint64(data[:], uint64(s.persistentClock.Now()))
+	s.chainDb.Put([]byte("persistentClock"), data[:])
+
 	close(s.closeCh)
 	s.peers.close()
 	s.reqDist.close()
@@ -286,7 +300,7 @@ func (s *LightEthereum) Stop() error {
 	s.txPool.Stop()
 	s.engine.Close()
 	s.eventMux.Stop()
-	//s.serverPool.stop()
+	s.serverPool.stop()
 	s.chainDb.Close()
 	s.wg.Wait()
 	log.Info("Light ethereum stopped")
