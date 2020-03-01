@@ -19,7 +19,6 @@ package les
 import (
 	"bytes"
 	"fmt"
-	"math"
 	"math/rand"
 	"reflect"
 	"testing"
@@ -438,9 +437,8 @@ func TestNegativeBalanceCalculation(t *testing.T) {
 		pool.disconnect(newPoolTestPeer(i, nil))
 		nb := pool.ndb.getOrNewNB(newPoolTestPeer(i, nil).freeClientId())
 		nb.logValue -= pool.negExpiration(clock.Now())
-		nb.logValue = uint64(float64(nb.logValue) / logMultiplier)
-		if nb.logValue != uint64(math.Log(float64(time.Minute/time.Second))) {
-			t.Fatalf("Negative balance mismatch, want %v, got %v", int64(math.Log(float64(time.Minute/time.Second))), nb.logValue)
+		if nb.logValue != log2Fixed(float64(time.Minute/time.Second)) {
+			t.Fatalf("Negative balance mismatch, want %v, got %v", log2Fixed(float64(time.Minute/time.Second)), nb.logValue)
 		}
 	}
 }

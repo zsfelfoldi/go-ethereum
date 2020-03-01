@@ -32,11 +32,43 @@ const (
 	balanceCallbackCount
 )
 
+const fixedFactor = 0x1000000
+
+type fixed64 int64
+
+func fixedToFloat(f fixed64) float64 {
+	return float64(f) / fixedFactor
+}
+
+func floatToFixed(f float64) fixed64 {
+	return fixed64(f * fixedFactor)
+}
+
+func fixedToUint(f fixed64) uint64 {
+	return uint64(f) / fixedFactor
+}
+
+func uintToFixed(f uint64) fixed64 {
+	return fixed64(f * fixedFactor)
+}
+
+func fracFixed(f fixed64) fixed64 {
+	return f % fixedFactor
+}
+
+func pow2Fixed(f fixed64) float64 {
+	return math.Exp(float64(f) / 24204406.323122971)
+}
+
+func log2Fixed(f float64) fixed64 {
+	return fixed64(math.Log(f) * 24204406.323122971)
+}
+
 // expirationController controls the exponential expiration of positive and negative
 // balances
 type expirationController interface {
-	posExpiration(mclock.AbsTime) uint64
-	negExpiration(mclock.AbsTime) uint64
+	posExpiration(mclock.AbsTime) fixed64
+	negExpiration(mclock.AbsTime) fixed64
 }
 
 // expiredValue is a scalar value that is continuously expired (decreased exponentially)
@@ -52,14 +84,14 @@ type expiredValue struct {
 }
 
 // value calculates the value at the given moment
-func (e expiredValue) value(logOffset uint64) uint64 {
-	return uint64(math.Exp(float64(int64(e.exp*log2Multiplier-logOffset))/logMultiplier) * float64(e.base))
+func (e expiredValue) value(logOffset fixed64) uint64 {
+	return uint64(pow2Fixed(uintToFixed(e.exp)-logOffset) * float64(e.base))
 }
 
 // add adds a signed value at the given moment
-func (e *expiredValue) add(amount int64, logOffset uint64) int64 {
-	addExp := logOffset / log2Multiplier
-	baseMul := math.Exp(float64(logOffset%log2Multiplier) / logMultiplier)
+func (e *expiredValue) add(amount int64, logOffset fixed64) int64 {
+	addExp := fixedToUint(logOffset)
+	baseMul := pow2Fixed(fracFixed(logOffset))
 	if addExp < e.exp {
 		baseMul /= math.Pow(2, float64(e.exp-addExp))
 	}
