@@ -154,7 +154,7 @@ func (h *clientHandler) handle(p *serverPeer) error {
 
 		p.lock.RLock()
 		route := p.routes[lotterypmt.Identity]
-		p.lock.Unlock()
+		p.lock.RUnlock()
 		if route == nil {
 			return
 		}
