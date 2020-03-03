@@ -31,14 +31,21 @@ package merkletree
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"sort"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+func init() {
+	rand.Seed(time.Now().UTC().UnixNano())
+}
 
 var (
 	// maxLevel indicates the deepest Level the node can be. It means
@@ -59,19 +66,40 @@ var (
 	// ErrUnknownEntry is returned if caller wants to prove an non-existent entry.
 	ErrUnknownEntry = errors.New("the entry is non-existent requested for proof")
 
+	// ErrInvalidEntry is returned if caller wants to prove an invalid entry.
+	ErrInvalidEntry = errors.New("the entry is invalid requested for proof")
+
 	// ErrInvalidProof is returned if the provided merkle proof to verify is invalid.
 	ErrInvalidProof = errors.New("invalid merkle proof")
 )
 
 // Entry represents the data entry referenced by the merkle tree.
 type Entry struct {
-	Value  []byte  // The corresponding value of this entry
-	Weight uint64  // The initial weight specified by caller
-	Level  uint64  // The level of node which references this entry in the tree
-	bias   float64 // The bias between initial weight and the assigned weight
+	Value  []byte // The corresponding value of this entry
+	Weight uint64 // The initial weight specified by caller
+
+	// Internal fields
+	level uint64  // The level of node which references this entry in the tree
+	bias  float64 // The bias between initial weight and the assigned weight
+	salt  uint64  // A random value used as the input for hash calculation
 }
 
-func (s *Entry) Hash() common.Hash { return crypto.Keccak256Hash(s.Value) }
+// Hash return the hash of the entry
+func (s *Entry) Hash() common.Hash {
+	var buff [8]byte
+	binary.BigEndian.PutUint64(buff[:], s.salt)
+	return crypto.Keccak256Hash(append(s.Value, buff[:]...))
+}
+
+// Salt returns the random number used for hash calculation.
+func (s *Entry) Salt() uint64 {
+	return s.salt
+}
+
+// Level returns the level of entry.
+func (s *Entry) Level() uint64 {
+	return s.level
+}
 
 // EntryByBias implements the sort interface to allow sorting a list of entries
 // by their weight bias.
@@ -86,7 +114,7 @@ func (s EntryByBias) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 type EntryByLevel []*Entry
 
 func (s EntryByLevel) Len() int           { return len(s) }
-func (s EntryByLevel) Less(i, j int) bool { return s[i].Level > s[j].Level }
+func (s EntryByLevel) Less(i, j int) bool { return s[i].level > s[j].level }
 func (s EntryByLevel) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 // Node represents a node in merkle tree.
@@ -123,7 +151,7 @@ func (node *Node) Hash() common.Hash {
 // String returns the string format of node.
 func (node *Node) String() string {
 	if node.Value != nil {
-		return fmt.Sprintf("E(%x:%d)", node.Value.Value, node.Value.Level)
+		return fmt.Sprintf("E(%x:%d)", node.Value.Value, node.Value.level)
 	}
 	return fmt.Sprintf("N(%x) => L.(%s) R.(%s)", node.Hash(), node.Left.String(), node.Right.String())
 }
@@ -138,6 +166,12 @@ type MerkleTree struct {
 func NewMerkleTree(entries []*Entry) (*MerkleTree, error) {
 	if len(entries) == 0 {
 		return nil, ErrEmptyEntryList
+	}
+	// Assign an unique salt for each entry. The hash
+	// of entry is calculated by keccak256(value, salt)
+	// so we can preserve the privacy of given value.
+	for _, entry := range entries {
+		entry.salt = rand.Uint64()
 	}
 	// Verify the validity of the given entries.
 	var sum, totalWeight uint64
@@ -155,7 +189,7 @@ func NewMerkleTree(entries []*Entry) (*MerkleTree, error) {
 			return nil, ErrInvalidWeight
 		}
 		totalWeight += maxWeight >> int(c)
-		entry.Level = uint64(c)
+		entry.level = uint64(c)
 	}
 	sort.Sort(EntryByBias(entries))
 
@@ -164,10 +198,10 @@ func NewMerkleTree(entries []*Entry) (*MerkleTree, error) {
 	for totalWeight < maxWeight && len(shift) > 0 {
 		var limit int
 		for index, entry := range shift {
-			addWeight := maxWeight >> entry.Level
+			addWeight := maxWeight >> entry.level
 			if totalWeight+addWeight <= maxWeight {
 				totalWeight += addWeight
-				entry.Level -= 1
+				entry.level -= 1
 				if index != limit {
 					shift[limit], shift[index] = shift[index], shift[limit]
 				}
@@ -203,21 +237,21 @@ func newTree(entries []*Entry) (*Node, []*Node, error) {
 		// So the level of first two nodes must be same and can be
 		// grouped as a sub tree.
 		if i == 0 {
-			if entries[0].Level != entries[1].Level {
+			if entries[0].level != entries[1].level {
 				return nil, nil, errors.New("invalid entries") // Should never happen
 			}
-			n1, n2 := &Node{Value: entries[0], Level: entries[0].Level}, &Node{Value: entries[1], Level: entries[1].Level}
-			current = &Node{Left: n1, Right: n2, Level: entries[0].Level - 1}
+			n1, n2 := &Node{Value: entries[0], Level: entries[0].level}, &Node{Value: entries[1], Level: entries[1].level}
+			current = &Node{Left: n1, Right: n2, Level: entries[0].level - 1}
 			n1.Parent, n2.Parent = current, current
 			i += 2
 			leaves = append(leaves, n1, n2)
 			continue
 		}
 		switch {
-		case current.Level > entries[i].Level:
+		case current.Level > entries[i].level:
 			return nil, nil, errors.New("invalid entries") // Should never happen
-		case current.Level == entries[i].Level:
-			n := &Node{Value: entries[i], Level: entries[i].Level}
+		case current.Level == entries[i].level:
+			n := &Node{Value: entries[i], Level: entries[i].level}
 			tmp := &Node{Left: current, Right: n, Level: current.Level - 1}
 			current.Parent, n.Parent = tmp, tmp
 			current = tmp
@@ -227,7 +261,7 @@ func newTree(entries []*Entry) (*Node, []*Node, error) {
 			var j int
 			var weight uint64
 			for j = i; j < len(entries); j++ {
-				weight += maxWeight >> entries[j].Level
+				weight += maxWeight >> entries[j].level
 				if weight == maxWeight>>current.Level {
 					break
 				}
@@ -252,10 +286,14 @@ func (t *MerkleTree) Hash() common.Hash {
 }
 
 // Prove constructs a merkle proof for the specified entry.
-func (t *MerkleTree) Prove(e *Entry) ([]common.Hash, error) {
+func (t *MerkleTree) Prove(e *Entry, salt uint64) ([]common.Hash, error) {
 	var n *Node
 	for _, leaf := range t.Leaves {
 		if bytes.Equal(leaf.Value.Value, e.Value) {
+			// Ensure the salt is match.
+			if leaf.Value.salt != salt {
+				return nil, ErrInvalidEntry
+			}
 			n = leaf
 			break
 		}

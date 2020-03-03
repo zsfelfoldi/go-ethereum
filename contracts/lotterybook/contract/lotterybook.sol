@@ -187,8 +187,9 @@ contract LotteryBook {
     // @sig_v: the v-value of the signature
     // @sig_r: the r-value of the signature
     // @sig_s: the s-value of the signature
+    // @receiver_salt: the salt for receiver
     // @proof: the merkle proof which used to prove the msg.sender has qualification to claim
-    function claim(bytes32 id, bytes4 revealRange, uint8 sig_v, bytes32 sig_r, bytes32 sig_s, bytes32[] memory proof) public {
+    function claim(bytes32 id, bytes4 revealRange, uint8 sig_v, bytes32 sig_r, bytes32 sig_s, uint64 receiverSalt, bytes32[] memory proof) public {
         // Ensure the lottery is existent and claimable.
         uint64 revealNumber = lotteries[id].revealNumber;
 
@@ -197,7 +198,7 @@ contract LotteryBook {
         require(revealNumber < block.number && revealNumber + 256 >= block.number, "lottery isn't claimeable or it's already stale");
 
         // Verify the position of sender in the probabilistic tree.
-        bytes32 h = keccak256(abi.encodePacked(msg.sender));
+        bytes32 h = keccak256(abi.encodePacked(msg.sender, receiverSalt));
 
         uint256 pos; // The position of msg.sender
         for (uint8 i = 0; i < proof.length; i++) {
@@ -214,12 +215,11 @@ contract LotteryBook {
         require(h == id, "invalid position merkle proof");
 
         // Verified the caller's position, now ensure it's the lucky guy.
-        bytes32 revealHash = blockhash(revealNumber);
-
+        //
         // The winning range of caller is [pos*maxWeight/dividend, revealRange]
         // Note the revealRange is encoded in big-endian format.
-        require(uint32(uint256(revealHash)) <= uint32(revealRange), "invalid winner proof");
-        require((maxWeight>>proof.length)*pos <= uint32(uint256(revealHash)), "invalid winner proof");
+        require(uint32(uint256(blockhash(revealNumber))) <= uint32(revealRange), "invalid winner proof");
+        require((maxWeight>>proof.length)*pos <= uint32(uint256(blockhash(revealNumber))), "invalid winner proof");
 
         // We also need to ensure the revealRange not larger than the upper limit, otherwhile
         // owner can always assign a very high range to itself.

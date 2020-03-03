@@ -156,6 +156,10 @@ type Cheque struct {
 	// The id of lottery is derived by formula: keccak256<merkle_root, salt>
 	Salt uint64
 
+	// ReceiverSalt is the random number which used to calculate receiver hash.
+	// The hash is derived by formula: keccak256<receiver_addr, receiver_salt>
+	ReceiverSalt uint64
+
 	// The signature to protect the correctness of all above fields.
 	Sig [crypto.SignatureLength]byte
 
@@ -173,13 +177,14 @@ type chequeRLP struct {
 	ContractAddr common.Address // The address of the accountbook contract(bank address)
 	RevealRange  [4]byte        // The upper reveal range for payee to claim lottery.
 	Salt         uint64         // The random number of lottery
+	ReceiverSalt uint64         // The random number of receiver
 	Sig          [crypto.SignatureLength]byte
 }
 
 // EncodeRLP implements rlp.Encoder, and flattens the necessary fields of a cheque
 // into an RLP stream.
 func (c *Cheque) EncodeRLP(w io.Writer) error {
-	return rlp.Encode(w, &chequeRLP{Witness: c.Witness, ContractAddr: c.ContractAddr, RevealRange: c.RevealRange, Salt: c.Salt, Sig: c.Sig})
+	return rlp.Encode(w, &chequeRLP{Witness: c.Witness, ContractAddr: c.ContractAddr, RevealRange: c.RevealRange, Salt: c.Salt, ReceiverSalt: c.ReceiverSalt, Sig: c.Sig})
 }
 
 // DecodeRLP implements rlp.Decoder, loads the rlp-encoded fields of a cheque
@@ -189,19 +194,20 @@ func (c *Cheque) DecodeRLP(s *rlp.Stream) error {
 	if err := s.Decode(&dec); err != nil {
 		return err
 	}
-	c.Witness, c.ContractAddr, c.RevealRange, c.Salt, c.Sig = dec.Witness, dec.ContractAddr, dec.RevealRange, dec.Salt, dec.Sig
+	c.Witness, c.ContractAddr, c.RevealRange, c.Salt, c.ReceiverSalt, c.Sig = dec.Witness, dec.ContractAddr, dec.RevealRange, dec.Salt, dec.ReceiverSalt, dec.Sig
 	if err := c.deriveFields(); err != nil {
 		return err
 	}
 	return nil
 }
 
-func newCheque(witness []common.Hash, contractAddr common.Address, salt uint64) (*Cheque, error) {
+func newCheque(witness []common.Hash, contractAddr common.Address, salt, receiverSalt uint64) (*Cheque, error) {
 	cheque := &Cheque{
 		Witness:      witness,
 		ContractAddr: contractAddr,
 		RevealRange:  [4]byte{},
 		Salt:         salt,
+		ReceiverSalt: receiverSalt,
 	}
 	if err := cheque.deriveFields(); err != nil {
 		return nil, err
@@ -348,7 +354,9 @@ func validateCheque(c *Cheque, sender, receiver, contract common.Address) error 
 	// During the RLP-decode we will filter invalid cheque whose
 	// witness is empty. Ensure the receiver of cheque actually
 	// matches the given address.
-	if crypto.Keccak256Hash(receiver.Bytes()) != c.Witness[0] {
+	var buff [8]byte
+	binary.BigEndian.PutUint64(buff[:], c.ReceiverSalt)
+	if crypto.Keccak256Hash(append(receiver.Bytes(), buff[:]...)) != c.Witness[0] {
 		return errors.New("invalid receiver")
 	}
 	return nil

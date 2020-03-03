@@ -55,7 +55,7 @@ func (t *merkleTreeTest) run() bool {
 	}
 	var ranges entryRanges
 	for _, entry := range t.entries {
-		proof, err := tree.Prove(entry)
+		proof, err := tree.Prove(entry, entry.Salt())
 		if err != nil {
 			t.err = err
 			return false
@@ -65,7 +65,7 @@ func (t *merkleTreeTest) run() bool {
 			t.err = err
 			return false
 		}
-		ranges = append(ranges, entryRange{pos, entry.Level})
+		ranges = append(ranges, entryRange{pos, entry.level})
 	}
 	sort.Sort(ranges)
 	position := float64(0)
@@ -113,33 +113,4 @@ func TestMerkleTree(t *testing.T) {
 	} else if err != nil {
 		t.Error(err)
 	}
-}
-
-func ExampleMerkleTree() {
-	entry1 := &Entry{
-		Value:  []byte{0x01, 0x02},
-		Weight: 2,
-	}
-	entry2 := &Entry{
-		Value:  []byte{0x03, 0x04},
-		Weight: 1,
-	}
-	entry3 := &Entry{
-		Value:  []byte{0x05, 0x06},
-		Weight: 1,
-	}
-	tree, err := NewMerkleTree([]*Entry{entry1, entry2, entry3})
-	if err != nil {
-		fmt.Println(err)
-	}
-	proof, err := tree.Prove(entry1)
-	if err != nil {
-		fmt.Println(err)
-	}
-	pos, err := VerifyProof(tree.Hash(), proof)
-	if err != nil {
-		fmt.Println(err)
-	}
-	fmt.Println(pos)
-	// Output: 0
 }

@@ -240,7 +240,7 @@ func TestClaimLottery(t *testing.T) {
 		var claimed bool
 	loop:
 		for _, e := range merkleEntries {
-			proof, err := tree.Prove(e)
+			proof, err := tree.Prove(e, e.Salt())
 			if err != nil {
 				t.Fatalf("Failed to generate merkle proof: %v", err)
 			}
@@ -249,7 +249,7 @@ func TestClaimLottery(t *testing.T) {
 				t.Fatalf("Invalid merkle proof: %v", err)
 			}
 			for _, p := range percentages {
-				start, end := tester.calcuValidRange(pos, e.Level, p)
+				start, end := tester.calcuValidRange(pos, e.Level(), p)
 				if start > value || end < value {
 					continue
 				}
@@ -274,7 +274,7 @@ func TestClaimLottery(t *testing.T) {
 						var signedRange [4]byte
 						binary.BigEndian.PutUint32(signedRange[:], uint32(end))
 						sig := tester.issueCheque(id, signedRange)
-						_, err = tester.contract.Claim(opt, id, signedRange, sig[64], common.BytesToHash(sig[:32]), common.BytesToHash(sig[32:64]), proofslice)
+						_, err = tester.contract.Claim(opt, id, signedRange, sig[64], common.BytesToHash(sig[:32]), common.BytesToHash(sig[32:64]), e.Salt(), proofslice)
 						if err != nil {
 							t.Fatalf("Failed to claim lottery: %v", err)
 						}

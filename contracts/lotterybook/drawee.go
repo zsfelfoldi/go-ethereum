@@ -202,7 +202,7 @@ func (drawee *ChequeDrawee) claim(context context.Context, cheque *Cheque) error
 		proofslice = append(proofslice, p)
 	}
 	start := time.Now()
-	tx, err := drawee.book.contract.Claim(drawee.opts, cheque.LotteryId, cheque.RevealRange, cheque.Sig[64], common.BytesToHash(cheque.Sig[:common.HashLength]), common.BytesToHash(cheque.Sig[common.HashLength:2*common.HashLength]), proofslice)
+	tx, err := drawee.book.contract.Claim(drawee.opts, cheque.LotteryId, cheque.RevealRange, cheque.Sig[64], common.BytesToHash(cheque.Sig[:common.HashLength]), common.BytesToHash(cheque.Sig[common.HashLength:2*common.HashLength]), cheque.ReceiverSalt, proofslice)
 	if err != nil {
 		return err
 	}

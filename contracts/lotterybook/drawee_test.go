@@ -85,7 +85,7 @@ func TestAddCheque(t *testing.T) {
 	// newRawCheque generates raw cheque to drawee with different testing
 	// requirements.
 	newRawCheque := func(key *ecdsa.PrivateKey) *Cheque {
-		cheque, _ := newCheque([]common.Hash{crypto.Keccak256Hash(env.draweeAddr.Bytes())}, drawer.ContractAddr(), 10086)
+		cheque, _ := newCheque([]common.Hash{crypto.Keccak256Hash(env.draweeAddr.Bytes())}, drawer.ContractAddr(), 10086, 0)
 		cheque.signWithKey(func(digestHash []byte) ([]byte, error) {
 			return crypto.Sign(digestHash, key)
 		})
@@ -162,7 +162,7 @@ func TestAddCheque(t *testing.T) {
 				tx, _ := drawer.book.contract.NewLottery(opt, id, current+30, salt)
 				bind.WaitMined(context.Background(), drawer.dBackend, tx)
 
-				cheque, _ := newCheque([]common.Hash{root}, drawer.ContractAddr(), salt)
+				cheque, _ := newCheque([]common.Hash{root}, drawer.ContractAddr(), salt, 0)
 				cheque.RevealRange = [4]byte{0xff, 0xff, 0xff, 0xff}
 				cheque.signWithKey(drawer.keySigner)
 				cheque.deriveFields() // Recompute uint64 format reveal range
@@ -180,7 +180,7 @@ func TestAddCheque(t *testing.T) {
 		{
 			func() *Cheque {
 				root := crypto.Keccak256Hash(env.draweeAddr.Bytes())
-				cheque, _ := newCheque([]common.Hash{root}, common.HexToAddress("deadbeef"), 10086)
+				cheque, _ := newCheque([]common.Hash{root}, common.HexToAddress("deadbeef"), 10086, 0)
 				cheque.signWithKey(drawer.keySigner)
 				return cheque
 			}, true, 0,

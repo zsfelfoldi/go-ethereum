@@ -17,6 +17,7 @@
 package lotterybook
 
 import (
+	"encoding/binary"
 	"reflect"
 	"testing"
 
@@ -44,11 +45,11 @@ func TestPersistCheque(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to build merkle tree: %v", err)
 	}
-	witness, err := tree.Prove(entry)
+	witness, err := tree.Prove(entry, entry.Salt())
 	if err != nil {
 		t.Fatalf("Failed to build merkle proof: %v", err)
 	}
-	cheque, err := newCheque(witness, common.HexToAddress("cafebabe"), 10086)
+	cheque, err := newCheque(witness, common.HexToAddress("cafebabe"), 10086, entry.Salt())
 	if err != nil {
 		t.Fatalf("Failed to create cheque: %v", err)
 	}
@@ -146,8 +147,8 @@ func TestListCheques(t *testing.T) {
 	}
 	tree, _ := merkletree.NewMerkleTree(entries)
 	for _, e := range entries {
-		witness, _ := tree.Prove(e)
-		cheque, err := newCheque(witness, common.HexToAddress("cafebabe"), 10086)
+		witness, _ := tree.Prove(e, e.Salt())
+		cheque, err := newCheque(witness, common.HexToAddress("cafebabe"), 10086, e.Salt())
 		if err != nil {
 			t.Fatalf("Failed to create cheque: %v", err)
 		}
@@ -162,7 +163,9 @@ func TestListCheques(t *testing.T) {
 		t.Fatalf("Failed to read all cheques")
 	}
 	for index, dbc := range dbCheques {
-		if crypto.Keccak256Hash(addresses[index].Bytes()) != dbc.Witness[0] {
+		var buff [8]byte
+		binary.BigEndian.PutUint64(buff[:], dbc.ReceiverSalt)
+		if crypto.Keccak256Hash(append(addresses[index].Bytes(), buff[:]...)) != dbc.Witness[0] {
 			t.Fatalf("Invalid cheque")
 		}
 		var find bool
