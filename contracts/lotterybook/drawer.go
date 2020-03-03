@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"math"
 	"math/big"
 	"math/rand"
 	"sort"
@@ -397,7 +398,7 @@ func (drawer *ChequeDrawer) issueCheque(payer common.Address, lotteryId common.H
 	// Note in the following calculation, it may lose precision.
 	// In theory amount/assigned won't be very small. So it's safer to calculate
 	// percentage first.
-	diff := uint64(float64(amount) / float64(assigned) * float64(cheque.UpperLimit-cheque.LowerLimit+1))
+	diff := uint64(math.Ceil(float64(amount) / float64(assigned) * float64(cheque.UpperLimit-cheque.LowerLimit+1)))
 	if diff == 0 {
 		return nil, errors.New("invalid payment amount")
 	}
