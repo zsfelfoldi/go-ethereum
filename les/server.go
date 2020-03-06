@@ -24,10 +24,12 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/eth"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/checkpointoracle"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/discv5"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -51,6 +53,7 @@ type LesServer struct {
 	costTracker  *costTracker
 	defParams    flowcontrol.ServerParams
 	servingQueue *servingQueue
+	incentiveDB  ethdb.Database
 	clientPool   *clientPool
 	tokenSale    *tokenSale
 
@@ -59,7 +62,7 @@ type LesServer struct {
 	threadsBusy                            int // Request serving threads count when system is busy(block insertion).
 }
 
-func NewLesServer(e *eth.Ethereum, config *eth.Config) (*LesServer, error) {
+func NewLesServer(ctx *node.ServiceContext, e *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 	// Collect les protocol version information supported by local node.
 	lesTopics := make([]discv5.Topic, len(AdvertiseProtocolVersions))
 	for i, pv := range AdvertiseProtocolVersions {
@@ -118,7 +121,22 @@ func NewLesServer(e *eth.Ethereum, config *eth.Config) (*LesServer, error) {
 		srv.maxCapacity = totalRecharge
 	}
 	srv.fcManager.SetCapacityLimits(srv.freeCapacity, srv.maxCapacity, srv.freeCapacity*2)
-	srv.clientPool = newClientPool(srv.chainDb, srv.minCapacity, srv.freeCapacity, mclock.System{}, func(id enode.ID) { go srv.peers.disconnect(peerIdToString(id)) })
+
+	// Create a standalone database for all incentive relevant data storing.
+	// There are two main reasons for a standalone db:
+	// - In the server side, lots of resource balances will be recorded for each
+	//   connected clients, it will pollute and slow down the main db
+	// - In the server side, some sentitive payment data will be saved which
+	//   In theory should never be deleted. However the main db(mostly used by
+	//   Eth protocol) can be erased sometimes(e.g. re-sync state to prune stale
+	//   state manually)
+	incentiveDB, err := ctx.OpenDatabase("incentive", 0, 0, "eth/db/incentivedata") // How to disable metrics?
+	if err != nil {
+		return nil, err
+	}
+	srv.incentiveDB = incentiveDB
+
+	srv.clientPool = newClientPool(incentiveDB, srv.minCapacity, srv.freeCapacity, mclock.System{}, func(id enode.ID) { go srv.peers.disconnect(peerIdToString(id)) })
 	srv.clientPool.setDefaultFactors(priceFactors{0, 1, 1}, priceFactors{0, 1, 1})
 	srv.tokenSale = newTokenSale(srv.clientPool, 0.1, 100)
 	if config.LespayTestModule {
@@ -225,6 +243,7 @@ func (s *LesServer) Stop() {
 
 	// Note, bloom trie indexer is closed by parent bloombits indexer.
 	s.chtIndexer.Close()
+	s.incentiveDB.Close()
 	s.wg.Wait()
 	log.Info("Les server stopped")
 }
