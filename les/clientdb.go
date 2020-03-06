@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -96,17 +95,11 @@ const (
 )
 
 var (
-	posBalancePrefix      = []byte("pb:")         // dbVersion(uint16 big endian) + posBalancePrefix + id -> positive balance
-	negBalancePrefix      = []byte("nb:")         // dbVersion(uint16 big endian) + negBalancePrefix + ip -> negative balance
-	curBalancePrefix      = []byte("cb:")         // dbVersion(uint16 big endian) + curBalancePrefix + id -> currency balance
-	paymentReceiverPrefix = []byte("pr:")         // dbVersion(uint16 big endian) + paymentReceiverPrefix + id + "receiverName:" -> receiver namespace
-	expirationKey         = []byte("expiration:") // dbVersion(uint16 big endian) + expirationKey -> posExp, negExp
+	posBalancePrefix = []byte("pb:")         // dbVersion(uint16 big endian) + posBalancePrefix + id -> positive balance
+	negBalancePrefix = []byte("nb:")         // dbVersion(uint16 big endian) + negBalancePrefix + ip -> negative balance
+	curBalancePrefix = []byte("cb:")         // dbVersion(uint16 big endian) + curBalancePrefix + id -> currency balance
+	expirationKey    = []byte("expiration:") // dbVersion(uint16 big endian) + expirationKey -> posExp, negExp
 )
-
-type atomicWriteLock struct {
-	released chan struct{}
-	batch    ethdb.Batch
-}
 
 type nodeDB struct {
 	db            ethdb.Database
@@ -114,9 +107,11 @@ type nodeDB struct {
 	clock         mclock.Clock
 	closeCh       chan struct{}
 	evictCallBack func(mclock.AbsTime, bool, tokenBalance) bool // Callback to determine whether the balance can be evicted.
-	idLockMutex   sync.Mutex
-	idLocks       map[string]atomicWriteLock
-	cleanupHook   func() // Test hook used for testing
+	cleanupHook   func()                                        // Test hook used for testing
+
+	// Atomicity APIs, may nil there is no atomicity guarantee.
+	openTransactionFn  func()
+	closeTransactionFn func()
 }
 
 func newNodeDB(db ethdb.Database, clock mclock.Clock) *nodeDB {
@@ -129,7 +124,13 @@ func newNodeDB(db ethdb.Database, clock mclock.Clock) *nodeDB {
 		cache:   cache,
 		clock:   clock,
 		closeCh: make(chan struct{}),
-		idLocks: make(map[string]atomicWriteLock),
+	}
+	// If it's a atomic database which can guarantee the atomicity
+	// when the db handler is shared by different modules, get the
+	// APIs.
+	if sdb, ok := db.(*rawdb.AtomicDatabase); ok {
+		ndb.openTransactionFn = sdb.OpenTransaction
+		ndb.closeTransactionFn = sdb.CloseTransaction
 	}
 	go ndb.expirer()
 	return ndb
@@ -139,43 +140,16 @@ func (db *nodeDB) close() {
 	close(db.closeCh)
 }
 
-func (db *nodeDB) atomicWriteLock(id []byte) ethdb.KeyValueWriter {
-	db.idLockMutex.Lock()
-	for {
-		ch := db.idLocks[string(id)].released
-		if ch == nil {
-			break
-		}
-		db.idLockMutex.Unlock()
-		<-ch
-		db.idLockMutex.Lock()
+func (db *nodeDB) openTransaction() {
+	if db.openTransactionFn != nil {
+		db.openTransactionFn()
 	}
-	batch := db.db.NewBatch()
-	db.idLocks[string(id)] = atomicWriteLock{
-		released: make(chan struct{}),
-		batch:    batch,
-	}
-	db.idLockMutex.Unlock()
-	return batch
 }
 
-func (db *nodeDB) atomicWriteUnlock(id []byte) {
-	db.idLockMutex.Lock()
-	awl := db.idLocks[string(id)]
-	awl.batch.Write()
-	close(awl.released)
-	delete(db.idLocks, string(id))
-	db.idLockMutex.Unlock()
-}
-
-func (db *nodeDB) writer(id []byte) ethdb.KeyValueWriter {
-	db.idLockMutex.Lock()
-	batch := db.idLocks[string(id)].batch
-	db.idLockMutex.Unlock()
-	if batch == nil {
-		return db.db
+func (db *nodeDB) closeTransaction() {
+	if db.closeTransactionFn != nil {
+		db.closeTransactionFn()
 	}
-	return batch
 }
 
 func idKey(id []byte, neg bool) []byte {
@@ -184,10 +158,6 @@ func idKey(id []byte, neg bool) []byte {
 		prefix = negBalancePrefix
 	}
 	return append(prefix, id...)
-}
-
-func receiverPrefix(id enode.ID, receiver string) []byte {
-	return append(append(paymentReceiverPrefix, id.Bytes()...), []byte(receiver+":")...)
 }
 
 func (db *nodeDB) getExpiration() (fixed64, fixed64) {
@@ -222,7 +192,7 @@ func (db *nodeDB) setCurrencyBalance(id enode.ID, b currencyBalance) {
 	if err != nil {
 		log.Crit("Failed to encode currency balance", "err", err)
 	}
-	db.writer(id.Bytes()).Put(append(curBalancePrefix, id.Bytes()...), enc)
+	db.db.Put(append(curBalancePrefix, id.Bytes()...), enc)
 }
 
 func (db *nodeDB) getOrNewBalance(id []byte, neg bool) tokenBalance {
@@ -249,21 +219,13 @@ func (db *nodeDB) setBalance(id []byte, neg bool, b tokenBalance) {
 	if err != nil {
 		log.Crit("Failed to encode positive balance", "err", err)
 	}
-	if neg {
-		db.db.Put(key, enc)
-	} else {
-		db.writer(id).Put(key, enc)
-	}
+	db.db.Put(key, enc)
 	db.cache.Add(string(key), b)
 }
 
 func (db *nodeDB) delBalance(id []byte, neg bool) {
 	key := idKey(id, neg)
-	if neg {
-		db.db.Delete(key)
-	} else {
-		db.writer(id).Delete(key)
-	}
+	db.db.Delete(key)
 	db.cache.Remove(string(key))
 }
 
