@@ -20,6 +20,8 @@ import (
 	"crypto/ecdsa"
 	"time"
 
+	"github.com/ethereum/go-ethereum/core/rawdb"
+
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
@@ -134,9 +136,9 @@ func NewLesServer(ctx *node.ServiceContext, e *eth.Ethereum, config *eth.Config)
 	if err != nil {
 		return nil, err
 	}
-	srv.incentiveDB = incentiveDB
+	srv.incentiveDB = rawdb.NewAtomicDatabase(incentiveDB)
 
-	srv.clientPool = newClientPool(incentiveDB, srv.minCapacity, srv.freeCapacity, mclock.System{}, func(id enode.ID) { go srv.peers.disconnect(peerIdToString(id)) })
+	srv.clientPool = newClientPool(srv.incentiveDB, srv.minCapacity, srv.freeCapacity, mclock.System{}, func(id enode.ID) { go srv.peers.disconnect(peerIdToString(id)) })
 	srv.clientPool.setDefaultFactors(priceFactors{0, 1, 1}, priceFactors{0, 1, 1})
 	srv.tokenSale = newTokenSale(srv.clientPool, 0.1, 100)
 	if config.LespayTestModule {
