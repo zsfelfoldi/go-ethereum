@@ -32,6 +32,7 @@ import (
 type AtomicDatabase struct {
 	db    ethdb.Database
 	lock  sync.Mutex
+	ref   int
 	batch ethdb.Batch // It's not thread safe!!
 }
 
@@ -45,19 +46,13 @@ func (db *AtomicDatabase) OpenTransaction() {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
+	// If the atomic mode is already activated, increase
+	// the batch reference.
 	if db.batch != nil {
-		db.batch.Write()
+		db.ref += 1
+		return
 	}
-	db.batch = db.db.NewBatch()
-}
-
-// DropTransaction drops the previous batch. Normally used when
-// database updating is reverted.
-func (db *AtomicDatabase) DropTransaction() {
-	db.lock.Lock()
-	defer db.lock.Unlock()
-
-	db.batch = nil
+	db.ref, db.batch = 1, db.db.NewBatch()
 }
 
 // CloseTransaction commits all changes in the current batch and
@@ -67,6 +62,10 @@ func (db *AtomicDatabase) CloseTransaction() {
 	defer db.lock.Unlock()
 
 	if db.batch == nil {
+		return
+	}
+	db.ref -= 1
+	if db.ref != 0 {
 		return
 	}
 	db.batch.Write()
