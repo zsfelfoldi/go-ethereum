@@ -29,6 +29,7 @@ import (
 )
 
 type serverPool struct {
+	clock                                           mclock.Clock
 	ns                                              *lpu.NodeStateMachine
 	vt                                              *lpc.ValueTracker
 	dialIterator                                    enode.Iterator
@@ -47,10 +48,12 @@ var (
 	smKnownSelectorDisable = []string{"iterSelected", "iterReturned", "query", "queryDelay", "canConnect", "dialed", "redialWait", "connected", "paid"}
 )
 
-func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, clock mclock.Clock) *serverPool {
+func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, clock mclock.Clock, ulServers []string) *serverPool {
+	//TODO connect to ulServers
 	s := &serverPool{
-		ns: lpu.NewNodeStateMachine(db, dbKey, smSaveImmediately, smSaveTimeout, time.Minute*10, clock),
-		vt: lpc.NewValueTracker(db, clock, requestList),
+		clock: clock,
+		ns:    lpu.NewNodeStateMachine(db, dbKey, smSaveImmediately, smSaveTimeout, time.Minute*10, clock),
+		vt:    lpc.NewValueTracker(db, clock, requestList),
 	}
 	enrFieldId := s.ns.RegisterField(reflect.TypeOf(enr.Record{}))
 	knownSelector := lpc.NewWrsIterator(s.ns, s.ns.GetStates(smKnownSelectorRequire), s.ns.GetStates(smKnownSelectorDisable), s.knownSelectWeight, enrFieldId)
@@ -82,33 +85,14 @@ func (s *serverPool) stop() {
 
 func (s *serverPool) registerPeer(p *serverPeer) {
 	s.ns.UpdateState(p.ID(), s.stConnected+s.stHasValue, s.stDialed, 0)
-	sv := s.vt.Register(p.ID())
-	s.updateParams(sv, p.fcCosts)
-	p.updateParams = func() {
-		s.updateParams(sv, p.fcCosts)
-	}
+	p.setValueTracker(s.vt.Register(p.ID()))
+	p.updateVtParams(s.vt)
 }
 
 func (s *serverPool) unregisterPeer(p *serverPeer) {
 	s.ns.UpdateState(p.ID(), s.stRedialWait, s.stConnected, time.Second*10)
 	s.vt.Unregister(p.ID())
-	p.updateParams = nil
-}
-
-func (s *serverPool) updateParams(sv *lpc.ServiceValue, costTable requestCostTable) {
-	if sv == nil {
-		return
-	}
-	reqCosts := make([]uint64, len(requestList))
-	for code, costs := range costTable {
-		if m, ok := requestMapping[uint32(code)]; ok {
-			reqCosts[m.first] = costs.baseCost + costs.reqCost
-			if m.rest != -1 {
-				reqCosts[m.rest] = costs.reqCost
-			}
-		}
-	}
-	s.vt.UpdateCosts(sv, reqCosts)
+	p.setValueTracker(nil)
 }
 
 func (s *serverPool) knownSelectWeight(i interface{}) uint64 {

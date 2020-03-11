@@ -38,7 +38,6 @@ var (
 type retrieveManager struct {
 	dist  *requestDistributor
 	peers *serverPeerSet
-	//serverPool peerSelector
 
 	lock     sync.RWMutex
 	sentReqs map[uint64]*sentReq
@@ -46,11 +45,6 @@ type retrieveManager struct {
 
 // validatorFunc is a function that processes a reply message
 type validatorFunc func(distPeer, *Msg) error
-
-// peerSelector receives feedback info about response times and timeouts
-/*type peerSelector interface {
-	adjustResponseTime(*poolEntry, time.Duration, bool)
-}*/
 
 // sentReq represents a request sent and tracked by retrieveManager
 type sentReq struct {
@@ -98,11 +92,10 @@ const (
 )
 
 // newRetrieveManager creates the retrieve manager
-func newRetrieveManager(peers *serverPeerSet, dist *requestDistributor /*, serverPool peerSelector*/) *retrieveManager {
+func newRetrieveManager(peers *serverPeerSet, dist *requestDistributor) *retrieveManager {
 	return &retrieveManager{
-		peers: peers,
-		dist:  dist,
-		//serverPool: serverPool,
+		peers:    peers,
+		dist:     dist,
 		sentReqs: make(map[uint64]*sentReq),
 	}
 }
@@ -324,8 +317,6 @@ func (r *sentReq) tryRequest() {
 		return
 	}
 
-	//reqSent := mclock.Now()
-	//srto, hrto := false, false
 	hrto := false
 
 	r.lock.RLock()
@@ -338,10 +329,6 @@ func (r *sentReq) tryRequest() {
 	defer func() {
 		// send feedback to server pool and remove peer if hard timeout happened
 		pp, ok := p.(*serverPeer)
-		/*if ok && r.rm.serverPool != nil {
-			respTime := time.Duration(mclock.Now() - reqSent)
-			r.rm.serverPool.adjustResponseTime(pp.poolEntry, respTime, srto)
-		}*/
 		if hrto && ok {
 			pp.Log().Debug("Request timed out hard")
 			if r.rm.peers != nil {
@@ -364,7 +351,6 @@ func (r *sentReq) tryRequest() {
 		r.eventsCh <- reqPeerEvent{event, p}
 		return
 	case <-time.After(softRequestTimeout):
-		//srto = true
 		r.eventsCh <- reqPeerEvent{rpSoftTimeout, p}
 	}
 

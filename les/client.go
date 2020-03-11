@@ -102,9 +102,8 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 		engine:         eth.CreateConsensusEngine(ctx, chainConfig, &config.Ethash, nil, false, chainDb),
 		bloomRequests:  make(chan chan *bloombits.Retrieval),
 		bloomIndexer:   eth.NewBloomIndexer(chainDb, params.BloomBitsBlocksClient, params.HelperTrieConfirmations),
-		//serverPool:     newServerPool(chainDb, config.UltraLightServers),
 	}
-	leth.retriever = newRetrieveManager(peers, leth.reqDist /*, leth.serverPool*/)
+	leth.retriever = newRetrieveManager(peers, leth.reqDist)
 	leth.relay = newLesTxRelay(peers, leth.retriever)
 
 	leth.odr = NewLesOdr(chainDb, light.DefaultClientIndexerConfig, leth.retriever)
@@ -171,16 +170,9 @@ func New(ctx *node.ServiceContext, config *eth.Config) (*LightEthereum, error) {
 	} else {
 		leth.persistentClock.SetAbsTime(0)
 	}
-	leth.serverPool = newServerPool(chainDb, []byte("serverpool:"), dnsFiltered, leth.persistentClock)
+	leth.serverPool = newServerPool(chainDb, []byte("serverpool:"), dnsFiltered, leth.persistentClock, config.UltraLightServers)
 	peers.subscribe(leth.serverPool)
 	leth.dialCandidates = leth.serverPool.dialIterator
-
-	/*go func() {
-		for leth.dialCandidates.Next() {
-			node := leth.dialCandidates.Node()
-			fmt.Println(node.ID())
-		}
-	}()*/
 
 	return leth, nil
 }
@@ -274,10 +266,6 @@ func (s *LightEthereum) Start(srvr *p2p.Server) error {
 	s.startBloomHandlers(params.BloomBitsBlocksClient)
 
 	s.netRPCService = ethapi.NewPublicNetAPI(srvr, s.config.NetworkId)
-
-	// clients are searching for the first advertised protocol in the list
-	//protocolVersion := AdvertiseProtocolVersions[0]
-	//s.serverPool.start(srvr, lesTopic(s.blockchain.Genesis().Hash(), protocolVersion))
 	return nil
 }
 
