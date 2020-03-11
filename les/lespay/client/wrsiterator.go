@@ -14,12 +14,13 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package utils
+package client
 
 import (
 	"sync"
 	"time"
 
+	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/enr"
 )
@@ -27,9 +28,9 @@ import (
 type (
 	WrsIterator struct {
 		lock                                                 sync.Mutex
-		ns                                                   *NodeStateMachine
-		wrs                                                  *WeightedRandomSelect
-		requireStates, disableStates, stSelected, stReturned NodeStateBitMask
+		ns                                                   *lpu.NodeStateMachine
+		wrs                                                  *lpu.WeightedRandomSelect
+		requireStates, disableStates, stSelected, stReturned lpu.NodeStateBitMask
 		enrFieldID                                           int
 		wakeup                                               chan struct{}
 		nextID                                               enode.ID
@@ -37,10 +38,10 @@ type (
 	}
 )
 
-func NewWrsIterator(ns *NodeStateMachine, requireStates, disableStates NodeStateBitMask, wfn func(interface{}) uint64, enrFieldID int) *WrsIterator {
+func NewWrsIterator(ns *lpu.NodeStateMachine, requireStates, disableStates lpu.NodeStateBitMask, wfn func(interface{}) uint64, enrFieldID int) *WrsIterator {
 	w := &WrsIterator{
 		ns:            ns,
-		wrs:           NewWeightedRandomSelect(wfn),
+		wrs:           lpu.NewWeightedRandomSelect(wfn),
 		requireStates: requireStates,
 		disableStates: disableStates,
 		stSelected:    ns.GetState("selected"),
@@ -50,7 +51,7 @@ func NewWrsIterator(ns *NodeStateMachine, requireStates, disableStates NodeState
 	return w
 }
 
-func (w *WrsIterator) nodeEvent(id enode.ID, oldState, newState NodeStateBitMask) {
+func (w *WrsIterator) nodeEvent(id enode.ID, oldState, newState lpu.NodeStateBitMask) {
 	w.lock.Lock()
 	defer w.lock.Unlock()
 

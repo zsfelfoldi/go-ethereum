@@ -77,19 +77,20 @@ const (
 )
 
 type requestInfo struct {
-	name     string
-	maxCount uint64
+	name                          string
+	maxCount                      uint64
+	refBasketFirst, refBasketRest float64
 }
 
 var requests = map[uint64]requestInfo{
-	GetBlockHeadersMsg:     {"GetBlockHeaders", MaxHeaderFetch},
-	GetBlockBodiesMsg:      {"GetBlockBodies", MaxBodyFetch},
-	GetReceiptsMsg:         {"GetReceipts", MaxReceiptFetch},
-	GetCodeMsg:             {"GetCode", MaxCodeFetch},
-	GetProofsV2Msg:         {"GetProofsV2", MaxProofsFetch},
-	GetHelperTrieProofsMsg: {"GetHelperTrieProofs", MaxHelperTrieProofsFetch},
-	SendTxV2Msg:            {"SendTxV2", MaxTxSend},
-	GetTxStatusMsg:         {"GetTxStatus", MaxTxStatus},
+	GetBlockHeadersMsg:     {"GetBlockHeaders", MaxHeaderFetch, 10, 1000},
+	GetBlockBodiesMsg:      {"GetBlockBodies", MaxBodyFetch, 1, 0},
+	GetReceiptsMsg:         {"GetReceipts", MaxReceiptFetch, 1, 0},
+	GetCodeMsg:             {"GetCode", MaxCodeFetch, 1, 0},
+	GetProofsV2Msg:         {"GetProofsV2", MaxProofsFetch, 10, 0},
+	GetHelperTrieProofsMsg: {"GetHelperTrieProofs", MaxHelperTrieProofsFetch, 10, 100},
+	SendTxV2Msg:            {"SendTxV2", MaxTxSend, 1, 0},
+	GetTxStatusMsg:         {"GetTxStatus", MaxTxStatus, 10, 0},
 }
 
 type errCode int

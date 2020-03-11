@@ -23,14 +23,16 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb"
 	lpc "github.com/ethereum/go-ethereum/les/lespay/client"
+	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/enr"
 )
 
 type serverPool struct {
-	ns                                              *lpc.NodeStateMachine
+	ns                                              *lpu.NodeStateMachine
+	vt                                              *lpc.ValueTracker
 	dialIterator                                    enode.Iterator
-	stDialed, stConnected, stRedialWait, stHasValue lpc.NodeStateBitMask
+	stDialed, stConnected, stRedialWait, stHasValue lpu.NodeStateBitMask
 }
 
 type serverPoolFields struct {
@@ -47,7 +49,8 @@ var (
 
 func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, clock mclock.Clock) *serverPool {
 	s := &serverPool{
-		ns: lpc.NewNodeStateMachine(db, dbKey, smSaveImmediately, smSaveTimeout, time.Minute*10, clock),
+		ns: lpu.NewNodeStateMachine(db, dbKey, smSaveImmediately, smSaveTimeout, time.Minute*10, clock),
+		vt: lpc.NewValueTracker(db, clock, requestList),
 	}
 	enrFieldId := s.ns.RegisterField(reflect.TypeOf(enr.Record{}))
 	knownSelector := lpc.NewWrsIterator(s.ns, s.ns.GetStates(smKnownSelectorRequire), s.ns.GetStates(smKnownSelectorDisable), s.knownSelectWeight, enrFieldId)
@@ -79,12 +82,70 @@ func (s *serverPool) stop() {
 
 func (s *serverPool) registerPeer(p *serverPeer) {
 	s.ns.UpdateState(p.ID(), s.stConnected+s.stHasValue, s.stDialed, 0)
+	sv := s.vt.Register(p.ID())
+	s.updateParams(sv, p.fcCosts)
+	p.updateParams = func() {
+		s.updateParams(sv, p.fcCosts)
+	}
 }
 
 func (s *serverPool) unregisterPeer(p *serverPeer) {
 	s.ns.UpdateState(p.ID(), s.stRedialWait, s.stConnected, time.Second*10)
+	s.vt.Unregister(p.ID())
+	p.updateParams = nil
+}
+
+func (s *serverPool) updateParams(sv *lpc.ServiceValue, costTable requestCostTable) {
+	if sv == nil {
+		return
+	}
+	reqCosts := make([]uint64, len(requestList))
+	for code, costs := range costTable {
+		if m, ok := requestMapping[uint32(code)]; ok {
+			reqCosts[m.first] = costs.baseCost + costs.reqCost
+			if m.rest != -1 {
+				reqCosts[m.rest] = costs.reqCost
+			}
+		}
+	}
+	s.vt.UpdateCosts(sv, reqCosts)
 }
 
 func (s *serverPool) knownSelectWeight(i interface{}) uint64 {
-	return 1
+	sv := s.vt.GetServiceValue(i.(enode.ID))
+	if sv == nil {
+		return 0
+	}
+	return uint64(sv.TotalReqValue(time.Second)) //TODO use expRT value based on global stats
+}
+
+type reqMapping struct {
+	first, rest int
+}
+
+var (
+	requestList    []lpc.RequestInfo
+	requestMapping map[uint32]reqMapping
+)
+
+func init() {
+	requestMapping = make(map[uint32]reqMapping)
+	for code, req := range requests {
+		cost := reqAvgTimeCost[code]
+		rm := reqMapping{len(requestList), -1}
+		requestList = append(requestList, lpc.RequestInfo{
+			Name:       req.name + ".first",
+			InitAmount: req.refBasketFirst,
+			InitValue:  float64(cost.baseCost + cost.reqCost),
+		})
+		if req.refBasketRest != 0 {
+			rm.rest = len(requestList)
+			requestList = append(requestList, lpc.RequestInfo{
+				Name:       req.name + ".rest",
+				InitAmount: req.refBasketRest,
+				InitValue:  float64(cost.reqCost),
+			})
+		}
+		requestMapping[uint32(code)] = rm
+	}
 }

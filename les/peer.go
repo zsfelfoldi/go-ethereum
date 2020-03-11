@@ -355,7 +355,8 @@ type serverPeer struct {
 	checkpoint       params.TrustedCheckpoint // The advertised checkpoint sent by server.
 
 	//poolEntry *poolEntry              // Statistic for server peer.
-	fcServer *flowcontrol.ServerNode // Client side mirror token bucket.
+	fcServer     *flowcontrol.ServerNode // Client side mirror token bucket.
+	updateParams func()
 
 	// Statistics
 	errCount    int // Counter the invalid responses server has replied
@@ -565,6 +566,9 @@ func (p *serverPeer) updateFlowControl(update keyValueMap) {
 		for code, cost := range costUpdate {
 			p.fcCosts[code] = cost
 		}
+	}
+	if p.updateParams != nil {
+		p.updateParams()
 	}
 }
 
