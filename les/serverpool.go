@@ -96,7 +96,7 @@ func (s *serverPool) unregisterPeer(p *serverPeer) {
 }
 
 func (s *serverPool) knownSelectWeight(i interface{}) uint64 {
-	sv := s.vt.GetServiceValue(i.(enode.ID))
+	sv := s.vt.GetServerValueTracker(i.(enode.ID))
 	if sv == nil {
 		return 0
 	}

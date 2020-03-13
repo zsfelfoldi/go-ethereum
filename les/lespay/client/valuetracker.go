@@ -43,7 +43,8 @@ var (
 	vtServer = []byte("vtServer:")
 )
 
-type ServiceValue struct {
+// ServerValueTracker collects service value statistics for a specific server
+type ServerValueTracker struct {
 	lock sync.Mutex
 
 	rtStats     responseTimeStats
@@ -55,7 +56,7 @@ type ServiceValue struct {
 	lastReqCosts []uint64 // accessed by ValueTracker only
 }
 
-func (sv *ServiceValue) init(now mclock.AbsTime, reqValues *[]float64) {
+func (sv *ServerValueTracker) init(now mclock.AbsTime, reqValues *[]float64) {
 	reqTypeCount := len(*reqValues)
 	sv.reqCosts = make([]uint64, reqTypeCount)
 	sv.lastReqCosts = sv.reqCosts
@@ -64,7 +65,7 @@ func (sv *ServiceValue) init(now mclock.AbsTime, reqValues *[]float64) {
 	sv.basket.init(now, reqTypeCount)
 }
 
-func (sv *ServiceValue) periodicUpdate(now mclock.AbsTime) {
+func (sv *ServerValueTracker) periodicUpdate(now mclock.AbsTime) {
 
 }
 
@@ -72,7 +73,7 @@ type ServedRequest struct {
 	ReqType, Amount uint32
 }
 
-func (sv *ServiceValue) Served(reqs []ServedRequest, respTime time.Duration) {
+func (sv *ServerValueTracker) Served(reqs []ServedRequest, respTime time.Duration) {
 	sv.lock.Lock()
 	defer sv.lock.Unlock()
 
@@ -84,7 +85,7 @@ func (sv *ServiceValue) Served(reqs []ServedRequest, respTime time.Duration) {
 	sv.rtStats.add(respTime, value)
 }
 
-func (sv *ServiceValue) TotalReqValue(expRT time.Duration) float64 {
+func (sv *ServerValueTracker) TotalReqValue(expRT time.Duration) float64 {
 	sv.lock.Lock()
 	defer sv.lock.Unlock()
 
@@ -92,7 +93,7 @@ func (sv *ServiceValue) TotalReqValue(expRT time.Duration) float64 {
 	return tv
 }
 
-func (sv *ServiceValue) NormalizedRtStats() []float64 {
+func (sv *ServerValueTracker) NormalizedRtStats() []float64 {
 	sv.lock.Lock()
 	defer sv.lock.Unlock()
 
@@ -110,7 +111,7 @@ func (sv *ServiceValue) NormalizedRtStats() []float64 {
 	return res
 }
 
-func (sv *ServiceValue) updateCosts(reqCosts []uint64, reqValues *[]float64, rvFactor float64) {
+func (sv *ServerValueTracker) updateCosts(reqCosts []uint64, reqValues *[]float64, rvFactor float64) {
 	sv.lock.Lock()
 	defer sv.lock.Unlock()
 
@@ -119,19 +120,21 @@ func (sv *ServiceValue) updateCosts(reqCosts []uint64, reqValues *[]float64, rvF
 	sv.basket.updateRvFactor(rvFactor)
 }
 
-func (sv *ServiceValue) transferBasket(now mclock.AbsTime) requestBasket {
+func (sv *ServerValueTracker) transferBasket(now mclock.AbsTime) requestBasket {
 	sv.lock.Lock()
 	defer sv.lock.Unlock()
 
 	return sv.basket.transfer(now, vtBasketTransferRate)
 }
 
+// ValueTracker coordinates service value calculation for individual servers and updates
+// global statistics
 type ValueTracker struct {
 	clock        mclock.Clock
 	lock         sync.Mutex
 	quit         chan chan struct{}
 	db           ethdb.Database
-	connected    map[enode.ID]*ServiceValue
+	connected    map[enode.ID]*ServerValueTracker
 	reqTypeCount int
 
 	refBasket           referenceBasket
@@ -147,7 +150,7 @@ type valueTrackerEncV1 struct {
 	RefBasket        requestBasket
 }
 
-type serviceValueEncV1 struct {
+type serverValueTrackerEncV1 struct {
 	RtStats            responseTimeStats
 	ValueBasketMapping uint
 	ValueBasket        requestBasket
@@ -165,13 +168,13 @@ func NewValueTracker(db ethdb.Database, clock mclock.Clock, reqInfo []RequestInf
 	mapping := make([]string, len(reqInfo))
 	for i, req := range reqInfo {
 		mapping[i] = req.Name
-		initRefBasket[i].amount = uint64(req.InitAmount * reqAmountMultiplier)
+		initRefBasket[i].amount = uint64(req.InitAmount * referenceFactor)
 		initRefBasket[i].value = uint64(req.InitAmount * req.InitValue)
 	}
 
 	vt := &ValueTracker{
 		clock:               clock,
-		connected:           make(map[enode.ID]*ServiceValue),
+		connected:           make(map[enode.ID]*ServerValueTracker),
 		quit:                make(chan chan struct{}),
 		lastRefBasketUpdate: now,
 		db:                  db,
@@ -282,7 +285,7 @@ func (vt *ValueTracker) Stop() {
 	vt.lock.Unlock()
 }
 
-func (vt *ValueTracker) Register(id enode.ID) *ServiceValue {
+func (vt *ValueTracker) Register(id enode.ID) *ServerValueTracker {
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 
@@ -305,18 +308,18 @@ func (vt *ValueTracker) Unregister(id enode.ID) {
 	}
 }
 
-func (vt *ValueTracker) GetServiceValue(id enode.ID) *ServiceValue {
+func (vt *ValueTracker) GetServerValueTracker(id enode.ID) *ServerValueTracker {
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 
 	return vt.loadOrNew(id)
 }
 
-func (vt *ValueTracker) loadOrNew(id enode.ID) *ServiceValue {
+func (vt *ValueTracker) loadOrNew(id enode.ID) *ServerValueTracker {
 	if sv, ok := vt.connected[id]; ok {
 		return sv
 	}
-	sv := &ServiceValue{}
+	sv := &ServerValueTracker{}
 	enc, err := vt.db.Get(append(vtServer, id[:]...))
 	if err != nil {
 		return sv
@@ -328,10 +331,10 @@ func (vt *ValueTracker) loadOrNew(id enode.ID) *ServiceValue {
 		return sv
 	}
 	if version != svVersion {
-		log.Error("Unknown ServiceValue version", "stored", version, "current", svVersion)
+		log.Error("Unknown ServerValueTracker version", "stored", version, "current", svVersion)
 		return sv
 	}
-	var sve serviceValueEncV1
+	var sve serverValueTrackerEncV1
 	if err := rlp.Decode(r, &sve); err != nil {
 		log.Error("Failed to decode service value information", "id", id, "err", err)
 		return sv
@@ -349,8 +352,8 @@ func (vt *ValueTracker) loadOrNew(id enode.ID) *ServiceValue {
 	return sv
 }
 
-func (vt *ValueTracker) save(id enode.ID, sv *ServiceValue) {
-	sve := serviceValueEncV1{
+func (vt *ValueTracker) save(id enode.ID, sv *ServerValueTracker) {
+	sve := serverValueTrackerEncV1{
 		RtStats:            sv.rtStats,
 		ValueBasketMapping: uint(vt.currentMapping),
 		ValueBasket:        sv.basket.valueBasket,
@@ -371,13 +374,15 @@ func (vt *ValueTracker) updateReferenceBasket() {
 	for _, sv := range vt.connected {
 		vt.refBasket.add(sv.transferBasket(now))
 	}
+	vt.refBasket.normalizeAndExpire(0) //TODO add expiration
+	vt.refBasket.updateReqValues()
 	for _, sv := range vt.connected {
 		sv.updateCosts(sv.lastReqCosts, &vt.refBasket.reqValues, vt.refBasket.reqValueFactor(sv.lastReqCosts))
 	}
 	vt.saveToDb()
 }
 
-func (vt *ValueTracker) UpdateCosts(sv *ServiceValue, reqCosts []uint64) {
+func (vt *ValueTracker) UpdateCosts(sv *ServerValueTracker, reqCosts []uint64) {
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 

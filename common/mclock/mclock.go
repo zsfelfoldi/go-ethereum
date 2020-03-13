@@ -79,6 +79,7 @@ func (c System) Now() AbsTime {
 	return AbsTime(monotime.Now()) + c.offset
 }
 
+// SetAbsTime virtually sets the current time by adjusting the offset
 func (c *System) SetAbsTime(now AbsTime) {
 	c.offset = now - AbsTime(monotime.Now())
 }

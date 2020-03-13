@@ -357,7 +357,7 @@ type serverPeer struct {
 
 	fcServer     *flowcontrol.ServerNode // Client side mirror token bucket.
 	vtLock       sync.Mutex
-	valueTracker *lpc.ServiceValue
+	valueTracker *lpc.ServerValueTracker
 	sentReqs     map[uint64]sentReqEntry
 
 	// Statistics
@@ -641,7 +641,7 @@ func (p *serverPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 	})
 }
 
-func (p *serverPeer) setValueTracker(sv *lpc.ServiceValue) {
+func (p *serverPeer) setValueTracker(sv *lpc.ServerValueTracker) {
 	p.vtLock.Lock()
 	p.valueTracker = sv
 	if sv != nil {
