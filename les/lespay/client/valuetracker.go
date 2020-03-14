@@ -19,6 +19,7 @@ package client
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -33,9 +34,9 @@ const (
 	vtVersion = 1 // database encoding format
 	svVersion = 1
 
-	vtUpdatePeriod          = time.Minute
-	vtRefBasketUpdatePeriod = time.Minute * 10
-	vtBasketTransferRate    = 1 / float64(time.Hour)
+	vtUpdatePeriod       = time.Minute
+	vtBasketTransferRate = 1 / float64(time.Hour)
+	vtStatsExpRate       = 1 / float64(time.Hour*1000)
 )
 
 var (
@@ -47,11 +48,11 @@ var (
 type ServerValueTracker struct {
 	lock sync.Mutex
 
-	rtStats     responseTimeStats
-	lastExpired mclock.AbsTime
-	basket      serverBasket
-	reqCosts    []uint64
-	reqValues   *[]float64
+	rtStats, lastRtStats responseTimeStats
+	lastTransfer         mclock.AbsTime
+	basket               serverBasket
+	reqCosts             []uint64
+	reqValues            *[]float64
 
 	lastReqCosts []uint64 // accessed by ValueTracker only
 }
@@ -60,13 +61,9 @@ func (sv *ServerValueTracker) init(now mclock.AbsTime, reqValues *[]float64) {
 	reqTypeCount := len(*reqValues)
 	sv.reqCosts = make([]uint64, reqTypeCount)
 	sv.lastReqCosts = sv.reqCosts
-	sv.lastExpired = now
+	sv.lastTransfer = now
 	sv.reqValues = reqValues
-	sv.basket.init(now, reqTypeCount)
-}
-
-func (sv *ServerValueTracker) periodicUpdate(now mclock.AbsTime) {
-
+	sv.basket.init(reqTypeCount)
 }
 
 type ServedRequest struct {
@@ -120,11 +117,22 @@ func (sv *ServerValueTracker) updateCosts(reqCosts []uint64, reqValues *[]float6
 	sv.basket.updateRvFactor(rvFactor)
 }
 
-func (sv *ServerValueTracker) transferBasket(now mclock.AbsTime) requestBasket {
+func (sv *ServerValueTracker) transferStats(now mclock.AbsTime) (requestBasket, responseTimeStats) {
 	sv.lock.Lock()
 	defer sv.lock.Unlock()
 
-	return sv.basket.transfer(now, vtBasketTransferRate)
+	dt := now - sv.lastTransfer
+	sv.lastTransfer = now
+	if dt < 0 {
+		dt = 0
+	}
+	exp := -math.Expm1(float64(dt) * vtStatsExpRate)
+	recentRtStats := sv.rtStats
+	recentRtStats.subStats(&sv.lastRtStats)
+	sv.rtStats.expire(exp)
+	recentRtStats.expire(exp)
+	sv.lastRtStats = sv.rtStats
+	return sv.basket.transfer(-math.Expm1(-vtBasketTransferRate * float64(dt))), recentRtStats
 }
 
 // ValueTracker coordinates service value calculation for individual servers and updates
@@ -137,11 +145,12 @@ type ValueTracker struct {
 	connected    map[enode.ID]*ServerValueTracker
 	reqTypeCount int
 
-	refBasket           referenceBasket
-	lastRefBasketUpdate mclock.AbsTime
-	mappings            [][]string
-	currentMapping      int
-	initRefBasket       requestBasket
+	refBasket      referenceBasket
+	lastUpdate     mclock.AbsTime
+	mappings       [][]string
+	currentMapping int
+	initRefBasket  requestBasket
+	rtStats        responseTimeStats
 }
 
 type valueTrackerEncV1 struct {
@@ -173,13 +182,13 @@ func NewValueTracker(db ethdb.Database, clock mclock.Clock, reqInfo []RequestInf
 	}
 
 	vt := &ValueTracker{
-		clock:               clock,
-		connected:           make(map[enode.ID]*ServerValueTracker),
-		quit:                make(chan chan struct{}),
-		lastRefBasketUpdate: now,
-		db:                  db,
-		reqTypeCount:        len(initRefBasket),
-		initRefBasket:       initRefBasket,
+		clock:         clock,
+		connected:     make(map[enode.ID]*ServerValueTracker),
+		quit:          make(chan chan struct{}),
+		lastUpdate:    now,
+		db:            db,
+		reqTypeCount:  len(initRefBasket),
+		initRefBasket: initRefBasket,
 	}
 	if vt.loadFromDb(mapping) != nil {
 		// previous state not saved or invalid, init with default values
@@ -193,7 +202,9 @@ func NewValueTracker(db ethdb.Database, clock mclock.Clock, reqInfo []RequestInf
 		for {
 			select {
 			case <-time.After(vtUpdatePeriod):
+				vt.lock.Lock()
 				vt.periodicUpdate()
+				vt.lock.Unlock()
 			case quit := <-vt.quit:
 				close(quit)
 				return
@@ -275,9 +286,9 @@ func (vt *ValueTracker) Stop() {
 	vt.quit <- quit
 	<-quit
 	vt.lock.Lock()
-	vt.updateReferenceBasket()
+	vt.periodicUpdate()
 	for id, sv := range vt.connected {
-		vt.save(id, sv)
+		vt.saveNode(id, sv)
 
 	}
 	vt.connected = nil
@@ -292,7 +303,7 @@ func (vt *ValueTracker) Register(id enode.ID) *ServerValueTracker {
 	if vt.connected == nil { // closed
 		return nil
 	}
-	sv := vt.loadOrNew(id)
+	sv := vt.loadOrNewNode(id)
 	sv.init(vt.clock.Now(), &vt.refBasket.reqValues)
 	vt.connected[id] = sv
 	return sv
@@ -303,7 +314,7 @@ func (vt *ValueTracker) Unregister(id enode.ID) {
 	defer vt.lock.Unlock()
 
 	if sv := vt.connected[id]; sv != nil {
-		vt.save(id, sv)
+		vt.saveNode(id, sv)
 		delete(vt.connected, id)
 	}
 }
@@ -312,10 +323,10 @@ func (vt *ValueTracker) GetServerValueTracker(id enode.ID) *ServerValueTracker {
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 
-	return vt.loadOrNew(id)
+	return vt.loadOrNewNode(id)
 }
 
-func (vt *ValueTracker) loadOrNew(id enode.ID) *ServerValueTracker {
+func (vt *ValueTracker) loadOrNewNode(id enode.ID) *ServerValueTracker {
 	if sv, ok := vt.connected[id]; ok {
 		return sv
 	}
@@ -352,7 +363,7 @@ func (vt *ValueTracker) loadOrNew(id enode.ID) *ServerValueTracker {
 	return sv
 }
 
-func (vt *ValueTracker) save(id enode.ID, sv *ServerValueTracker) {
+func (vt *ValueTracker) saveNode(id enode.ID, sv *ServerValueTracker) {
 	sve := serverValueTrackerEncV1{
 		RtStats:            sv.rtStats,
 		ValueBasketMapping: uint(vt.currentMapping),
@@ -368,20 +379,6 @@ func (vt *ValueTracker) save(id enode.ID, sv *ServerValueTracker) {
 	}
 }
 
-func (vt *ValueTracker) updateReferenceBasket() {
-	now := vt.clock.Now()
-	vt.lastRefBasketUpdate = now
-	for _, sv := range vt.connected {
-		vt.refBasket.add(sv.transferBasket(now))
-	}
-	vt.refBasket.normalizeAndExpire(0) //TODO add expiration
-	vt.refBasket.updateReqValues()
-	for _, sv := range vt.connected {
-		sv.updateCosts(sv.lastReqCosts, &vt.refBasket.reqValues, vt.refBasket.reqValueFactor(sv.lastReqCosts))
-	}
-	vt.saveToDb()
-}
-
 func (vt *ValueTracker) UpdateCosts(sv *ServerValueTracker, reqCosts []uint64) {
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
@@ -391,14 +388,23 @@ func (vt *ValueTracker) UpdateCosts(sv *ServerValueTracker, reqCosts []uint64) {
 }
 
 func (vt *ValueTracker) periodicUpdate() {
-	vt.lock.Lock()
-	defer vt.lock.Unlock()
-
 	now := mclock.Now()
+	dt := now - vt.lastUpdate
+	vt.lastUpdate = now
+	if dt < 0 {
+		dt = 0
+	}
+	exp := -math.Expm1(float64(dt) * vtStatsExpRate)
+	vt.rtStats.expire(exp)
 	for _, sv := range vt.connected {
-		sv.periodicUpdate(now)
+		basket, rtStats := sv.transferStats(now)
+		vt.refBasket.add(basket)
+		vt.rtStats.addStats(&rtStats)
 	}
-	if now > vt.lastRefBasketUpdate+mclock.AbsTime(vtRefBasketUpdatePeriod) {
-		vt.updateReferenceBasket()
+	vt.refBasket.normalizeAndExpire(exp)
+	vt.refBasket.updateReqValues()
+	for _, sv := range vt.connected {
+		sv.updateCosts(sv.lastReqCosts, &vt.refBasket.reqValues, vt.refBasket.reqValueFactor(sv.lastReqCosts))
 	}
+	vt.saveToDb()
 }

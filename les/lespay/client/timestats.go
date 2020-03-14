@@ -91,3 +91,15 @@ func (rt *responseTimeStats) expire(exp float64) {
 		rt[i] = s - uint64(float64(s)*exp)
 	}
 }
+
+func (rt *responseTimeStats) addStats(s *responseTimeStats) {
+	for i, v := range s[:] {
+		rt[i] += v
+	}
+}
+
+func (rt *responseTimeStats) subStats(s *responseTimeStats) {
+	for i, v := range s[:] {
+		rt[i] -= v
+	}
+}

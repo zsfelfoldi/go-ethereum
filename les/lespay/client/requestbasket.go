@@ -18,7 +18,6 @@ package client
 
 import (
 	"io"
-	"math"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -56,7 +55,6 @@ type referenceBasket struct {
 type serverBasket struct {
 	costBasket, valueBasket requestBasket
 	rvFactor                float64
-	lastTransfer            mclock.AbsTime
 }
 
 type (
@@ -68,14 +66,13 @@ type (
 
 // init initializes a new server basket with the given service vector size (number of
 // different request types)
-func (s *serverBasket) init(now mclock.AbsTime, size int) {
+func (s *serverBasket) init(size int) {
 	if s.costBasket == nil {
 		s.costBasket = make(requestBasket, size)
 	}
 	if s.valueBasket == nil {
 		s.valueBasket = make(requestBasket, size)
 	}
-	s.lastTransfer = now
 }
 
 // add adds the give type and amount of requests to the basket. Cost is calculated
@@ -97,28 +94,23 @@ func (s *serverBasket) updateRvFactor(rvFactor float64) {
 	s.rvFactor = rvFactor
 }
 
-// transfer decreases amounts and values in the basket with the given exponential rate
-// and moves the removed amounts into a new basket which is returned and can be added
+// transfer decreases amounts and values in the basket with the given ratio and
+// moves the removed amounts into a new basket which is returned and can be added
 // to the global reference basket.
-func (s *serverBasket) transfer(now mclock.AbsTime, rate float64) requestBasket {
+func (s *serverBasket) transfer(ratio float64) requestBasket {
 	s.updateRvFactor(s.rvFactor)
 	res := make(requestBasket, len(s.valueBasket))
-	dt := now - s.lastTransfer
-	s.lastTransfer = now
-	if dt > 0 {
-		rate = -math.Expm1(-rate * float64(dt))
-		for i, v := range s.valueBasket {
-			ta := uint64(float64(v.amount) * rate)
-			tv := uint64(float64(v.value) * rate)
-			if ta > v.amount {
-				ta = v.amount
-			}
-			if tv > v.value {
-				tv = v.value
-			}
-			s.valueBasket[i] = basketItem{v.amount - ta, v.value - tv}
-			res[i] = basketItem{ta, tv}
+	for i, v := range s.valueBasket {
+		ta := uint64(float64(v.amount) * ratio)
+		tv := uint64(float64(v.value) * ratio)
+		if ta > v.amount {
+			ta = v.amount
 		}
+		if tv > v.value {
+			tv = v.value
+		}
+		s.valueBasket[i] = basketItem{v.amount - ta, v.value - tv}
+		res[i] = basketItem{ta, tv}
 	}
 	return res
 }

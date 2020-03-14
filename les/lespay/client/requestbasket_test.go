@@ -17,12 +17,8 @@
 package client
 
 import (
-	"math"
 	"math/rand"
 	"testing"
-	"time"
-
-	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
 func checkU64(t *testing.T, name string, value, exp uint64) {
@@ -39,7 +35,7 @@ func checkF64(t *testing.T, name string, value, exp, tol float64) {
 
 func TestServerBasket(t *testing.T) {
 	var s serverBasket
-	s.init(0, 2)
+	s.init(2)
 	// add some requests with different request value factors
 	s.updateRvFactor(1)
 	s.add(0, 1000, 10000)
@@ -53,8 +49,8 @@ func TestServerBasket(t *testing.T) {
 	checkU64(t, "s.valueBasket[0].value", s.valueBasket[0].value, 50000)
 	checkU64(t, "s.valueBasket[1].amount", s.valueBasket[1].amount, 5000*referenceFactor)
 	checkU64(t, "s.valueBasket[1].value", s.valueBasket[1].value, 100000)
-	// make a transfer after 1 minute with 50% per minute transfer rate
-	transfer1 := s.transfer(mclock.AbsTime(time.Minute), math.Log(2)/float64(time.Minute))
+	// transfer 50% of the contents of the basket
+	transfer1 := s.transfer(0.5)
 	checkU64(t, "transfer1[0].amount", transfer1[0].amount, 2500*referenceFactor)
 	checkU64(t, "transfer1[0].value", transfer1[0].value, 25000)
 	checkU64(t, "transfer1[1].amount", transfer1[1].amount, 2500*referenceFactor)
@@ -62,12 +58,12 @@ func TestServerBasket(t *testing.T) {
 	// add more requests
 	s.updateRvFactor(100)
 	s.add(0, 1000, 100)
-	// make another transfer after 2 more minutes with 50% per minute transfer rate
-	transfer2 := s.transfer(mclock.AbsTime(time.Minute*3), math.Log(2)/float64(time.Minute))
-	checkU64(t, "transfer2[0].amount", transfer2[0].amount, (2500+1000)*3/4*referenceFactor)
-	checkU64(t, "transfer2[0].value", transfer2[0].value, (25000+10000)*3/4)
-	checkU64(t, "transfer2[1].amount", transfer2[1].amount, 2500*3/4*referenceFactor)
-	checkU64(t, "transfer2[1].value", transfer2[1].value, 50000*3/4)
+	// transfer 25% of the contents of the basket
+	transfer2 := s.transfer(0.25)
+	checkU64(t, "transfer2[0].amount", transfer2[0].amount, (2500+1000)/4*referenceFactor)
+	checkU64(t, "transfer2[0].value", transfer2[0].value, (25000+10000)/4)
+	checkU64(t, "transfer2[1].amount", transfer2[1].amount, 2500/4*referenceFactor)
+	checkU64(t, "transfer2[1].value", transfer2[1].value, 50000/4)
 }
 
 func TestConvertMapping(t *testing.T) {
@@ -97,8 +93,8 @@ func TestReqValueFactor(t *testing.T) {
 
 func TestReqValueAdjustment(t *testing.T) {
 	var s1, s2 serverBasket
-	s1.init(0, 3)
-	s2.init(0, 3)
+	s1.init(3)
+	s2.init(3)
 	cost1 := []uint64{30000, 60000, 90000}
 	cost2 := []uint64{100000, 200000, 300000}
 	var ref referenceBasket
@@ -124,8 +120,8 @@ func TestReqValueAdjustment(t *testing.T) {
 			reqCost = uint64(reqAmount) * cost2[reqType]
 			s2.add(reqType, reqAmount, reqCost)
 		}
-		ref.add(s1.transfer(mclock.AbsTime(period)*mclock.AbsTime(time.Minute), 0.1/float64(time.Minute)))
-		ref.add(s2.transfer(mclock.AbsTime(period)*mclock.AbsTime(time.Minute), 0.1/float64(time.Minute)))
+		ref.add(s1.transfer(0.1))
+		ref.add(s2.transfer(0.1))
 		ref.normalizeAndExpire(0.1)
 		ref.updateReqValues()
 	}
