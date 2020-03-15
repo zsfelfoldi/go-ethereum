@@ -53,7 +53,7 @@ func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, cl
 	s := &serverPool{
 		clock: clock,
 		ns:    lpu.NewNodeStateMachine(db, dbKey, smSaveImmediately, smSaveTimeout, time.Minute*10, clock),
-		vt:    lpc.NewValueTracker(db, clock, requestList),
+		vt:    lpc.NewValueTracker(db, clock, requestList, time.Minute, 1/float64(time.Hour), 1/float64(time.Hour*1000)),
 	}
 	enrFieldId := s.ns.RegisterField(reflect.TypeOf(enr.Record{}))
 	knownSelector := lpc.NewWrsIterator(s.ns, s.ns.GetStates(smKnownSelectorRequire), s.ns.GetStates(smKnownSelectorDisable), s.knownSelectWeight, enrFieldId)
@@ -96,11 +96,11 @@ func (s *serverPool) unregisterPeer(p *serverPeer) {
 }
 
 func (s *serverPool) knownSelectWeight(i interface{}) uint64 {
-	sv := s.vt.GetServerValueTracker(i.(enode.ID))
-	if sv == nil {
+	nvt := s.vt.GetNodeValueTracker(i.(enode.ID))
+	if nvt == nil {
 		return 0
 	}
-	return uint64(sv.TotalReqValue(time.Second)) //TODO use expRT value based on global stats
+	return uint64(nvt.TotalReqValue(time.Second)) //TODO use expRT value based on global stats
 }
 
 type reqMapping struct {
