@@ -42,22 +42,30 @@ type serverPoolFields struct {
 }
 
 var (
-	smSaveImmediately      = []string{"hasValue", "paymentEnabled", "paid"}
-	smSaveTimeout          = []string{"queryDelay", "priceDelay", "redialWait"}
-	smKnownSelectorRequire = []string{"hasValue"}
-	smKnownSelectorDisable = []string{"iterSelected", "iterReturned", "query", "queryDelay", "canConnect", "dialed", "redialWait", "connected", "paid"}
+	sfDiscovered = lpu.NewNodeStateFlag("discovered", false, true)
+	sfHasValue   = lpu.NewNodeStateFlag("hasValue", true, false)
+	sfSelected   = lpu.NewNodeStateFlag("selected", false, false)
+	sfDialed     = lpu.NewNodeStateFlag("dialed", false, false)
+	sfConnected  = lpu.NewNodeStateFlag("connected", false, false)
+	sfRedialWait = lpu.NewNodeStateFlag("redialWait", false, true)
+
+	keepNodeRecord       = []*lpu.NodeStateFlag{sfDiscovered, sfHasValue}
+	knownSelectorRequire = []*lpu.NodeStateFlag{sfHasValue}
+	knownSelectorDisable = []*lpu.NodeStateFlag{sfSelected, sfDialed, sfConnected, sfRedialWait}
 )
 
 func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, clock mclock.Clock, ulServers []string) *serverPool {
 	//TODO connect to ulServers
 	s := &serverPool{
 		clock: clock,
-		ns:    lpu.NewNodeStateMachine(db, dbKey, smSaveImmediately, smSaveTimeout, time.Minute*10, clock),
+		ns:    lpu.NewNodeStateMachine(db, dbKey, time.Minute*10, clock),
 		vt:    lpc.NewValueTracker(db, clock, requestList, time.Minute, 1/float64(time.Hour), 1/float64(time.Hour*1000)),
 	}
-	enrFieldId := s.ns.RegisterField(reflect.TypeOf(enr.Record{}))
-	knownSelector := lpc.NewWrsIterator(s.ns, s.ns.GetStates(smKnownSelectorRequire), s.ns.GetStates(smKnownSelectorDisable), s.knownSelectWeight, enrFieldId)
+	enrFieldId := s.ns.RegisterField(reflect.TypeOf(enr.Record{}), s.ns.GetStates(keepNodeRecord))
+	knownSelector := lpc.NewWrsIterator(s.ns, s.ns.GetStates(knownSelectorRequire), s.ns.GetStates(knownSelectorDisable), s.ns.GetState(sfSelected), s.knownSelectWeight, enrFieldId)
+	stDiscovered := s.ns.GetState(sfDiscovered)
 	discEnrStored := enode.Filter(discovery, func(node *enode.Node) bool {
+		s.ns.UpdateState(node.ID(), stDiscovered, 0, time.Hour)
 		s.ns.SetField(node.ID(), enrFieldId, node.Record())
 		return true
 	})
@@ -66,10 +74,10 @@ func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, cl
 	iter.AddSource(knownSelector)
 	// preNegotiationFilter will be added in series with iter here when les4 is available
 
-	s.stDialed = s.ns.GetState("dialed")
-	s.stConnected = s.ns.GetState("connected")
-	s.stRedialWait = s.ns.GetState("redialWait")
-	s.stHasValue = s.ns.GetState("hasValue")
+	s.stDialed = s.ns.GetState(sfDialed)
+	s.stConnected = s.ns.GetState(sfConnected)
+	s.stRedialWait = s.ns.GetState(sfRedialWait)
+	s.stHasValue = s.ns.GetState(sfHasValue)
 	s.dialIterator = enode.Filter(iter, func(node *enode.Node) bool {
 		s.ns.UpdateState(node.ID(), s.stDialed, 0, time.Second*10)
 		return true

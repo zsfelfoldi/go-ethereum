@@ -27,36 +27,36 @@ import (
 
 type (
 	WrsIterator struct {
-		lock                                                 sync.Mutex
-		ns                                                   *lpu.NodeStateMachine
-		wrs                                                  *lpu.WeightedRandomSelect
-		requireStates, disableStates, stSelected, stReturned lpu.NodeStateBitMask
-		enrFieldID                                           int
-		wakeup                                               chan struct{}
-		nextID                                               enode.ID
-		closed                                               bool
+		lock                                      sync.Mutex
+		ns                                        *lpu.NodeStateMachine
+		wrs                                       *lpu.WeightedRandomSelect
+		requireStates, disableStates, setSelected lpu.NodeStateBitMask
+		enrFieldID                                int
+		wakeup                                    chan struct{}
+		nextID                                    enode.ID
+		closed                                    bool
 	}
 )
 
-func NewWrsIterator(ns *lpu.NodeStateMachine, requireStates, disableStates lpu.NodeStateBitMask, wfn func(interface{}) uint64, enrFieldID int) *WrsIterator {
+func NewWrsIterator(ns *lpu.NodeStateMachine, requireStates, disableStates, setSelected lpu.NodeStateBitMask, wfn func(interface{}) uint64, enrFieldID int) *WrsIterator {
 	w := &WrsIterator{
 		ns:            ns,
 		wrs:           lpu.NewWeightedRandomSelect(wfn),
 		requireStates: requireStates,
 		disableStates: disableStates,
-		stSelected:    ns.GetState("selected"),
-		stReturned:    ns.GetState("returned"),
+		setSelected:   setSelected,
 	}
 	ns.AddStateSub(requireStates|disableStates, w.nodeEvent)
 	return w
 }
 
 func (w *WrsIterator) nodeEvent(id enode.ID, oldState, newState lpu.NodeStateBitMask) {
+	ps := (oldState&w.disableStates) == 0 && (oldState&w.requireStates) == w.requireStates
+	ns := (newState&w.disableStates) == 0 && (newState&w.requireStates) == w.requireStates
+
 	w.lock.Lock()
 	defer w.lock.Unlock()
 
-	ps := (oldState&w.disableStates) == 0 && (oldState&w.requireStates) == w.requireStates
-	ns := (newState&w.disableStates) == 0 && (newState&w.requireStates) == w.requireStates
 	if ps == ns {
 		return
 	}
@@ -82,7 +82,7 @@ func (w *WrsIterator) Next() bool {
 		n := w.wrs.Choose()
 		if n != nil {
 			w.nextID = n.(enode.ID)
-			w.ns.UpdateState(w.nextID, w.stSelected, 0, time.Second*5)
+			w.ns.UpdateState(w.nextID, w.setSelected, 0, time.Second*5)
 			return true
 		}
 		ch := make(chan struct{})
@@ -108,11 +108,7 @@ func (w *WrsIterator) Node() *enode.Node {
 	w.lock.Lock()
 	defer w.lock.Unlock()
 
-	w.ns.UpdateState(w.nextID, w.stReturned, w.stSelected, time.Second*5)
 	enr := w.ns.GetField(w.nextID, w.enrFieldID).(*enr.Record)
-	node, err := enode.New(enode.V4ID{}, enr)
-	if err != nil {
-		panic(err) // ???
-	}
+	node, _ := enode.New(enode.V4ID{}, enr)
 	return node
 }

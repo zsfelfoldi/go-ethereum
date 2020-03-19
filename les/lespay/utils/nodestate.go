@@ -38,19 +38,20 @@ type (
 		dbKey                        []byte
 		nodes                        map[enode.ID]*nodeInfo
 		nodeFieldTypes               []reflect.Type
-		nodeStates                   map[string]int
+		nodeFieldMasks               []NodeStateBitMask
+		nodeStates                   map[*NodeStateFlag]int
 		stateCount                   int
 		stateSubs                    []nodeStateSub
 		saveImmediately, saveTimeout NodeStateBitMask
 		saveTimeoutThreshold         time.Duration
 	}
 
-	NodeStateBitMask uint64
+	NodeStateFlag struct {
+		name                         string
+		saveImmediately, saveTimeout bool
+	}
 
-	/*nodeFields interface {
-		rlp.Encoder
-		rlp.Decoder
-	}*/
+	NodeStateBitMask uint64
 
 	nodeInfo struct {
 		state     NodeStateBitMask
@@ -87,20 +88,25 @@ type (
 
 const initState = NodeStateBitMask(1)
 
-func NewNodeStateMachine(db ethdb.Database, dbKey []byte, saveImmediately, saveTimeout []string,
-	saveTimeoutThreshold time.Duration, clock mclock.Clock) *NodeStateMachine {
+func NewNodeStateMachine(db ethdb.Database, dbKey []byte, saveTimeoutThreshold time.Duration, clock mclock.Clock) *NodeStateMachine {
 	ns := &NodeStateMachine{
 		db:                   db,
 		dbKey:                dbKey,
 		saveTimeoutThreshold: saveTimeoutThreshold,
 		clock:                clock,
 		nodes:                make(map[enode.ID]*nodeInfo),
-		nodeStates:           make(map[string]int),
+		nodeStates:           make(map[*NodeStateFlag]int),
 	}
-	ns.GetState("init")
-	ns.saveImmediately = ns.GetStates(saveImmediately)
-	ns.saveTimeout = ns.GetStates(saveTimeout)
+	ns.GetState(NewNodeStateFlag("init", false, false))
 	return ns
+}
+
+func NewNodeStateFlag(name string, saveImmediately, saveTimeout bool) *NodeStateFlag {
+	return &NodeStateFlag{
+		name:            name,
+		saveImmediately: saveImmediately,
+		saveTimeout:     saveTimeout,
+	}
 }
 
 // call before starting the state machine
@@ -244,6 +250,13 @@ func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask
 			ns.deleteNode(id)
 		}
 	} else {
+		for i, f := range node.fields {
+			if f != nil {
+				if ns.nodeFieldMasks[i]&newState == 0 {
+					node.fields[i] = nil
+				}
+			}
+		}
 		if changed&ns.saveTimeout != 0 {
 			node.dirty = true
 		}
@@ -296,7 +309,7 @@ func (ns *NodeStateMachine) addTimeout(id enode.ID, mask NodeStateBitMask, timeo
 		ns.lock.Lock()
 		if t.mask != 0 {
 			fmt.Println("timeout", id, "mask", ns.stateToString(t.mask))
-			ns.updateState(id, 0, t.mask, 0)
+			cb = ns.updateState(id, 0, t.mask, 0)
 		}
 		ns.lock.Unlock()
 		if cb != nil {
@@ -329,9 +342,10 @@ func (ns *NodeStateMachine) removeTimeouts(node *nodeInfo, mask NodeStateBitMask
 }
 
 // call before starting the state machine
-func (ns *NodeStateMachine) RegisterField(fieldType reflect.Type) int {
+func (ns *NodeStateMachine) RegisterField(fieldType reflect.Type, fieldMask NodeStateBitMask) int {
 	index := len(ns.nodeFieldTypes)
 	ns.nodeFieldTypes = append(ns.nodeFieldTypes, fieldType)
+	ns.nodeFieldMasks = append(ns.nodeFieldMasks, fieldMask)
 	return index
 }
 
@@ -363,20 +377,27 @@ func (ns *NodeStateMachine) SetField(id enode.ID, fieldId int, value interface{}
 	}
 }
 
-func (ns *NodeStateMachine) GetState(name string) NodeStateBitMask {
-	state, ok := ns.nodeStates[name]
-	if !ok {
-		state = ns.stateCount
-		ns.stateCount++
-		ns.nodeStates[name] = state
+func (ns *NodeStateMachine) GetState(field *NodeStateFlag) NodeStateBitMask {
+	if state, ok := ns.nodeStates[field]; ok {
+		return NodeStateBitMask(1) << state
 	}
-	return NodeStateBitMask(1) << state
+	state := ns.stateCount
+	mask := NodeStateBitMask(1) << state
+	ns.stateCount++
+	ns.nodeStates[field] = state
+	if field.saveImmediately {
+		ns.saveImmediately |= mask
+	}
+	if field.saveTimeout {
+		ns.saveTimeout |= mask
+	}
+	return mask
 }
 
-func (ns *NodeStateMachine) GetStates(names []string) NodeStateBitMask {
+func (ns *NodeStateMachine) GetStates(fields []*NodeStateFlag) NodeStateBitMask {
 	var mask NodeStateBitMask
-	for _, name := range names {
-		mask |= ns.GetState(name)
+	for _, field := range fields {
+		mask |= ns.GetState(field)
 	}
 	return mask
 }
@@ -384,12 +405,12 @@ func (ns *NodeStateMachine) GetStates(names []string) NodeStateBitMask {
 func (ns *NodeStateMachine) stateToString(states NodeStateBitMask) string {
 	s := "["
 	comma := false
-	for name, index := range ns.nodeStates {
+	for field, index := range ns.nodeStates {
 		if states&(NodeStateBitMask(1)<<index) != 0 {
 			if comma {
 				s = s + ", "
 			}
-			s = s + name
+			s = s + field.name
 			comma = true
 		}
 	}
