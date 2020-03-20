@@ -81,7 +81,7 @@ func TestConvertMapping(t *testing.T) {
 func TestReqValueFactor(t *testing.T) {
 	var ref referenceBasket
 	ref.refBasket = make(requestBasket, 4)
-	for i, _ := range ref.refBasket {
+	for i := range ref.refBasket {
 		ref.refBasket[i].amount = uint64(i+1) * referenceFactor
 		ref.refBasket[i].value = uint64(i+1) * referenceFactor
 	}
@@ -99,7 +99,7 @@ func TestReqValueAdjustment(t *testing.T) {
 	cost2 := []uint64{100000, 200000, 300000}
 	var ref referenceBasket
 	ref.refBasket = make(requestBasket, 3)
-	for i, _ := range ref.refBasket {
+	for i := range ref.refBasket {
 		ref.refBasket[i].amount = 123 * referenceFactor
 		ref.refBasket[i].value = 123 * referenceFactor
 	}

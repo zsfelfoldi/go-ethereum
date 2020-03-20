@@ -44,7 +44,7 @@ var (
 type NodeValueTracker struct {
 	lock sync.Mutex
 
-	rtStats, lastRtStats ResponseTimeStats
+	rtStats, lastRtStats TimeStats
 	lastTransfer         mclock.AbsTime
 	basket               serverBasket
 	reqCosts             []uint64
@@ -86,7 +86,7 @@ func (nv *NodeValueTracker) TotalReqValue(expRT time.Duration) float64 {
 	return tv
 }
 
-func (nv *NodeValueTracker) RtStats() ResponseTimeStats {
+func (nv *NodeValueTracker) RtStats() TimeStats {
 	nv.lock.Lock()
 	defer nv.lock.Unlock()
 
@@ -102,7 +102,7 @@ func (nv *NodeValueTracker) updateCosts(reqCosts []uint64, reqValues *[]float64,
 	nv.basket.updateRvFactor(rvFactor)
 }
 
-func (nv *NodeValueTracker) transferStats(now mclock.AbsTime, transferRate, statsExpRate float64) (requestBasket, ResponseTimeStats) {
+func (nv *NodeValueTracker) transferStats(now mclock.AbsTime, transferRate, statsExpRate float64) (requestBasket, TimeStats) {
 	nv.lock.Lock()
 	defer nv.lock.Unlock()
 
@@ -135,7 +135,7 @@ type ValueTracker struct {
 	mappings       [][]string
 	currentMapping int
 	initRefBasket  requestBasket
-	rtStats        ResponseTimeStats
+	rtStats        TimeStats
 
 	transferRate, statsExpRate float64
 }
@@ -147,7 +147,7 @@ type valueTrackerEncV1 struct {
 }
 
 type nodeValueTrackerEncV1 struct {
-	RtStats            ResponseTimeStats
+	RtStats            TimeStats
 	ValueBasketMapping uint
 	ValueBasket        requestBasket
 }
@@ -402,7 +402,7 @@ func (vt *ValueTracker) UpdateCosts(nv *NodeValueTracker, reqCosts []uint64) {
 	nv.updateCosts(reqCosts, &vt.refBasket.reqValues, vt.refBasket.reqValueFactor(reqCosts))
 }
 
-func (vt *ValueTracker) RtStats() ResponseTimeStats {
+func (vt *ValueTracker) RtStats() TimeStats {
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 

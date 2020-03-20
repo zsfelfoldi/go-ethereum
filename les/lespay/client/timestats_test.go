@@ -22,12 +22,41 @@ import (
 	"time"
 )
 
+func TestTimeTransition(t *testing.T) {
+	var inrange = []time.Duration{
+		time.Millisecond * 10, time.Millisecond * 11,
+		time.Second, time.Second * 9, time.Second * 10,
+	}
+	epsilon := 0.001
+	for _, c := range inrange {
+		got := slotToTime(timeToSlot(c))
+		if float64(c)*(1+epsilon) < float64(got) || float64(c)*(1-epsilon) > float64(got) {
+			t.Fatalf("Invalid transition %v", c)
+		}
+	}
+	var outrange = []struct {
+		input  time.Duration
+		expect time.Duration
+	}{
+		{0, time.Millisecond * 10},
+		{time.Millisecond * 9, time.Millisecond * 10},
+		{time.Second * 11, time.Second * 10},
+		{time.Second * 30, time.Second * 10},
+	}
+	for _, c := range outrange {
+		got := slotToTime(timeToSlot(c.input))
+		if got != c.expect {
+			t.Fatalf("Invalid transition %v", c)
+		}
+	}
+}
+
 func TestValue(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		max := minResponseTime + time.Duration(rand.Int63n(int64(maxResponseTime-minResponseTime)))
 		min := minResponseTime + time.Duration(rand.Int63n(int64(max-minResponseTime)))
 		expRT := max/2 + time.Duration(rand.Int63n(int64(maxResponseTime-max/2)))
-		s := makeRangeStats(min, max, 1000)
+		s := makeRangeStats(min, max)
 		value, relValue := s.Value(expRT)
 		expv := 1 - float64((min+max)/2)/float64(expRT)
 		if expv < 0 {
@@ -45,13 +74,13 @@ func TestValue(t *testing.T) {
 
 func TestAddSubExpire(t *testing.T) {
 	var (
-		sum, expiredSum                 ResponseTimeStats
+		sum, expiredSum                 TimeStats
 		sumValueExp, expiredSumValueExp float64
 	)
 	for i := 0; i < 1000; i++ {
 		max := minResponseTime + time.Duration(rand.Int63n(int64(maxResponseTime-minResponseTime)))
 		min := minResponseTime + time.Duration(rand.Int63n(int64(max-minResponseTime)))
-		s := makeRangeStats(min, max, 1000)
+		s := makeRangeStats(min, max)
 		value, _ := s.Value(maxResponseTime)
 		sum.AddStats(&s)
 		sumValueExp += value
@@ -84,7 +113,7 @@ func TestTimeout(t *testing.T) {
 }
 
 func testTimeoutRange(t *testing.T, min, max time.Duration) {
-	s := makeRangeStats(min, max, 1000)
+	s := makeRangeStats(min, max)
 	for i := 2; i < 9; i++ {
 		to := s.Timeout(float64(i) / 10)
 		exp := max - (max-min)*time.Duration(i)/10
@@ -95,11 +124,10 @@ func testTimeoutRange(t *testing.T, min, max time.Duration) {
 	}
 }
 
-func makeRangeStats(min, max time.Duration, amount float64) ResponseTimeStats {
-	var s ResponseTimeStats
-	amount /= 1000
+func makeRangeStats(min, max time.Duration) TimeStats {
+	var s TimeStats
 	for i := 0; i < 1000; i++ {
-		s.Add(min+(max-min)*time.Duration(i)/999, amount)
+		s.Add(min+(max-min)*time.Duration(i)/999, 1)
 	}
 	return s
 }

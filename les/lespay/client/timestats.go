@@ -22,63 +22,59 @@ import (
 )
 
 const (
-	minResponseTime   = time.Millisecond * 50
+	minResponseTime   = time.Millisecond * 10
 	maxResponseTime   = time.Second * 10
 	timeStatLength    = 32
 	weightScaleFactor = 1000000
 )
 
-type ResponseTimeStats [timeStatLength]uint64
+type TimeStats [timeStatLength]uint64
 
-var timeStatsLogFactor = (timeStatLength - 1) / (math.Log(float64(maxResponseTime)/float64(minResponseTime)) + 1)
+var timeStatsLogFactor = (timeStatLength - 1) / math.Log(float64(maxResponseTime)/float64(minResponseTime))
 
-func TimeToStatScale(d time.Duration) float64 {
-	if d < 0 {
+func timeToSlot(t time.Duration) float64 {
+	if t <= minResponseTime {
 		return 0
-	}
-	r := float64(d) / float64(minResponseTime)
-	if r > 1 {
-		r = math.Log(r) + 1
-	}
-	r *= timeStatsLogFactor
-	if r > timeStatLength-1 {
+	} else if t >= maxResponseTime {
 		return timeStatLength - 1
 	}
-	return r
+	return math.Log(float64(t)/float64(minResponseTime)) * timeStatsLogFactor
 }
 
-func StatScaleToTime(r float64) time.Duration {
-	r /= timeStatsLogFactor
-	if r > 1 {
-		r = math.Exp(r - 1)
+func slotToTime(slot float64) time.Duration {
+	if slot <= 0 {
+		return minResponseTime
+	} else if slot >= float64(timeStatLength-1) {
+		return maxResponseTime
 	}
-	return time.Duration(r * float64(minResponseTime))
+	return time.Duration(math.Exp(slot/timeStatsLogFactor) * float64(minResponseTime))
 }
 
-func (rt *ResponseTimeStats) Add(respTime time.Duration, weight float64) {
-	r := TimeToStatScale(respTime)
-	i := int(r)
-	r -= float64(i)
+func (ts *TimeStats) Add(respTime time.Duration, weight float64) {
+	slot := timeToSlot(respTime)
+	index := int(slot)
+	bias := slot - float64(index)
+
 	weight *= weightScaleFactor
-	rt[i] += uint64(weight * (1 - r))
-	if i < timeStatLength-1 {
-		rt[i+1] += uint64(weight * r)
+	ts[index] += uint64(weight * (1 - bias))
+	if index < timeStatLength-1 {
+		ts[index+1] += uint64(weight * bias)
 	}
 }
 
-func (rt *ResponseTimeStats) Value(expRT time.Duration) (float64, float64) {
+func (ts *TimeStats) Value(expRT time.Duration) (float64, float64) {
 	var (
 		v   float64
 		sum uint64
 	)
-	for i, s := range rt[:] {
-		sum += s
-		t := StatScaleToTime(float64(i))
+	for slot, weight := range ts[:] {
+		sum += weight
+		t := slotToTime(float64(slot))
 		w := 1 - float64(t)/float64(expRT)
 		if w < -1 {
 			w = -1
 		}
-		v += float64(s) * w
+		v += float64(weight) * w
 	}
 	if sum == 0 || v < 0 {
 		return 0, 0
@@ -86,50 +82,64 @@ func (rt *ResponseTimeStats) Value(expRT time.Duration) (float64, float64) {
 	return v / weightScaleFactor, v / float64(sum)
 }
 
-func (rt *ResponseTimeStats) Expire(exp float64) {
-	for i, s := range rt[:] {
+func (ts *TimeStats) Mean() time.Duration {
+	var (
+		total       float64
+		totalWeight uint64
+	)
+	for slot, weight := range ts {
+		if weight == 0 {
+			continue
+		}
+		totalWeight += weight
+		total += float64(slotToTime(float64(slot))) * float64(weight)
+	}
+	return time.Duration(int64(total / float64(totalWeight)))
+}
+
+func (ts *TimeStats) Expire(exp float64) {
+	for i, s := range ts[:] {
 		sub := uint64(float64(s) * exp)
 		if sub < s {
-			s -= sub
+			ts[i] -= sub
 		} else {
-			s = 0
-		}
-		rt[i] = s
-	}
-}
-
-func (rt *ResponseTimeStats) AddStats(s *ResponseTimeStats) {
-	for i, v := range s[:] {
-		rt[i] += v
-	}
-}
-
-func (rt *ResponseTimeStats) SubStats(s *ResponseTimeStats) {
-	for i, v := range s[:] {
-		if v < rt[i] {
-			rt[i] -= v
-		} else {
-			rt[i] = 0
+			ts[i] = 0
 		}
 	}
 }
 
-func (rt *ResponseTimeStats) Timeout(failRatio float64) time.Duration {
+func (ts *TimeStats) AddStats(s *TimeStats) {
+	for i, v := range s[:] {
+		ts[i] += v
+	}
+}
+
+func (ts *TimeStats) SubStats(s *TimeStats) {
+	for i, v := range s[:] {
+		if v < ts[i] {
+			ts[i] -= v
+		} else {
+			ts[i] = 0
+		}
+	}
+}
+
+func (ts *TimeStats) Timeout(failRatio float64) time.Duration {
 	var sum uint64
-	for _, v := range rt {
+	for _, v := range ts {
 		sum += v
 	}
 	s := uint64(float64(sum) * failRatio)
 	i := timeStatLength - 1
-	for i > 0 && s >= rt[i] {
-		s -= rt[i]
+	for i > 0 && s >= ts[i] {
+		s -= ts[i]
 		i--
 	}
 	r := float64(i) + 0.5
-	if rt[i] > 0 {
-		r -= float64(s) / float64(rt[i])
+	if ts[i] > 0 {
+		r -= float64(s) / float64(ts[i])
 	}
-	th := StatScaleToTime(r)
+	th := slotToTime(r)
 	if th < minResponseTime {
 		th = minResponseTime
 	}
