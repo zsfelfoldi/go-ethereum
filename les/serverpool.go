@@ -25,7 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb"
 	lpc "github.com/ethereum/go-ethereum/les/lespay/client"
-	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
+	"github.com/ethereum/go-ethereum/les/utils"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/enr"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -40,10 +40,10 @@ const (
 
 type serverPool struct {
 	clock                                           mclock.Clock
-	ns                                              *lpu.NodeStateMachine
+	ns                                              *utils.NodeStateMachine
 	vt                                              *lpc.ValueTracker
 	dialIterator                                    enode.Iterator
-	stDialed, stConnected, stRedialWait, stHasValue lpu.NodeStateBitMask
+	stDialed, stConnected, stRedialWait, stHasValue utils.NodeStateBitMask
 	nodeHistoryFieldId                              int
 	timeoutLock                                     sync.RWMutex
 	timeout                                         time.Duration
@@ -53,29 +53,29 @@ type serverPool struct {
 
 type nodeHistory struct {
 	// only dialCost is saved
-	dialCost          lpu.ExpiredValue
+	dialCost          utils.ExpiredValue
 	lastTimeoutUpdate uint64
 	totalValue        float64
 }
 
 var (
-	sfDiscovered = lpu.NewNodeStateFlag("discovered", false, true)
-	sfHasValue   = lpu.NewNodeStateFlag("hasValue", true, false)
-	sfSelected   = lpu.NewNodeStateFlag("selected", false, false)
-	sfDialed     = lpu.NewNodeStateFlag("dialed", false, false)
-	sfConnected  = lpu.NewNodeStateFlag("connected", false, false)
-	sfRedialWait = lpu.NewNodeStateFlag("redialWait", false, true)
+	sfDiscovered = utils.NewNodeStateFlag("discovered", false, true)
+	sfHasValue   = utils.NewNodeStateFlag("hasValue", true, false)
+	sfSelected   = utils.NewNodeStateFlag("selected", false, false)
+	sfDialed     = utils.NewNodeStateFlag("dialed", false, false)
+	sfConnected  = utils.NewNodeStateFlag("connected", false, false)
+	sfRedialWait = utils.NewNodeStateFlag("redialWait", false, true)
 
-	keepNodeRecord       = []*lpu.NodeStateFlag{sfDiscovered, sfHasValue}
-	knownSelectorRequire = []*lpu.NodeStateFlag{sfHasValue}
-	knownSelectorDisable = []*lpu.NodeStateFlag{sfSelected, sfDialed, sfConnected, sfRedialWait}
+	keepNodeRecord       = []*utils.NodeStateFlag{sfDiscovered, sfHasValue}
+	knownSelectorRequire = []*utils.NodeStateFlag{sfHasValue}
+	knownSelectorDisable = []*utils.NodeStateFlag{sfSelected, sfDialed, sfConnected, sfRedialWait}
 )
 
 func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, clock mclock.Clock, ulServers []string) *serverPool {
 	//TODO connect to ulServers
 	s := &serverPool{
 		clock:   clock,
-		ns:      lpu.NewNodeStateMachine(db, dbKey, time.Minute*10, clock),
+		ns:      utils.NewNodeStateMachine(db, dbKey, time.Minute*10, clock),
 		vt:      lpc.NewValueTracker(db, clock, requestList, time.Minute, 1/float64(time.Hour), 1/float64(time.Hour*1000)),
 		timeout: minTimeout,
 		quit:    make(chan struct{}),

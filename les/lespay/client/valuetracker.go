@@ -25,7 +25,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb"
-	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
+	"github.com/ethereum/go-ethereum/les/utils"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -106,8 +106,8 @@ type ValueTracker struct {
 
 	transferRate   float64
 	statsExpLock   sync.RWMutex
-	statsExpirer   lpu.Expirer
-	statsExpFactor lpu.ExpirationFactor
+	statsExpirer   utils.Expirer
+	statsExpFactor utils.ExpirationFactor
 }
 
 type valueTrackerEncV1 struct {
@@ -182,7 +182,7 @@ func NewValueTracker(db ethdb.KeyValueStore, clock mclock.Clock, reqInfo []Reque
 	return vt
 }
 
-func (vt *ValueTracker) StatsExpirer() *lpu.Expirer {
+func (vt *ValueTracker) StatsExpirer() *utils.Expirer {
 	return &vt.statsExpirer
 }
 
@@ -206,7 +206,7 @@ func (vt *ValueTracker) loadFromDb(mapping []string) error {
 		log.Error("Decoding value tracker state failed", "err", err)
 		return err
 	}
-	vt.statsExpirer.SetLogOffset(vt.clock.Now(), lpu.Fixed64(vte.ExpOffset))
+	vt.statsExpirer.SetLogOffset(vt.clock.Now(), utils.Fixed64(vte.ExpOffset))
 	vt.mappings = vte.Mappings
 	vt.currentMapping = -1
 loop:
@@ -386,7 +386,7 @@ func (vt *ValueTracker) RtStats() ResponseTimeStats {
 func (vt *ValueTracker) periodicUpdate() {
 	now := vt.clock.Now()
 	vt.statsExpLock.Lock()
-	vt.statsExpFactor = lpu.ExpFactor(vt.statsExpirer.LogOffset(now))
+	vt.statsExpFactor = utils.ExpFactor(vt.statsExpirer.LogOffset(now))
 	vt.statsExpLock.Unlock()
 
 	dt := now - vt.lastUpdate

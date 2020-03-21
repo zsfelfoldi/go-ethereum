@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
+	"github.com/ethereum/go-ethereum/les/utils"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/enr"
 )
@@ -28,9 +28,9 @@ import (
 type (
 	WrsIterator struct {
 		lock                                      sync.Mutex
-		ns                                        *lpu.NodeStateMachine
-		wrs                                       *lpu.WeightedRandomSelect
-		requireStates, disableStates, setSelected lpu.NodeStateBitMask
+		ns                                        *utils.NodeStateMachine
+		wrs                                       *utils.WeightedRandomSelect
+		requireStates, disableStates, setSelected utils.NodeStateBitMask
 		enrFieldID                                int
 		wakeup                                    chan struct{}
 		nextID                                    enode.ID
@@ -38,10 +38,10 @@ type (
 	}
 )
 
-func NewWrsIterator(ns *lpu.NodeStateMachine, requireStates, disableStates, setSelected lpu.NodeStateBitMask, wfn func(interface{}) uint64, enrFieldID int) *WrsIterator {
+func NewWrsIterator(ns *utils.NodeStateMachine, requireStates, disableStates, setSelected utils.NodeStateBitMask, wfn func(interface{}) uint64, enrFieldID int) *WrsIterator {
 	w := &WrsIterator{
 		ns:            ns,
-		wrs:           lpu.NewWeightedRandomSelect(wfn),
+		wrs:           utils.NewWeightedRandomSelect(wfn),
 		requireStates: requireStates,
 		disableStates: disableStates,
 		setSelected:   setSelected,
@@ -50,7 +50,7 @@ func NewWrsIterator(ns *lpu.NodeStateMachine, requireStates, disableStates, setS
 	return w
 }
 
-func (w *WrsIterator) nodeEvent(id enode.ID, oldState, newState lpu.NodeStateBitMask) {
+func (w *WrsIterator) nodeEvent(id enode.ID, oldState, newState utils.NodeStateBitMask) {
 	ps := (oldState&w.disableStates) == 0 && (oldState&w.requireStates) == w.requireStates
 	ns := (newState&w.disableStates) == 0 && (newState&w.requireStates) == w.requireStates
 

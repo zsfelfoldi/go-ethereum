@@ -19,7 +19,7 @@ package client
 import (
 	"io"
 
-	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
+	"github.com/ethereum/go-ethereum/les/utils"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -94,7 +94,7 @@ func (s *serverBasket) init(size int) {
 
 // add adds the give type and amount of requests to the basket. Cost is calculated
 // according to the server's own cost table.
-func (s *serverBasket) add(reqType, reqAmount uint32, reqCost uint64, expFactor lpu.ExpirationFactor) {
+func (s *serverBasket) add(reqType, reqAmount uint32, reqCost uint64, expFactor utils.ExpirationFactor) {
 	s.basket.setExp(expFactor.Exp)
 	i := &s.basket.items[reqType]
 	i.amount += uint64(float64(uint64(reqAmount)*basketFactor) * expFactor.Factor)

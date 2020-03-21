@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
-	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
+	"github.com/ethereum/go-ethereum/les/utils"
 )
 
 // requestDistributor implements a mechanism that distributes requests to
@@ -194,7 +194,7 @@ func (d *requestDistributor) nextRequest() (distPeer, *distReq, time.Duration) {
 	elem := d.reqQueue.Front()
 	var (
 		bestWait time.Duration
-		sel      *lpu.WeightedRandomSelect
+		sel      *utils.WeightedRandomSelect
 	)
 
 	d.peerLock.RLock()
@@ -219,7 +219,7 @@ func (d *requestDistributor) nextRequest() (distPeer, *distReq, time.Duration) {
 				wait, bufRemain := peer.waitBefore(cost)
 				if wait == 0 {
 					if sel == nil {
-						sel = lpu.NewWeightedRandomSelect(selectPeerWeight)
+						sel = utils.NewWeightedRandomSelect(selectPeerWeight)
 					}
 					sel.Update(selectPeerItem{peer: peer, req: req, weight: uint64(bufRemain*1000000) + 1})
 				} else {

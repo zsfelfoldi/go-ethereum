@@ -27,7 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 
-	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
+	"github.com/ethereum/go-ethereum/les/utils"
 )
 
 const (
@@ -101,7 +101,7 @@ func TestValueTracker(t *testing.T) {
 				break
 			}
 		}
-		exp := lpu.ExpFactor(vt.StatsExpirer().LogOffset(clock.Now()))
+		exp := utils.ExpFactor(vt.StatsExpirer().LogOffset(clock.Now()))
 		basketAmount := make([]uint64, testReqTypes)
 		for i, bi := range vt.refBasket.basket.items {
 			basketAmount[i] += uint64(exp.Value(float64(bi.amount), vt.refBasket.basket.exp))

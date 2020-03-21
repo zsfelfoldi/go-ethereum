@@ -20,7 +20,7 @@ import (
 	"math/rand"
 	"testing"
 
-	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
+	"github.com/ethereum/go-ethereum/les/utils"
 )
 
 func checkU64(t *testing.T, name string, value, exp uint64) {
@@ -40,7 +40,7 @@ func TestServerBasket(t *testing.T) {
 	s.init(2)
 	// add some requests with different request value factors
 	s.updateRvFactor(1)
-	noexp := lpu.ExpirationFactor{Factor: 1}
+	noexp := utils.ExpirationFactor{Factor: 1}
 	s.add(0, 1000, 10000, noexp)
 	s.add(1, 3000, 60000, noexp)
 	s.updateRvFactor(10)
@@ -111,9 +111,9 @@ func TestReqValueAdjustment(t *testing.T) {
 	checkF64(t, "reqValues[0]", ref.reqValues[0], 1, 0.01)
 	checkF64(t, "reqValues[1]", ref.reqValues[1], 1, 0.01)
 	checkF64(t, "reqValues[2]", ref.reqValues[2], 1, 0.01)
-	var logOffset lpu.Fixed64
+	var logOffset utils.Fixed64
 	for period := 0; period < 1000; period++ {
-		exp := lpu.ExpFactor(logOffset)
+		exp := utils.ExpFactor(logOffset)
 		s1.updateRvFactor(ref.reqValueFactor(cost1))
 		s2.updateRvFactor(ref.reqValueFactor(cost2))
 		// throw in random requests into each basket using their internal pricing
@@ -129,7 +129,7 @@ func TestReqValueAdjustment(t *testing.T) {
 		ref.add(s2.transfer(0.1))
 		ref.normalize()
 		ref.updateReqValues()
-		logOffset += lpu.Float64ToFixed64(0.1)
+		logOffset += utils.Float64ToFixed64(0.1)
 	}
 	checkF64(t, "reqValues[0]", ref.reqValues[0], 0.5, 0.01)
 	checkF64(t, "reqValues[1]", ref.reqValues[1], 1, 0.01)

@@ -20,7 +20,7 @@ import (
 	"math"
 	"time"
 
-	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
+	"github.com/ethereum/go-ethereum/les/utils"
 )
 
 const (
@@ -60,7 +60,7 @@ func StatScaleToTime(r float64) time.Duration {
 	return time.Duration(r * float64(minResponseTime))
 }
 
-func (rt *ResponseTimeStats) Add(respTime time.Duration, weight float64, expFactor lpu.ExpirationFactor) {
+func (rt *ResponseTimeStats) Add(respTime time.Duration, weight float64, expFactor utils.ExpirationFactor) {
 	rt.setExp(expFactor.Exp)
 	weight *= expFactor.Factor * weightScaleFactor
 	r := TimeToStatScale(respTime)
@@ -89,7 +89,7 @@ func (rt *ResponseTimeStats) setExp(exp uint64) {
 	}
 }
 
-func (rt *ResponseTimeStats) Value(expRT time.Duration, expFactor lpu.ExpirationFactor) (float64, float64) {
+func (rt *ResponseTimeStats) Value(expRT time.Duration, expFactor utils.ExpirationFactor) (float64, float64) {
 	var (
 		v   float64
 		sum uint64
