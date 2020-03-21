@@ -19,31 +19,26 @@ package client
 import (
 	"io"
 
-	"github.com/ethereum/go-ethereum/common/mclock"
+	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
-const referenceFactor = 1000000 // reference basket amount and value scale factor
+const basketFactor = 1000000 // reference basket amount and value scale factor
 
 // referenceBasket keeps track of global request usage statistics and the usual prices
 // of each used request type relative to each other. The amounts in the basket are scaled
-// up by referenceFactor because of the exponential expiration of long-term statistical data.
+// up by basketFactor because of the exponential expiration of long-term statistical data.
 // Values are scaled so that the sum of all amounts and the sum of all values are equal.
 //
 // reqValues represent the internal relative value estimates for each request type and are
 // calculated as value / amount. The average reqValue of all used requests is 1.
 // In other words: SUM(refBasket[type].amount * reqValue[type]) = SUM(refBasket[type].amount)
 type referenceBasket struct {
-	refBasket   requestBasket
-	reqValues   []float64 // contents are read only, new slice is created for each update
-	lastExpired mclock.AbsTime
+	basket    requestBasket
+	reqValues []float64 // contents are read only, new slice is created for each update
 }
 
 // serverBasket collects served request amount and value statistics for a single server.
-// Served requests are first added to costBasket where value represents request cost
-// according to the server's own cost table. These are scaled and added on demand to
-// valueBasket where they are scaled by the request value factor of the server which is
-// calculated and updated by the reference basket based on the announced cost table.
 //
 // Values are gradually transferred to the global reference basket with a long time
 // constant so that each server basket represents long term usage and price statistics.
@@ -53,44 +48,62 @@ type referenceBasket struct {
 // the specific server and modify the global estimates with a weight proportional to
 // the amount of service provided by the server.
 type serverBasket struct {
-	costBasket, valueBasket requestBasket
-	rvFactor                float64
+	basket   requestBasket
+	rvFactor float64
 }
 
 type (
-	requestBasket []basketItem
-	basketItem    struct {
+	requestBasket struct {
+		items []basketItem
+		exp   uint64
+	}
+	basketItem struct {
 		amount, value uint64
 	}
 )
 
+// setExp sets the basket's common exponent and bitwise shifts the values to offset the change
+func (b *requestBasket) setExp(exp uint64) {
+	if exp > b.exp {
+		shift := exp - b.exp
+		for i, item := range b.items {
+			item.amount >>= shift
+			item.value >>= shift
+			b.items[i] = item
+		}
+		b.exp = exp
+	}
+	if exp < b.exp {
+		shift := b.exp - exp
+		for i, item := range b.items {
+			item.amount <<= shift
+			item.value <<= shift
+			b.items[i] = item
+		}
+		b.exp = exp
+	}
+}
+
 // init initializes a new server basket with the given service vector size (number of
 // different request types)
 func (s *serverBasket) init(size int) {
-	if s.costBasket == nil {
-		s.costBasket = make(requestBasket, size)
-	}
-	if s.valueBasket == nil {
-		s.valueBasket = make(requestBasket, size)
+	if s.basket.items == nil {
+		s.basket.items = make([]basketItem, size)
 	}
 }
 
 // add adds the give type and amount of requests to the basket. Cost is calculated
 // according to the server's own cost table.
-func (s *serverBasket) add(reqType, reqAmount uint32, reqCost uint64) {
-	i := &s.costBasket[reqType]
-	i.amount += uint64(reqAmount) * referenceFactor
-	i.value += reqCost
+func (s *serverBasket) add(reqType, reqAmount uint32, reqCost uint64, expFactor lpu.ExpirationFactor) {
+	s.basket.setExp(expFactor.Exp)
+	i := &s.basket.items[reqType]
+	i.amount += uint64(float64(uint64(reqAmount)*basketFactor) * expFactor.Factor)
+	i.value += uint64(float64(reqCost) * s.rvFactor * expFactor.Factor)
 }
 
 // updateRvFactor updates the request value factor that scales server costs into the
 // local value dimensions.
 func (s *serverBasket) updateRvFactor(rvFactor float64) {
-	for i, c := range s.costBasket {
-		s.valueBasket[i].amount += c.amount
-		s.valueBasket[i].value += uint64(float64(c.value) * s.rvFactor)
-		s.costBasket[i] = basketItem{}
-	}
 	s.rvFactor = rvFactor
 }
 
@@ -98,9 +111,11 @@ func (s *serverBasket) updateRvFactor(rvFactor float64) {
 // moves the removed amounts into a new basket which is returned and can be added
 // to the global reference basket.
 func (s *serverBasket) transfer(ratio float64) requestBasket {
-	s.updateRvFactor(s.rvFactor)
-	res := make(requestBasket, len(s.valueBasket))
-	for i, v := range s.valueBasket {
+	res := requestBasket{
+		items: make([]basketItem, len(s.basket.items)),
+		exp:   s.basket.exp,
+	}
+	for i, v := range s.basket.items {
 		ta := uint64(float64(v.amount) * ratio)
 		tv := uint64(float64(v.value) * ratio)
 		if ta > v.amount {
@@ -109,18 +124,17 @@ func (s *serverBasket) transfer(ratio float64) requestBasket {
 		if tv > v.value {
 			tv = v.value
 		}
-		s.valueBasket[i] = basketItem{v.amount - ta, v.value - tv}
-		res[i] = basketItem{ta, tv}
+		s.basket.items[i] = basketItem{v.amount - ta, v.value - tv}
+		res.items[i] = basketItem{ta, tv}
 	}
 	return res
 }
 
 // init initializes the reference basket with the given service vector size (number of
 // different request types)
-func (r *referenceBasket) init(now mclock.AbsTime, size int) {
+func (r *referenceBasket) init(size int) {
 	r.reqValues = make([]float64, size)
-	r.lastExpired = now
-	r.normalizeAndExpire(0)
+	r.normalize()
 	r.updateReqValues()
 }
 
@@ -128,21 +142,22 @@ func (r *referenceBasket) init(now mclock.AbsTime, size int) {
 // value amounts so that their sum equals the total value calculated according to the
 // previous reqValues.
 func (r *referenceBasket) add(newBasket requestBasket) {
+	r.basket.setExp(newBasket.exp)
 	// scale newBasket to match service unit value
 	var (
 		totalCost  uint64
 		totalValue float64
 	)
-	for i, v := range newBasket {
+	for i, v := range newBasket.items {
 		totalCost += v.value
 		totalValue += float64(v.amount) * r.reqValues[i]
 	}
 	if totalCost > 0 {
 		// add to reference with scaled values
 		scaleValues := totalValue / float64(totalCost)
-		for i, v := range newBasket {
-			r.refBasket[i].amount += v.amount
-			r.refBasket[i].value += uint64(float64(v.value) * scaleValues)
+		for i, v := range newBasket.items {
+			r.basket.items[i].amount += v.amount
+			r.basket.items[i].value += uint64(float64(v.value) * scaleValues)
 		}
 	}
 	r.updateReqValues()
@@ -152,7 +167,7 @@ func (r *referenceBasket) add(newBasket requestBasket) {
 // values should be normalized first.
 func (r *referenceBasket) updateReqValues() {
 	r.reqValues = make([]float64, len(r.reqValues))
-	for i, b := range r.refBasket {
+	for i, b := range r.basket.items {
 		if b.amount > 0 {
 			r.reqValues[i] = float64(b.value) / float64(b.amount)
 		} else {
@@ -161,19 +176,17 @@ func (r *referenceBasket) updateReqValues() {
 	}
 }
 
-// normalizeAndExpire applies expiration of long-term statistical data and also ensures
-// that the sum of values equal the sum of amounts in the basket.
-func (r *referenceBasket) normalizeAndExpire(exp float64) {
+// normalize ensures that the sum of values equal the sum of amounts in the basket.
+func (r *referenceBasket) normalize() {
 	var sumAmount, sumValue uint64
-	for _, b := range r.refBasket {
+	for _, b := range r.basket.items {
 		sumAmount += b.amount
 		sumValue += b.value
 	}
-	expValue := exp + float64(int64(sumValue-sumAmount))/float64(sumValue)
-	for i, b := range r.refBasket {
-		b.amount -= uint64(float64(b.amount) * exp)
-		b.value -= uint64(float64(b.value) * expValue)
-		r.refBasket[i] = b
+	add := float64(int64(sumAmount-sumValue)) / float64(sumValue)
+	for i, b := range r.basket.items {
+		b.value += uint64(int64(float64(b.value) * add))
+		r.basket.items[i] = b
 	}
 }
 
@@ -184,14 +197,14 @@ func (r *referenceBasket) reqValueFactor(costList []uint64) float64 {
 		totalCost  float64
 		totalValue uint64
 	)
-	for i, b := range r.refBasket {
+	for i, b := range r.basket.items {
 		totalCost += float64(costList[i]) * float64(b.amount) // use floats to avoid overflow
 		totalValue += b.value
 	}
 	if totalCost < 1 {
 		return 0
 	}
-	return float64(totalValue) * referenceFactor / totalCost
+	return float64(totalValue) * basketFactor / totalCost
 }
 
 // EncodeRLP implements rlp.Encoder
@@ -211,6 +224,24 @@ func (b *basketItem) DecodeRLP(s *rlp.Stream) error {
 	return nil
 }
 
+// EncodeRLP implements rlp.Encoder
+func (r *requestBasket) EncodeRLP(w io.Writer) error {
+	return rlp.Encode(w, []interface{}{r.items, r.exp})
+}
+
+// DecodeRLP implements rlp.Decoder
+func (r *requestBasket) DecodeRLP(s *rlp.Stream) error {
+	var enc struct {
+		Items []basketItem
+		Exp   uint64
+	}
+	if err := s.Decode(&enc); err != nil {
+		return err
+	}
+	r.items, r.exp = enc.Items, enc.Exp
+	return nil
+}
+
 // convertMapping converts a basket loaded from the database into the current format.
 // If the available request types and their mapping into the service vector differ from
 // the one used when saving the basket then this function reorders old fields and fills
@@ -221,13 +252,13 @@ func (r requestBasket) convertMapping(oldMapping, newMapping []string, initBaske
 	for i, name := range oldMapping {
 		nameMap[name] = i
 	}
-	rc := make(requestBasket, len(newMapping))
+	rc := requestBasket{items: make([]basketItem, len(newMapping))}
 	var scale, oldScale, newScale float64
 	for i, name := range newMapping {
 		if ii, ok := nameMap[name]; ok {
-			rc[i] = r[ii]
-			oldScale += float64(initBasket[i].amount) * float64(initBasket[i].amount)
-			newScale += float64(rc[i].amount) * float64(initBasket[i].amount)
+			rc.items[i] = r.items[ii]
+			oldScale += float64(initBasket.items[i].amount) * float64(initBasket.items[i].amount)
+			newScale += float64(rc.items[i].amount) * float64(initBasket.items[i].amount)
 		}
 	}
 	if oldScale > 1e-10 {
@@ -237,8 +268,8 @@ func (r requestBasket) convertMapping(oldMapping, newMapping []string, initBaske
 	}
 	for i, name := range newMapping {
 		if _, ok := nameMap[name]; !ok {
-			rc[i].amount = uint64(float64(initBasket[i].amount) * scale)
-			rc[i].value = uint64(float64(initBasket[i].value) * scale)
+			rc.items[i].amount = uint64(float64(initBasket.items[i].amount) * scale)
+			rc.items[i].value = uint64(float64(initBasket.items[i].value) * scale)
 		}
 	}
 	return rc

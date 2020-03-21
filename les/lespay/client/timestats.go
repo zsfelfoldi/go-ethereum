@@ -19,6 +19,8 @@ package client
 import (
 	"math"
 	"time"
+
+	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
 )
 
 const (
@@ -28,7 +30,10 @@ const (
 	weightScaleFactor = 1000000
 )
 
-type ResponseTimeStats [timeStatLength]uint64
+type ResponseTimeStats struct {
+	stats [timeStatLength]uint64
+	exp   uint64
+}
 
 var timeStatsLogFactor = (timeStatLength - 1) / (math.Log(float64(maxResponseTime)/float64(minResponseTime)) + 1)
 
@@ -55,23 +60,41 @@ func StatScaleToTime(r float64) time.Duration {
 	return time.Duration(r * float64(minResponseTime))
 }
 
-func (rt *ResponseTimeStats) Add(respTime time.Duration, weight float64) {
+func (rt *ResponseTimeStats) Add(respTime time.Duration, weight float64, expFactor lpu.ExpirationFactor) {
+	rt.setExp(expFactor.Exp)
+	weight *= expFactor.Factor * weightScaleFactor
 	r := TimeToStatScale(respTime)
 	i := int(r)
 	r -= float64(i)
-	weight *= weightScaleFactor
-	rt[i] += uint64(weight * (1 - r))
+	rt.stats[i] += uint64(weight * (1 - r))
 	if i < timeStatLength-1 {
-		rt[i+1] += uint64(weight * r)
+		rt.stats[i+1] += uint64(weight * r)
 	}
 }
 
-func (rt *ResponseTimeStats) Value(expRT time.Duration) (float64, float64) {
+func (rt *ResponseTimeStats) setExp(exp uint64) {
+	if exp > rt.exp {
+		shift := exp - rt.exp
+		for i, v := range rt.stats {
+			rt.stats[i] = v >> shift
+		}
+		rt.exp = exp
+	}
+	if exp < rt.exp {
+		shift := rt.exp - exp
+		for i, v := range rt.stats {
+			rt.stats[i] = v << shift
+		}
+		rt.exp = exp
+	}
+}
+
+func (rt *ResponseTimeStats) Value(expRT time.Duration, expFactor lpu.ExpirationFactor) (float64, float64) {
 	var (
 		v   float64
 		sum uint64
 	)
-	for i, s := range rt[:] {
+	for i, s := range rt.stats {
 		sum += s
 		t := StatScaleToTime(float64(i))
 		w := 1 - float64(t)/float64(expRT)
@@ -83,56 +106,47 @@ func (rt *ResponseTimeStats) Value(expRT time.Duration) (float64, float64) {
 	if sum == 0 || v < 0 {
 		return 0, 0
 	}
+	v = expFactor.Value(v, rt.exp)
 	return v / weightScaleFactor, v / float64(sum)
 }
 
-func (rt *ResponseTimeStats) Expire(exp float64) {
-	for i, s := range rt[:] {
-		sub := uint64(float64(s) * exp)
-		if sub < s {
-			s -= sub
-		} else {
-			s = 0
-		}
-		rt[i] = s
-	}
-}
-
 func (rt *ResponseTimeStats) AddStats(s *ResponseTimeStats) {
-	for i, v := range s[:] {
-		rt[i] += v
+	rt.setExp(s.exp)
+	for i, v := range s.stats {
+		rt.stats[i] += v
 	}
 }
 
 func (rt *ResponseTimeStats) SubStats(s *ResponseTimeStats) {
-	for i, v := range s[:] {
-		if v < rt[i] {
-			rt[i] -= v
+	rt.setExp(s.exp)
+	for i, v := range s.stats {
+		if v < rt.stats[i] {
+			rt.stats[i] -= v
 		} else {
-			rt[i] = 0
+			rt.stats[i] = 0
 		}
 	}
 }
 
 func (rt *ResponseTimeStats) Timeout(failRatio float64) time.Duration {
 	var sum uint64
-	for _, v := range rt {
+	for _, v := range rt.stats {
 		sum += v
 	}
 	s := uint64(float64(sum) * failRatio)
 	i := timeStatLength - 1
-	for i > 0 && s >= rt[i] {
-		s -= rt[i]
+	for i > 0 && s >= rt.stats[i] {
+		s -= rt.stats[i]
 		i--
 	}
 	r := float64(i) + 0.5
-	if rt[i] > 0 {
-		r -= float64(s) / float64(rt[i])
+	if rt.stats[i] > 0 {
+		r -= float64(s) / float64(rt.stats[i])
+	}
+	if r < 0 {
+		r = 0
 	}
 	th := StatScaleToTime(r)
-	if th < minResponseTime {
-		th = minResponseTime
-	}
 	if th > maxResponseTime {
 		th = maxResponseTime
 	}

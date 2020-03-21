@@ -355,10 +355,11 @@ type serverPeer struct {
 	checkpointNumber uint64                   // The block height which the checkpoint is registered.
 	checkpoint       params.TrustedCheckpoint // The advertised checkpoint sent by server.
 
-	fcServer     *flowcontrol.ServerNode // Client side mirror token bucket.
-	vtLock       sync.Mutex
-	valueTracker *lpc.NodeValueTracker
-	sentReqs     map[uint64]sentReqEntry
+	fcServer         *flowcontrol.ServerNode // Client side mirror token bucket.
+	vtLock           sync.Mutex
+	valueTracker     *lpc.ValueTracker
+	nodeValueTracker *lpc.NodeValueTracker
+	sentReqs         map[uint64]sentReqEntry
 
 	// Statistics
 	errCount    int // Counter the invalid responses server has replied
@@ -641,10 +642,11 @@ func (p *serverPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 	})
 }
 
-func (p *serverPeer) setValueTracker(sv *lpc.NodeValueTracker) {
+func (p *serverPeer) setValueTracker(vt *lpc.ValueTracker, nvt *lpc.NodeValueTracker) {
 	p.vtLock.Lock()
-	p.valueTracker = sv
-	if sv != nil {
+	p.valueTracker = vt
+	p.nodeValueTracker = nvt
+	if nvt != nil {
 		p.sentReqs = make(map[uint64]sentReqEntry)
 	} else {
 		p.sentReqs = nil
@@ -652,11 +654,11 @@ func (p *serverPeer) setValueTracker(sv *lpc.NodeValueTracker) {
 	p.vtLock.Unlock()
 }
 
-func (p *serverPeer) updateVtParams(vt *lpc.ValueTracker) {
+func (p *serverPeer) updateVtParams() {
 	p.vtLock.Lock()
 	defer p.vtLock.Unlock()
 
-	if p.valueTracker == nil {
+	if p.nodeValueTracker == nil {
 		return
 	}
 	reqCosts := make([]uint64, len(requestList))
@@ -668,7 +670,7 @@ func (p *serverPeer) updateVtParams(vt *lpc.ValueTracker) {
 			}
 		}
 	}
-	vt.UpdateCosts(p.valueTracker, reqCosts)
+	p.valueTracker.UpdateCosts(p.nodeValueTracker, reqCosts)
 }
 
 type sentReqEntry struct {
@@ -693,6 +695,7 @@ func (p *serverPeer) answeredRequest(id uint64) {
 	e, ok := p.sentReqs[id]
 	delete(p.sentReqs, id)
 	vt := p.valueTracker
+	nvt := p.nodeValueTracker
 	p.vtLock.Unlock()
 	if !ok {
 		return
@@ -711,7 +714,7 @@ func (p *serverPeer) answeredRequest(id uint64) {
 		vtReqs[1] = lpc.ServedRequest{ReqType: uint32(m.rest), Amount: e.amount - 1}
 	}
 	dt := time.Duration(mclock.Now() - e.at)
-	vt.Served(vtReqs[:reqCount], dt)
+	vt.Served(nvt, vtReqs[:reqCount], dt)
 }
 
 // clientPeer represents each node to which the les server is connected.

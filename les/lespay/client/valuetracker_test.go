@@ -26,6 +26,8 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 	"github.com/ethereum/go-ethereum/p2p/enode"
+
+	lpu "github.com/ethereum/go-ethereum/les/lespay/utils"
 )
 
 const (
@@ -75,7 +77,7 @@ func TestValueTracker(t *testing.T) {
 				node := rand.Intn(testNodeCount)
 				respTime := time.Duration((rand.Float64() + 1) * float64(time.Second) * float64(node+1) / testNodeCount)
 				totalAmount[reqType] += uint64(reqAmount)
-				nodes[node].Served([]ServedRequest{{uint32(reqType), uint32(reqAmount)}}, respTime)
+				vt.Served(nodes[node], []ServedRequest{{uint32(reqType), uint32(reqAmount)}}, respTime)
 				clock.Run(time.Second)
 			}
 		} else {
@@ -99,35 +101,36 @@ func TestValueTracker(t *testing.T) {
 				break
 			}
 		}
+		exp := lpu.ExpFactor(vt.StatsExpirer().LogOffset(clock.Now()))
 		basketAmount := make([]uint64, testReqTypes)
-		for i, bi := range vt.refBasket.refBasket {
-			basketAmount[i] += bi.amount
+		for i, bi := range vt.refBasket.basket.items {
+			basketAmount[i] += uint64(exp.Value(float64(bi.amount), vt.refBasket.basket.exp))
 		}
 		if makeRequests {
 			// if we did not make requests in this round then we expect all amounts to be
 			// in the reference basket
 			for _, node := range nodes {
-				for i, bi := range node.basket.valueBasket {
-					basketAmount[i] += bi.amount
+				for i, bi := range node.basket.basket.items {
+					basketAmount[i] += uint64(exp.Value(float64(bi.amount), node.basket.basket.exp))
 				}
 			}
 		}
 		for i, a := range basketAmount {
-			amount := a / referenceFactor
+			amount := a / basketFactor
 			if amount+10 < totalAmount[i] || amount > totalAmount[i]+10 {
-				t.Errorf("totalAmount[%d] mismatch (expected %d, got %d)", i, totalAmount[i], amount)
+				t.Errorf("totalAmount[%d] mismatch in round %d (expected %d, got %d)", i, round, totalAmount[i], amount)
 			}
 		}
 		var sumValue float64
 		for _, node := range nodes {
-			s := node.RtStats()
-			v, _ := s.Value(maxResponseTime)
+			s := vt.NodeRtStats(node)
+			v, _ := s.Value(maxResponseTime, exp)
 			sumValue += v
 		}
 		s := vt.RtStats()
-		mainValue, _ := s.Value(maxResponseTime)
+		mainValue, _ := s.Value(maxResponseTime, exp)
 		if sumValue < mainValue-10 || sumValue > mainValue+10 {
-			t.Errorf("Main rtStats value does not match sum of node rtStats values (main %v, sum %v)", mainValue, sumValue)
+			t.Errorf("Main rtStats value does not match sum of node rtStats values in round %d (main %v, sum %v)", round, mainValue, sumValue)
 		}
 	}
 }

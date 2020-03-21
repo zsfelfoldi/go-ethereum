@@ -166,7 +166,7 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 			return errResp(ErrRequestRejected, "")
 		}
 		p.updateFlowControl(update)
-		p.updateVtParams(h.backend.serverPool.vt)
+		p.updateVtParams()
 
 		if req.Hash != (common.Hash{}) {
 			if p.announceType == announceTypeNone {
