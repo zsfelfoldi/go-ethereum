@@ -69,6 +69,9 @@ var (
 	keepNodeRecord       = []*utils.NodeStateFlag{sfDiscovered, sfHasValue}
 	knownSelectorRequire = []*utils.NodeStateFlag{sfHasValue}
 	knownSelectorDisable = []*utils.NodeStateFlag{sfSelected, sfDialed, sfConnected, sfRedialWait}
+
+	sfiEnr         = utils.NewNodeStateField("enr", reflect.TypeOf(enr.Record{}), keepNodeRecord)
+	sfiNodeHistory = utils.NewNodeStateField("nodeHistory", reflect.TypeOf(nodeHistory{}), knownSelectorRequire)
 )
 
 func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, clock mclock.Clock, ulServers []string) *serverPool {
@@ -80,11 +83,11 @@ func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, cl
 		timeout: minTimeout,
 		quit:    make(chan struct{}),
 	}
-	enrFieldId := s.ns.RegisterField(reflect.TypeOf(enr.Record{}), s.ns.GetStates(keepNodeRecord))
-	s.nodeHistoryFieldId = s.ns.RegisterField(reflect.TypeOf(nodeHistory{}), s.ns.GetStates(knownSelectorRequire))
+	enrFieldId := s.ns.FieldIndex(sfiEnr)
+	s.nodeHistoryFieldId = s.ns.FieldIndex(sfiNodeHistory)
 
-	knownSelector := lpc.NewWrsIterator(s.ns, s.ns.GetStates(knownSelectorRequire), s.ns.GetStates(knownSelectorDisable), s.ns.GetState(sfSelected), s.knownSelectWeight, enrFieldId)
-	stDiscovered := s.ns.GetState(sfDiscovered)
+	knownSelector := lpc.NewWrsIterator(s.ns, s.ns.StatesMask(knownSelectorRequire), s.ns.StatesMask(knownSelectorDisable), s.ns.StateMask(sfSelected), s.knownSelectWeight, enrFieldId)
+	stDiscovered := s.ns.StateMask(sfDiscovered)
 	discEnrStored := enode.Filter(discovery, func(node *enode.Node) bool {
 		s.ns.UpdateState(node.ID(), stDiscovered, 0, time.Hour)
 		s.ns.SetField(node.ID(), enrFieldId, node.Record())
@@ -95,10 +98,10 @@ func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, cl
 	iter.AddSource(knownSelector)
 	// preNegotiationFilter will be added in series with iter here when les4 is available
 
-	s.stDialed = s.ns.GetState(sfDialed)
-	s.stConnected = s.ns.GetState(sfConnected)
-	s.stRedialWait = s.ns.GetState(sfRedialWait)
-	s.stHasValue = s.ns.GetState(sfHasValue)
+	s.stDialed = s.ns.StateMask(sfDialed)
+	s.stConnected = s.ns.StateMask(sfConnected)
+	s.stRedialWait = s.ns.StateMask(sfRedialWait)
+	s.stHasValue = s.ns.StateMask(sfHasValue)
 	s.dialIterator = enode.Filter(iter, func(node *enode.Node) bool {
 		n, _ := s.ns.GetField(node.ID(), s.nodeHistoryFieldId).(*nodeHistory)
 		if n == nil {

@@ -17,29 +17,32 @@
 package utils
 
 import (
-	"fmt"
 	"reflect"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/rlp"
 )
-
-// 2do: size limit
 
 type (
 	NodeStateMachine struct {
 		lock                         sync.Mutex
 		clock                        mclock.Clock
 		db                           ethdb.Database
-		dbKey                        []byte
+		dbMappingKey, dbNodeKey      []byte
+		mappings                     []nsMapping
+		currentMapping               int
 		nodes                        map[enode.ID]*nodeInfo
-		nodeFieldTypes               []reflect.Type
-		nodeFieldMasks               []NodeStateBitMask
 		nodeStates                   map[*NodeStateFlag]int
+		nodeStateNameMap             map[string]int
+		nodeFields                   []*NodeStateField
+		nodeFieldMasks               []NodeStateBitMask
+		nodeFieldMap                 map[*NodeStateField]int
+		nodeFieldNameMap             map[string]int
 		stateCount                   int
 		stateSubs                    []nodeStateSub
 		saveImmediately, saveTimeout NodeStateBitMask
@@ -49,6 +52,16 @@ type (
 	NodeStateFlag struct {
 		name                         string
 		saveImmediately, saveTimeout bool
+	}
+
+	NodeStateField struct {
+		name  string
+		ftype reflect.Type
+		flags []*NodeStateFlag
+	}
+
+	nsMapping struct {
+		States, Fields []string
 	}
 
 	NodeStateBitMask uint64
@@ -61,6 +74,7 @@ type (
 	}
 
 	nodeInfoEnc struct {
+		Mapping  uint
 		State    NodeStateBitMask
 		Timeouts []nodeStateTimeoutEnc
 		Fields   [][]byte
@@ -91,13 +105,17 @@ const initState = NodeStateBitMask(1)
 func NewNodeStateMachine(db ethdb.Database, dbKey []byte, saveTimeoutThreshold time.Duration, clock mclock.Clock) *NodeStateMachine {
 	ns := &NodeStateMachine{
 		db:                   db,
-		dbKey:                dbKey,
+		dbMappingKey:         append(dbKey, []byte("mapping")...),
+		dbNodeKey:            append(dbKey, []byte("node")...),
 		saveTimeoutThreshold: saveTimeoutThreshold,
 		clock:                clock,
 		nodes:                make(map[enode.ID]*nodeInfo),
 		nodeStates:           make(map[*NodeStateFlag]int),
+		nodeStateNameMap:     make(map[string]int),
+		nodeFieldMap:         make(map[*NodeStateField]int),
+		nodeFieldNameMap:     make(map[string]int),
 	}
-	ns.GetState(NewNodeStateFlag("init", false, false))
+	ns.StateMask(NewNodeStateFlag("init", false, false))
 	return ns
 }
 
@@ -109,6 +127,14 @@ func NewNodeStateFlag(name string, saveImmediately, saveTimeout bool) *NodeState
 	}
 }
 
+func NewNodeStateField(name string, ftype reflect.Type, flags []*NodeStateFlag) *NodeStateField {
+	return &NodeStateField{
+		name:  name,
+		ftype: ftype,
+		flags: flags,
+	}
+}
+
 // call before starting the state machine
 func (ns *NodeStateMachine) AddStateSub(mask NodeStateBitMask, callback NodeStateCallback) {
 	ns.stateSubs = append(ns.stateSubs, nodeStateSub{mask, callback})
@@ -116,67 +142,146 @@ func (ns *NodeStateMachine) AddStateSub(mask NodeStateBitMask, callback NodeStat
 
 func (ns *NodeStateMachine) newNode() *nodeInfo {
 	return &nodeInfo{
-		fields: make([]interface{}, len(ns.nodeFieldTypes)),
+		fields: make([]interface{}, len(ns.nodeFields)),
 	}
 }
 
 func (ns *NodeStateMachine) LoadFromDb() {
+	if enc, err := ns.db.Get(ns.dbMappingKey); err == nil {
+		if err := rlp.DecodeBytes(enc, &ns.mappings); err != nil {
+			log.Error("Failed to decode node state and field mappings", "error", err)
+		}
+	}
+	mapping := nsMapping{
+		States: make([]string, len(ns.nodeStates)),
+		Fields: make([]string, len(ns.nodeFields)),
+	}
+	for flag, index := range ns.nodeStates {
+		mapping.States[index] = flag.name
+	}
+	for index, field := range ns.nodeFields {
+		mapping.Fields[index] = field.name
+	}
+	ns.currentMapping = -1
+loop:
+	for i, m := range ns.mappings {
+		if len(m.States) != len(mapping.States) {
+			continue loop
+		}
+		if len(m.Fields) != len(mapping.Fields) {
+			continue loop
+		}
+		for j, s := range mapping.States {
+			if m.States[j] != s {
+				continue loop
+			}
+		}
+		for j, s := range mapping.Fields {
+			if m.Fields[j] != s {
+				continue loop
+			}
+		}
+		ns.currentMapping = i
+		break
+	}
+	if ns.currentMapping == -1 {
+		ns.currentMapping = len(ns.mappings)
+		ns.mappings = append(ns.mappings, mapping)
+		if enc, err := rlp.EncodeToBytes(ns.mappings); err == nil {
+			if err := ns.db.Put(ns.dbMappingKey, enc); err != nil {
+				log.Error("Failed to save node state and field mappings", "error", err)
+			}
+		} else {
+			log.Error("Failed to encode node state and field mappings", "error", err)
+		}
+	}
+
 	now := ns.clock.Now()
-	it := ns.db.NewIteratorWithPrefix(ns.dbKey)
+	it := ns.db.NewIteratorWithPrefix(ns.dbNodeKey)
 	for it.Next() {
-		fmt.Println("found new db entry")
 		var id enode.ID
-		if len(it.Key()) != len(id)+len(ns.dbKey) {
-			fmt.Println("*** len(it.Key()) != len(id)")
+		if len(it.Key()) != len(ns.dbNodeKey)+len(id) {
+			log.Error("Node state db entry with invalid length", "found", len(it.Key()), "expected", len(ns.dbNodeKey)+len(id))
 			continue
 		}
-		copy(id[:], it.Key()[len(ns.dbKey):])
-		var enc nodeInfoEnc
-		if err := rlp.DecodeBytes(it.Value(), &enc); err != nil {
-			fmt.Println("*** decode error", err)
-			continue
-		}
-		node := ns.newNode()
-		node.db = true
-		fieldCount := len(node.fields)
-		if len(enc.Fields) != fieldCount {
-			// error
-			if len(enc.Fields) < fieldCount {
-				fieldCount = len(enc.Fields)
-			}
-		}
-		for i := 0; i < fieldCount; i++ {
-			if len(enc.Fields[i]) > 0 {
-				fmt.Println("decoding field", i, ns.nodeFieldTypes[i])
-				node.fields[i] = reflect.New(ns.nodeFieldTypes[i]).Interface()
-				fmt.Println("type before decode", reflect.TypeOf(node.fields[i]))
-				if err := rlp.DecodeBytes(enc.Fields[i], node.fields[i]); err != nil {
-					fmt.Println("*** field decode error", err)
-					continue
+		copy(id[:], it.Key()[len(ns.dbNodeKey):])
+		ns.loadNode(id, it.Value(), now)
+	}
+}
+
+func (ns *NodeStateMachine) loadNode(id enode.ID, data []byte, now mclock.AbsTime) {
+	var enc nodeInfoEnc
+	if err := rlp.DecodeBytes(data, &enc); err != nil {
+		log.Error("Failed to decode node info", "id", id, "error", err)
+		return
+	}
+	node := ns.newNode()
+	node.db = true
+
+	if int(enc.Mapping) >= len(ns.mappings) {
+		log.Error("Unknown node state and field mapping", "id", id, "index", enc.Mapping, "len", len(ns.mappings))
+		return
+	}
+	encMapping := ns.mappings[int(enc.Mapping)]
+	if len(enc.Fields) != len(encMapping.Fields) {
+		log.Error("Invalid node field count", "id", id, "stored", len(enc.Fields), "mapping", len(encMapping.Fields))
+		return
+	}
+loop:
+	for i, encField := range enc.Fields {
+		if len(encField) > 0 {
+			index := i
+			if int(enc.Mapping) != ns.currentMapping {
+				// convert field mapping
+				name := encMapping.Fields[i]
+				var ok bool
+				if index, ok = ns.nodeFieldNameMap[name]; !ok {
+					log.Debug("Dropped unknown node field", "id", id, "field name", name)
+					continue loop
 				}
-				fmt.Println("type after decode", reflect.TypeOf(node.fields[i]))
 			}
-		}
-		ns.nodes[id] = node
-		ns.initState(id, node, enc.State)
-		for _, et := range enc.Timeouts {
-			dt := time.Duration(et.At - uint64(now))
-			if dt > 0 {
-				ns.addTimeout(id, et.Mask, dt)
-			} else {
-				ns.updateState(id, 0, et.Mask, 0)()
+			node.fields[index] = reflect.New(ns.nodeFields[index].ftype).Interface()
+			if err := rlp.DecodeBytes(encField, node.fields[index]); err != nil {
+				log.Error("Failed to decode node field", "id", id, "field index", index, "error", err)
+				return
 			}
 		}
 	}
+	ns.nodes[id] = node
+	state := enc.State
+	if int(enc.Mapping) != ns.currentMapping {
+		// convert state flag mapping
+		state = 0
+		for i, name := range encMapping.States {
+			if (enc.State & (NodeStateBitMask(1) << i)) != 0 {
+				if index, ok := ns.nodeStateNameMap[name]; ok {
+					state |= NodeStateBitMask(1) << index
+				} else {
+					log.Debug("Dropped unknown node state flag", "id", id, "flag name", name)
+				}
+			}
+		}
+	}
+	ns.initState(id, node, state)
+	for _, et := range enc.Timeouts {
+		dt := time.Duration(et.At - uint64(now))
+		if dt > 0 {
+			ns.addTimeout(id, et.Mask, dt)
+		} else {
+			ns.updateState(id, 0, et.Mask, 0)()
+		}
+	}
+	log.Debug("Loaded node state", "id", id, "state", ns.stateToString(enc.State))
 }
 
 func (ns *NodeStateMachine) saveNode(id enode.ID, node *nodeInfo) {
 	saveStates := ns.saveImmediately | ns.saveTimeout
 	enc := nodeInfoEnc{
-		State:  node.state & saveStates,
-		Fields: make([][]byte, len(ns.nodeFieldTypes)),
+		Mapping: uint(ns.currentMapping),
+		State:   node.state & saveStates,
+		Fields:  make([][]byte, len(ns.nodeFields)),
 	}
-	fmt.Println("saveNode", id, "state", ns.stateToString(node.state), "savedState", ns.stateToString(node.state&saveStates))
+	log.Debug("Saved node state", "id", id, "state", ns.stateToString(enc.State))
 	for _, t := range node.timeouts {
 		if mask := t.mask & saveStates; mask != 0 {
 			enc.Timeouts = append(enc.Timeouts, nodeStateTimeoutEnc{
@@ -188,20 +293,22 @@ func (ns *NodeStateMachine) saveNode(id enode.ID, node *nodeInfo) {
 	for i, f := range node.fields {
 		var err error
 		if enc.Fields[i], err = rlp.EncodeToBytes(f); err != nil {
-			// error
+			log.Error("Failed to encode node field", "id", id, "fieldIndex", i, "error", err)
 		}
 	}
 	if data, err := rlp.EncodeToBytes(&enc); err == nil {
-		ns.db.Put(append(ns.dbKey, id[:]...), data)
+		if err := ns.db.Put(append(ns.dbNodeKey, id[:]...), data); err != nil {
+			log.Error("Failed to save node info", "id", id, "error", err)
+		}
 	} else {
-		// error
+		log.Error("Failed to encode node info", "id", id, "error", err)
 	}
 	node.dirty = false
 	node.db = true
 }
 
 func (ns *NodeStateMachine) deleteNode(id enode.ID) {
-	ns.db.Delete(append(ns.dbKey, id[:]...))
+	ns.db.Delete(append(ns.dbNodeKey, id[:]...))
 }
 
 func (ns *NodeStateMachine) SaveToDb() {
@@ -228,9 +335,7 @@ func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask
 	if node == nil {
 		node = ns.newNode()
 		ns.nodes[id] = node
-		fmt.Println("updateState", id, "newNode")
 	}
-	fmt.Println("updateState", id, "state", ns.stateToString(node.state), "set", ns.stateToString(set), "reset", ns.stateToString(reset))
 	newState := (node.state & (^reset)) | set
 	if newState == node.state {
 		return func() {}
@@ -293,10 +398,8 @@ func (ns *NodeStateMachine) AddTimeout(id enode.ID, mask NodeStateBitMask, timeo
 func (ns *NodeStateMachine) addTimeout(id enode.ID, mask NodeStateBitMask, timeout time.Duration) {
 	node := ns.nodes[id]
 	if node == nil {
-		fmt.Println("addTimeout", id, "unknown")
 		return
 	}
-	fmt.Println("addTimeout", id, "state", ns.stateToString(node.state), "mask", ns.stateToString(mask), "timeout", timeout)
 	mask &= node.state
 	ns.removeTimeouts(node, mask)
 	t := &nodeStateTimeout{
@@ -308,7 +411,6 @@ func (ns *NodeStateMachine) addTimeout(id enode.ID, mask NodeStateBitMask, timeo
 		var cb func()
 		ns.lock.Lock()
 		if t.mask != 0 {
-			fmt.Println("timeout", id, "mask", ns.stateToString(t.mask))
 			cb = ns.updateState(id, 0, t.mask, 0)
 		}
 		ns.lock.Unlock()
@@ -342,10 +444,18 @@ func (ns *NodeStateMachine) removeTimeouts(node *nodeInfo, mask NodeStateBitMask
 }
 
 // call before starting the state machine
-func (ns *NodeStateMachine) RegisterField(fieldType reflect.Type, fieldMask NodeStateBitMask) int {
-	index := len(ns.nodeFieldTypes)
-	ns.nodeFieldTypes = append(ns.nodeFieldTypes, fieldType)
-	ns.nodeFieldMasks = append(ns.nodeFieldMasks, fieldMask)
+func (ns *NodeStateMachine) FieldIndex(field *NodeStateField) int {
+	if index, ok := ns.nodeFieldMap[field]; ok {
+		return index
+	}
+	index := len(ns.nodeFields)
+	ns.nodeFields = append(ns.nodeFields, field)
+	ns.nodeFieldMasks = append(ns.nodeFieldMasks, ns.StatesMask(field.flags))
+	ns.nodeFieldMap[field] = index
+	if _, ok := ns.nodeFieldNameMap[field.name]; ok {
+		log.Error("Node field name collision", "name", field.name)
+	}
+	ns.nodeFieldNameMap[field.name] = index
 	return index
 }
 
@@ -373,31 +483,35 @@ func (ns *NodeStateMachine) SetField(id enode.ID, fieldId int, value interface{}
 	if fieldId < len(node.fields) {
 		node.fields[fieldId] = value
 	} else {
-		// error
+		log.Error("Invalid node field index", "index", fieldId, "len", len(node.fields))
 	}
 }
 
-func (ns *NodeStateMachine) GetState(field *NodeStateFlag) NodeStateBitMask {
-	if state, ok := ns.nodeStates[field]; ok {
+func (ns *NodeStateMachine) StateMask(flag *NodeStateFlag) NodeStateBitMask {
+	if state, ok := ns.nodeStates[flag]; ok {
 		return NodeStateBitMask(1) << state
 	}
-	state := ns.stateCount
-	mask := NodeStateBitMask(1) << state
+	index := ns.stateCount
+	mask := NodeStateBitMask(1) << index
 	ns.stateCount++
-	ns.nodeStates[field] = state
-	if field.saveImmediately {
+	ns.nodeStates[flag] = index
+	if _, ok := ns.nodeStateNameMap[flag.name]; ok {
+		log.Error("Node state flag name collision", "name", flag.name)
+	}
+	ns.nodeStateNameMap[flag.name] = index
+	if flag.saveImmediately {
 		ns.saveImmediately |= mask
 	}
-	if field.saveTimeout {
+	if flag.saveTimeout {
 		ns.saveTimeout |= mask
 	}
 	return mask
 }
 
-func (ns *NodeStateMachine) GetStates(fields []*NodeStateFlag) NodeStateBitMask {
+func (ns *NodeStateMachine) StatesMask(flags []*NodeStateFlag) NodeStateBitMask {
 	var mask NodeStateBitMask
-	for _, field := range fields {
-		mask |= ns.GetState(field)
+	for _, flag := range flags {
+		mask |= ns.StateMask(flag)
 	}
 	return mask
 }
