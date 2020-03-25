@@ -67,10 +67,11 @@ type (
 	NodeStateBitMask uint64
 
 	nodeInfo struct {
-		state     NodeStateBitMask
-		timeouts  []*nodeStateTimeout
-		fields    []interface{} //nodeFields
-		db, dirty bool
+		state          NodeStateBitMask
+		timeouts       []*nodeStateTimeout
+		fields         []interface{} //nodeFields
+		fieldGcCounter int
+		db, dirty      bool
 	}
 
 	nodeInfoEnc struct {
@@ -268,7 +269,9 @@ loop:
 		if dt > 0 {
 			ns.addTimeout(id, et.Mask, dt)
 		} else {
-			ns.updateState(id, 0, et.Mask, 0)()
+			if cb := ns.updateState(id, 0, et.Mask, 0); cb != nil {
+				cb()
+			}
 		}
 	}
 	log.Debug("Loaded node state", "id", id, "state", ns.stateToString(enc.State))
@@ -327,7 +330,9 @@ func (ns *NodeStateMachine) UpdateState(id enode.ID, set, reset NodeStateBitMask
 	ns.lock.Lock()
 	cb := ns.updateState(id, set, reset, timeout)
 	ns.lock.Unlock()
-	cb()
+	if cb != nil {
+		cb()
+	}
 }
 
 func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask, timeout time.Duration) func() {
@@ -338,7 +343,7 @@ func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask
 	}
 	newState := (node.state & (^reset)) | set
 	if newState == node.state {
-		return func() {}
+		return nil
 	}
 	oldState := node.state
 	changed := oldState ^ newState
@@ -355,19 +360,13 @@ func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask
 			ns.deleteNode(id)
 		}
 	} else {
-		for i, f := range node.fields {
-			if f != nil {
-				if ns.nodeFieldMasks[i]&newState == 0 {
-					node.fields[i] = nil
-				}
-			}
-		}
 		if changed&ns.saveTimeout != 0 {
 			node.dirty = true
 		}
 		if changed&ns.saveImmediately != 0 {
 			ns.saveNode(id, node)
 		}
+		node.fieldGcCounter++
 	}
 	return func() {
 		// call state update subscription callbacks without holding the mutex
@@ -375,6 +374,21 @@ func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask
 			if changed&sub.mask != 0 {
 				sub.callback(id, oldState&sub.mask, newState&sub.mask)
 			}
+		}
+		if newState != 0 {
+			ns.lock.Lock()
+			node.fieldGcCounter--
+			if node.fieldGcCounter == 0 {
+				// remove all fields that are not needed any more after reaching the final state
+				for i, f := range node.fields {
+					if f != nil {
+						if ns.nodeFieldMasks[i]&node.state == 0 {
+							node.fields[i] = nil
+						}
+					}
+				}
+			}
+			ns.lock.Unlock()
 		}
 	}
 }
