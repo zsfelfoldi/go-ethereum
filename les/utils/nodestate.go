@@ -29,47 +29,88 @@ import (
 )
 
 type (
+	// NodeStateMachine connects different system components operating on subsets of
+	// network nodes. Node states are represented by 64 bit vectors with each bit assigned
+	// to a state flag. Each state flag has a descriptor structure and the mapping is
+	// created automatically. It is possible to subscribe to subsets of state flags and
+	// receive a callback if one of the nodes has a relevant state flag changed.
+	// Callbacks can also modify further flags of the same node or other nodes. State
+	// updates only return after all immediate effects throughout the system have happened
+	// (deadlocks should be avoided by design of the implemented state logic). The caller
+	// can also add timeouts assigned to a certain node and a subset of state flags.
+	// If the timeout elapses, the flags are reset. If all relevant flags are reset then
+	// the timer is dropped. The state flags and the associated timers are persisted in
+	// the database if the flag descriptor enables saving.
+	//
+	// Extra node fields can also be registered so system components can also store more
+	// complex state for each node that is relevant to them, without creating a custom
+	// peer set. Fields can be shared across multiple components if they all know the
+	// field ID. Fields are also assigned to a set of state flags and the contents of
+	// each field is only retained for a certain node as long as at least one of these
+	// flags is set (meaning that the node is still interesting to the component(s) which
+	// are interested in the given field). Persistent fields should implement rlp.Encoder
+	// and rlp.Decoder.
 	NodeStateMachine struct {
-		lock                         sync.Mutex
-		clock                        mclock.Clock
-		db                           ethdb.Database
-		dbMappingKey, dbNodeKey      []byte
-		mappings                     []nsMapping
-		currentMapping               int
-		nodes                        map[enode.ID]*nodeInfo
-		nodeStates                   map[*NodeStateFlag]int
-		nodeStateNameMap             map[string]int
-		nodeFields                   []*NodeStateField
-		nodeFieldMasks               []NodeStateBitMask
-		nodeFieldMap                 map[*NodeStateField]int
-		nodeFieldNameMap             map[string]int
-		stateCount                   int
-		stateSubs                    []nodeStateSub
-		saveImmediately, saveTimeout NodeStateBitMask
-		saveTimeoutThreshold         time.Duration
+		lock                            sync.Mutex
+		clock                           mclock.Clock
+		db                              ethdb.Database
+		dbMappingKey, dbNodeKey         []byte
+		mappings                        []nsMapping
+		currentMapping                  int
+		nodes                           map[enode.ID]*nodeInfo
+		nodeStates                      map[*NodeStateFlag]int
+		nodeStateNameMap                map[string]int
+		nodeFields                      []*NodeStateField
+		nodeFieldMasks                  []NodeStateBitMask
+		nodeFieldMap                    map[*NodeStateField]int
+		nodeFieldNameMap                map[string]int
+		stateCount                      int
+		stateSubs                       []nodeStateSub
+		saveImmediately, saveAtShutdown NodeStateBitMask
 	}
 
+	// NodeStateFlag describes a node state flag. Each registered instance is automatically
+	// mapped to a bit of the 64 bit node states.
+	// If saveImmediately is true then the node is saved each time the flag is switched on
+	// or off. If saveAtShutdown is true then
 	NodeStateFlag struct {
-		name                         string
-		saveImmediately, saveTimeout bool
+		name                            string
+		saveImmediately, saveAtShutdown bool
 	}
 
+	// NodeStateField describes an optional node field of the given type. The contents
+	// of the field are only retained for each node as long as at least one of the
+	// specified flags is set. If all relevant flags are reset then the field is removed
+	// after all callbacks of the state change are processed.
 	NodeStateField struct {
 		name  string
 		ftype reflect.Type
 		flags []*NodeStateFlag
 	}
 
+	// nsMapping describes an index mapping of node state flags and fields. Mapping is
+	// determined during startup, before loading node data from the database. The used
+	// mapping is saved for each node and is converted upon loading if it has changed
+	// since the last time it was saved.
 	nsMapping struct {
 		States, Fields []string
 	}
 
+	// NodeStateBitMask describes a node state or state mask. It represents a subset
+	// of node flags with each bit assigned to a flag index (LSB represents flag 0).
 	NodeStateBitMask uint64
 
+	// NodeStateCallback is a subscription callback which is called when one of the
+	// state flags that is included in the subscription state mask is changed.
+	// Note: oldState and newState are also masked with the subscription mask so only
+	// the relevant bits are included.
+	NodeStateCallback func(id enode.ID, oldState, newState NodeStateBitMask)
+
+	// nodeInfo contains node state, fields and state timeouts
 	nodeInfo struct {
 		state          NodeStateBitMask
 		timeouts       []*nodeStateTimeout
-		fields         []interface{} //nodeFields
+		fields         []interface{}
 		fieldGcCounter int
 		db, dirty      bool
 	}
@@ -86,8 +127,6 @@ type (
 		callback NodeStateCallback
 	}
 
-	NodeStateCallback func(id enode.ID, oldState, newState NodeStateBitMask)
-
 	nodeStateTimeout struct {
 		id    enode.ID
 		at    mclock.AbsTime
@@ -101,33 +140,42 @@ type (
 	}
 )
 
+// initState is a special state that is assumed to be set before a node is loaded from
+// the database. After loading initState is reset and the saved state flags are set.
 const initState = NodeStateBitMask(1)
 
-func NewNodeStateMachine(db ethdb.Database, dbKey []byte, saveTimeoutThreshold time.Duration, clock mclock.Clock) *NodeStateMachine {
+// NewNodeStateMachine creates a new node state machine.
+// Note: if state timers are persisted in the database then clock value should also
+// be persisted at shutdown and resumed at next startup.
+func NewNodeStateMachine(db ethdb.Database, dbKey []byte, clock mclock.Clock) *NodeStateMachine {
 	ns := &NodeStateMachine{
-		db:                   db,
-		dbMappingKey:         append(dbKey, []byte("mapping")...),
-		dbNodeKey:            append(dbKey, []byte("node")...),
-		saveTimeoutThreshold: saveTimeoutThreshold,
-		clock:                clock,
-		nodes:                make(map[enode.ID]*nodeInfo),
-		nodeStates:           make(map[*NodeStateFlag]int),
-		nodeStateNameMap:     make(map[string]int),
-		nodeFieldMap:         make(map[*NodeStateField]int),
-		nodeFieldNameMap:     make(map[string]int),
+		db:               db,
+		dbMappingKey:     append(dbKey, []byte("mapping")...),
+		dbNodeKey:        append(dbKey, []byte("node")...),
+		clock:            clock,
+		nodes:            make(map[enode.ID]*nodeInfo),
+		nodeStates:       make(map[*NodeStateFlag]int),
+		nodeStateNameMap: make(map[string]int),
+		nodeFieldMap:     make(map[*NodeStateField]int),
+		nodeFieldNameMap: make(map[string]int),
 	}
+	// init flag is always mapped to index 0 (initState bit mask)
 	ns.StateMask(NewNodeStateFlag("init", false, false))
 	return ns
 }
 
-func NewNodeStateFlag(name string, saveImmediately, saveTimeout bool) *NodeStateFlag {
+// NewNodeStateFlag creates a new node state flag. Mapping happens when it is first passed
+// to NodeStateMachine.StateMask
+func NewNodeStateFlag(name string, saveImmediately, saveAtShutdown bool) *NodeStateFlag {
 	return &NodeStateFlag{
 		name:            name,
 		saveImmediately: saveImmediately,
-		saveTimeout:     saveTimeout,
+		saveAtShutdown:  saveAtShutdown,
 	}
 }
 
+// NewNodeStateField creates a new node state field. Mapping happens when it is first passed
+// to NodeStateMachine.FieldIndex
 func NewNodeStateField(name string, ftype reflect.Type, flags []*NodeStateFlag) *NodeStateField {
 	return &NodeStateField{
 		name:  name,
@@ -136,17 +184,25 @@ func NewNodeStateField(name string, ftype reflect.Type, flags []*NodeStateFlag) 
 	}
 }
 
-// call before starting the state machine
+// AddStateSub adds a node state subscription. The callback is called while the state
+// machine mutex is not held and it is allowed to make further state updates. All immediate
+// changes throughout the system are processed in the same thread/goroutine. It is the
+// responsibility of the implemented state logic to avoid deadlocks caused by the callbacks,
+// infinite toggling of flags or hazardous/non-deterministic state changes.
+// State subscriptions should be installed before loading the node database or making the
+// first state update.
 func (ns *NodeStateMachine) AddStateSub(mask NodeStateBitMask, callback NodeStateCallback) {
 	ns.stateSubs = append(ns.stateSubs, nodeStateSub{mask, callback})
 }
 
+// newNode creates a new nodeInfo
 func (ns *NodeStateMachine) newNode() *nodeInfo {
 	return &nodeInfo{
 		fields: make([]interface{}, len(ns.nodeFields)),
 	}
 }
 
+// LoadFromDb loads persisted node states from the database
 func (ns *NodeStateMachine) LoadFromDb() {
 	if enc, err := ns.db.Get(ns.dbMappingKey); err == nil {
 		if err := rlp.DecodeBytes(enc, &ns.mappings); err != nil {
@@ -206,11 +262,12 @@ loop:
 			continue
 		}
 		copy(id[:], it.Key()[len(ns.dbNodeKey):])
-		ns.loadNode(id, it.Value(), now)
+		ns.decodeNode(id, it.Value(), now)
 	}
 }
 
-func (ns *NodeStateMachine) loadNode(id enode.ID, data []byte, now mclock.AbsTime) {
+// decodeNode decodes a node database entry and adds it to the node set if successful
+func (ns *NodeStateMachine) decodeNode(id enode.ID, data []byte, now mclock.AbsTime) {
 	var enc nodeInfoEnc
 	if err := rlp.DecodeBytes(data, &enc); err != nil {
 		log.Error("Failed to decode node info", "id", id, "error", err)
@@ -277,8 +334,9 @@ loop:
 	log.Debug("Loaded node state", "id", id, "state", ns.stateToString(enc.State))
 }
 
+// saveNode saves the given node info to the database
 func (ns *NodeStateMachine) saveNode(id enode.ID, node *nodeInfo) {
-	saveStates := ns.saveImmediately | ns.saveTimeout
+	saveStates := ns.saveImmediately | ns.saveAtShutdown
 	enc := nodeInfoEnc{
 		Mapping: uint(ns.currentMapping),
 		State:   node.state & saveStates,
@@ -310,10 +368,12 @@ func (ns *NodeStateMachine) saveNode(id enode.ID, node *nodeInfo) {
 	node.db = true
 }
 
+// deleteNode removes a node info from the database
 func (ns *NodeStateMachine) deleteNode(id enode.ID) {
 	ns.db.Delete(append(ns.dbNodeKey, id[:]...))
 }
 
+// SaveToDb saves all nodes that have been changed but not saved immediately
 func (ns *NodeStateMachine) SaveToDb() {
 	ns.lock.Lock()
 	defer ns.lock.Unlock()
@@ -325,7 +385,9 @@ func (ns *NodeStateMachine) SaveToDb() {
 	}
 }
 
-// returns after all resulting immediate changes are processed
+// UpdateState updates the given node state flags and processes all resulting callbacks.
+// It only returns after all subsequent immediate changes (including those changed by the
+// callbacks) have been processed.
 func (ns *NodeStateMachine) UpdateState(id enode.ID, set, reset NodeStateBitMask, timeout time.Duration) {
 	ns.lock.Lock()
 	cb := ns.updateState(id, set, reset, timeout)
@@ -335,6 +397,8 @@ func (ns *NodeStateMachine) UpdateState(id enode.ID, set, reset NodeStateBitMask
 	}
 }
 
+// updateState performs a node state update and returns a function that processes state
+// subscription callbacks and should be called while the mutex is not held.
 func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask, timeout time.Duration) func() {
 	node := ns.nodes[id]
 	if node == nil {
@@ -360,7 +424,7 @@ func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask
 			ns.deleteNode(id)
 		}
 	} else {
-		if changed&ns.saveTimeout != 0 {
+		if changed&ns.saveAtShutdown != 0 {
 			node.dirty = true
 		}
 		if changed&ns.saveImmediately != 0 {
@@ -393,6 +457,7 @@ func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask
 	}
 }
 
+// initState performs the first state update after loading a node from the database
 func (ns *NodeStateMachine) initState(id enode.ID, node *nodeInfo, state NodeStateBitMask) {
 	node.state = state
 	for _, sub := range ns.stateSubs {
@@ -402,6 +467,7 @@ func (ns *NodeStateMachine) initState(id enode.ID, node *nodeInfo, state NodeSta
 	}
 }
 
+// AddTimeout adds a node state timeout associated to the given state flag(s).
 func (ns *NodeStateMachine) AddTimeout(id enode.ID, mask NodeStateBitMask, timeout time.Duration) {
 	ns.lock.Lock()
 	defer ns.lock.Unlock()
@@ -409,6 +475,7 @@ func (ns *NodeStateMachine) AddTimeout(id enode.ID, mask NodeStateBitMask, timeo
 	ns.addTimeout(id, mask, timeout)
 }
 
+// addTimeout adds a node state timeout associated to the given state flag(s).
 func (ns *NodeStateMachine) addTimeout(id enode.ID, mask NodeStateBitMask, timeout time.Duration) {
 	node := ns.nodes[id]
 	if node == nil {
@@ -433,15 +500,15 @@ func (ns *NodeStateMachine) addTimeout(id enode.ID, mask NodeStateBitMask, timeo
 		}
 	})
 	node.timeouts = append(node.timeouts, t)
-	if mask&ns.saveTimeout != 0 {
-		if timeout >= ns.saveTimeoutThreshold {
-			ns.saveNode(id, node)
-		} else {
-			node.dirty = true
-		}
+	if mask&ns.saveAtShutdown != 0 {
+		node.dirty = true
 	}
 }
 
+// removeTimeout removes node state timeouts associated to the given state flag(s).
+// If a timeout was associated to multiple flags which are not all included in the
+// specified remove mask then only the included flags are de-associated and the timer
+// stays active.
 func (ns *NodeStateMachine) removeTimeouts(node *nodeInfo, mask NodeStateBitMask) {
 	for i := 0; i < len(node.timeouts); i++ {
 		t := node.timeouts[i]
@@ -457,7 +524,8 @@ func (ns *NodeStateMachine) removeTimeouts(node *nodeInfo, mask NodeStateBitMask
 	}
 }
 
-// call before starting the state machine
+// FieldIndex adds the node field if it has not been added before and returns the field index.
+// Node fields should be mapped before loading the node database or making the first state update.
 func (ns *NodeStateMachine) FieldIndex(field *NodeStateField) int {
 	if index, ok := ns.nodeFieldMap[field]; ok {
 		return index
@@ -473,6 +541,7 @@ func (ns *NodeStateMachine) FieldIndex(field *NodeStateField) int {
 	return index
 }
 
+// GetField retrieves the given field of the given node
 func (ns *NodeStateMachine) GetField(id enode.ID, fieldId int) interface{} {
 	ns.lock.Lock()
 	defer ns.lock.Unlock()
@@ -484,6 +553,7 @@ func (ns *NodeStateMachine) GetField(id enode.ID, fieldId int) interface{} {
 	}
 }
 
+// SetField sets the given field of the given node
 func (ns *NodeStateMachine) SetField(id enode.ID, fieldId int, value interface{}) {
 	ns.lock.Lock()
 	defer ns.lock.Unlock()
@@ -501,6 +571,9 @@ func (ns *NodeStateMachine) SetField(id enode.ID, fieldId int, value interface{}
 	}
 }
 
+// StateMask assigns a bit index to the given flag if it has not been mapped before and
+// returns the node state bit mask.
+// State flags should be mapped before loading the node database or making the first state update.
 func (ns *NodeStateMachine) StateMask(flag *NodeStateFlag) NodeStateBitMask {
 	if state, ok := ns.nodeStates[flag]; ok {
 		return NodeStateBitMask(1) << state
@@ -516,12 +589,15 @@ func (ns *NodeStateMachine) StateMask(flag *NodeStateFlag) NodeStateBitMask {
 	if flag.saveImmediately {
 		ns.saveImmediately |= mask
 	}
-	if flag.saveTimeout {
-		ns.saveTimeout |= mask
+	if flag.saveAtShutdown {
+		ns.saveAtShutdown |= mask
 	}
 	return mask
 }
 
+// StatesMask assigns a bit index to the given flags if they have not been mapped before and
+// returns the node state bit mask.
+// State flags should be mapped before loading the node database or making the first state update.
 func (ns *NodeStateMachine) StatesMask(flags []*NodeStateFlag) NodeStateBitMask {
 	var mask NodeStateBitMask
 	for _, flag := range flags {
@@ -530,6 +606,7 @@ func (ns *NodeStateMachine) StatesMask(flags []*NodeStateFlag) NodeStateBitMask 
 	return mask
 }
 
+// stateToString returns a list of the names of the flags specified in the bit mask
 func (ns *NodeStateMachine) stateToString(states NodeStateBitMask) string {
 	s := "["
 	comma := false

@@ -78,7 +78,7 @@ func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, cl
 	//TODO connect to ulServers
 	s := &serverPool{
 		clock:   clock,
-		ns:      utils.NewNodeStateMachine(db, dbKey, time.Minute*10, clock),
+		ns:      utils.NewNodeStateMachine(db, dbKey, clock),
 		vt:      lpc.NewValueTracker(db, clock, requestList, time.Minute, 1/float64(time.Hour), 1/float64(time.Hour*1000)),
 		timeout: minTimeout,
 		quit:    make(chan struct{}),
