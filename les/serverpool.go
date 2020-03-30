@@ -58,6 +58,14 @@ type nodeHistory struct {
 	totalValue        float64
 }
 
+func (n *nodeHistory) EncodeRLP(w io.Writer) error {
+	return rlp.Encode(w, &n.dialCost)
+}
+
+func (n *nodeHistory) DecodeRLP(s *rlp.Stream) error {
+	return s.Decode(&n.dialCost)
+}
+
 var (
 	sfDiscovered = utils.NewNodeStateFlag("discovered", false, true)
 	sfHasValue   = utils.NewNodeStateFlag("hasValue", true, false)
@@ -83,11 +91,19 @@ func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, cl
 		timeout: minTimeout,
 		quit:    make(chan struct{}),
 	}
-	enrFieldId := s.ns.FieldIndex(sfiEnr)
-	s.nodeHistoryFieldId = s.ns.FieldIndex(sfiNodeHistory)
+	// Register all serverpool-defined states
+	stDiscovered, _ := s.ns.RegisterState(sfDiscovered)
+	s.stHasValue, _ = s.ns.RegisterState(sfHasValue)
+	stSelected, _ := s.ns.RegisterState(sfSelected)
+	s.stDialed, _ = s.ns.RegisterState(sfDialed)
+	s.stConnected, _ = s.ns.RegisterState(sfConnected)
+	s.stRedialWait, _ = s.ns.RegisterState(sfRedialWait)
 
-	knownSelector := lpc.NewWrsIterator(s.ns, s.ns.StatesMask(knownSelectorRequire), s.ns.StatesMask(knownSelectorDisable), s.ns.StateMask(sfSelected), s.knownSelectWeight, enrFieldId)
-	stDiscovered := s.ns.StateMask(sfDiscovered)
+	// Register all serverpool-defined node fields.
+	enrFieldId, _ := s.ns.RegisterField(sfiEnr)
+	s.nodeHistoryFieldId, _ = s.ns.RegisterField(sfiNodeHistory)
+
+	knownSelector := lpc.NewWrsIterator(s.ns, s.ns.StatesMask(knownSelectorRequire), s.ns.StatesMask(knownSelectorDisable), stSelected, s.knownSelectWeight, enrFieldId)
 	discEnrStored := enode.Filter(discovery, func(node *enode.Node) bool {
 		s.ns.UpdateState(node.ID(), stDiscovered, 0, time.Hour)
 		s.ns.SetField(node.ID(), enrFieldId, node.Record())
@@ -96,12 +112,9 @@ func newServerPool(db ethdb.Database, dbKey []byte, discovery enode.Iterator, cl
 	iter := enode.NewFairMix(time.Second)
 	iter.AddSource(discEnrStored)
 	iter.AddSource(knownSelector)
+
 	// preNegotiationFilter will be added in series with iter here when les4 is available
 
-	s.stDialed = s.ns.StateMask(sfDialed)
-	s.stConnected = s.ns.StateMask(sfConnected)
-	s.stRedialWait = s.ns.StateMask(sfRedialWait)
-	s.stHasValue = s.ns.StateMask(sfHasValue)
 	s.dialIterator = enode.Filter(iter, func(node *enode.Node) bool {
 		n, _ := s.ns.GetField(node.ID(), s.nodeHistoryFieldId).(*nodeHistory)
 		if n == nil {
@@ -226,12 +239,4 @@ func init() {
 		}
 		requestMapping[uint32(code)] = rm
 	}
-}
-
-func (n *nodeHistory) EncodeRLP(w io.Writer) error {
-	return rlp.Encode(w, &n.dialCost)
-}
-
-func (n *nodeHistory) DecodeRLP(s *rlp.Stream) error {
-	return s.Decode(&n.dialCost)
 }

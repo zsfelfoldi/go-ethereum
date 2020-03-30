@@ -17,9 +17,13 @@
 package utils
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -51,13 +55,17 @@ type (
 	// are interested in the given field). Persistent fields should implement rlp.Encoder
 	// and rlp.Decoder.
 	NodeStateMachine struct {
-		lock                            sync.Mutex
-		clock                           mclock.Clock
-		db                              ethdb.Database
-		dbMappingKey, dbNodeKey         []byte
-		mappings                        []nsMapping
-		currentMapping                  int
-		nodes                           map[enode.ID]*nodeInfo
+		inited                  uint32
+		lock                    sync.Mutex
+		clock                   mclock.Clock
+		db                      ethdb.Database
+		dbMappingKey, dbNodeKey []byte
+		mappings                []nsMapping
+		currentMapping          int
+		nodes                   map[enode.ID]*nodeInfo
+
+		// Registered state flags or fields. Modifications are allowed
+		// only when the node state machine has not been initialized.
 		nodeStates                      map[*NodeStateFlag]int
 		nodeStateNameMap                map[string]int
 		nodeFields                      []*NodeStateField
@@ -65,14 +73,21 @@ type (
 		nodeFieldMap                    map[*NodeStateField]int
 		nodeFieldNameMap                map[string]int
 		stateCount                      int
-		stateSubs                       []nodeStateSub
+		stateLimit                      int
 		saveImmediately, saveAtShutdown NodeStateBitMask
+
+		// Installed callbacks. Modifications are allowed only when the
+		// node state machine has not been initialized.
+		stateSubs []nodeStateSub
+
+		// Testing hooks, only for testing purposes.
+		saveNodeHook func(*nodeInfo)
 	}
 
 	// NodeStateFlag describes a node state flag. Each registered instance is automatically
 	// mapped to a bit of the 64 bit node states.
 	// If saveImmediately is true then the node is saved each time the flag is switched on
-	// or off. If saveAtShutdown is true then
+	// or off. If saveAtShutdown is true then the node is saved when state machine is shutdown.
 	NodeStateFlag struct {
 		name                            string
 		saveImmediately, saveAtShutdown bool
@@ -140,6 +155,14 @@ type (
 	}
 )
 
+var (
+	errAlreadyInited = errors.New("state machine is already initialized")
+	errStateOverflow = errors.New("registered state flag exceeds the limit")
+	errNameCollision = errors.New("state flag or node field name collision")
+	errOutOfBound    = errors.New("out of bound")
+	errInvalidField  = errors.New("invalid field")
+)
+
 // initState is a special state that is assumed to be set before a node is loaded from
 // the database. After loading initState is reset and the saved state flags are set.
 const initState = NodeStateBitMask(1)
@@ -158,14 +181,15 @@ func NewNodeStateMachine(db ethdb.Database, dbKey []byte, clock mclock.Clock) *N
 		nodeStateNameMap: make(map[string]int),
 		nodeFieldMap:     make(map[*NodeStateField]int),
 		nodeFieldNameMap: make(map[string]int),
+		stateLimit:       8 * int(unsafe.Sizeof(NodeStateBitMask(0))),
 	}
 	// init flag is always mapped to index 0 (initState bit mask)
-	ns.StateMask(NewNodeStateFlag("init", false, false))
+	ns.RegisterState(NewNodeStateFlag("init", false, false))
 	return ns
 }
 
 // NewNodeStateFlag creates a new node state flag. Mapping happens when it is first passed
-// to NodeStateMachine.StateMask
+// to NodeStateMachine.RegisterState
 func NewNodeStateFlag(name string, saveImmediately, saveAtShutdown bool) *NodeStateFlag {
 	return &NodeStateFlag{
 		name:            name,
@@ -175,7 +199,7 @@ func NewNodeStateFlag(name string, saveImmediately, saveAtShutdown bool) *NodeSt
 }
 
 // NewNodeStateField creates a new node state field. Mapping happens when it is first passed
-// to NodeStateMachine.FieldIndex
+// to NodeStateMachine.RegisterField
 func NewNodeStateField(name string, ftype reflect.Type, flags []*NodeStateFlag) *NodeStateField {
 	return &NodeStateField{
 		name:  name,
@@ -191,22 +215,32 @@ func NewNodeStateField(name string, ftype reflect.Type, flags []*NodeStateFlag) 
 // infinite toggling of flags or hazardous/non-deterministic state changes.
 // State subscriptions should be installed before loading the node database or making the
 // first state update.
-func (ns *NodeStateMachine) AddStateSub(mask NodeStateBitMask, callback NodeStateCallback) {
+func (ns *NodeStateMachine) AddStateSub(mask NodeStateBitMask, callback NodeStateCallback) error {
+	if atomic.LoadUint32(&ns.inited) == 1 {
+		return errAlreadyInited
+	}
 	ns.stateSubs = append(ns.stateSubs, nodeStateSub{mask, callback})
+	return nil
 }
 
 // newNode creates a new nodeInfo
 func (ns *NodeStateMachine) newNode() *nodeInfo {
-	return &nodeInfo{
-		fields: make([]interface{}, len(ns.nodeFields)),
-	}
+	return &nodeInfo{fields: make([]interface{}, len(ns.nodeFields))}
+}
+
+// init marks the node state machine as initialized. After this no more
+// state registration or callback installation is allowed.
+func (ns *NodeStateMachine) init() {
+	atomic.StoreUint32(&ns.inited, 1)
 }
 
 // LoadFromDb loads persisted node states from the database
 func (ns *NodeStateMachine) LoadFromDb() {
+	ns.init()
 	if enc, err := ns.db.Get(ns.dbMappingKey); err == nil {
 		if err := rlp.DecodeBytes(enc, &ns.mappings); err != nil {
-			log.Error("Failed to decode node state and field mappings", "error", err)
+			log.Error("Failed to decode scheme", "error", err)
+			return
 		}
 	}
 	mapping := nsMapping{
@@ -244,12 +278,15 @@ loop:
 	if ns.currentMapping == -1 {
 		ns.currentMapping = len(ns.mappings)
 		ns.mappings = append(ns.mappings, mapping)
-		if enc, err := rlp.EncodeToBytes(ns.mappings); err == nil {
-			if err := ns.db.Put(ns.dbMappingKey, enc); err != nil {
-				log.Error("Failed to save node state and field mappings", "error", err)
-			}
-		} else {
-			log.Error("Failed to encode node state and field mappings", "error", err)
+
+		// Scheme should be persisted properly, otherwise
+		// all persisted data can't be resolved next time.
+		enc, err := rlp.EncodeToBytes(ns.mappings)
+		if err != nil {
+			panic("Failed to encode scheme")
+		}
+		if err := ns.db.Put(ns.dbMappingKey, enc); err != nil {
+			panic("Failed to save scheme")
 		}
 	}
 
@@ -277,7 +314,7 @@ func (ns *NodeStateMachine) decodeNode(id enode.ID, data []byte, now mclock.AbsT
 	node.db = true
 
 	if int(enc.Mapping) >= len(ns.mappings) {
-		log.Error("Unknown node state and field mapping", "id", id, "index", enc.Mapping, "len", len(ns.mappings))
+		log.Error("Unknown scheme", "id", id, "index", enc.Mapping, "len", len(ns.mappings))
 		return
 	}
 	encMapping := ns.mappings[int(enc.Mapping)]
@@ -285,48 +322,65 @@ func (ns *NodeStateMachine) decodeNode(id enode.ID, data []byte, now mclock.AbsT
 		log.Error("Invalid node field count", "id", id, "stored", len(enc.Fields), "mapping", len(encMapping.Fields))
 		return
 	}
-loop:
-	for i, encField := range enc.Fields {
-		if len(encField) > 0 {
-			index := i
-			if int(enc.Mapping) != ns.currentMapping {
-				// convert field mapping
-				name := encMapping.Fields[i]
-				var ok bool
-				if index, ok = ns.nodeFieldNameMap[name]; !ok {
-					log.Debug("Dropped unknown node field", "id", id, "field name", name)
-					continue loop
+	// convertMask converts a old format state/mask to the latest version.
+	convertMask := func(schemeID int, scheme []string, state NodeStateBitMask) (NodeStateBitMask, bool) {
+		if schemeID == ns.currentMapping {
+			return state, true // Nothing need to be changed
+		}
+		var converted NodeStateBitMask
+		for i, name := range scheme {
+			if (state & (NodeStateBitMask(1) << i)) != 0 {
+				if index, ok := ns.nodeStateNameMap[name]; ok {
+					converted |= NodeStateBitMask(1) << index
+				} else {
+					return NodeStateBitMask(0), false // unkonwn flag
 				}
 			}
-			node.fields[index] = reflect.New(ns.nodeFields[index].ftype).Interface()
-			if err := rlp.DecodeBytes(encField, node.fields[index]); err != nil {
-				log.Error("Failed to decode node field", "id", id, "field index", index, "error", err)
+		}
+		return converted, true
+	}
+	// Resolve persisted node fields
+	for i, encField := range enc.Fields {
+		if len(encField) == 0 {
+			continue
+		}
+		index := i
+		if int(enc.Mapping) != ns.currentMapping {
+			name := encMapping.Fields[i]
+			var ok bool
+			if index, ok = ns.nodeFieldNameMap[name]; !ok {
+				log.Error("Dropped unknown node field", "id", id, "field name", name)
 				return
 			}
 		}
-	}
-	ns.nodes[id] = node
-	state := enc.State
-	if int(enc.Mapping) != ns.currentMapping {
-		// convert state flag mapping
-		state = 0
-		for i, name := range encMapping.States {
-			if (enc.State & (NodeStateBitMask(1) << i)) != 0 {
-				if index, ok := ns.nodeStateNameMap[name]; ok {
-					state |= NodeStateBitMask(1) << index
-				} else {
-					log.Debug("Dropped unknown node state flag", "id", id, "flag name", name)
-				}
-			}
+		node.fields[index] = reflect.New(ns.nodeFields[index].ftype).Interface()
+		if err := rlp.DecodeBytes(encField, node.fields[index]); err != nil {
+			log.Error("Failed to decode node field", "id", id, "field index", index, "error", err)
+			return
 		}
 	}
-	ns.initState(id, node, state)
+	// Resolve node state
+	state, success := convertMask(int(enc.Mapping), encMapping.States, enc.State)
+	if !success {
+		return
+	}
+	var masks []NodeStateBitMask
 	for _, et := range enc.Timeouts {
+		mask, success := convertMask(int(enc.Mapping), encMapping.States, et.Mask)
+		if !success {
+			return
+		}
+		masks = append(masks, mask)
+	}
+	// It's a compatible node record, add it to set.
+	ns.nodes[id] = node
+	ns.initState(id, node, state)
+	for index, et := range enc.Timeouts {
 		dt := time.Duration(et.At - uint64(now))
 		if dt > 0 {
-			ns.addTimeout(id, et.Mask, dt)
+			ns.addTimeout(id, masks[index], dt)
 		} else {
-			if cb := ns.updateState(id, 0, et.Mask, 0); cb != nil {
+			if cb := ns.updateState(id, 0, masks[index], 0); cb != nil {
 				cb()
 			}
 		}
@@ -335,7 +389,7 @@ loop:
 }
 
 // saveNode saves the given node info to the database
-func (ns *NodeStateMachine) saveNode(id enode.ID, node *nodeInfo) {
+func (ns *NodeStateMachine) saveNode(id enode.ID, node *nodeInfo) error {
 	saveStates := ns.saveImmediately | ns.saveAtShutdown
 	enc := nodeInfoEnc{
 		Mapping: uint(ns.currentMapping),
@@ -352,20 +406,28 @@ func (ns *NodeStateMachine) saveNode(id enode.ID, node *nodeInfo) {
 		}
 	}
 	for i, f := range node.fields {
-		var err error
-		if enc.Fields[i], err = rlp.EncodeToBytes(f); err != nil {
-			log.Error("Failed to encode node field", "id", id, "fieldIndex", i, "error", err)
+		if f == nil {
+			continue
 		}
-	}
-	if data, err := rlp.EncodeToBytes(&enc); err == nil {
-		if err := ns.db.Put(append(ns.dbNodeKey, id[:]...), data); err != nil {
-			log.Error("Failed to save node info", "id", id, "error", err)
+		blob, err := rlp.EncodeToBytes(f)
+		if err != nil {
+			return err
 		}
-	} else {
-		log.Error("Failed to encode node info", "id", id, "error", err)
+		enc.Fields[i] = blob
 	}
-	node.dirty = false
-	node.db = true
+	data, err := rlp.EncodeToBytes(&enc)
+	if err != nil {
+		return err
+	}
+	if err := ns.db.Put(append(ns.dbNodeKey, id[:]...), data); err != nil {
+		return err
+	}
+	node.dirty, node.db = false, true
+
+	if ns.saveNodeHook != nil {
+		ns.saveNodeHook(node)
+	}
+	return nil
 }
 
 // deleteNode removes a node info from the database
@@ -380,7 +442,10 @@ func (ns *NodeStateMachine) SaveToDb() {
 
 	for id, node := range ns.nodes {
 		if node.dirty {
-			ns.saveNode(id, node)
+			err := ns.saveNode(id, node)
+			if err != nil {
+				log.Error("Failed to save node", "id", id, "error", err)
+			}
 		}
 	}
 }
@@ -390,6 +455,7 @@ func (ns *NodeStateMachine) SaveToDb() {
 // callbacks) have been processed.
 func (ns *NodeStateMachine) UpdateState(id enode.ID, set, reset NodeStateBitMask, timeout time.Duration) {
 	ns.lock.Lock()
+	ns.init()
 	cb := ns.updateState(id, set, reset, timeout)
 	ns.lock.Unlock()
 	if cb != nil {
@@ -399,6 +465,9 @@ func (ns *NodeStateMachine) UpdateState(id enode.ID, set, reset NodeStateBitMask
 
 // updateState performs a node state update and returns a function that processes state
 // subscription callbacks and should be called while the mutex is not held.
+//
+// If the timeout is specified, it means the set states will be reset after the specified
+// time interval.
 func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask, timeout time.Duration) func() {
 	node := ns.nodes[id]
 	if node == nil {
@@ -412,7 +481,7 @@ func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask
 	oldState := node.state
 	changed := oldState ^ newState
 	node.state = newState
-	// remove timers of reset states
+
 	ns.removeTimeouts(node, oldState&(^newState))
 	setStates := newState & (^oldState)
 	if timeout != 0 && setStates != 0 {
@@ -424,11 +493,13 @@ func (ns *NodeStateMachine) updateState(id enode.ID, set, reset NodeStateBitMask
 			ns.deleteNode(id)
 		}
 	} else {
-		if changed&ns.saveAtShutdown != 0 {
-			node.dirty = true
-		}
 		if changed&ns.saveImmediately != 0 {
-			ns.saveNode(id, node)
+			err := ns.saveNode(id, node)
+			if err != nil {
+				log.Error("Failed to save node", "id", id, "error", err)
+			}
+		} else if changed&ns.saveAtShutdown != 0 {
+			node.dirty = true
 		}
 		node.fieldGcCounter++
 	}
@@ -468,10 +539,12 @@ func (ns *NodeStateMachine) initState(id enode.ID, node *nodeInfo, state NodeSta
 }
 
 // AddTimeout adds a node state timeout associated to the given state flag(s).
+// After the specified time interval, the relevant states will be reset.
 func (ns *NodeStateMachine) AddTimeout(id enode.ID, mask NodeStateBitMask, timeout time.Duration) {
 	ns.lock.Lock()
 	defer ns.lock.Unlock()
 
+	ns.init()
 	ns.addTimeout(id, mask, timeout)
 }
 
@@ -482,6 +555,9 @@ func (ns *NodeStateMachine) addTimeout(id enode.ID, mask NodeStateBitMask, timeo
 		return
 	}
 	mask &= node.state
+	if mask == 0 {
+		return
+	}
 	ns.removeTimeouts(node, mask)
 	t := &nodeStateTimeout{
 		id:   id,
@@ -489,11 +565,8 @@ func (ns *NodeStateMachine) addTimeout(id enode.ID, mask NodeStateBitMask, timeo
 		mask: mask,
 	}
 	t.timer = ns.clock.AfterFunc(timeout, func() {
-		var cb func()
 		ns.lock.Lock()
-		if t.mask != 0 {
-			cb = ns.updateState(id, 0, t.mask, 0)
-		}
+		cb := ns.updateState(id, 0, t.mask, 0)
 		ns.lock.Unlock()
 		if cb != nil {
 			cb()
@@ -512,33 +585,42 @@ func (ns *NodeStateMachine) addTimeout(id enode.ID, mask NodeStateBitMask, timeo
 func (ns *NodeStateMachine) removeTimeouts(node *nodeInfo, mask NodeStateBitMask) {
 	for i := 0; i < len(node.timeouts); i++ {
 		t := node.timeouts[i]
-		if match := t.mask & mask; match != 0 {
-			t.mask -= match
-			if t.mask == 0 {
-				t.timer.Stop()
-				node.timeouts[i] = node.timeouts[len(node.timeouts)-1]
-				node.timeouts = node.timeouts[:len(node.timeouts)-1]
-				i--
-			}
+		match := t.mask & mask
+		if match == 0 {
+			continue
 		}
+		t.mask -= match
+		if t.mask != 0 {
+			continue
+		}
+		t.timer.Stop()
+		node.timeouts[i] = node.timeouts[len(node.timeouts)-1]
+		node.timeouts = node.timeouts[:len(node.timeouts)-1]
+		i--
 	}
 }
 
-// FieldIndex adds the node field if it has not been added before and returns the field index.
+// RegisterField adds the node field if it has not been added before and returns the field index.
 // Node fields should be mapped before loading the node database or making the first state update.
-func (ns *NodeStateMachine) FieldIndex(field *NodeStateField) int {
+func (ns *NodeStateMachine) RegisterField(field *NodeStateField) (int, error) {
+	// Short circuit if it's already registered.
 	if index, ok := ns.nodeFieldMap[field]; ok {
-		return index
+		return index, nil
+	}
+	// Ensure the registration time window is still opened.
+	if atomic.LoadUint32(&ns.inited) == 1 {
+		return 0, errAlreadyInited
+	}
+	// Ensure the field name is still avaliable.
+	if _, ok := ns.nodeFieldNameMap[field.name]; ok {
+		return 0, errNameCollision
 	}
 	index := len(ns.nodeFields)
 	ns.nodeFields = append(ns.nodeFields, field)
 	ns.nodeFieldMasks = append(ns.nodeFieldMasks, ns.StatesMask(field.flags))
 	ns.nodeFieldMap[field] = index
-	if _, ok := ns.nodeFieldNameMap[field.name]; ok {
-		log.Error("Node field name collision", "name", field.name)
-	}
 	ns.nodeFieldNameMap[field.name] = index
-	return index
+	return index, nil
 }
 
 // GetField retrieves the given field of the given node
@@ -548,51 +630,88 @@ func (ns *NodeStateMachine) GetField(id enode.ID, fieldId int) interface{} {
 
 	if node := ns.nodes[id]; node != nil && fieldId < len(node.fields) {
 		return node.fields[fieldId]
-	} else {
-		return nil
 	}
+	return nil
 }
 
 // SetField sets the given field of the given node
-func (ns *NodeStateMachine) SetField(id enode.ID, fieldId int, value interface{}) {
+func (ns *NodeStateMachine) SetField(id enode.ID, fieldId int, value interface{}) error {
 	ns.lock.Lock()
 	defer ns.lock.Unlock()
 
+	// Allocate the node if it's non-existent
 	node := ns.nodes[id]
 	if node == nil {
 		node = ns.newNode()
-		ns.nodes[id] = node
 	}
+	// Refuse to set field if it's unknown or the relevant state is unset.
+	if fieldId >= len(ns.nodeFields) {
+		return errOutOfBound
+	}
+	if reflect.TypeOf(value) != ns.nodeFields[fieldId].ftype {
+		return errInvalidField
+	}
+	fieldMask := ns.nodeFieldMasks[fieldId]
+	if fieldMask&node.state == 0 {
+		return nil
+	}
+	node.fields[fieldId] = value
+	ns.nodes[id] = node
 
-	if fieldId < len(node.fields) {
-		node.fields[fieldId] = value
-	} else {
-		log.Error("Invalid node field index", "index", fieldId, "len", len(node.fields))
+	// Persist node after change if necessary
+	if fieldMask&ns.saveImmediately != 0 {
+		err := ns.saveNode(id, node)
+		if err != nil {
+			log.Error("Failed to save node", "id", id, "error", err)
+		}
+	} else if fieldMask&ns.saveAtShutdown != 0 {
+		node.dirty = true
 	}
+	return nil
 }
 
-// StateMask assigns a bit index to the given flag if it has not been mapped before and
-// returns the node state bit mask.
-// State flags should be mapped before loading the node database or making the first state update.
-func (ns *NodeStateMachine) StateMask(flag *NodeStateFlag) NodeStateBitMask {
+// RegisterState assigns a bit index to the given flag if it has not been mapped
+// before and returns the node state bit mask. State flags should be mapped before
+// loading the node database or making the first state update.
+func (ns *NodeStateMachine) RegisterState(flag *NodeStateFlag) (NodeStateBitMask, error) {
+	// Short circuit if it's already registered.
 	if state, ok := ns.nodeStates[flag]; ok {
-		return NodeStateBitMask(1) << state
+		return NodeStateBitMask(1) << state, nil
 	}
+	// Ensure the registration time window is still opened.
+	if atomic.LoadUint32(&ns.inited) == 1 {
+		return NodeStateBitMask(0), errAlreadyInited
+	}
+	// Ensure the registered states is under the limitation.
+	if len(ns.nodeStates) >= ns.stateLimit {
+		return NodeStateBitMask(0), errStateOverflow
+	}
+	// Ensure the flag name is still avaliable.
+	if _, ok := ns.nodeStateNameMap[flag.name]; ok {
+		return NodeStateBitMask(0), errNameCollision
+	}
+	// Pass all checking, register it now
 	index := ns.stateCount
 	mask := NodeStateBitMask(1) << index
 	ns.stateCount++
 	ns.nodeStates[flag] = index
-	if _, ok := ns.nodeStateNameMap[flag.name]; ok {
-		log.Error("Node state flag name collision", "name", flag.name)
-	}
 	ns.nodeStateNameMap[flag.name] = index
+
 	if flag.saveImmediately {
 		ns.saveImmediately |= mask
 	}
 	if flag.saveAtShutdown {
 		ns.saveAtShutdown |= mask
 	}
-	return mask
+	return mask, nil
+}
+
+// StateMask returns the state mask associated with given flag.
+func (ns *NodeStateMachine) StateMask(flag *NodeStateFlag) NodeStateBitMask {
+	if state, ok := ns.nodeStates[flag]; ok {
+		return NodeStateBitMask(1) << state
+	}
+	return NodeStateBitMask(0)
 }
 
 // StatesMask assigns a bit index to the given flags if they have not been mapped before and
@@ -621,4 +740,9 @@ func (ns *NodeStateMachine) stateToString(states NodeStateBitMask) string {
 	}
 	s = s + "]"
 	return s
+}
+
+// String returns the 2-based format to better represent "bits"
+func (mask NodeStateBitMask) String() string {
+	return fmt.Sprintf("%b", mask)
 }

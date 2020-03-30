@@ -43,7 +43,7 @@ func TestValueTracker(t *testing.T) {
 	requestList := make([]RequestInfo, testReqTypes)
 	relPrices := make([]float64, testReqTypes)
 	totalAmount := make([]uint64, testReqTypes)
-	for i, _ := range requestList {
+	for i := range requestList {
 		requestList[i] = RequestInfo{Name: "testreq" + strconv.Itoa(i), InitAmount: 1, InitValue: 1}
 		totalAmount[i] = 1
 		relPrices[i] = rand.Float64() + 0.1
@@ -61,12 +61,12 @@ func TestValueTracker(t *testing.T) {
 		updateCosts := func(i int) {
 			costList := make([]uint64, testReqTypes)
 			baseCost := rand.Float64()*10000000 + 100000
-			for j, _ := range costList {
+			for j := range costList {
 				costList[j] = uint64(baseCost * relPrices[j])
 			}
 			vt.UpdateCosts(nodes[i], costList)
 		}
-		for i, _ := range nodes {
+		for i := range nodes {
 			nodes[i] = vt.Register(enode.ID{byte(i)})
 			updateCosts(i)
 		}

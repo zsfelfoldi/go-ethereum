@@ -184,7 +184,7 @@ type selectPeerItem struct {
 }
 
 func selectPeerWeight(i interface{}) uint64 {
-	return i.(*selectPeerItem).weight
+	return i.(selectPeerItem).weight
 }
 
 // nextRequest returns the next possible request from any peer, along with the
