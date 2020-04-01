@@ -100,6 +100,14 @@ func (nv *NodeValueTracker) transferStats(now mclock.AbsTime, transferRate float
 	return nv.basket.transfer(-math.Expm1(-transferRate * float64(dt))), recentRtStats
 }
 
+// RtStats returns the node's own response time distribution statistics
+func (nv *NodeValueTracker) RtStats() ResponseTimeStats {
+	nv.lock.Lock()
+	defer nv.lock.Unlock()
+
+	return nv.rtStats
+}
+
 // ValueTracker coordinates service value calculation for individual servers and updates
 // global statistics
 type ValueTracker struct {
@@ -500,12 +508,4 @@ func (vt *ValueTracker) TotalServiceValue(nv *NodeValueTracker, weights Response
 	defer nv.lock.Unlock()
 
 	return nv.rtStats.Value(weights, expFactor)
-}
-
-// RtStats returns the node's own response time distribution statistics
-func (vt *ValueTracker) NodeRtStats(nv *NodeValueTracker) ResponseTimeStats {
-	nv.lock.Lock()
-	defer nv.lock.Unlock()
-
-	return nv.rtStats
 }

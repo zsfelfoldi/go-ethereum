@@ -67,7 +67,7 @@ func (api *PrivateClientAPI) Distribution(nodeStr string, normalized bool) (RtDi
 		return api.vt.RtStats().Distribution(normalized, expFactor), nil
 	}
 	if id, err := parseNodeStr(nodeStr); err == nil {
-		return api.vt.NodeRtStats(api.vt.GetNode(id)).Distribution(normalized, expFactor), nil
+		return api.vt.GetNode(id).RtStats().Distribution(normalized, expFactor), nil
 	} else {
 		return RtDistribution{}, err
 	}
@@ -85,7 +85,7 @@ func (api *PrivateClientAPI) Timeout(nodeStr string, failRate float64) (float64,
 		return float64(api.vt.RtStats().Timeout(failRate)) / float64(time.Second), nil
 	}
 	if id, err := parseNodeStr(nodeStr); err == nil {
-		return float64(api.vt.NodeRtStats(api.vt.GetNode(id)).Timeout(failRate)) / float64(time.Second), nil
+		return float64(api.vt.GetNode(id).RtStats().Timeout(failRate)) / float64(time.Second), nil
 	} else {
 		return 0, err
 	}
@@ -100,7 +100,7 @@ func (api *PrivateClientAPI) Value(nodeStr string, timeout float64) (float64, er
 		return api.vt.RtStats().Value(wt, expFactor), nil
 	}
 	if id, err := parseNodeStr(nodeStr); err == nil {
-		return api.vt.NodeRtStats(api.vt.GetNode(id)).Value(wt, expFactor), nil
+		return api.vt.GetNode(id).RtStats().Value(wt, expFactor), nil
 	} else {
 		return 0, err
 	}

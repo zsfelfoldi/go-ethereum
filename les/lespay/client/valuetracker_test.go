@@ -123,7 +123,7 @@ func TestValueTracker(t *testing.T) {
 		}
 		var sumValue float64
 		for _, node := range nodes {
-			s := vt.NodeRtStats(node)
+			s := node.RtStats()
 			sumValue += s.Value(maxResponseWeights, exp)
 		}
 		s := vt.RtStats()
