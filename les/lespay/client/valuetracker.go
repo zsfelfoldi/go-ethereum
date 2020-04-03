@@ -126,16 +126,17 @@ type ValueTracker struct {
 
 	transferRate   float64
 	statsExpLock   sync.RWMutex
+	statsExpRate   float64
 	statsExpirer   utils.Expirer
 	statsExpFactor utils.ExpirationFactor
 }
 
 type valueTrackerEncV1 struct {
-	Mappings         [][]string
-	RefBasketMapping uint
-	RefBasket        requestBasket
-	RtStats          ResponseTimeStats
-	ExpOffset        uint64
+	Mappings           [][]string
+	RefBasketMapping   uint
+	RefBasket          requestBasket
+	RtStats            ResponseTimeStats
+	ExpOffset, SavedAt uint64
 }
 
 type nodeValueTrackerEncV1 struct {
@@ -180,6 +181,7 @@ func NewValueTracker(db ethdb.KeyValueStore, clock mclock.Clock, reqInfo []Reque
 		reqTypeCount:  len(initRefBasket.items),
 		initRefBasket: initRefBasket,
 		transferRate:  transferRate,
+		statsExpRate:  statsExpRate,
 	}
 	if vt.loadFromDb(mapping) != nil {
 		// previous state not saved or invalid, init with default values
@@ -235,7 +237,12 @@ func (vt *ValueTracker) loadFromDb(mapping []string) error {
 		log.Error("Decoding value tracker state failed", "err", err)
 		return err
 	}
-	vt.statsExpirer.SetLogOffset(vt.clock.Now(), utils.Fixed64(vte.ExpOffset))
+	logOffset := utils.Fixed64(vte.ExpOffset)
+	dt := time.Now().UnixNano() - int64(vte.SavedAt)
+	if dt > 0 {
+		logOffset += utils.Float64ToFixed64(float64(dt) * vt.statsExpRate)
+	}
+	vt.statsExpirer.SetLogOffset(vt.clock.Now(), logOffset)
 	vt.rtStats = vte.RtStats
 	vt.mappings = vte.Mappings
 	vt.currentMapping = -1
@@ -276,6 +283,7 @@ func (vt *ValueTracker) saveToDb() {
 		RefBasket:        vt.refBasket.basket,
 		RtStats:          vt.rtStats,
 		ExpOffset:        uint64(vt.statsExpirer.LogOffset(vt.clock.Now())),
+		SavedAt:          uint64(time.Now().UnixNano()),
 	}
 	enc1, err := rlp.EncodeToBytes(uint(vtVersion))
 	if err != nil {
