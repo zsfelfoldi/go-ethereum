@@ -124,6 +124,11 @@ func (e *ExpiredValue) SubExp(a ExpiredValue) {
 	}
 }
 
+// IsZero returns true if the value is zero
+func (e *ExpiredValue) IsZero() bool {
+	return e.Base == 0
+}
+
 // LinearExpiredValue is very similar with the expiredValue which the value
 // will continuously expired. But the different part is it's expired linearly.
 type LinearExpiredValue struct {
@@ -166,6 +171,13 @@ func (e *LinearExpiredValue) Add(amount int64, now mclock.AbsTime) uint64 {
 		e.Val = uint64(int64(e.Val) + amount)
 	}
 	return e.Val
+}
+
+// ValueExpirer controls value expiration rate
+type ValueExpirer interface {
+	SetRate(now mclock.AbsTime, rate float64)
+	SetLogOffset(now mclock.AbsTime, logOffset Fixed64)
+	LogOffset(now mclock.AbsTime) Fixed64
 }
 
 // Expirer changes logOffset with a linear rate which can be changed during operation.
