@@ -25,6 +25,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/enr"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -67,9 +68,9 @@ func TestCallback(t *testing.T) {
 	set0 := make(chan struct{}, 1)
 	set1 := make(chan struct{}, 1)
 	set2 := make(chan struct{}, 1)
-	ns.AddStateSub(f0, func(id enode.ID, oldState, newState NodeStateBitMask) { set0 <- struct{}{} })
-	ns.AddStateSub(f1, func(id enode.ID, oldState, newState NodeStateBitMask) { set1 <- struct{}{} })
-	ns.AddStateSub(f2, func(id enode.ID, oldState, newState NodeStateBitMask) { set2 <- struct{}{} })
+	ns.SubscribeStates(enode.ID{}, f0, func(id enode.ID, oldState, newState NodeStateBitMask) { set0 <- struct{}{} })
+	ns.SubscribeStates(enode.ID{}, f1, func(id enode.ID, oldState, newState NodeStateBitMask) { set1 <- struct{}{} })
+	ns.SubscribeStates(enode.ID{}, f2, func(id enode.ID, oldState, newState NodeStateBitMask) { set2 <- struct{}{} })
 
 	ns.Start()
 
@@ -85,6 +86,79 @@ func TestCallback(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("failed to invoke callback")
 		}
+	}
+}
+
+func TestNodeSubscription(t *testing.T) {
+	mdb, clock := rawdb.NewMemoryDatabase(), &mclock.Simulated{}
+	ns := NewNodeStateMachine(mdb, []byte("-ns"), clock)
+
+	f0, _ := ns.RegisterState(NewNodeStateFlag("flag0", true, true))
+	f1, _ := ns.RegisterState(NewNodeStateFlag("flag1", true, true))
+
+	set := make(chan struct{}, 1)
+	ns.SubscribeStates(enode.ID{0x01}, f0|f1, func(id enode.ID, oldState, newState NodeStateBitMask) { set <- struct{}{} })
+
+	ns.Start()
+
+	ns.UpdateState(enode.ID{0x01}, f0, 0, 0)
+	select {
+	case <-set:
+	case <-time.After(time.Second):
+		t.Fatalf("failed to invoke callback")
+	}
+
+	ns.UpdateState(enode.ID{0x01}, f1, 0, 0)
+	select {
+	case <-set:
+	case <-time.After(time.Second):
+		t.Fatalf("failed to invoke callback")
+	}
+
+	ns.UpdateState(enode.ID{0x02}, f0|f1, 0, 0)
+	select {
+	case <-set:
+		t.Fatalf("Unexpected call")
+	case <-time.After(time.Millisecond * 100):
+	}
+}
+
+func TestOfflinesubscription(t *testing.T) {
+	mdb, clock := rawdb.NewMemoryDatabase(), &mclock.Simulated{}
+	ns := NewNodeStateMachine(mdb, []byte("-ns"), clock)
+
+	f0, _ := ns.RegisterState(NewNodeStateFlag("flag0", true, true))
+	f1, _ := ns.RegisterState(NewNodeStateFlag("flag1", true, true))
+
+	set := make(chan struct{}, 1)
+	ns.SubscribeStates(enode.ID{0x01}, f0|f1|OfflineState, func(id enode.ID, oldState, newState NodeStateBitMask) { set <- struct{}{} })
+
+	ns.Start()
+	ns.UpdateState(enode.ID{0x01}, f0|f1, 0, 0)
+	select {
+	case <-set:
+	case <-time.After(time.Second):
+		t.Fatalf("failed to invoke callback")
+	}
+
+	ns.Stop()
+	select {
+	case <-set:
+	case <-time.After(time.Second):
+		t.Fatalf("failed to invoke callback")
+	}
+
+	// Restart
+	ns = NewNodeStateMachine(mdb, []byte("-ns"), clock)
+	f0, _ = ns.RegisterState(NewNodeStateFlag("flag0", true, true))
+	f1, _ = ns.RegisterState(NewNodeStateFlag("flag1", true, true))
+	ns.SubscribeStates(enode.ID{0x01}, f0|f1|OfflineState, func(id enode.ID, oldState, newState NodeStateBitMask) { set <- struct{}{} })
+
+	ns.Start()
+	select {
+	case <-set:
+	case <-time.After(time.Second):
+		t.Fatalf("failed to invoke callback")
 	}
 }
 
@@ -165,6 +239,11 @@ func TestSaveAtShutdown(t *testing.T) {
 			t.Fatalf("Timeout")
 		}
 	}
+	select {
+	case <-saveNode:
+		t.Fatalf("Unpected call")
+	case <-time.After(time.Millisecond * 100):
+	}
 }
 
 func TestRegistrationProtection(t *testing.T) {
@@ -239,7 +318,7 @@ func TestRegistrationProtection(t *testing.T) {
 	if err != errAlreadyStarted {
 		t.Fatalf("Expect already init error")
 	}
-	err = ns.AddStateSub(indexToMask(1), nil)
+	err = ns.SubscribeStates(enode.ID{}, indexToMask(1), nil)
 	if err != errAlreadyStarted {
 		t.Fatalf("Expect already init error")
 	}
@@ -303,17 +382,20 @@ func TestUnsetField(t *testing.T) {
 	}
 }
 
-func TestUpdateState(t *testing.T) {
-	mdb, clock := rawdb.NewMemoryDatabase(), &mclock.Simulated{}
-	ns := NewNodeStateMachine(mdb, []byte("-ns"), clock)
+func TestUpdateStateWithDatabase(t *testing.T)   { testUpdateState(t, rawdb.NewMemoryDatabase()) }
+func TestUpdateStateWithNoDatabase(t *testing.T) { testUpdateState(t, nil) }
 
-	f0, _ := ns.RegisterState(NewNodeStateFlag("flag0", false, false))
-	f1, _ := ns.RegisterState(NewNodeStateFlag("flag1", false, false))
-	f2, _ := ns.RegisterState(NewNodeStateFlag("flag2", false, false))
+func testUpdateState(t *testing.T, db ethdb.KeyValueStore) {
+	clock := &mclock.Simulated{}
+	ns := NewNodeStateMachine(db, []byte("-ns"), clock)
+
+	f0, _ := ns.RegisterState(NewNodeStateFlag("flag0", false, true))
+	f1, _ := ns.RegisterState(NewNodeStateFlag("flag1", false, true))
+	f2, _ := ns.RegisterState(NewNodeStateFlag("flag2", false, true))
 
 	type change struct{ old, new NodeStateBitMask }
 	set := make(chan change, 1)
-	ns.AddStateSub(f0|f1, func(id enode.ID, oldState, newState NodeStateBitMask) {
+	ns.SubscribeStates(enode.ID{}, f0|f1, func(id enode.ID, oldState, newState NodeStateBitMask) {
 		set <- change{
 			old: oldState,
 			new: newState,
@@ -444,5 +526,23 @@ func TestPersistent(t *testing.T) {
 	field1 = ns3.GetField(enode.ID{0x01}, fd1)
 	if !reflect.DeepEqual(field1, "hello world") {
 		t.Fatalf("Field changed")
+	}
+}
+
+func TestTimeAdjust(t *testing.T) {
+	mdb, clock := rawdb.NewMemoryDatabase(), &mclock.Simulated{}
+	ns := NewNodeStateMachine(mdb, []byte("-ns"), clock)
+	ns.Start()
+	if ns.clockOffset != 0 {
+		t.Fatalf("Initial clock offset should be zero, got %v", ns.clockOffset)
+	}
+	clock.Run(time.Second * 20)
+	ns.Stop()
+
+	clock.Run(time.Second * 30)
+	ns = NewNodeStateMachine(mdb, []byte("-ns"), clock)
+	ns.Start()
+	if ns.clockOffset != mclock.AbsTime(-1*time.Second*30) {
+		t.Fatalf("Clock offset should be 30s, got %v", ns.clockOffset)
 	}
 }

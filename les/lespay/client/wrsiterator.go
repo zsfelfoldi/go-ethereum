@@ -58,7 +58,7 @@ func NewWrsIterator(ns *utils.NodeStateMachine, requireMask, disableMask utils.N
 		enrFieldID:   ns.MustRegisterField(enrField),
 		validSchemes: validSchemes,
 	}
-	ns.AddStateSub(requireMask|disableMask, func(id enode.ID, oldState, newState utils.NodeStateBitMask) {
+	ns.SubscribeStates(enode.ID{}, requireMask|disableMask, func(id enode.ID, oldState, newState utils.NodeStateBitMask) {
 		ps := (oldState&w.disableMask) == 0 && (oldState&w.requireMask) == w.requireMask
 		ns := (newState&w.disableMask) == 0 && (newState&w.requireMask) == w.requireMask
 

@@ -60,8 +60,8 @@ type serverPool struct {
 	timeoutRefreshed mclock.AbsTime
 }
 
-// nodeHistory keeps track of dial costs which determine node weight together with the
-// service value calculated by lpc.ValueTracker.
+// nodeHistory keeps track of dial costs which determine node weight
+// together with the service value calculated by lpc.ValueTracker.
 type nodeHistory struct {
 	// only dialCost is saved
 	lock        sync.Mutex
@@ -76,16 +76,24 @@ var (
 	sfSelected      = utils.NewNodeStateFlag("selected", false, false)
 	sfDialed        = utils.NewNodeStateFlag("dialed", false, false)
 	sfConnected     = utils.NewNodeStateFlag("connected", false, false)
-	sfRedialWait    = utils.NewNodeStateFlag("redialWait", false, true)
+	sfRedialWait    = utils.NewNodeStateFlag("redialWait", false, false)
 	sfAlwaysConnect = utils.NewNodeStateFlag("alwaysConnect", false, false)
 
-	keepNodeRecord   = []*utils.NodeStateFlag{sfDiscovered, sfHasValue, sfAlwaysConnect}
+	// keepNodeRecord is a group of state flags. If any
+	// flag is set, then the node record should be kept.
+	keepNodeRecord = []*utils.NodeStateFlag{sfDiscovered, sfHasValue, sfAlwaysConnect}
+
+	// disableSelection is a group of state flags. If any
+	// flag is set, then the node is considered as selected
+	// and won't be selected for further network activities.
 	disableSelection = []*utils.NodeStateFlag{sfSelected, sfDialed, sfConnected, sfRedialWait}
 
 	errInvalidField = errors.New("invalid field type")
 
 	sfiEnr = utils.NewNodeStateField("enr", reflect.TypeOf(&enr.Record{}), keepNodeRecord,
 		func(field interface{}) ([]byte, error) {
+			// todo(rjl493456442) enr record can only
+			// be RLP-encoded when the record is signed
 			if e, ok := field.(*enr.Record); ok {
 				enc, err := rlp.EncodeToBytes(e)
 				return enc, err

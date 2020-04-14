@@ -55,7 +55,7 @@ func NewQueueIterator(ns *utils.NodeStateMachine, requireMask, disableMask utils
 		enrFieldID:   ns.MustRegisterField(enrField),
 		validSchemes: validSchemes,
 	}
-	ns.AddStateSub(requireMask|disableMask, func(id enode.ID, oldState, newState utils.NodeStateBitMask) {
+	ns.SubscribeStates(enode.ID{}, requireMask|disableMask, func(id enode.ID, oldState, newState utils.NodeStateBitMask) {
 		oldMatch := (oldState&requireMask == requireMask) && (oldState&disableMask == 0)
 		newMatch := (newState&requireMask == requireMask) && (newState&disableMask == 0)
 		if newMatch != oldMatch {
