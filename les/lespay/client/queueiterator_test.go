@@ -32,7 +32,7 @@ var (
 	sfTest2 = utils.NewNodeStateFlag("test2", false, false)
 	sfTest3 = utils.NewNodeStateFlag("test3", false, false)
 	sfTest4 = utils.NewNodeStateFlag("test4", false, false)
-	sfiEnr  = utils.NewNodeStateField("enr", reflect.TypeOf(&enr.Record{}), []*utils.NodeStateFlag{sfTest1}, nil, nil)
+	sfiEnr  = utils.NewNodeStateField("enr", reflect.TypeOf(&enr.Record{}), []*utils.NodeStateFlag{sfTest1}, false, nil, nil)
 )
 
 const iterTestNodeCount = 6

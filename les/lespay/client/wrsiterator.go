@@ -62,12 +62,13 @@ func NewWrsIterator(ns *utils.NodeStateMachine, requireMask, disableMask utils.N
 		ps := (oldState&w.disableMask) == 0 && (oldState&w.requireMask) == w.requireMask
 		ns := (newState&w.disableMask) == 0 && (newState&w.requireMask) == w.requireMask
 
-		w.lock.Lock()
-		defer w.lock.Unlock()
-
 		if ps == ns {
 			return
 		}
+
+		w.lock.Lock()
+		defer w.lock.Unlock()
+
 		if ns {
 			w.wrs.Update(id)
 			if w.wakeup != nil && !w.wrs.IsEmpty() {

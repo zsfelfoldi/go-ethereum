@@ -128,6 +128,17 @@ func (e *ExpiredValue) SubExp(a ExpiredValue) {
 	}
 }
 
+// IsZero returns true if the value is zero
+func (e *ExpiredValue) IsZero() bool {
+	return e.Base == 0
+}
+
+type ValueExpirer interface {
+	SetRate(now mclock.AbsTime, rate float64)
+	SetLogOffset(now mclock.AbsTime, logOffset Fixed64)
+	LogOffset(now mclock.AbsTime) Fixed64
+}
+
 // Expirer changes logOffset with a linear rate which can be changed during operation.
 // It is not thread safe, if access by multiple goroutines is needed then it should be
 // encapsulated into a locked structure.

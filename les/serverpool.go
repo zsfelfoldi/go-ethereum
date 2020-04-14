@@ -84,7 +84,7 @@ var (
 
 	errInvalidField = errors.New("invalid field type")
 
-	sfiEnr = utils.NewNodeStateField("enr", reflect.TypeOf(&enr.Record{}), keepNodeRecord,
+	sfiEnr = utils.NewNodeStateField("enr", reflect.TypeOf(&enr.Record{}), keepNodeRecord, false,
 		func(field interface{}) ([]byte, error) {
 			if e, ok := field.(*enr.Record); ok {
 				enc, err := rlp.EncodeToBytes(e)
@@ -99,7 +99,7 @@ var (
 			return e, err
 		},
 	)
-	sfiNodeHistory = utils.NewNodeStateField("nodeHistory", reflect.TypeOf(&nodeHistory{}), []*utils.NodeStateFlag{sfDiscovered, sfHasValue},
+	sfiNodeHistory = utils.NewNodeStateField("nodeHistory", reflect.TypeOf(&nodeHistory{}), []*utils.NodeStateFlag{sfDiscovered, sfHasValue}, false,
 		func(field interface{}) ([]byte, error) {
 			if n, ok := field.(*nodeHistory); ok {
 				enc, err := rlp.EncodeToBytes(&n.dialCost)

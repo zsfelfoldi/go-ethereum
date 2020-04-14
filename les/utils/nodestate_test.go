@@ -48,7 +48,7 @@ func registerTestFields(ns *NodeStateMachine, n int, flags []*NodeStateFlag) []*
 	var fields []*NodeStateField
 	for i := 0; i < n; i++ {
 		f := flags[rand.Intn(len(flags))]
-		field := NewNodeStateField(fmt.Sprintf("field-%d", i), reflect.TypeOf(enr.Record{}), []*NodeStateFlag{f}, nil, nil)
+		field := NewNodeStateField(fmt.Sprintf("field-%d", i), reflect.TypeOf(enr.Record{}), []*NodeStateFlag{f}, false, nil, nil)
 		fields = append(fields, field)
 		ns.RegisterField(field)
 	}
@@ -103,7 +103,7 @@ func TestSaveImmediately(t *testing.T) {
 	f0, _ := ns.RegisterState(flag0)
 	f1, _ := ns.RegisterState(flag1)
 	f2, _ := ns.RegisterState(flag2)
-	fd, _ := ns.RegisterField(NewNodeStateField("field", reflect.TypeOf(""), []*NodeStateFlag{flag0, flag1, flag2}, nil, nil))
+	fd, _ := ns.RegisterField(NewNodeStateField("field", reflect.TypeOf(""), []*NodeStateFlag{flag0, flag1, flag2}, true, stringFieldEnc, stringFieldDec))
 
 	ns.Start()
 
@@ -208,9 +208,9 @@ func TestRegistrationProtection(t *testing.T) {
 	}{
 		{fields[0], 0, nil},
 		{fields[29], 29, nil},
-		{NewNodeStateField("field-0", reflect.TypeOf(enr.Record{}), nil, nil, nil), 0, errNameCollision},
-		{NewNodeStateField("field-29", reflect.TypeOf(enr.Record{}), nil, nil, nil), 0, errNameCollision},
-		{NewNodeStateField("field-30", reflect.TypeOf(enr.Record{}), nil, nil, nil), 30, nil},
+		{NewNodeStateField("field-0", reflect.TypeOf(enr.Record{}), nil, false, nil, nil), 0, errNameCollision},
+		{NewNodeStateField("field-29", reflect.TypeOf(enr.Record{}), nil, false, nil, nil), 0, errNameCollision},
+		{NewNodeStateField("field-30", reflect.TypeOf(enr.Record{}), nil, false, nil, nil), 30, nil},
 	}
 	for id, c := range cases2 {
 		index, err := ns.RegisterField(c.field)
@@ -235,7 +235,7 @@ func TestRegistrationProtection(t *testing.T) {
 	if err != errAlreadyStarted {
 		t.Fatalf("Expect already init error")
 	}
-	_, err = ns.RegisterField(NewNodeStateField("field-31", reflect.TypeOf(enr.Record{}), nil, nil, nil))
+	_, err = ns.RegisterField(NewNodeStateField("field-31", reflect.TypeOf(enr.Record{}), nil, false, nil, nil))
 	if err != errAlreadyStarted {
 		t.Fatalf("Expect already init error")
 	}
@@ -255,7 +255,7 @@ func TestSetField(t *testing.T) {
 	}
 	flag := NewNodeStateFlag("flag", false, true)
 	f, _ := ns.RegisterState(flag)
-	fd, _ := ns.RegisterField(NewNodeStateField("field", reflect.TypeOf(""), []*NodeStateFlag{flag}, nil, nil))
+	fd, _ := ns.RegisterField(NewNodeStateField("field", reflect.TypeOf(""), []*NodeStateFlag{flag}, false, nil, nil))
 
 	ns.Start()
 
@@ -290,7 +290,7 @@ func TestUnsetField(t *testing.T) {
 
 	flag := NewNodeStateFlag("flag", false, true)
 	f, _ := ns.RegisterState(flag)
-	fd, _ := ns.RegisterField(NewNodeStateField("field", reflect.TypeOf(""), []*NodeStateFlag{flag}, nil, nil))
+	fd, _ := ns.RegisterField(NewNodeStateField("field", reflect.TypeOf(""), []*NodeStateFlag{flag}, false, nil, nil))
 
 	ns.Start()
 
@@ -367,7 +367,7 @@ func TestUpdateState(t *testing.T) {
 	check(f0|f1, 0, true)
 }
 
-func fd0enc(field interface{}) ([]byte, error) {
+func uint64FieldEnc(field interface{}) ([]byte, error) {
 	if u, ok := field.(uint64); ok {
 		enc, err := rlp.EncodeToBytes(&u)
 		return enc, err
@@ -376,13 +376,13 @@ func fd0enc(field interface{}) ([]byte, error) {
 	}
 }
 
-func fd0dec(enc []byte) (interface{}, error) {
+func uint64FieldDec(enc []byte) (interface{}, error) {
 	var u uint64
 	err := rlp.DecodeBytes(enc, &u)
 	return u, err
 }
 
-func fd1enc(field interface{}) ([]byte, error) {
+func stringFieldEnc(field interface{}) ([]byte, error) {
 	if s, ok := field.(string); ok {
 		return []byte(s), nil
 	} else {
@@ -390,7 +390,7 @@ func fd1enc(field interface{}) ([]byte, error) {
 	}
 }
 
-func fd1dec(enc []byte) (interface{}, error) {
+func stringFieldDec(enc []byte) (interface{}, error) {
 	return string(enc), nil
 }
 
@@ -402,8 +402,8 @@ func TestPersistent(t *testing.T) {
 	f1 := NewNodeStateFlag("flag1", false, true)
 	s0, _ := ns.RegisterState(f0)
 	s1, _ := ns.RegisterState(f1)
-	fd0, _ := ns.RegisterField(NewNodeStateField("field0", reflect.TypeOf(uint64(0)), []*NodeStateFlag{f0}, fd0enc, fd0dec))
-	fd1, _ := ns.RegisterField(NewNodeStateField("field1", reflect.TypeOf(""), []*NodeStateFlag{f1}, fd1enc, fd1dec))
+	fd0, _ := ns.RegisterField(NewNodeStateField("field0", reflect.TypeOf(uint64(0)), []*NodeStateFlag{f0}, false, uint64FieldEnc, uint64FieldDec))
+	fd1, _ := ns.RegisterField(NewNodeStateField("field1", reflect.TypeOf(""), []*NodeStateFlag{f1}, false, stringFieldEnc, stringFieldDec))
 	ns.Start()
 	ns.UpdateState(enode.ID{0x01}, s0, 0, time.Second)
 	ns.UpdateState(enode.ID{0x01}, s1, 0, time.Second)
@@ -414,8 +414,8 @@ func TestPersistent(t *testing.T) {
 	ns2 := NewNodeStateMachine(mdb, []byte("-ns"), clock)
 	ns2.RegisterState(f0)
 	ns2.RegisterState(f1)
-	fd0, _ = ns2.RegisterField(NewNodeStateField("field0", reflect.TypeOf(uint64(0)), []*NodeStateFlag{f0}, fd0enc, fd0dec))
-	fd1, _ = ns2.RegisterField(NewNodeStateField("field1", reflect.TypeOf(""), []*NodeStateFlag{f1}, fd1enc, fd1dec))
+	fd0, _ = ns2.RegisterField(NewNodeStateField("field0", reflect.TypeOf(uint64(0)), []*NodeStateFlag{f0}, false, uint64FieldEnc, uint64FieldDec))
+	fd1, _ = ns2.RegisterField(NewNodeStateField("field1", reflect.TypeOf(""), []*NodeStateFlag{f1}, false, stringFieldEnc, stringFieldDec))
 	ns2.Start()
 	field0 := ns2.GetField(enode.ID{0x01}, fd0)
 	if !reflect.DeepEqual(field0, uint64(100)) {
@@ -430,11 +430,11 @@ func TestPersistent(t *testing.T) {
 	// Different order
 	ns3.RegisterState(f1)
 	ns3.RegisterState(f0)
-	fd1, _ = ns3.RegisterField(NewNodeStateField("field1", reflect.TypeOf(""), []*NodeStateFlag{f1}, fd1enc, fd1dec))
-	fd0, _ = ns3.RegisterField(NewNodeStateField("field0", reflect.TypeOf(uint64(0)), []*NodeStateFlag{f0}, fd0enc, fd0dec))
+	fd1, _ = ns3.RegisterField(NewNodeStateField("field1", reflect.TypeOf(""), []*NodeStateFlag{f1}, false, stringFieldEnc, stringFieldDec))
+	fd0, _ = ns3.RegisterField(NewNodeStateField("field0", reflect.TypeOf(uint64(0)), []*NodeStateFlag{f0}, false, uint64FieldEnc, uint64FieldDec))
 	// additional registeration
 	ns3.RegisterState(NewNodeStateFlag("flag2", false, true))
-	ns3.RegisterField(NewNodeStateField("field2", reflect.TypeOf(uint32(0)), []*NodeStateFlag{f0}, nil, nil))
+	ns3.RegisterField(NewNodeStateField("field2", reflect.TypeOf(uint32(0)), []*NodeStateFlag{f0}, false, nil, nil))
 
 	ns3.Start()
 	field0 = ns3.GetField(enode.ID{0x01}, fd0)
@@ -445,4 +445,44 @@ func TestPersistent(t *testing.T) {
 	if !reflect.DeepEqual(field1, "hello world") {
 		t.Fatalf("Field changed")
 	}
+}
+
+func TestFieldSub(t *testing.T) {
+	mdb, clock := rawdb.NewMemoryDatabase(), &mclock.Simulated{}
+	ns := NewNodeStateMachine(mdb, []byte("-ns"), clock)
+
+	f0 := NewNodeStateFlag("flag0", false, true)
+	field0 := NewNodeStateField("field0", reflect.TypeOf(uint64(0)), []*NodeStateFlag{f0}, false, uint64FieldEnc, uint64FieldDec)
+	s0, _ := ns.RegisterState(f0)
+	fd0, _ := ns.RegisterField(field0)
+	var (
+		lastState                  NodeStateBitMask
+		lastOldValue, lastNewValue interface{}
+	)
+	ns.AddFieldSub(fd0, func(id enode.ID, state NodeStateBitMask, oldValue, newValue interface{}) {
+		lastState, lastOldValue, lastNewValue = state, oldValue, newValue
+	})
+	check := func(state NodeStateBitMask, oldValue, newValue interface{}) {
+		if lastState != state || lastOldValue != oldValue || lastNewValue != newValue {
+			t.Fatalf("Incorrect field sub callback (expected [%v %v %v], got [%v %v %v])", state, oldValue, newValue, lastState, lastOldValue, lastNewValue)
+		}
+	}
+	ns.Start()
+	ns.UpdateState(enode.ID{0x01}, s0, 0, 0)
+	ns.SetField(enode.ID{0x01}, fd0, uint64(100))
+	check(s0, nil, uint64(100))
+	ns.Stop()
+	check(OfflineState, uint64(100), nil)
+
+	ns2 := NewNodeStateMachine(mdb, []byte("-ns"), clock)
+	s0, _ = ns2.RegisterState(f0)
+	fd0, _ = ns2.RegisterField(field0)
+	ns2.AddFieldSub(fd0, func(id enode.ID, state NodeStateBitMask, oldValue, newValue interface{}) {
+		lastState, lastOldValue, lastNewValue = state, oldValue, newValue
+	})
+	ns2.Start()
+	check(OfflineState, nil, uint64(100))
+	ns2.UpdateState(enode.ID{0x01}, 0, s0, 0)
+	check(0, uint64(100), nil)
+	ns2.Stop()
 }

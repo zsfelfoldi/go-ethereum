@@ -139,6 +139,7 @@ func (q *LazyQueue) MultiPop(callback func(data interface{}, priority int64) boo
 				}
 				return
 			}
+			nextIndex = q.peekIndex() // re-check because callback is allowed to push items back
 		}
 	}
 }
