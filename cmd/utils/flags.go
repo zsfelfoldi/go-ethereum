@@ -1584,9 +1584,10 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 // setDNSDiscoveryDefaults configures DNS discovery with the given URL if
 // no URLs are set.
 func setDNSDiscoveryDefaults(cfg *eth.Config, genesis common.Hash) {
-	if len(cfg.DiscoveryURLs) != 0 {
-		return
+	if cfg.DiscoveryURLs != nil {
+		return // already set through flags/config
 	}
+
 	protocol := "eth"
 	if cfg.SyncMode == downloader.LightSync {
 		protocol = "les"
