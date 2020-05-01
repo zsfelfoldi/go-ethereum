@@ -27,8 +27,9 @@ import (
 // WrsIterator returns nodes from the specified selectable set with a weighted random
 // selection. Selection weights are provided by a callback function.
 type WrsIterator struct {
-	lock sync.Mutex
-	cond *sync.Cond
+	lock, afterLock sync.Mutex
+	cond            *sync.Cond
+	afterList       []func()
 
 	ns       *nodestate.NodeStateMachine
 	wrs      *utils.WeightedRandomSelect
@@ -39,11 +40,24 @@ type WrsIterator struct {
 // NewWrsIterator creates a new WrsIterator. Nodes are selectable if they have all the required
 // and none of the disabled flags set. When a node is selected the selectedFlag is set which also
 // disables further selectability until it is removed or times out.
-func NewWrsIterator(ns *nodestate.NodeStateMachine, requireFlags, disableFlags nodestate.Flags, wfn utils.WeightFn) *WrsIterator {
-	w := &WrsIterator{
-		ns:  ns,
-		wrs: utils.NewWeightedRandomSelect(wfn),
+func NewWrsIterator(ns *nodestate.NodeStateMachine, requireFlags, disableFlags nodestate.Flags, wfn func(*enode.Node) (uint64, func())) *WrsIterator {
+	w := &WrsIterator{ns: ns}
+
+	weightFn := func(i interface{}) uint64 {
+		n := ns.GetNode(i.(enode.ID))
+		if n == nil {
+			return 0
+		}
+		weight, after := wfn(n)
+		if after != nil {
+			w.afterLock.Lock()
+			w.afterList = append(w.afterList, after)
+			w.afterLock.Unlock()
+		}
+		return weight
 	}
+
+	w.wrs = utils.NewWeightedRandomSelect(weightFn)
 	w.cond = sync.NewCond(&w.lock)
 
 	ns.SubscribeState(requireFlags.Or(disableFlags), func(n *enode.Node, oldState, newState nodestate.Flags) {
@@ -60,14 +74,26 @@ func NewWrsIterator(ns *nodestate.NodeStateMachine, requireFlags, disableFlags n
 			w.wrs.Remove(n.ID())
 		}
 		w.lock.Unlock()
+		w.runAfterList()
 		w.cond.Signal()
 	})
 	return w
 }
 
+func (w *WrsIterator) runAfterList() {
+	w.afterLock.Lock()
+	list := w.afterList
+	w.afterList = nil
+	w.afterLock.Unlock()
+	for _, fn := range list {
+		fn()
+	}
+}
+
 // Next selects the next node.
 func (w *WrsIterator) Next() bool {
 	w.nextNode = w.chooseNode()
+	w.runAfterList()
 	return w.nextNode != nil
 }
 

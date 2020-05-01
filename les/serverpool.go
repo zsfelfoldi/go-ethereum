@@ -394,16 +394,13 @@ func (s *serverPool) calculateNode(node *enode.Node, recalcValue, redialWait boo
 
 // knownSelectWeight is the selection weight callback function. It also takes care of
 // removing nodes from the valuable set if their value has been expired.
-func (s *serverPool) knownSelectWeight(i interface{}) uint64 {
-	n := s.ns.GetNode(i.(enode.ID))
-	if n == nil {
-		return 0
-	}
+func (s *serverPool) knownSelectWeight(n *enode.Node) (uint64, func()) {
 	wt, _ := s.calculateNode(n, false, false, 0)
 	if wt < nodeWeightThreshold {
-		s.ns.SetState(n, nodestate.Flags{}, sfHasValue, 0)
-		s.ns.Persist(n)
-		return 0
+		return 0, func() {
+			s.ns.SetState(n, nodestate.Flags{}, sfHasValue, 0)
+			s.ns.Persist(n)
+		}
 	}
-	return wt
+	return wt, nil
 }
