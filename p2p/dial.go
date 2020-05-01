@@ -225,6 +225,7 @@ func (d *dialScheduler) loop(it enode.Iterator) {
 		nodesCh    chan *enode.Node
 		historyExp = make(chan struct{}, 1)
 	)
+	ait, _ := it.(enode.AdvancedIterator)
 
 loop:
 	for {
@@ -241,9 +242,15 @@ loop:
 
 		select {
 		case node := <-nodesCh:
-			if err := d.checkDial(node); err != nil {
+			if err := d.checkDial(node); err != nil || (ait != nil && !ait.CanDial(node)) {
+				if ait != nil {
+					ait.Discarded(node)
+				}
 				d.log.Trace("Discarding dial candidate", "id", node.ID(), "ip", node.IP(), "reason", err)
 			} else {
+				if ait != nil {
+					ait.Dialed(node)
+				}
 				d.startDial(newDialTask(node, dynDialedConn))
 			}
 

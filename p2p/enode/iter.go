@@ -30,6 +30,16 @@ type Iterator interface {
 	Close()      // ends the iterator
 }
 
+// AdvancedIterator gets feedback about the fate of recommended nodes and can also reconsider
+// the recommendation before the node is dialed. The receiver should call CanDial before dialing.
+// It should also call either Dialed or Discarded for every received node.
+type AdvancedIterator interface {
+	Iterator
+	CanDial(*Node) bool
+	Dialed(*Node)
+	Discarded(*Node)
+}
+
 // ReadNodes reads at most n nodes from the given iterator. The return value contains no
 // duplicates and no nil values. To prevent looping indefinitely for small repeating node
 // sequences, this function calls Next at most n times.
