@@ -157,11 +157,7 @@ func newServerPool(db ethdb.KeyValueStore, dbKey []byte, vt *lpc.ValueTracker, d
 
 	iter := enode.Iterator(s.mixer)
 	if query != nil {
-		var testClock *mclock.Simulated
-		if testing {
-			testClock = mono.(*mclock.Simulated)
-		}
-		iter = lpc.NewPreNegFilter(s.ns, iter, query, sfQueried, sfCanDial, 5, time.Second*5, time.Second*10, testClock)
+		iter = lpc.NewPreNegFilter(s.ns, iter, query, sfQueried, sfCanDial, 5, time.Second*5, time.Second*10)
 	}
 	s.dialIterator = enode.Filter(iter, func(node *enode.Node) bool {
 		s.ns.SetState(node, sfDialed, sfCanDial, time.Second*10)

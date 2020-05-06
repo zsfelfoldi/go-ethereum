@@ -18,6 +18,7 @@ package client
 
 import (
 	"math/rand"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,32 +62,35 @@ func TestPreNegFilter(t *testing.T) {
 		}
 	}
 
-	testQuery := func(node *enode.Node, result func(canDial bool)) (start, cancel func()) {
+	var timeout uint32
+	testQuery := func(node *enode.Node, result func(canDial bool)) func() {
 		idx := testNodeIndex(node.ID())
 		switch queryResult[idx] {
 		case 0:
-			return func() { result(false) }, func() {} // negative answer
+			return func() { result(false) } // negative answer
 		case 1:
-			return func() { result(true) }, func() {} // positive answer
+			return func() { result(true) } // positive answer
 		case 2:
-			return func() {}, func() { result(false) } // timeout
+			return func() {
+				clock.Run(5 * time.Second)
+				atomic.AddUint32(&timeout, 1)
+			} // timeout
 		}
-		return nil, nil
+		return nil
 	}
-	pf := NewPreNegFilter(ns, enode.IterNodes(nodes), testQuery, sfTest1, sfTest2, 5, time.Second*5, time.Second*10, clock)
+	pf := NewPreNegFilter(ns, enode.IterNodes(nodes), testQuery, sfTest1, sfTest2, 5, time.Second*5, time.Second*10)
 	pfr := enode.Filter(pf, func(node *enode.Node) bool {
 		// remove canDial flag so that filter can keep querying
 		ns.SetState(node, nodestate.Flags{}, sfTest2, 0)
 		return true
 	})
 	ns.Start()
+
 	l := len(enode.ReadNodes(pfr, pfTestTotal))
 	if l != pfTestPositive {
 		t.Errorf("Wrong number of returned result (got %d, expected %d)", l, pfTestPositive)
 	}
-	dt := time.Duration(clock.Now())
-	expdt := time.Second * pfTestTimeout // 5 secs per timeout, 5 waiting in parallel
-	if dt != expdt {
-		t.Errorf("Wrong amount of time required (got %v, expected %v)", dt, expdt)
+	if atomic.LoadUint32(&timeout) != pfTestTimeout {
+		t.Errorf("Wrong amount of timeout query number(got %v, expected %v)", timeout, pfTestTimeout)
 	}
 }
