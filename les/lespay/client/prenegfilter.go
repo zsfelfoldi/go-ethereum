@@ -27,17 +27,18 @@ import (
 // PreNegFilter is a filter on an enode.Iterator that performs connection pre-negotiation
 // using the provided callback and only returns nodes that gave a positive answer recently.
 type PreNegFilter struct {
-	lock                            sync.Mutex
-	cond                            *sync.Cond
-	ns                              *nodestate.NodeStateMachine
-	sfQueried, sfCanDial            nodestate.Flags
-	queryTimeout, canDialTimeout    time.Duration
-	input, canDialIter              enode.Iterator
-	query                           PreNegQuery
-	pending                         map[*enode.Node]struct{}
-	needQueries                     int
-	maxPendingQueries, canDialCount int
-	waitingForNext, closed          bool
+	lock                         sync.Mutex
+	cond                         *sync.Cond
+	ns                           *nodestate.NodeStateMachine
+	sfQueried, sfCanDial         nodestate.Flags
+	queryTimeout, canDialTimeout time.Duration
+	input, canDialIter           enode.Iterator
+	query                        PreNegQuery
+	pending                      map[*enode.Node]struct{}
+	waiting                      map[*enode.Node]struct{}
+	needQueries                  int
+	maxPendingQueries            int
+	waitingForNext, closed       bool
 }
 
 // PreNegQuery callback performs connection pre-negotiation.
@@ -59,22 +60,21 @@ func NewPreNegFilter(ns *nodestate.NodeStateMachine, input enode.Iterator, query
 		sfQueried:         sfQueried,
 		sfCanDial:         sfCanDial,
 		queryTimeout:      queryTimeout,
-		canDialTimeout:    canDialTimeout,
 		maxPendingQueries: maxPendingQueries,
 		canDialIter:       NewQueueIterator(ns, sfCanDial, nodestate.Flags{}, false),
 		pending:           make(map[*enode.Node]struct{}),
+		waiting:           make(map[*enode.Node]struct{}),
 	}
 	pf.cond = sync.NewCond(&pf.lock)
 	ns.SubscribeState(sfQueried.Or(sfCanDial), func(n *enode.Node, oldState, newState nodestate.Flags) {
 		pf.lock.Lock()
 		defer pf.lock.Unlock()
 
-		// Maintain the 'canDial' result counter
 		if oldState.HasAll(sfCanDial) {
-			pf.canDialCount--
+			delete(pf.waiting, n)
 		}
 		if newState.HasAll(sfCanDial) {
-			pf.canDialCount++
+			pf.waiting[n] = struct{}{}
 		}
 		// Query timeout, remove it from the pending set and spin up one more query.
 		if oldState.HasAll(sfQueried) && newState.HasNone(sfQueried.Or(sfCanDial)) {
@@ -90,11 +90,14 @@ func NewPreNegFilter(ns *nodestate.NodeStateMachine, input enode.Iterator, query
 
 // checkQuery checks whether we need more queries and signals readLoop if necessary.
 func (pf *PreNegFilter) checkQuery() {
-	if pf.waitingForNext && pf.canDialCount == 0 {
+	if pf.waitingForNext && len(pf.waiting) == 0 {
 		pf.needQueries = pf.maxPendingQueries
 	}
 	if pf.needQueries > len(pf.pending) {
-		pf.cond.Signal()
+		diff := pf.needQueries - len(pf.pending)
+		for i := 0; i < diff; i++ {
+			pf.cond.Signal()
+		}
 	}
 }
 
@@ -165,6 +168,7 @@ func (pf *PreNegFilter) Next() bool {
 	pf.lock.Lock()
 	pf.needQueries = 0
 	pf.waitingForNext = false
+	delete(pf.waiting, pf.Node())
 	pf.lock.Unlock()
 	return next
 }
