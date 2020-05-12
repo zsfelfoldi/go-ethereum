@@ -63,20 +63,20 @@ func TestPreNegFilter(t *testing.T) {
 	}
 
 	var timeout uint32
-	testQuery := func(node *enode.Node, result func(canDial bool)) func() {
+	testQuery := func(node *enode.Node, result func(canDial bool)) (func(), func()) {
 		idx := testNodeIndex(node.ID())
 		switch queryResult[idx] {
 		case 0:
-			return func() { result(false) } // negative answer
+			return func() { result(false) }, func() {} // negative answer
 		case 1:
-			return func() { result(true) } // positive answer
+			return func() { result(true) }, func() {} // positive answer
 		case 2:
 			return func() {
 				clock.Run(5 * time.Second)
 				atomic.AddUint32(&timeout, 1)
-			} // timeout
+			}, func() {} // timeout
 		}
-		return nil
+		return nil, nil
 	}
 	pf := NewPreNegFilter(ns, enode.IterNodes(nodes), testQuery, sfTest1, sfTest2, 5, time.Second*5, time.Second*10)
 	pfr := enode.Filter(pf, func(node *enode.Node) bool {
