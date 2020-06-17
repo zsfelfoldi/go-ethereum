@@ -163,7 +163,7 @@ func TestAddCheque(t *testing.T) {
 				bind.WaitMined(context.Background(), drawer.dBackend, tx)
 
 				cheque, _ := newCheque([]common.Hash{root}, drawer.ContractAddr(), salt, 0)
-				cheque.RevealRange = [4]byte{0xff, 0xff, 0xff, 0xff}
+				cheque.RevealRange = []byte{0xff, 0xff, 0xff, 0xff}
 				cheque.signWithKey(drawer.keySigner)
 				cheque.deriveFields() // Recompute uint64 format reveal range
 

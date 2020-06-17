@@ -23,6 +23,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -60,6 +61,10 @@ const (
 	// lotteryClaimPeriod is the maximum block number lottery winner can claim
 	// the whole deposit.
 	lotteryClaimPeriod = 256
+
+	// maxSignedRange is the maximum uint64 which is used to represent the cheque
+	// is never used.
+	maxSignedRange = math.MaxUint64
 )
 
 var txTimeout = 5 * time.Minute // The maxmium waiting time for blockchain to include on-chain transaction
@@ -90,7 +95,7 @@ func (l *Lottery) balance(address common.Address, cheque *Cheque) uint64 {
 		return 0
 	}
 	assigned := l.Amount >> (len(cheque.Witness) - 1)
-	if cheque.SignedRange == 0 || cheque.SignedRange == cheque.LowerLimit {
+	if cheque.SignedRange == maxSignedRange {
 		return assigned
 	}
 	return uint64(float64(cheque.UpperLimit-cheque.SignedRange) / float64(cheque.UpperLimit-cheque.LowerLimit+1) * float64(assigned))
@@ -150,7 +155,10 @@ type Cheque struct {
 	// way we can divide a "deposit" for payee into different small parts.
 	//
 	// RevealRange is encoded in big-endian order.
-	RevealRange [4]byte
+	//
+	// If the revealRange is nil, it means the cheque is not used yet.
+	// Otherwise the length of revealRange must be 4(uint32).
+	RevealRange []byte
 
 	// Salt is the random number which used to calculate lottery id.
 	// The id of lottery is derived by formula: keccak256<merkle_root, salt>
@@ -164,18 +172,20 @@ type Cheque struct {
 	Sig [crypto.SignatureLength]byte
 
 	// These following fields are defined and derived locally
-	MerkleRoot  common.Hash    // The merkle tree root hash of corresponding lottery
-	LotteryId   common.Hash    // The id of corresponding lottery
-	LowerLimit  uint64         // The lower limit for claiming lottery
-	UpperLimit  uint64         // The upper limit for claiming lottery
-	SignedRange uint64         // The uint64 format of revealRange, 0 if revealRange is empty
+	MerkleRoot common.Hash // The merkle tree root hash of corresponding lottery
+	LotteryId  common.Hash // The id of corresponding lottery
+	LowerLimit uint64      // The lower limit for claiming lottery
+	UpperLimit uint64      // The upper limit for claiming lottery
+
+	// The real signed amount is: (SignedRange - LowerLimit + 1) / (UpperLimit - LowerLimit + 1) * Assigned
+	SignedRange uint64         // The uint64 format of revealRange, maxUint64 if revealRange is empty(cheque is not used)
 	signer      common.Address // The signer of the cheque
 }
 
 type chequeRLP struct {
 	Witness      []common.Hash  // The merkle proof that proves the drawee is included in the lottery
 	ContractAddr common.Address // The address of the accountbook contract(bank address)
-	RevealRange  [4]byte        // The upper reveal range for payee to claim lottery.
+	RevealRange  []byte         // The upper reveal range for payee to claim lottery
 	Salt         uint64         // The random number of lottery
 	ReceiverSalt uint64         // The random number of receiver
 	Sig          [crypto.SignatureLength]byte
@@ -195,17 +205,23 @@ func (c *Cheque) DecodeRLP(s *rlp.Stream) error {
 		return err
 	}
 	c.Witness, c.ContractAddr, c.RevealRange, c.Salt, c.ReceiverSalt, c.Sig = dec.Witness, dec.ContractAddr, dec.RevealRange, dec.Salt, dec.ReceiverSalt, dec.Sig
+
+	// RLP wil convert the nil slice to []byte{}, set it back
+	if len(c.RevealRange) == 0 {
+		c.RevealRange = nil
+	}
 	if err := c.deriveFields(); err != nil {
 		return err
 	}
 	return nil
 }
 
+// newCheque creates a blank cheque for sepcific receiver. All internal
+// fields will be derived here. Note the returned cheque is NOT signed.
 func newCheque(witness []common.Hash, contractAddr common.Address, salt, receiverSalt uint64) (*Cheque, error) {
 	cheque := &Cheque{
 		Witness:      witness,
 		ContractAddr: contractAddr,
-		RevealRange:  [4]byte{},
 		Salt:         salt,
 		ReceiverSalt: receiverSalt,
 	}
@@ -222,6 +238,7 @@ func (c *Cheque) deriveFields() error {
 	if len(c.Witness) == 0 {
 		return errors.New("empty witness")
 	}
+	// The first witness element is the hash of leaf.
 	c.MerkleRoot = c.Witness[0]
 	if len(c.Witness) != 1 {
 		for i := 1; i < len(c.Witness); i++ {
@@ -245,11 +262,16 @@ func (c *Cheque) deriveFields() error {
 	c.UpperLimit = interval*(position+1) - 1
 
 	// Derive signed range, also ensure the reveal range is a reasonable value.
-	if c.RevealRange != [4]byte{} {
-		c.SignedRange = uint64(binary.BigEndian.Uint32(c.RevealRange[:]))
-		if c.SignedRange < c.LowerLimit || c.SignedRange > c.UpperLimit {
-			return errors.New("invalid reveal range")
-		}
+	if len(c.RevealRange) == 0 {
+		c.SignedRange = maxSignedRange
+		return nil
+	}
+	if len(c.RevealRange) != 4 {
+		return fmt.Errorf("invalid reveal range length %d", len(c.RevealRange))
+	}
+	c.SignedRange = uint64(binary.BigEndian.Uint32(c.RevealRange))
+	if c.SignedRange < c.LowerLimit || c.SignedRange > c.UpperLimit {
+		return errors.New("invalid reveal range")
 	}
 	return nil
 }
@@ -267,7 +289,7 @@ func (c *Cheque) sigHash() common.Hash {
 	// 5: range - the promised hash range allowed for lottery redemption
 	var appContent []byte
 	appContent = append(appContent, c.LotteryId.Bytes()...)
-	appContent = append(appContent, c.RevealRange[:]...)
+	appContent = append(appContent, c.RevealRange...)
 	data := append([]byte{0x19, 0x00}, append(c.ContractAddr.Bytes(), appContent...)...)
 	return crypto.Keccak256Hash(data)
 }
@@ -309,7 +331,7 @@ func (c *Cheque) sign(signFn func(data []byte) ([]byte, error)) error {
 	p["address"] = c.ContractAddr.Hex()
 	var appContent []byte
 	appContent = append(appContent, c.LotteryId.Bytes()...)
-	appContent = append(appContent, c.RevealRange[:]...)
+	appContent = append(appContent, c.RevealRange...)
 	p["message"] = hexutil.Encode(appContent)
 	encoded, err := json.Marshal(p)
 	if err != nil {
@@ -336,6 +358,10 @@ func (c *Cheque) signWithKey(signFn func(digestHash []byte) ([]byte, error)) err
 
 // reveal returns an indicator whether this cheque is the winner.
 func (c *Cheque) reveal(hash common.Hash) bool {
+	// Short circuit if the cheque is never used yet.
+	if c.SignedRange == maxSignedRange {
+		return false
+	}
 	// Use the highest eight bytes in big-endian order to construct reveal number.
 	var trimmed [4]byte
 	copy(trimmed[:], hash.Bytes()[common.HashLength-4:])

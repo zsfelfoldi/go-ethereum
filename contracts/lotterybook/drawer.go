@@ -402,7 +402,7 @@ func (drawer *ChequeDrawer) issueCheque(payer common.Address, lotteryId common.H
 	if diff == 0 {
 		return nil, errors.New("invalid payment amount")
 	}
-	if cheque.SignedRange == 0 {
+	if cheque.SignedRange == maxSignedRange {
 		cheque.SignedRange = cheque.LowerLimit + diff - 1
 	} else {
 		cheque.SignedRange = cheque.SignedRange + diff
@@ -412,9 +412,8 @@ func (drawer *ChequeDrawer) issueCheque(payer common.Address, lotteryId common.H
 		return nil, ErrNotEnoughDeposit
 	}
 	// Make the signature for cheque.
-	var buf [4]byte
-	binary.BigEndian.PutUint32(buf[:], uint32(cheque.SignedRange))
-	cheque.RevealRange = buf
+	cheque.RevealRange = make([]byte, 4)
+	binary.BigEndian.PutUint32(cheque.RevealRange, uint32(cheque.SignedRange))
 	if drawer.keySigner != nil {
 		// If it's testing, use provided key signer.
 		if err := cheque.signWithKey(drawer.keySigner); err != nil {

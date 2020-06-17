@@ -136,10 +136,10 @@ func (drawee *ChequeDrawee) AddCheque(drawer common.Address, c *Cheque) (uint64,
 		// TODO what if the sender is deliberately attacking us
 		// via sending cheques without deposit? Read status from
 		// contract is not trivial.
-		// Short circuit if the lottery is already revealed.
 		if l.Amount == 0 {
 			return 0, errors.New("invalid lottery")
 		}
+		// Short circuit if the lottery is already revealed.
 		if current >= l.RevealNumber {
 			invalidChequeMeter.Mark(1)
 			return 0, errors.New("expired lottery")
@@ -170,7 +170,7 @@ func (drawee *ChequeDrawee) AddCheque(drawer common.Address, c *Cheque) (uint64,
 		diff = c.SignedRange - stored.SignedRange
 	} else {
 		// Reject cheque if the paid amount is zero.
-		if c.SignedRange == c.LowerLimit || c.SignedRange == 0 {
+		if c.SignedRange == maxSignedRange {
 			invalidChequeMeter.Mark(1)
 			return 0, errors.New("invalid payment amount")
 		}
@@ -194,6 +194,8 @@ func (drawee *ChequeDrawee) AddCheque(drawer common.Address, c *Cheque) (uint64,
 }
 
 // claim sends a on-chain transaction to claim the specified lottery.
+// Note this function will block until the transaction is mined! Please
+// don't call this in the main thread.
 func (drawee *ChequeDrawee) claim(context context.Context, cheque *Cheque) error {
 	var proofslice [][32]byte
 	for i := 1; i < len(cheque.Witness); i++ {
@@ -202,7 +204,12 @@ func (drawee *ChequeDrawee) claim(context context.Context, cheque *Cheque) error
 		proofslice = append(proofslice, p)
 	}
 	start := time.Now()
-	tx, err := drawee.book.contract.Claim(drawee.opts, cheque.LotteryId, cheque.RevealRange, cheque.Sig[64], common.BytesToHash(cheque.Sig[:common.HashLength]), common.BytesToHash(cheque.Sig[common.HashLength:2*common.HashLength]), cheque.ReceiverSalt, proofslice)
+	if len(cheque.RevealRange) != 4 {
+		return errors.New("invalid cheque")
+	}
+	var revealRange [4]byte
+	copy(revealRange[:], cheque.RevealRange)
+	tx, err := drawee.book.contract.Claim(drawee.opts, cheque.LotteryId, revealRange, cheque.Sig[64], common.BytesToHash(cheque.Sig[:common.HashLength]), common.BytesToHash(cheque.Sig[common.HashLength:2*common.HashLength]), cheque.ReceiverSalt, proofslice)
 	if err != nil {
 		return err
 	}

@@ -52,7 +52,7 @@ func TestChequeManagement(t *testing.T) {
 	_, cheques, _, _ := env.newRawLottery([]common.Address{env.draweeAddr}, []uint64{128}, 5)
 
 	var signed = cheques[0]
-	signed.RevealRange = [4]byte{0xff, 0xff, 0xff, 0xff}
+	signed.RevealRange = []byte{0xff, 0xff, 0xff, 0xff}
 	signed.SignedRange = math.MaxUint32
 	signed.signWithKey(func(digestHash []byte) ([]byte, error) {
 		return crypto.Sign(digestHash, env.drawerKey)
@@ -96,7 +96,7 @@ func TestChequeRecovery(t *testing.T) {
 	lottery, cheques, salt, _ := env.newRawLottery([]common.Address{env.draweeAddr}, []uint64{128}, 5)
 
 	var signed = cheques[0]
-	signed.RevealRange = [4]byte{0xff, 0xff, 0xff, 0xff}
+	signed.RevealRange = []byte{0xff, 0xff, 0xff, 0xff}
 	signed.SignedRange = math.MaxUint32
 	signed.signWithKey(func(digestHash []byte) ([]byte, error) {
 		return crypto.Sign(digestHash, env.drawerKey)
