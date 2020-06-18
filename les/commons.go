@@ -78,12 +78,14 @@ type lesCommons struct {
 	oracle                       *checkpointoracle.CheckpointOracle
 
 	// Payment channel relative fields
-	paymentDb     ethdb.Database      // The database used to store all received payments or payment records
-	paymentInited uint32              // The status indicator whether payment methods are allocated.
-	address       common.Address      // The address used to pay or charge
-	am            *accounts.Manager   // The global account manager which holds the local account
-	lmgr          *lotterypmt.Manager // Off-chain payment channel manager
-	schemas       []payment.SchemaRLP // The batch of schemas of local supported payment
+	paymentDb ethdb.Database      // The database used to store all received payments or payment records
+	am        *accounts.Manager   // The global account manager which holds the local account
+	schemas   []payment.SchemaRLP // The batch of schemas of local supported payment
+
+	// Lottery payment relative fields
+	lmgr           *lotterypmt.Manager // Off-chain payment channel manager
+	lotteryAddress common.Address      // The address used to pay or charge by lottery book
+	lotteryInited  uint32              // The status indicator whether lottery payment method are allocated.
 
 	closeCh chan struct{}
 	wg      sync.WaitGroup

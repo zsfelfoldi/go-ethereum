@@ -358,7 +358,7 @@ func (api *PrivateLightAPI) GetCheckpointContractAddress() (string, error) {
 
 // OpenedChannel returns all established channel addresses.
 func (api *PrivateLightAPI) OpenedChannels() ([]common.Address, error) {
-	if atomic.LoadUint32(&api.backend.paymentInited) == 0 {
+	if atomic.LoadUint32(&api.backend.lotteryInited) == 0 {
 		return nil, errNoPayment
 	}
 	return api.backend.lmgr.Remotes(), nil

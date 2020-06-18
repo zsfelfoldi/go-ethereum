@@ -134,13 +134,14 @@ func NewLesServer(ctx *node.ServiceContext, e *eth.Ethereum, config *eth.Config)
 	}
 	srv.chtIndexer.Start(e.BlockChain())
 
-	if config.LightServiceCharge {
-		paymentDb, err := ctx.OpenDatabase("paymentdata", 0, 0, "eth/db/paymentdata") // How to disable metrics?
+	if config.LotteryPaymentAddress != (common.Address{}) {
+		paymentDb, err := ctx.OpenDatabase("lespay", 0, 0, "eth/db/lespay") // How to disable metrics?
 		if err != nil {
 			return nil, err
 		}
 		srv.paymentDb = paymentDb
-		srv.address = config.LightAddress
+		srv.lotteryAddress = config.LotteryPaymentAddress
+		log.Info("Lottery payment is enabled", "address", srv.lotteryAddress, "payementdb", ctx.Config.ResolvePath("lespay"))
 	}
 	return srv, nil
 }
@@ -238,38 +239,9 @@ func (s *LesServer) SetBackends(cbackend bind.ContractBackend, dbackend bind.Dep
 	if s.oracle != nil {
 		s.oracle.Start(cbackend)
 	}
-	if s.config.LightServiceCharge {
-		go func() {
-			// Ensure the payment contract is deployed.
-			paymentContract, exist := params.PaymentContracts[s.genesis]
-			if !exist {
-				return
-			}
-			if s.address == (common.Address{}) {
-				log.Warn("Failed to setup payment manager", "error", "empty receiver address")
-				return
-			}
-			account := accounts.Account{Address: s.address}
-			wallet, err := s.am.Find(account)
-			if err != nil {
-				log.Warn("Failed to setup payment manager", "error", err)
-				return
-			}
-			mgr, err := lotterypmt.NewManager(lotterypmt.DefaultReceiverConfig, s.chainReader, bind.NewRawTransactor(wallet.SignTx, account), nil, s.address, paymentContract, cbackend, dbackend, s.paymentDb)
-			if err != nil {
-				log.Warn("Failed to setup payment manager", "error", err)
-				return
-			}
-			s.lmgr = mgr
-			schema, err := mgr.LocalSchema()
-			if err != nil {
-				log.Warn("Invalid payment schema", "error", err)
-				return
-			}
-			s.schemas = append(s.schemas, schema)
-			atomic.StoreUint32(&s.paymentInited, 1) // Mark payment channel is available now
-			log.Info("Succeed to setup payment manager", "address", s.address)
-		}()
+	// Setup lottery payment if necessary
+	if s.lotteryAddress != (common.Address{}) {
+		go s.setupLotteryPayment(cbackend, dbackend)
 	}
 }
 
@@ -330,4 +302,32 @@ func (s *LesServer) capacityManagement() {
 			return
 		}
 	}
+}
+
+func (s *LesServer) setupLotteryPayment(cbackend bind.ContractBackend, dbackend bind.DeployBackend) {
+	// Ensure the payment contract is deployed.
+	paymentContract, exist := params.PaymentContracts[s.genesis]
+	if !exist {
+		return
+	}
+	account := accounts.Account{Address: s.lotteryAddress}
+	wallet, err := s.am.Find(account)
+	if err != nil {
+		log.Warn("Failed to setup payment manager", "error", err)
+		return
+	}
+	mgr, err := lotterypmt.NewManager(lotterypmt.DefaultReceiverConfig, s.chainReader, bind.NewRawTransactor(wallet.SignTx, account), nil, s.lotteryAddress, paymentContract, cbackend, dbackend, s.paymentDb)
+	if err != nil {
+		log.Warn("Failed to setup payment manager", "error", err)
+		return
+	}
+	s.lmgr = mgr
+	schema, err := mgr.LocalSchema()
+	if err != nil {
+		log.Warn("Invalid payment schema", "error", err)
+		return
+	}
+	s.schemas = append(s.schemas, schema)
+	atomic.StoreUint32(&s.lotteryInited, 1) // Mark payment channel is available now
+	log.Info("Succeed to setup payment manager", "address", s.lotteryAddress)
 }

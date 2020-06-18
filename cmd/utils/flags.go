@@ -283,17 +283,9 @@ var (
 		Usage: "Ultra light server sends announcements only",
 	}
 	// Les server incentivization settings
-	ServiceChargeFlag = cli.BoolFlag{
-		Name:  "light.charge",
-		Usage: "Indicator whether to charge for light client service",
-	}
-	ServicePaymentFlag = cli.BoolFlag{
-		Name:  "light.pay",
-		Usage: "Indicator whether to pay for light server service",
-	}
-	LightAddressFlag = cli.StringFlag{
-		Name:  "light.address",
-		Usage: "Account address of the light server or client which used to pay the fee or charge",
+	LotteryPaymentAddressFlag = cli.StringFlag{
+		Name:  "light.lottery.address",
+		Usage: "Account address of the server/client used to pay/charge by lottery payment(disable if empty)",
 	}
 	// Ethash settings
 	EthashCacheDirFlag = DirectoryFlag{
@@ -1083,14 +1075,8 @@ func setLes(ctx *cli.Context, cfg *eth.Config) {
 	if ctx.GlobalIsSet(UltraLightOnlyAnnounceFlag.Name) {
 		cfg.UltraLightOnlyAnnounce = ctx.GlobalBool(UltraLightOnlyAnnounceFlag.Name)
 	}
-	if ctx.GlobalIsSet(ServiceChargeFlag.Name) {
-		cfg.LightServiceCharge = ctx.GlobalBool(ServiceChargeFlag.Name)
-	}
-	if ctx.GlobalIsSet(ServicePaymentFlag.Name) {
-		cfg.LightServicePay = ctx.GlobalBool(ServicePaymentFlag.Name)
-	}
-	if ctx.GlobalIsSet(LightAddressFlag.Name) {
-		cfg.LightAddress = common.HexToAddress(ctx.GlobalString(LightAddressFlag.Name))
+	if ctx.GlobalIsSet(LotteryPaymentAddressFlag.Name) {
+		cfg.LotteryPaymentAddress = common.HexToAddress(ctx.GlobalString(LotteryPaymentAddressFlag.Name))
 	}
 }
 

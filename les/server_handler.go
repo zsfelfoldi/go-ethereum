@@ -114,7 +114,7 @@ func (h *serverHandler) handle(p *clientPeer) error {
 	p.Log().Debug("Light Ethereum peer connected", "name", p.Name())
 
 	// Reject light clients if payment module is still initializing.
-	if h.server.config.LightServiceCharge && atomic.LoadUint32(&h.server.paymentInited) == 0 {
+	if h.server.lotteryAddress != (common.Address{}) && atomic.LoadUint32(&h.server.lotteryInited) == 0 {
 		return errors.New("payment hasn't been initialized")
 	}
 	// Execute the LES handshake

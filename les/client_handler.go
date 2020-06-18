@@ -98,8 +98,8 @@ func (h *clientHandler) handle(p *serverPeer) error {
 	if h.backend.peers.len() >= h.backend.config.LightPeers && !p.Peer.Info().Network.Trusted {
 		return p2p.DiscTooManyPeers
 	}
-	// Reject les server if payment module is still initializing.
-	if h.backend.config.LightServicePay && atomic.LoadUint32(&h.backend.paymentInited) == 0 {
+	// Reject les server if lottery payment module is still initializing.
+	if h.backend.lotteryAddress != (common.Address{}) && atomic.LoadUint32(&h.backend.lotteryInited) == 0 {
 		return errors.New("payment hasn't been initialized")
 	}
 	p.Log().Debug("Light Ethereum peer connected", "name", p.Name())

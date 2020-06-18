@@ -133,9 +133,7 @@ type Config struct {
 	UltraLightOnlyAnnounce bool     `toml:",omitempty"` // Whether to only announce headers, or also serve them
 
 	// Les server incentivization options
-	LightServiceCharge bool           // Indicator whether to charge for the light service
-	LightServicePay    bool           // Indicator whether to pay for the light service
-	LightAddress       common.Address // Address of the server or client which used to pay the fee or charge.
+	LotteryPaymentAddress common.Address // Address of the server or client which used to pay/charge the fee by lottery payment
 
 	// Database options
 	SkipBcVersionCheck bool `toml:"-"`
