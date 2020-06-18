@@ -143,7 +143,7 @@ type peerCommons struct {
 	fcCosts  requestCostTable         // The Maximum request cost table.
 
 	// Payment relative fields
-	routes map[string]payment.PaymentRoute // Established different payment routes
+	receiverList map[string]common.Address // Receiver addresses for different payements
 
 	closeCh chan struct{}
 	lock    sync.RWMutex // Lock used to protect all thread-sensitive fields.
@@ -359,14 +359,14 @@ type serverPeer struct {
 func newServerPeer(version int, network uint64, trusted bool, p *p2p.Peer, rw p2p.MsgReadWriter) *serverPeer {
 	return &serverPeer{
 		peerCommons: peerCommons{
-			Peer:      p,
-			rw:        rw,
-			id:        peerIdToString(p.ID()),
-			version:   version,
-			network:   network,
-			sendQueue: utils.NewExecQueue(100),
-			routes:    make(map[string]payment.PaymentRoute),
-			closeCh:   make(chan struct{}),
+			Peer:         p,
+			rw:           rw,
+			id:           peerIdToString(p.ID()),
+			version:      version,
+			network:      network,
+			sendQueue:    utils.NewExecQueue(100),
+			receiverList: make(map[string]common.Address),
+			closeCh:      make(chan struct{}),
 		},
 		trusted: trusted,
 	}
@@ -580,6 +580,7 @@ func (p *serverPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 			p.announceType = announceTypeSigned
 		}
 		*lists = (*lists).add("announceType", p.announceType)
+
 		// Add local supported payment schemas
 		if len(backend.schemas) > 0 {
 			*lists = (*lists).add("payment/schemas", backend.schemas)
@@ -629,21 +630,21 @@ func (p *serverPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 				}
 			}
 		}
-		// Parse payment relative handshake
+		// Parse payment relative handshake, create the payment routes
 		var schemas []payment.SchemaRLP
 		if err := recv.get("payment/schemas", &schemas); err == nil {
 			for _, s := range schemas {
 				switch {
-				case s.Key == lotterypmt.Identity && backend.lmgr != nil:
-					schema, err := backend.lmgr.ResolveSchema(s.Value)
+				case s.Key == lotterypmt.Identity && backend.lotteryMgr != nil:
+					scheme, err := backend.lotteryMgr.ResolveSchema(s.Value)
 					if err != nil {
 						continue
 					}
-					route, err := backend.lmgr.OpenRoute(schema, p, nil)
+					item, err := scheme.Load("Receiver")
 					if err != nil {
 						continue
 					}
-					p.routes[schema.Identity()] = route
+					p.receiverList[lotterypmt.Identity] = item.(common.Address)
 				}
 			}
 		}
@@ -755,14 +756,14 @@ type clientPeer struct {
 func newClientPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *clientPeer {
 	return &clientPeer{
 		peerCommons: peerCommons{
-			Peer:      p,
-			rw:        rw,
-			id:        peerIdToString(p.ID()),
-			version:   version,
-			network:   network,
-			sendQueue: utils.NewExecQueue(100),
-			routes:    make(map[string]payment.PaymentRoute),
-			closeCh:   make(chan struct{}),
+			Peer:         p,
+			rw:           rw,
+			id:           peerIdToString(p.ID()),
+			version:      version,
+			network:      network,
+			sendQueue:    utils.NewExecQueue(100),
+			receiverList: make(map[string]common.Address),
+			closeCh:      make(chan struct{}),
 		},
 		errCh: make(chan error, 1),
 	}
@@ -1009,28 +1010,22 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 			if err := recv.get("payment/schemas", &schemas); err == nil {
 				for _, s := range schemas {
 					switch {
-					case s.Key == lotterypmt.Identity && server.lmgr != nil:
-						schema, err := server.lmgr.ResolveSchema(s.Value)
+					case s.Key == lotterypmt.Identity && server.lotteryMgr != nil:
+						scheme, err := server.lotteryMgr.ResolveSchema(s.Value)
 						if err != nil {
 							continue
 						}
-						route, err := server.lmgr.OpenRoute(schema, nil, p)
+						item, err := scheme.Load("Sender")
 						if err != nil {
 							continue
 						}
-						p.routes[schema.Identity()] = route
+						p.receiverList[lotterypmt.Identity] = item.(common.Address)
 					}
 				}
 			}
 		}
 		return nil
 	})
-}
-
-// Only for debugging
-func (p *clientPeer) ReceivePayment(amount uint64) error {
-	fmt.Printf("[Add balance] add %d for %s\n", amount, p.id)
-	return nil
 }
 
 // serverPeerSubscriber is an interface to notify services about added or

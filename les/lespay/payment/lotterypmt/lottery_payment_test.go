@@ -48,7 +48,12 @@ func TestSchema(t *testing.T) {
 			&LotteryPaymentSchema{
 				Receiver: common.HexToAddress("deadbeef"),
 				Contract: common.HexToAddress("cafebabe"),
-			}, nil, true, false,
+			},
+			map[string]common.Address{
+				"Receiver": common.HexToAddress("deadbeef"),
+				"Contract": common.HexToAddress("cafebabe"),
+			},
+			true, false,
 		},
 		{
 			// Invalid schema

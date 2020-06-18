@@ -17,47 +17,11 @@
 package payment
 
 import (
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/rlp"
 )
-
-// PaymentRoute is the way the light client pays to the les server.
-// PaymentRoute can be implemented in many different ways, such as
-// off-chain payment, on-chain payment. All available payments must
-// implement the following functions.
-//
-// Note paymentRoute is only a one-way payment channel.
-type PaymentRoute interface {
-	// Pay initiates a payment to the designated payee with specified
-	// payemnt amount.
-	Pay(amount uint64) error
-
-	// Receive receives a payment from the payer and returns any error
-	// for payment processing and proving.
-	Receive(proofOfPayment []byte) error
-
-	// Close exits the payment and opens the reqeust to withdraw all funds.
-	Close() error
-
-	// Info returns the information union of route(sender, receiver, contract)
-	Info() (common.Address, common.Address, common.Address)
-}
-
-// PaymentSender represents the sender in the opened payment route.
-type PaymentSender interface {
-	// SendPayment sends the given cheque to the peer via network.
-	SendPayment([]byte, string) error
-}
-
-// PaymentReceiver represents the receiver in the opened payment route.
-type PaymentReceiver interface {
-	// ReceivePayment notifies upper-level system we have received
-	// the payment from the peer with specified amount.
-	ReceivePayment(uint64) error
-}
 
 // CurrentHeader retrieves the current header from the local chain.
 type ChainReader interface {

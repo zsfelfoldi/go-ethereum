@@ -82,7 +82,7 @@ type lesCommons struct {
 	schemas   []payment.SchemaRLP // The batch of schemas of local supported payment
 
 	// Lottery payment relative fields
-	lmgr           *lotterypmt.Manager // Off-chain payment channel manager
+	lotteryMgr     *lotterypmt.Manager // Off-chain lottery payment channel manager
 	lotteryAddress common.Address      // The address used to pay or charge by lottery book
 	lotteryInited  uint32              // The status indicator whether lottery payment method are allocated.
 

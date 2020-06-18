@@ -321,7 +321,7 @@ func (s *LesServer) setupLotteryPayment(cbackend bind.ContractBackend, dbackend 
 		log.Warn("Failed to setup payment manager", "error", err)
 		return
 	}
-	s.lmgr = mgr
+	s.lotteryMgr = mgr
 	schema, err := mgr.LocalSchema()
 	if err != nil {
 		log.Warn("Invalid payment schema", "error", err)

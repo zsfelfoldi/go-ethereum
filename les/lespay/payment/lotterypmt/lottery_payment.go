@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -44,88 +43,6 @@ const (
 	Sender Role = iota
 	Receiver
 )
-
-type Route struct {
-	role        Role
-	chainReader payment.ChainReader
-	local       common.Address
-	contract    common.Address
-	remote      common.Address
-	sender      payment.PaymentSender     // Nil if route is opened by receiver
-	receiver    payment.PaymentReceiver   // Nil if route is opened by sender
-	drawer      *lotterybook.ChequeDrawer // Nil if route is opened by receiver
-	drawee      *lotterybook.ChequeDrawee // Nil if route is opened by sender
-}
-
-func newRoute(role Role, chainReader payment.ChainReader, local, remote, contract common.Address, drawer *lotterybook.ChequeDrawer, drawee *lotterybook.ChequeDrawee, sender payment.PaymentSender, receiver payment.PaymentReceiver) *Route {
-	route := &Route{
-		role:        role,
-		chainReader: chainReader,
-		local:       local,
-		remote:      remote,
-		contract:    contract,
-		sender:      sender,
-		receiver:    receiver,
-		drawer:      drawer,
-		drawee:      drawee,
-	}
-	return route
-}
-
-// Pay initiates a payment to the designated payee with specified
-// payemnt amount.
-func (r *Route) Pay(amount uint64) error {
-	if r.role != Sender {
-		return errInvalidOpt
-	}
-	cheque, err := r.drawer.IssueCheque(r.remote, amount)
-	if err != nil {
-		return err
-	}
-	proofOfPayment, err := rlp.EncodeToBytes(cheque)
-	if err != nil {
-		return err
-	}
-	log.Debug("Sent payment", "amount", amount, "route", r.contract)
-	return r.sender.SendPayment(proofOfPayment, Identity)
-}
-
-// Receive receives a payment from the payer and returns any error
-// for payment processing and proving.
-func (r *Route) Receive(proofOfPayment []byte) error {
-	if r.role != Receiver {
-		return errInvalidOpt
-	}
-	var cheque lotterybook.Cheque
-	if err := rlp.DecodeBytes(proofOfPayment, &cheque); err != nil {
-		return err
-	}
-	amount, err := r.drawee.AddCheque(r.remote, &cheque)
-	if err != nil {
-		return err
-	}
-	log.Debug("Received payment", "amount", amount, "route", r.contract)
-	return r.receiver.ReceivePayment(amount)
-}
-
-// Close exits the payment and withdraw all expired lotteries
-func (r *Route) Close() error {
-	if r.role != Sender {
-		return nil
-	}
-	ctx, cancelFn := context.WithTimeout(context.Background(), time.Minute*5)
-	defer cancelFn()
-	return r.drawer.Destroy(ctx)
-}
-
-// Info returns the infomation union of payment route.
-func (r *Route) Info() (common.Address, common.Address, common.Address) {
-	if r.role == Sender {
-		return r.local, r.remote, r.contract
-	} else {
-		return r.remote, r.local, r.contract
-	}
-}
 
 // Config defines all user-selectable options for both
 // sender and receiver.
@@ -158,11 +75,6 @@ type Manager struct {
 	txSigner     *bind.TransactOpts                // Signer used to sign transaction
 	chequeSigner func(data []byte) ([]byte, error) // Signer used to sign cheque
 
-	// routes are all established channels. For payment receiver,
-	// the key of routes map is sender's address; otherwise the
-	// key refers to receiver's address.
-	routes   map[common.Address]*Route
-	lock     sync.RWMutex              // The lock used to protect routes
 	sender   *lotterybook.ChequeDrawer // Nil if manager is opened by receiver
 	receiver *lotterybook.ChequeDrawee // Nil if manager is opened by sender
 
@@ -183,7 +95,6 @@ func NewManager(config *Config, chainReader payment.ChainReader, txSigner *bind.
 		db:           db,
 		cBackend:     cBackend,
 		dBackend:     dBackend,
-		routes:       make(map[common.Address]*Route),
 	}
 	if m.config.Role == Sender {
 		sender, err := lotterybook.NewChequeDrawer(m.local, contract, txSigner, chequeSigner, chainReader, cBackend, dBackend, db)
@@ -199,53 +110,6 @@ func NewManager(config *Config, chainReader payment.ChainReader, txSigner *bind.
 		m.receiver = receiver
 	}
 	return m, nil
-}
-
-// OpenRoute establishes a new payment route for new customer or new service
-// provider. If we are payment receiver, the addr refers to the lottery contract
-// addr, otherwise the addr refers to receiver's address.
-func (m *Manager) OpenRoute(schema payment.Schema, sender payment.PaymentSender, receiver payment.PaymentReceiver) (payment.PaymentRoute, error) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
-	if m.config.Role == Receiver {
-		elem, err := schema.Load("Sender")
-		if err != nil {
-			return nil, err
-		}
-		remote := elem.(common.Address)
-		if _, exist := m.routes[remote]; exist {
-			return nil, errors.New("duplicated payment route")
-		}
-		m.routes[remote] = newRoute(Receiver, m.chainReader, m.local, remote, m.contract, nil, m.receiver, nil, receiver)
-		log.Debug("Opened route", "local", m.local, "remote", remote)
-		return m.routes[remote], nil
-	} else {
-		elem, err := schema.Load("Receiver")
-		if err != nil {
-			return nil, err
-		}
-		remote := elem.(common.Address)
-		if _, exist := m.routes[remote]; exist {
-			return nil, errors.New("duplicated payment route")
-		}
-		// We are payment sender, establish a outgoing route with
-		// specified counterparty address and peer.
-		m.routes[remote] = newRoute(Sender, m.chainReader, m.local, remote, m.contract, m.sender, nil, sender, nil)
-		log.Debug("Opened route", "local", m.local, "remote", remote)
-		return m.routes[remote], nil
-	}
-}
-
-// CloseRoute closes a route with given address. If we are payment receiver,
-// the addr refers to the sender's address, otherwise, the address refers to
-// receiver's address.
-func (m *Manager) CloseRoute(addr common.Address) error {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	delete(m.routes, addr)
-	log.Debug("Closed route", "address", addr)
-	return nil
 }
 
 func (m *Manager) deposit(receivers []common.Address, amounts []uint64) (common.Hash, error) {
@@ -300,16 +164,50 @@ func (m *Manager) DepositAndWait(receivers []common.Address, amounts []uint64) (
 	return done, nil
 }
 
-// Remotes returns the address of counterparty peer for all
-// established payment routes.
-func (m *Manager) Remotes() []common.Address {
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-	var addresses []common.Address
-	for addr := range m.routes {
-		addresses = append(addresses, addr)
+// Pay initiates a payment to the designated payee with specified
+// payemnt amount.
+func (m *Manager) Pay(payee common.Address, amount uint64) ([]byte, error) {
+	if m.config.Role != Sender {
+		return nil, errInvalidOpt
 	}
-	return addresses
+	cheque, err := m.sender.IssueCheque(payee, amount)
+	if err != nil {
+		return nil, err
+	}
+	proofOfPayment, err := rlp.EncodeToBytes(cheque)
+	if err != nil {
+		return nil, err
+	}
+	log.Debug("Generated payment", "amount", amount, "payee", payee)
+	return proofOfPayment, nil
+}
+
+// Receive receives a payment from the payer and returns any error
+// for payment processing and proving.
+func (m *Manager) Receive(payer common.Address, proofOfPayment []byte) (uint64, error) {
+	if m.config.Role != Receiver {
+		return 0, errInvalidOpt
+	}
+	var cheque lotterybook.Cheque
+	if err := rlp.DecodeBytes(proofOfPayment, &cheque); err != nil {
+		return 0, err
+	}
+	amount, err := m.receiver.AddCheque(payer, &cheque)
+	if err != nil {
+		return 0, err
+	}
+	log.Debug("Resolved payment", "amount", amount, "payer", payer)
+	return amount, nil
+}
+
+// Destory exits the payment and withdraws all expired lotteries
+func (m *Manager) Destory() error {
+	if m.config.Role != Sender {
+		return errInvalidOpt
+	}
+	ctx, cancelFn := context.WithTimeout(context.Background(), time.Minute*5)
+	defer cancelFn()
+	return m.sender.Destroy(ctx)
 }
 
 // LotteryPaymentSchema defines the schema of payment.
@@ -365,26 +263,23 @@ func (m *Manager) LocalSchema() (payment.SchemaRLP, error) {
 // ensure the schema is compatible with us.
 func (m *Manager) ResolveSchema(blob []byte) (payment.Schema, error) {
 	var schema LotteryPaymentSchema
+	if err := rlp.DecodeBytes(blob, &schema); err != nil {
+		return nil, err
+	}
 	if m.config.Role == Sender {
-		if err := rlp.DecodeBytes(blob, &schema); err != nil {
-			return nil, err
-		}
 		if schema.Receiver == (common.Address{}) {
-			return nil, errors.New("invald schema")
+			return nil, errors.New("empty receiver address")
 		}
 		if schema.Contract != m.contract {
-			return nil, errors.New("invald schema")
+			return nil, errors.New("imcompatible contract")
 		}
 		return &schema, nil
 	} else {
-		if err := rlp.DecodeBytes(blob, &schema); err != nil {
-			return nil, err
-		}
 		if schema.Sender == (common.Address{}) {
-			return nil, errors.New("invald schema")
+			return nil, errors.New("empty sender address")
 		}
 		if schema.Contract != m.contract {
-			return nil, errors.New("invald schema")
+			return nil, errors.New("imcompatible contract")
 		}
 		return &schema, nil
 	}

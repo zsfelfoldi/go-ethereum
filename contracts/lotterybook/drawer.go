@@ -342,19 +342,19 @@ func (drawer *ChequeDrawer) Destroy(context context.Context) error {
 // strategy here for lottery selection: choose a lottery ticket with the
 // most recent expiration date and the remaining amount can cover the amount
 // paid this time.
-func (drawer *ChequeDrawer) IssueCheque(payer common.Address, amount uint64) (*Cheque, error) {
+func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) (*Cheque, error) {
 	lotteris, err := drawer.lmgr.activeLotteris()
 	if err != nil {
 		return nil, err
 	}
 	sort.Sort(LotteryByRevealTime(lotteris))
 	for _, lottery := range lotteris {
-		cheque := drawer.cdb.readCheque(payer, drawer.address, lottery.Id, true)
+		cheque := drawer.cdb.readCheque(payee, drawer.address, lottery.Id, true)
 		if cheque == nil {
 			continue
 		}
-		if lottery.balance(payer, cheque) >= amount {
-			return drawer.issueCheque(payer, lottery.Id, amount)
+		if lottery.balance(payee, cheque) >= amount {
+			return drawer.issueCheque(payee, lottery.Id, amount)
 		}
 	}
 	return nil, ErrNotEnoughDeposit // No suitable lottery found for payment

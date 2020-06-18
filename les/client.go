@@ -340,7 +340,7 @@ func (s *LightEthereum) setupLotteryPayment(contract bind.ContractBackend, deplo
 	account := accounts.Account{Address: s.lotteryAddress}
 	wallet, err := s.am.Find(account)
 	if err != nil {
-		log.Warn("Failed to setup payment manager", "error", err)
+		log.Warn("Failed to setup lottery payment manager", "error", err)
 		return
 	}
 	chequeSigner := func(data []byte) ([]byte, error) {
@@ -348,10 +348,10 @@ func (s *LightEthereum) setupLotteryPayment(contract bind.ContractBackend, deplo
 	}
 	mgr, err := lotterypmt.NewManager(lotterypmt.DefaultSenderConfig, s.chainReader, bind.NewRawTransactor(wallet.SignTx, account), chequeSigner, s.lotteryAddress, paymentContract, contract, deploy, s.paymentDb)
 	if err != nil {
-		log.Warn("Failed to setup payment manager", "error", err)
+		log.Warn("Failed to setup lottery payment manager", "error", err)
 		return
 	}
-	s.lmgr = mgr
+	s.lotteryMgr = mgr
 	schema, err := mgr.LocalSchema()
 	if err != nil {
 		log.Warn("Invalid payment schema", "error", err)
@@ -359,5 +359,5 @@ func (s *LightEthereum) setupLotteryPayment(contract bind.ContractBackend, deplo
 	}
 	s.schemas = append(s.schemas, schema)
 	atomic.StoreUint32(&s.lotteryInited, 1) // Mark payment channel is available now
-	log.Info("Succeed to setup payment manager", "address", s.lotteryAddress)
+	log.Info("Succeed to setup lottery payment manager", "address", s.lotteryAddress)
 }

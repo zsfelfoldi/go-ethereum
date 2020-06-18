@@ -162,15 +162,6 @@ func (h *serverHandler) handle(p *clientPeer) error {
 		h.server.clientPool.disconnect(p)
 		clientConnectionGauge.Update(int64(h.server.peers.len()))
 		connectionTimer.Update(time.Duration(mclock.Now() - connectedAt))
-		p.lock.Lock()
-		for identity, route := range p.routes {
-			switch identity {
-			case lotterypmt.Identity:
-				sender, _, _ := route.Info()
-				h.server.lmgr.CloseRoute(sender)
-			}
-		}
-		p.lock.Unlock()
 	}()
 
 	// Mark the peer starts to be served.
@@ -849,10 +840,12 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		switch {
-		case packet.Identity == lotterypmt.Identity && p.routes[lotterypmt.Identity] != nil:
-			if err := p.routes[lotterypmt.Identity].Receive(packet.ProofOfPayment); err != nil {
+		case packet.Identity == lotterypmt.Identity && p.receiverList[lotterypmt.Identity] != (common.Address{}):
+			amount, err := h.server.lotteryMgr.Receive(p.receiverList[lotterypmt.Identity], packet.ProofOfPayment)
+			if err != nil {
 				return errResp(ErrInvalidPayment, "error: %v", err)
 			}
+			log.Info("Received payement", "amount", amount, "sender", p.receiverList[lotterypmt.Identity])
 		default:
 			return errResp(ErrUnsupportedPayment, "identity: %s", packet.Identity)
 		}

@@ -127,16 +127,6 @@ func (h *clientHandler) handle(p *serverPeer) error {
 		h.backend.peers.unregister(p.id)
 		connectionTimer.Update(time.Duration(mclock.Now() - connectedAt))
 		serverConnectionGauge.Update(int64(h.backend.peers.len()))
-
-		p.lock.Lock()
-		for identity, route := range p.routes {
-			switch identity {
-			case lotterypmt.Identity:
-				_, receiver, _ := route.Info()
-				h.backend.lmgr.CloseRoute(receiver)
-			}
-		}
-		p.lock.Unlock()
 	}()
 
 	h.fetcher.announce(p, &announceData{Hash: p.headInfo.Hash, Number: p.headInfo.Number, Td: p.headInfo.Td})
@@ -153,13 +143,9 @@ func (h *clientHandler) handle(p *serverPeer) error {
 		defer ticker.Stop()
 
 		p.lock.RLock()
-		route := p.routes[lotterypmt.Identity]
+		receiver := p.receiverList[lotterypmt.Identity]
 		p.lock.RUnlock()
-		if route == nil {
-			return
-		}
-		_, receiver, _ := route.Info()
-		deposit, err := h.backend.lmgr.DepositAndWait([]common.Address{receiver}, []uint64{10000000})
+		deposit, err := h.backend.lotteryMgr.DepositAndWait([]common.Address{receiver}, []uint64{10000000})
 		if err != nil {
 			log.Error("Failed to deposit", "err", err)
 		}
@@ -170,9 +156,11 @@ func (h *clientHandler) handle(p *serverPeer) error {
 				if deposit != nil {
 					continue
 				}
-				if err := route.Pay(100); err != nil {
+				proofOfPayment, err := h.backend.lotteryMgr.Pay(receiver, 100)
+				if err != nil {
 					log.Error("Failed to pay", "error", err)
 				}
+				p.SendPayment(proofOfPayment, lotterypmt.Identity)
 			case <-deposit:
 				deposit = nil
 			case <-closed:
