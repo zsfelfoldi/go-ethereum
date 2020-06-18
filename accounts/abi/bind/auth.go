@@ -19,7 +19,6 @@ package bind
 import (
 	"crypto/ecdsa"
 	"errors"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"math/big"
@@ -104,8 +103,6 @@ func NewRawTransactor(signFn func(account accounts.Account, tx *types.Transactio
 		From: account.Address,
 		Signer: func(signer types.Signer, address common.Address, transaction *types.Transaction) (*types.Transaction, error) {
 			if address != account.Address {
-				fmt.Println("want", account.Address.Hex(), "got", address.Hex())
-
 				return nil, errors.New("not authorized to sign this account")
 			}
 			return signFn(account, transaction, nil) // Clef enforces its own chain id
