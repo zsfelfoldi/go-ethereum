@@ -22,7 +22,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -353,13 +352,4 @@ func (api *PrivateLightAPI) GetCheckpointContractAddress() (string, error) {
 		return "", errNotActivated
 	}
 	return api.backend.oracle.Contract().ContractAddr().Hex(), nil
-}
-
-// OpenedChannel returns all established channel addresses.
-func (api *PrivateLightAPI) OpenedChannels() ([]common.Address, error) {
-	//if atomic.LoadUint32(&api.backend.lotteryInited) == 0 {
-	//	return nil, errNoPayment
-	//}
-	//return api.backend.lotteryMgr.Remotes(), nil
-	return nil, nil
 }
