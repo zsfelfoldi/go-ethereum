@@ -34,6 +34,11 @@ import (
 // Identity is the unique string identity of lottery payment.
 const Identity = "Lottery"
 
+// RevealPeriod is the full life cycle length of lottery. The
+// number is quite arbitrary here, it's around 6.4 hours. We
+// can set a more reasonable number later.
+const RevealPeriod = 5760
+
 var errInvalidOpt = errors.New("invalid operation")
 
 // Role is the role of user in payment route.
@@ -64,7 +69,9 @@ var DefaultReceiverConfig = &Config{
 	Role: Receiver,
 }
 
-// Manager is responsible for payment routes management.
+// Manager is the enter point of the lottery payment no matter for sender
+// or receiver. It defines the function wrapper of the underlying payment
+// methods and offers the payment scheme codec.
 type Manager struct {
 	config      *Config
 	chainReader payment.ChainReader
@@ -83,16 +90,16 @@ type Manager struct {
 	dBackend bind.DeployBackend
 }
 
-// newRoute initializes a one-to-one payment channel for both sender and receiver.
+// NewManager returns the manager instance for lottery payment.
 func NewManager(config *Config, chainReader payment.ChainReader, txSigner *bind.TransactOpts, chequeSigner func(digestHash []byte) ([]byte, error), local, contract common.Address, cBackend bind.ContractBackend, dBackend bind.DeployBackend, db ethdb.Database) (*Manager, error) {
 	m := &Manager{
 		config:       config,
 		chainReader:  chainReader,
 		contract:     contract,
 		local:        local,
+		db:           db,
 		txSigner:     txSigner,
 		chequeSigner: chequeSigner,
-		db:           db,
 		cBackend:     cBackend,
 		dBackend:     dBackend,
 	}
@@ -112,33 +119,32 @@ func NewManager(config *Config, chainReader payment.ChainReader, txSigner *bind.
 	return m, nil
 }
 
-func (m *Manager) deposit(receivers []common.Address, amounts []uint64) (common.Hash, error) {
+func (m *Manager) deposit(receivers []common.Address, amounts []uint64, revealPeriod uint64) (common.Hash, error) {
 	if m.config.Role != Sender {
 		return common.Hash{}, errInvalidOpt
 	}
 	ctx, cancelFn := context.WithTimeout(context.Background(), time.Minute*5)
 	defer cancelFn()
 
-	// TODO(rjl493456442) implement reveal range oracle for better number recommendation.
 	current := m.chainReader.CurrentHeader().Number.Uint64()
-	id, err := m.sender.Deposit(ctx, receivers, amounts, current+5760)
+	id, err := m.sender.Deposit(ctx, receivers, amounts, current+revealPeriod)
 	return id, err
 }
 
 // Deposit creates deposit for the given batch of receivers and corresponding
-// deposit amount.
-func (m *Manager) Deposit(receivers []common.Address, amounts []uint64) error {
-	_, err := m.deposit(receivers, amounts)
-	return err
-}
-
-// DepositAndWait creates deposit for the given batch of receivers and corresponding
-// deposit amount. Wait until the deposit is available for payment and emit a signal
+// deposit amount. If wait is true then a channel is returned, the channel will
+// be closed only until the deposit is available for payment and emit a signal
 // for it.
-func (m *Manager) DepositAndWait(receivers []common.Address, amounts []uint64) (chan bool, error) {
-	id, err := m.deposit(receivers, amounts)
+func (m *Manager) Deposit(receivers []common.Address, amounts []uint64, revealPeriod uint64, wait bool) (chan bool, error) {
+	if revealPeriod == 0 {
+		revealPeriod = RevealPeriod
+	}
+	id, err := m.deposit(receivers, amounts, revealPeriod)
 	if err != nil {
 		return nil, err
+	}
+	if !wait {
+		return nil, nil
 	}
 	done := make(chan bool, 1)
 	go func() {

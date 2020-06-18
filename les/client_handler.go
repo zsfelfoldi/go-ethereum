@@ -135,39 +135,12 @@ func (h *clientHandler) handle(p *serverPeer) error {
 	atomic.StoreUint32(&p.serving, 1)
 	defer atomic.StoreUint32(&p.serving, 0)
 
-	// Testing code.
+	// Testing code, should be removed
 	closed := make(chan struct{})
 	defer close(closed)
-	go func() {
-		ticker := time.NewTicker(time.Second * 5)
-		defer ticker.Stop()
+	robot := NewPaymentRobot(h.backend.lotteryMgr, p.receiverList[lotterypmt.Identity], closed)
+	go robot.Run(p.SendPayment)
 
-		p.lock.RLock()
-		receiver := p.receiverList[lotterypmt.Identity]
-		p.lock.RUnlock()
-		deposit, err := h.backend.lotteryMgr.DepositAndWait([]common.Address{receiver}, []uint64{10000000})
-		if err != nil {
-			log.Error("Failed to deposit", "err", err)
-		}
-
-		for {
-			select {
-			case <-ticker.C:
-				if deposit != nil {
-					continue
-				}
-				proofOfPayment, err := h.backend.lotteryMgr.Pay(receiver, 100)
-				if err != nil {
-					log.Error("Failed to pay", "error", err)
-				}
-				p.SendPayment(proofOfPayment, lotterypmt.Identity)
-			case <-deposit:
-				deposit = nil
-			case <-closed:
-				return
-			}
-		}
-	}()
 	// Spawn a main loop to handle all incoming messages.
 	for {
 		if err := h.handleMsg(p); err != nil {

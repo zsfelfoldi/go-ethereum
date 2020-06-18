@@ -845,7 +845,8 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 			if err != nil {
 				return errResp(ErrInvalidPayment, "error: %v", err)
 			}
-			log.Info("Received payement", "amount", amount, "sender", p.receiverList[lotterypmt.Identity])
+			// todo pass the notification to relevant module!
+			log.Info("Received payment", "amount", amount, "sender", p.receiverList[lotterypmt.Identity])
 		default:
 			return errResp(ErrUnsupportedPayment, "identity: %s", packet.Identity)
 		}
