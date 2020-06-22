@@ -157,25 +157,48 @@ func (db *nodeDB) getPosBalanceIDs(start, stop enode.ID, maxCount int) (result [
 		return
 	}
 	prefix := db.getPrefix(false)
+	keylen := len(prefix) + len(enode.ID{})
+
 	it := db.db.NewIterator(prefix, start.Bytes())
 	defer it.Release()
-	for i := len(stop[:]) - 1; i >= 0; i-- {
-		stop[i]--
-		if stop[i] != 255 {
-			break
-		}
-	}
-	stopKey := db.key(stop.Bytes(), false)
-	keyLen := len(stopKey)
 
 	for it.Next() {
 		var id enode.ID
-		if len(it.Key()) != keyLen || bytes.Compare(it.Key(), stopKey) == 1 {
+		if len(it.Key()) != keylen {
 			return
 		}
-		copy(id[:], it.Key()[keyLen-len(id):])
+		copy(id[:], it.Key()[keylen-len(id):])
+		if bytes.Compare(id.Bytes(), stop.Bytes()) >= 0 {
+			return
+		}
 		result = append(result, id)
 		if len(result) == maxCount {
+			return
+		}
+	}
+	return
+}
+
+// forEachBalance iterates all balances and passes values to callback.
+func (db *nodeDB) forEachBalance(neg bool, callback func(id enode.ID, balance utils.ExpiredValue) bool) {
+	prefix := db.getPrefix(neg)
+	keylen := len(prefix) + len(enode.ID{})
+
+	it := db.db.NewIterator(prefix, nil)
+	defer it.Release()
+
+	for it.Next() {
+		var id enode.ID
+		if len(it.Key()) != keylen {
+			return
+		}
+		copy(id[:], it.Key()[keylen-len(id):])
+
+		var b utils.ExpiredValue
+		if err := rlp.DecodeBytes(it.Value(), &b); err != nil {
+			continue
+		}
+		if !callback(id, b) {
 			return
 		}
 	}

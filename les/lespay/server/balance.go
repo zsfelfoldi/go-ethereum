@@ -107,24 +107,10 @@ func NewBalanceTracker(ns *nodestate.NodeStateMachine, setup BalanceTrackerSetup
 		negExp:              negExp,
 		quit:                make(chan struct{}),
 	}
-	var start enode.ID
-	for {
-		ids := bt.ndb.getPosBalanceIDs(start, enode.ID{}, 1000)
-		var stop bool
-		l := len(ids)
-		if l == 1000 {
-			l--
-			start = ids[l]
-		} else {
-			stop = true
-		}
-		for i := 0; i < l; i++ {
-			bt.totalAmount.AddExp(bt.ndb.getOrNewBalance(ids[i].Bytes(), false))
-		}
-		if stop {
-			break
-		}
-	}
+	bt.ndb.forEachBalance(false, func(id enode.ID, balance utils.ExpiredValue) bool {
+		bt.totalAmount.AddExp(balance)
+		return true
+	})
 
 	ns.SubscribeField(bt.capacityField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
 		n, _ := ns.GetField(node, bt.BalanceField).(*NodeBalance)

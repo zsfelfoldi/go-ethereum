@@ -302,7 +302,8 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 			// Feed cost tracker request serving statistic.
 			h.server.costTracker.updateStats(msg.Code, amount, servingTime, realCost)
 			// Reduce priority "balance" for the specific peer.
-			/*balance =*/ p.balance.RequestServed(realCost)
+			/*balance =*/
+			p.balance.RequestServed(realCost)
 		}
 		if reply != nil {
 			p.queueSend(func() {
