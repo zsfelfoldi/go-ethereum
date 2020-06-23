@@ -20,26 +20,37 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/contracts/lotterybook"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/lespay/payment"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
-// Identity is the unique string identity of lottery payment.
-const Identity = "Lottery"
+const (
+	// Identity is the unique string identity of lottery payment.
+	Identity = "Lottery"
 
-// RevealPeriod is the full life cycle length of lottery. The
-// number is quite arbitrary here, it's around 6.4 hours. We
-// can set a more reasonable number later.
-const RevealPeriod = 5760
+	// revealPeriod is the full life cycle length of lottery. The
+	// number is quite arbitrary here, it's around 6.4 hours. We
+	// can set a more reasonable number later.
+	revealPeriod = 5760
 
-var errInvalidOpt = errors.New("invalid operation")
+	// chainSyncedThreshold is the maximum time different that
+	// local chain is considered synced. It's around 20 blocks.
+	chainSyncedThreshold = time.Minute * 5
+)
+
+var (
+	errInvalidOpt = errors.New("invalid operation")
+	errNotSynced  = errors.New("local chain is not synced")
+)
 
 // Role is the role of user in payment route.
 type Role int
@@ -69,6 +80,52 @@ var DefaultReceiverConfig = &Config{
 	Role: Receiver,
 }
 
+// chainWatcher is a special helper structure which can determine whether
+// the local chain is lag behine or keep synced.
+// It's necessary feature for lottery payment seems we have a strong assumption
+// that local chain is synced. All contract state we visited is associated
+// with chain height. If the local chain is lag behine, these scenarios can
+// happen:
+// - cheque drawer uses expired lottery for payment
+// - cheque drawee accpets lottery of expired lottery
+// But now this structure is mainly used to limit on client side(payment sender).
+type chainWatcher struct {
+	chain  payment.ChainReader
+	status uint32
+}
+
+func (cw *chainWatcher) run() {
+	newHeadCh := make(chan core.ChainHeadEvent, 1024)
+	sub := cw.chain.SubscribeChainHeadEvent(newHeadCh)
+	if sub == nil {
+		return
+	}
+	defer sub.Unsubscribe()
+
+	for {
+		select {
+		case ev := <-newHeadCh:
+			timestamp := time.Unix(int64(ev.Block.Time()), 0)
+
+			// If the time difference is less than 5 minutes(~20 blocks), we
+			// can assume the block is latest. But it's also problematic if
+			// local machine time is not correct.
+			if time.Since(timestamp) < chainSyncedThreshold {
+				atomic.StoreUint32(&cw.status, 1)
+			} else {
+				atomic.StoreUint32(&cw.status, 0)
+			}
+		case <-sub.Err():
+			return
+		}
+	}
+}
+
+// chainSynced returns the indicator whether the local chain is synced.
+func (cw *chainWatcher) chainSynced() bool {
+	return atomic.LoadUint32(&cw.status) == 1
+}
+
 // Manager is the enter point of the lottery payment no matter for sender
 // or receiver. It defines the function wrapper of the underlying payment
 // methods and offers the payment scheme codec.
@@ -84,6 +141,7 @@ type Manager struct {
 
 	sender   *lotterybook.ChequeDrawer // Nil if manager is opened by receiver
 	receiver *lotterybook.ChequeDrawee // Nil if manager is opened by sender
+	cwatcher *chainWatcher
 
 	// Backends used to interact with the underlying contract
 	cBackend bind.ContractBackend
@@ -100,9 +158,11 @@ func NewManager(config *Config, chainReader payment.ChainReader, txSigner *bind.
 		db:           db,
 		txSigner:     txSigner,
 		chequeSigner: chequeSigner,
+		cwatcher:     &chainWatcher{chain: chainReader},
 		cBackend:     cBackend,
 		dBackend:     dBackend,
 	}
+	m.cwatcher.run()
 	if m.config.Role == Sender {
 		sender, err := lotterybook.NewChequeDrawer(m.local, contract, txSigner, chequeSigner, chainReader, cBackend, dBackend, db)
 		if err != nil {
@@ -123,6 +183,9 @@ func (m *Manager) deposit(receivers []common.Address, amounts []uint64, revealPe
 	if m.config.Role != Sender {
 		return common.Hash{}, errInvalidOpt
 	}
+	if !m.cwatcher.chainSynced() {
+		return common.Hash{}, errNotSynced
+	}
 	ctx, cancelFn := context.WithTimeout(context.Background(), time.Minute*5)
 	defer cancelFn()
 
@@ -137,7 +200,7 @@ func (m *Manager) deposit(receivers []common.Address, amounts []uint64, revealPe
 // for it.
 func (m *Manager) Deposit(receivers []common.Address, amounts []uint64, revealPeriod uint64, wait bool) (chan bool, error) {
 	if revealPeriod == 0 {
-		revealPeriod = RevealPeriod
+		revealPeriod = revealPeriod
 	}
 	id, err := m.deposit(receivers, amounts, revealPeriod)
 	if err != nil {
@@ -176,6 +239,9 @@ func (m *Manager) Pay(payee common.Address, amount uint64) ([]byte, error) {
 	if m.config.Role != Sender {
 		return nil, errInvalidOpt
 	}
+	if !m.cwatcher.chainSynced() {
+		return nil, errNotSynced
+	}
 	cheque, err := m.sender.IssueCheque(payee, amount)
 	if err != nil {
 		return nil, err
@@ -210,6 +276,9 @@ func (m *Manager) Receive(payer common.Address, proofOfPayment []byte) (uint64, 
 func (m *Manager) Destory() error {
 	if m.config.Role != Sender {
 		return errInvalidOpt
+	}
+	if !m.cwatcher.chainSynced() {
+		return errNotSynced
 	}
 	ctx, cancelFn := context.WithTimeout(context.Background(), time.Minute*5)
 	defer cancelFn()
