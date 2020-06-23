@@ -143,7 +143,6 @@ type peerCommons struct {
 	fcCosts  requestCostTable         // The Maximum request cost table.
 
 	// Payment relative fields
-	receiverList map[string]common.Address // Receiver addresses for different payements
 
 	closeCh chan struct{}
 	lock    sync.RWMutex // Lock used to protect all thread-sensitive fields.
@@ -352,6 +351,9 @@ type serverPeer struct {
 	updateCount uint64
 	updateTime  mclock.AbsTime
 
+	// Payment fields
+	receiverList map[string]common.Address // Receiver addresses for all supported payements
+
 	// Callbacks
 	hasBlock func(common.Hash, uint64, bool) bool // Used to determine whether the server has the specified block.
 }
@@ -359,16 +361,16 @@ type serverPeer struct {
 func newServerPeer(version int, network uint64, trusted bool, p *p2p.Peer, rw p2p.MsgReadWriter) *serverPeer {
 	return &serverPeer{
 		peerCommons: peerCommons{
-			Peer:         p,
-			rw:           rw,
-			id:           peerIdToString(p.ID()),
-			version:      version,
-			network:      network,
-			sendQueue:    utils.NewExecQueue(100),
-			receiverList: make(map[string]common.Address),
-			closeCh:      make(chan struct{}),
+			Peer:      p,
+			rw:        rw,
+			id:        peerIdToString(p.ID()),
+			version:   version,
+			network:   network,
+			sendQueue: utils.NewExecQueue(100),
+			closeCh:   make(chan struct{}),
 		},
-		trusted: trusted,
+		trusted:      trusted,
+		receiverList: make(map[string]common.Address),
 	}
 }
 
@@ -751,21 +753,24 @@ type clientPeer struct {
 	responseCount uint64 // Counter to generate an unique id for request processing.
 	errCh         chan error
 	fcClient      *flowcontrol.ClientNode // Server side mirror token bucket.
+
+	// Payment fields
+	senderList map[string]common.Address // The sender addresses for all supported payments
 }
 
 func newClientPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *clientPeer {
 	return &clientPeer{
 		peerCommons: peerCommons{
-			Peer:         p,
-			rw:           rw,
-			id:           peerIdToString(p.ID()),
-			version:      version,
-			network:      network,
-			sendQueue:    utils.NewExecQueue(100),
-			receiverList: make(map[string]common.Address),
-			closeCh:      make(chan struct{}),
+			Peer:      p,
+			rw:        rw,
+			id:        peerIdToString(p.ID()),
+			version:   version,
+			network:   network,
+			sendQueue: utils.NewExecQueue(100),
+			closeCh:   make(chan struct{}),
 		},
-		errCh: make(chan error, 1),
+		errCh:      make(chan error, 1),
+		senderList: make(map[string]common.Address),
 	}
 }
 
@@ -1019,7 +1024,7 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 						if err != nil {
 							continue
 						}
-						p.receiverList[lotterypmt.Identity] = item.(common.Address)
+						p.senderList[lotterypmt.Identity] = item.(common.Address)
 					}
 				}
 			}

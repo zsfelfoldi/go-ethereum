@@ -840,13 +840,14 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		switch {
-		case packet.Identity == lotterypmt.Identity && p.receiverList[lotterypmt.Identity] != (common.Address{}):
-			amount, err := h.server.lotteryMgr.Receive(p.receiverList[lotterypmt.Identity], packet.ProofOfPayment)
+		case packet.Identity == lotterypmt.Identity && p.senderList[lotterypmt.Identity] != (common.Address{}):
+			/* testing code
+			amount, err := h.server.lotteryMgr.Receive(p.senderList[lotterypmt.Identity], packet.ProofOfPayment)
 			if err != nil {
 				return errResp(ErrInvalidPayment, "error: %v", err)
 			}
-			// todo pass the notification to relevant module!
-			log.Info("Received payment", "amount", amount, "sender", p.receiverList[lotterypmt.Identity])
+			log.Info("Received payment", "amount", amount, "sender", p.senderList[lotterypmt.Identity])
+			*/
 		default:
 			return errResp(ErrUnsupportedPayment, "identity: %s", packet.Identity)
 		}
