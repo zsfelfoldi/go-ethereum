@@ -349,6 +349,15 @@ func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) (*C
 	}
 	sort.Sort(LotteryByRevealTime(lotteris))
 	for _, lottery := range lotteris {
+		// We have another additional check here(but it's optional).
+		// If the reveal time is VERY close, then don't use it anymore.
+		// Seems (1) our chain may lag behind (2) when the receiver
+		// gets this cheque, the associated might expired at that time.
+		// So leave us a few safe time range.
+		current := drawer.chain.CurrentHeader().Number.Uint64()
+		if lottery.RevealNumber + 16 >= current { // 16 blocks is considered safe.
+			continue
+		}
 		cheque := drawer.cdb.readCheque(payee, drawer.address, lottery.Id, true)
 		if cheque == nil {
 			continue
