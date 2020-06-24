@@ -240,7 +240,6 @@ func (bt *BalanceTracker) newNodeBalance(node *enode.Node, negBalanceKey string)
 		initTime:      bt.clock.Now(),
 		lastUpdate:    bt.clock.Now(),
 	}
-	n.storedBalance = n.balance
 	n.summedBalance = n.balance.pos
 	for i := range n.callbackIndex {
 		n.callbackIndex[i] = -1
@@ -251,18 +250,12 @@ func (bt *BalanceTracker) newNodeBalance(node *enode.Node, negBalanceKey string)
 	return n
 }
 
-// storeBalance stores either a positive or a negative balance in the database if necessary
-func (bt *BalanceTracker) storeBalance(id []byte, neg bool, value utils.ExpiredValue, storedValue *utils.ExpiredValue) {
+// storeBalance stores either a positive or a negative balance in the database
+func (bt *BalanceTracker) storeBalance(id []byte, neg bool, value utils.ExpiredValue) {
 	if bt.canDropBalance(bt.clock.Now(), neg, value) {
-		if (*storedValue) != (utils.ExpiredValue{}) {
-			bt.ndb.delBalance(id, neg) // balance is small enough, drop it directly.
-			(*storedValue) = utils.ExpiredValue{}
-		}
+		bt.ndb.delBalance(id, neg) // balance is small enough, drop it directly.
 	} else {
-		if value != (*storedValue) {
-			bt.ndb.setBalance(id, neg, value)
-			(*storedValue) = value
-		}
+		bt.ndb.setBalance(id, neg, value)
 	}
 }
 
@@ -314,7 +307,7 @@ type NodeBalance struct {
 	negBalanceKey                    string
 	priorityFlag, closed             bool
 	capacity                         uint64
-	balance, storedBalance           balance
+	balance                          balance
 	summedBalance                    utils.ExpiredValue
 	posFactor, negFactor             PriceFactors
 	sumReqCost                       uint64
@@ -569,10 +562,10 @@ func (n *NodeBalance) updateBalance(now mclock.AbsTime) {
 // storeBalance stores the positive and/or negative balance of the node in the database
 func (n *NodeBalance) storeBalance(pos, neg bool) {
 	if pos {
-		n.bt.storeBalance(n.node.ID().Bytes(), false, n.balance.pos, &n.storedBalance.pos)
+		n.bt.storeBalance(n.node.ID().Bytes(), false, n.balance.pos)
 	}
 	if neg {
-		n.bt.storeBalance([]byte(n.negBalanceKey), true, n.balance.neg, &n.storedBalance.neg)
+		n.bt.storeBalance([]byte(n.negBalanceKey), true, n.balance.neg)
 	}
 }
 
