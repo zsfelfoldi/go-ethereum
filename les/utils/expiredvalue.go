@@ -18,6 +18,7 @@ package utils
 
 import (
 	"math"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 )
@@ -142,6 +143,7 @@ type ValueExpirer interface {
 // Note that if neither SetRate nor SetLogOffset are used during operation then LogOffset
 // is thread safe.
 type Expirer struct {
+	lock       sync.RWMutex
 	logOffset  Fixed64
 	rate       float64
 	lastUpdate mclock.AbsTime
@@ -150,6 +152,9 @@ type Expirer struct {
 // SetRate changes the expiration rate which is the inverse of the time constant in
 // nanoseconds.
 func (e *Expirer) SetRate(now mclock.AbsTime, rate float64) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+
 	dt := now - e.lastUpdate
 	if dt > 0 {
 		e.logOffset += Fixed64(logToFixedFactor * float64(dt) * e.rate)
@@ -160,12 +165,18 @@ func (e *Expirer) SetRate(now mclock.AbsTime, rate float64) {
 
 // SetLogOffset sets logOffset instantly.
 func (e *Expirer) SetLogOffset(now mclock.AbsTime, logOffset Fixed64) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+
 	e.lastUpdate = now
 	e.logOffset = logOffset
 }
 
 // LogOffset returns the current logarithmic offset.
 func (e *Expirer) LogOffset(now mclock.AbsTime) Fixed64 {
+	e.lock.RLock()
+	defer e.lock.RUnlock()
+
 	dt := now - e.lastUpdate
 	if dt <= 0 {
 		return e.logOffset

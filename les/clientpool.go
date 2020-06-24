@@ -25,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb"
 	lps "github.com/ethereum/go-ethereum/les/lespay/server"
+	"github.com/ethereum/go-ethereum/les/utils"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/enr"
@@ -53,13 +54,11 @@ var (
 	freeIdField         = clientPoolSetup.NewField("freeID", reflect.TypeOf(""))
 	balanceTrackerSetup = lps.NewBalanceTrackerSetup(clientPoolSetup)
 	priorityPoolSetup   = lps.NewPriorityPoolSetup(clientPoolSetup)
-	tokenIssuerSetup    = lps.TokenIssuerSetup{}
 )
 
 func init() {
 	balanceTrackerSetup.Init(freeIdField, priorityPoolSetup.CapacityField)
 	priorityPoolSetup.Init(balanceTrackerSetup.BalanceField, balanceTrackerSetup.UpdateFlag) // NodeBalance implements nodePriority
-	tokenIssuerSetup.Init(priorityPoolSetup.ActiveFlag, balanceTrackerSetup.PriorityFlag, priorityPoolSetup.CapacityField)
 }
 
 // clientPool implements a client database that assigns a priority to each client
@@ -83,15 +82,13 @@ func init() {
 type clientPool struct {
 	lps.BalanceTrackerSetup
 	lps.PriorityPoolSetup
-	lock           sync.Mutex
-	clock          mclock.Clock
-	closed         bool
-	removePeer     func(enode.ID)
-	ns             *nodestate.NodeStateMachine
-	pp             *lps.PriorityPool
-	bt             *lps.BalanceTracker
-	ti             *lps.TokenIssuer
-	posExp, negExp *lps.TokenExpirer
+	lock       sync.Mutex
+	clock      mclock.Clock
+	closed     bool
+	removePeer func(enode.ID)
+	ns         *nodestate.NodeStateMachine
+	pp         *lps.PriorityPool
+	bt         *lps.BalanceTracker
 
 	defaultPosFactors, defaultNegFactors lps.PriceFactors
 	posExpTC, negExpTC                   uint64
@@ -138,11 +135,7 @@ func newClientPool(lespayDb ethdb.Database, minCap, freeClientCap uint64, active
 		freeClientCap:       freeClientCap,
 		removePeer:          removePeer,
 	}
-	pool.ti = lps.NewTokenIssuer(ns, tokenIssuerSetup, clock, freeClientCap, activeBias/8, time.Hour)
-	pool.posExp = pool.ti.NewTokenExpirer()
-	pool.negExp = pool.ti.NewTokenExpirer()
-	pool.bt = lps.NewBalanceTracker(ns, balanceTrackerSetup, lespayDb, clock, pool.posExp, pool.negExp)
-	pool.ti.SetTotalAmountCallback(pool.bt.TotalTokenAmount)
+	pool.bt = lps.NewBalanceTracker(ns, balanceTrackerSetup, lespayDb, clock, &utils.Expirer{}, &utils.Expirer{})
 	pool.pp = lps.NewPriorityPool(ns, priorityPoolSetup, clock, minCap, activeBias, 4)
 
 	// set default expiration constants used by tests
@@ -279,7 +272,6 @@ func (f *clientPool) setDefaultFactors(posFactors, negFactors lps.PriceFactors) 
 
 	f.defaultPosFactors = posFactors
 	f.defaultNegFactors = negFactors
-	f.ti.SetCapacityFactor(posFactors.CapacityFactor)
 }
 
 // capacityInfo returns the total capacity allowance, the total capacity of connected
@@ -288,7 +280,8 @@ func (f *clientPool) capacityInfo() (uint64, uint64, uint64) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 
-	return f.capLimit, f.pp.ActiveCapacity(), f.ti.PriorityCapacity()
+	// total priority active cap will be supported when the token issuer module is added
+	return f.capLimit, f.pp.ActiveCapacity(), 0
 }
 
 // setLimits sets the maximum number and total capacity of connected clients,
@@ -299,7 +292,6 @@ func (f *clientPool) setLimits(totalConn int, totalCap uint64) {
 
 	f.capLimit = totalCap
 	f.pp.SetLimits(uint64(totalConn), totalCap)
-	f.ti.SetCapacityLimit(totalCap)
 }
 
 // setCapacity sets the assigned capacity of a connected client
