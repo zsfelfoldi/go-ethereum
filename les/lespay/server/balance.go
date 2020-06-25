@@ -83,16 +83,16 @@ func (bts *BalanceTrackerSetup) Init(negBalanceKeyField, capacityField nodestate
 // on the actual capacity.
 type BalanceTracker struct {
 	BalanceTrackerSetup
-	clock                      mclock.Clock
-	lock                       sync.Mutex
-	ns                         *nodestate.NodeStateMachine
-	ndb                        *nodeDB
-	posExp, negExp             utils.ValueExpirer
-	posExpTC, negExpTC         uint64
-	posThreshold, negThreshold uint64
-	totalAmount                utils.ExpiredValue
-	lastActiveBalanceUpdate    mclock.AbsTime
-	quit                       chan struct{}
+	clock                          mclock.Clock
+	lock                           sync.Mutex
+	ns                             *nodestate.NodeStateMachine
+	ndb                            *nodeDB
+	posExp, negExp                 utils.ValueExpirer
+	posExpTC, negExpTC             uint64
+	posThreshold, negThreshold     uint64
+	activeBalance, inactiveBalance utils.ExpiredValue
+	lastActiveBalanceUpdate        mclock.AbsTime
+	quit                           chan struct{}
 }
 
 // NewBalanceTracker creates a new BalanceTracker
@@ -108,7 +108,7 @@ func NewBalanceTracker(ns *nodestate.NodeStateMachine, setup BalanceTrackerSetup
 		quit:                make(chan struct{}),
 	}
 	bt.ndb.forEachBalance(false, func(id enode.ID, balance utils.ExpiredValue) bool {
-		bt.totalAmount.AddExp(balance)
+		bt.inactiveBalance.AddExp(balance)
 		return true
 	})
 
@@ -180,16 +180,19 @@ func (bt *BalanceTracker) TotalTokenAmount() uint64 {
 
 	now := bt.clock.Now()
 	if now > bt.lastActiveBalanceUpdate+mclock.AbsTime(time.Second*10) {
+		bt.activeBalance = utils.ExpiredValue{}
 		bt.ns.ForEach(nodestate.Flags{}, nodestate.Flags{}, func(node *enode.Node, state nodestate.Flags) {
 			if n, ok := bt.ns.GetField(node, bt.BalanceField).(*NodeBalance); ok {
 				n.lock.Lock()
-				bt.updateTotalAmount(n)
+				bt.activeBalance.AddExp(n.balance.pos)
 				n.lock.Unlock()
 			}
 		})
 		bt.lastActiveBalanceUpdate = now
 	}
-	return bt.totalAmount.Value(bt.posExp.LogOffset(now))
+	totalAmount := bt.activeBalance
+	totalAmount.AddExp(bt.inactiveBalance)
+	return totalAmount.Value(bt.posExp.LogOffset(now))
 }
 
 // GetPosBalanceIDs lists node IDs with an associated positive balance
@@ -240,7 +243,6 @@ func (bt *BalanceTracker) newNodeBalance(node *enode.Node, negBalanceKey string)
 		initTime:      bt.clock.Now(),
 		lastUpdate:    bt.clock.Now(),
 	}
-	n.summedBalance = n.balance.pos
 	for i := range n.callbackIndex {
 		n.callbackIndex[i] = -1
 	}
@@ -266,17 +268,6 @@ func (bt *BalanceTracker) canDropBalance(now mclock.AbsTime, neg bool, b utils.E
 		return b.Value(bt.negExp.LogOffset(now)) <= negThreshold
 	} else {
 		return b.Value(bt.posExp.LogOffset(now)) <= posThreshold
-	}
-}
-
-// updateTotalAmount updates total token amount with the balance change of the given
-// node since last update.
-// Note: this function needs both bt.lock and n.lock to be held.
-func (bt *BalanceTracker) updateTotalAmount(n *NodeBalance) {
-	if n.balance.pos != n.summedBalance {
-		bt.totalAmount.AddExp(n.balance.pos)
-		bt.totalAmount.SubExp(n.summedBalance)
-		n.summedBalance = n.balance.pos
 	}
 }
 
@@ -308,7 +299,6 @@ type NodeBalance struct {
 	priorityFlag, closed             bool
 	capacity                         uint64
 	balance                          balance
-	summedBalance                    utils.ExpiredValue
 	posFactor, negFactor             PriceFactors
 	sumReqCost                       uint64
 	lastUpdate, nextUpdate, initTime mclock.AbsTime
@@ -368,12 +358,13 @@ func (n *NodeBalance) AddPosBalance(amount int64) (uint64, uint64, error) {
 	if amount > 0 && (amount > maxBalance || oldValue > maxBalance-uint64(amount)) {
 		return oldValue, oldValue, errBalanceOverflow
 	}
+	n.bt.activeBalance.SubExp(n.balance.pos)
 	n.balance.pos.Add(amount, logOffset)
+	n.bt.activeBalance.AddExp(n.balance.pos)
 	setPriority = n.checkPriorityStatus()
 	n.checkCallbacks(now)
 	newValue := n.balance.pos.Value(logOffset)
 	n.storeBalance(true, false)
-	n.bt.updateTotalAmount(n)
 	return oldValue, newValue, nil
 }
 
@@ -399,12 +390,13 @@ func (n *NodeBalance) SetBalance(pos, neg uint64) error {
 	var pb, nb utils.ExpiredValue
 	pb.Add(int64(pos), n.bt.posExp.LogOffset(now))
 	nb.Add(int64(neg), n.bt.negExp.LogOffset(now))
+	n.bt.activeBalance.SubExp(n.balance.pos)
 	n.balance.pos = pb
+	n.bt.activeBalance.AddExp(n.balance.pos)
 	n.balance.neg = nb
 	setPriority = n.checkPriorityStatus()
 	n.checkCallbacks(now)
 	n.storeBalance(true, true)
-	n.bt.updateTotalAmount(n)
 	return nil
 }
 
@@ -538,7 +530,7 @@ func (n *NodeBalance) GetPriceFactors() (posFactor, negFactor PriceFactors) {
 func (n *NodeBalance) deactivate(close bool) {
 	n.lock.Lock()
 	defer n.lock.Unlock()
-	if n.closed {
+	if n.closed || n.capacity == 0 {
 		return
 	}
 	n.updateBalance(n.bt.clock.Now())
@@ -548,6 +540,8 @@ func (n *NodeBalance) deactivate(close bool) {
 		n.updateEvent = nil
 	}
 	n.storeBalance(true, true)
+	n.bt.activeBalance.SubExp(n.balance.pos)
+	n.bt.inactiveBalance.AddExp(n.balance.pos)
 	n.closed = close
 }
 
@@ -696,6 +690,9 @@ func (n *NodeBalance) signalPriorityUpdate() {
 // setCapacity updates the capacity value used for priority calculation
 // Note: capacity should never be zero
 func (n *NodeBalance) setCapacity(capacity uint64) {
+	if capacity == 0 {
+		panic(nil)
+	}
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
@@ -704,6 +701,10 @@ func (n *NodeBalance) setCapacity(capacity uint64) {
 	}
 	now := n.bt.clock.Now()
 	n.updateBalance(now)
+	if n.capacity == 0 {
+		n.bt.inactiveBalance.SubExp(n.balance.pos)
+		n.bt.activeBalance.AddExp(n.balance.pos)
+	}
 	n.capacity = capacity
 	n.checkCallbacks(now)
 }
