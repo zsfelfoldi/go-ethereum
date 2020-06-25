@@ -34,15 +34,19 @@ const (
 )
 
 // PriorityPoolSetup contains node state flags and fields used by PriorityPool
+// Note: ActiveFlag and InactiveFlag can be controlled both externally and by the pool,
+// see PriorityPool description for details.
 type PriorityPoolSetup struct {
-	ActiveFlag, InactiveFlag, updateFlag          nodestate.Flags
-	CapacityField, priorityField, ppNodeInfoField nodestate.Field
+	// controlled by PriorityPool
+	ActiveFlag, InactiveFlag       nodestate.Flags
+	CapacityField, ppNodeInfoField nodestate.Field
+	// external connections
+	updateFlag    nodestate.Flags
+	priorityField nodestate.Field
 }
 
 // NewPriorityPoolSetup creates a new PriorityPoolSetup and initializes the fields
 // and flags controlled by PriorityPool
-// Note: ActiveFlag and InactiveFlag can be controlled both externally and by the pool,
-// see PriorityPool description for details.
 func NewPriorityPoolSetup(setup *nodestate.Setup) PriorityPoolSetup {
 	return PriorityPoolSetup{
 		ActiveFlag:      setup.NewFlag("active"),
@@ -52,8 +56,8 @@ func NewPriorityPoolSetup(setup *nodestate.Setup) PriorityPoolSetup {
 	}
 }
 
-// Init sets the fields and flags used by PriorityPool as an input
-func (pps *PriorityPoolSetup) Init(priorityField nodestate.Field, updateFlag nodestate.Flags) {
+// Connect sets the fields and flags used by PriorityPool as an input
+func (pps *PriorityPoolSetup) Connect(priorityField nodestate.Field, updateFlag nodestate.Flags) {
 	pps.priorityField = priorityField // should implement nodePriority
 	pps.updateFlag = updateFlag       // triggers an immediate priority update
 }
