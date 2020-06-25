@@ -35,7 +35,7 @@ var (
 )
 
 func init() {
-	ppTestSetup.Init(ppTestClientField, ppUpdateFlag)
+	ppTestSetup.Connect(ppTestClientField, ppUpdateFlag)
 }
 
 const (

@@ -36,7 +36,7 @@ var (
 )
 
 func init() {
-	btTestSetup.Init(nbKeyField, ppTestSetup.CapacityField)
+	btTestSetup.Connect(nbKeyField, ppTestSetup.CapacityField)
 }
 
 type zeroExpirer struct{}

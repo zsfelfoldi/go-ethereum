@@ -48,8 +48,11 @@ const (
 
 // BalanceTrackerSetup contains node state flags and fields used by BalanceTracker
 type BalanceTrackerSetup struct {
-	PriorityFlag, UpdateFlag, activeFlag            nodestate.Flags
-	BalanceField, negBalanceKeyField, capacityField nodestate.Field
+	// controlled by PriorityPool
+	PriorityFlag, UpdateFlag nodestate.Flags
+	BalanceField             nodestate.Field
+	// external connections
+	negBalanceKeyField, capacityField nodestate.Field
 }
 
 // NewBalanceTrackerSetup creates a new BalanceTrackerSetup and initializes the fields
@@ -67,8 +70,8 @@ func NewBalanceTrackerSetup(setup *nodestate.Setup) BalanceTrackerSetup {
 	}
 }
 
-// Init sets the fields used by BalanceTracker as an input
-func (bts *BalanceTrackerSetup) Init(negBalanceKeyField, capacityField nodestate.Field) {
+// Connect sets the fields used by BalanceTracker as an input
+func (bts *BalanceTrackerSetup) Connect(negBalanceKeyField, capacityField nodestate.Field) {
 	bts.negBalanceKeyField = negBalanceKeyField
 	bts.capacityField = capacityField
 }

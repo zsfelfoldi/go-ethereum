@@ -57,8 +57,8 @@ var (
 )
 
 func init() {
-	balanceTrackerSetup.Init(freeIdField, priorityPoolSetup.CapacityField)
-	priorityPoolSetup.Init(balanceTrackerSetup.BalanceField, balanceTrackerSetup.UpdateFlag) // NodeBalance implements nodePriority
+	balanceTrackerSetup.Connect(freeIdField, priorityPoolSetup.CapacityField)
+	priorityPoolSetup.Connect(balanceTrackerSetup.BalanceField, balanceTrackerSetup.UpdateFlag) // NodeBalance implements nodePriority
 }
 
 // clientPool implements a client database that assigns a priority to each client
