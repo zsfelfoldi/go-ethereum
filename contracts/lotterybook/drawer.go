@@ -94,10 +94,10 @@ func (drawer *ChequeDrawer) Close() {
 
 // newProbabilityTree constructs a probability tree(merkle tree) based on the
 // given list of receivers and corresponding amounts. The payment amount can
-// used as the initial weight for each payer. Since the underlying merkle tree
+// used as the initial weight for each payee. Since the underlying merkle tree
 // is binary tree, so finally all weights will be adjusted to 1/2^N form.
-func (drawer *ChequeDrawer) newProbabilityTree(payers []common.Address, amounts []uint64) (*merkletree.MerkleTree, []*merkletree.Entry, uint64, error) {
-	if len(payers) != len(amounts) {
+func (drawer *ChequeDrawer) newProbabilityTree(payees []common.Address, amounts []uint64) (*merkletree.MerkleTree, []*merkletree.Entry, uint64, error) {
+	if len(payees) != len(amounts) {
 		return nil, nil, 0, errors.New("inconsistent payment receivers and amounts")
 	}
 	var totalAmount uint64
@@ -107,10 +107,10 @@ func (drawer *ChequeDrawer) newProbabilityTree(payers []common.Address, amounts 
 		}
 		totalAmount += amount
 	}
-	entries := make([]*merkletree.Entry, len(payers))
+	entries := make([]*merkletree.Entry, len(payees))
 	for index, amount := range amounts {
 		entries[index] = &merkletree.Entry{
-			Value:  payers[index].Bytes(),
+			Value:  payees[index].Bytes(),
 			Weight: amount,
 		}
 	}
@@ -121,12 +121,12 @@ func (drawer *ChequeDrawer) newProbabilityTree(payers []common.Address, amounts 
 	return tree, entries, totalAmount, nil
 }
 
-// submitLottery creates the lottery based on the specified batch of payers and
+// submitLottery creates the lottery based on the specified batch of payees and
 // corresponding payment amount. Return the newly created cheque list.
-func (drawer *ChequeDrawer) submitLottery(context context.Context, payers []common.Address, amounts []uint64, revealNumber uint64, onchainFn func(amount uint64, id [32]byte, blockNumber uint64, salt uint64) (*types.Transaction, error)) (*Lottery, error) {
+func (drawer *ChequeDrawer) submitLottery(context context.Context, payees []common.Address, amounts []uint64, revealNumber uint64, onchainFn func(amount uint64, id [32]byte, blockNumber uint64, salt uint64) (*types.Transaction, error)) (*Lottery, error) {
 	// Construct merkle probability tree with given payer list and corresponding
 	// payer weight. Return error if the given weight is invalid.
-	tree, entries, amount, err := drawer.newProbabilityTree(payers, amounts)
+	tree, entries, amount, err := drawer.newProbabilityTree(payees, amounts)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (drawer *ChequeDrawer) submitLottery(context context.Context, payers []comm
 		Id:           lotteryId,
 		RevealNumber: revealNumber,
 		Amount:       amount,
-		Receivers:    payers,
+		Receivers:    payees,
 	}
 	drawer.cdb.writeLottery(drawer.address, lotteryId, true, lottery) // tmp = true
 
@@ -193,9 +193,9 @@ func (drawer *ChequeDrawer) submitLottery(context context.Context, payers []comm
 	return lottery, nil
 }
 
-// createLottery creates the lottery based on the specified batch of payers and
+// createLottery creates the lottery based on the specified batch of payees and
 // corresponding payment amount, returns the id of craeted lottery.
-func (drawer *ChequeDrawer) createLottery(context context.Context, payers []common.Address, amounts []uint64, revealNumber uint64) (common.Hash, error) {
+func (drawer *ChequeDrawer) createLottery(context context.Context, payees []common.Address, amounts []uint64, revealNumber uint64) (common.Hash, error) {
 	onchainFn := func(amount uint64, id [32]byte, blockNumber uint64, salt uint64) (*types.Transaction, error) {
 		// Create an independent auth opt to submit the lottery
 		opt := &bind.TransactOpts{
@@ -205,7 +205,7 @@ func (drawer *ChequeDrawer) createLottery(context context.Context, payers []comm
 		}
 		return drawer.book.contract.NewLottery(opt, id, blockNumber, salt)
 	}
-	lottery, err := drawer.submitLottery(context, payers, amounts, revealNumber, onchainFn)
+	lottery, err := drawer.submitLottery(context, payees, amounts, revealNumber, onchainFn)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -256,7 +256,7 @@ func (drawer *ChequeDrawer) resetLottery(context context.Context, id common.Hash
 	drawer.cdb.deleteLottery(drawer.address, id, false)
 	_, addresses := drawer.cdb.listCheques(
 		drawer.address,
-		func(addr common.Address, lid common.Hash) bool { return lid == id },
+		func(addr common.Address, lid common.Hash, cheque *Cheque) bool { return lid == id },
 	)
 	for _, addr := range addresses {
 		drawer.cdb.deleteCheque(drawer.address, addr, id, true)
@@ -268,19 +268,18 @@ func (drawer *ChequeDrawer) resetLottery(context context.Context, id common.Hash
 // Deposit is a wrapper function of `createLottery` and `resetLottery`.
 // The strategy of deposit here is very simple: if there are any expired lotteries
 // can be reowned, use these lottery first; otherwise create new lottery for deposit.
-func (drawer *ChequeDrawer) Deposit(context context.Context, payers []common.Address, amounts []uint64, revealNumber uint64) (common.Hash, error) {
+func (drawer *ChequeDrawer) Deposit(context context.Context, payees []common.Address, amounts []uint64, revealNumber uint64) (common.Hash, error) {
 	expired, err := drawer.lmgr.expiredLotteris()
 	if err != nil {
 		return common.Hash{}, err
 	}
-	for _, l := range expired {
-		newId, err := drawer.resetLottery(context, l.Id, payers, amounts, revealNumber)
-		if err != nil {
-			continue
-		}
-		return newId, nil
+	// We have some expired lottery can be reused, don't create a fresh new here.
+	if len(expired) > 0 {
+		// todo implement a better selection algo
+		return drawer.resetLottery(context, expired[0].Id, payees, amounts, revealNumber)
 	}
-	return drawer.createLottery(context, payers, amounts, revealNumber)
+	// Nothing can be reused, create a new lottery for payment
+	return drawer.createLottery(context, payees, amounts, revealNumber)
 }
 
 // destroyLottery destroys a stale lottery, claims all deposit inside back to
@@ -314,7 +313,7 @@ func (drawer *ChequeDrawer) destroyLottery(context context.Context, id common.Ha
 	drawer.cdb.deleteLottery(drawer.address, id, false)
 	_, addresses := drawer.cdb.listCheques(
 		drawer.address,
-		func(addr common.Address, lid common.Hash) bool { return lid == id },
+		func(addr common.Address, lid common.Hash, cheque *Cheque) bool { return lid == id },
 	)
 	for _, addr := range addresses {
 		drawer.cdb.deleteCheque(drawer.address, addr, id, true)
@@ -352,7 +351,7 @@ func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) (*C
 		// We have another additional check here(but it's optional).
 		// If the reveal time is VERY close, then don't use it anymore.
 		// Seems (1) our chain may lag behind (2) when the receiver
-		// gets this cheque, the associated might expired at that time.
+		// gets this cheque, the lottery might expire at that time.
 		// So leave us a few safe time range.
 		current := drawer.chain.CurrentHeader().Number.Uint64()
 		if lottery.RevealNumber+16 >= current { // 16 blocks is considered safe.
@@ -365,6 +364,9 @@ func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) (*C
 		if lottery.balance(payee, cheque) >= amount {
 			return drawer.issueCheque(payee, lottery.Id, amount)
 		}
+		// todo we need to extend the payment protocol, instead of selecting
+		// a single lottery with sufficient allowance for payment, we can
+		// combine a few lotteries with samller allowance.
 	}
 	return nil, ErrNotEnoughDeposit // No suitable lottery found for payment
 }
@@ -444,7 +446,7 @@ func (drawer *ChequeDrawer) Allowance(id common.Hash) map[common.Address]uint64 
 	// Filter all cheques associated with given lottery.
 	cheques, addresses := drawer.cdb.listCheques(
 		drawer.address,
-		func(addr common.Address, lid common.Hash) bool { return lid == id },
+		func(addr common.Address, lid common.Hash, cheque *Cheque) bool { return lid == id },
 	)
 	// Short circuit if no cheque found.
 	if cheques == nil {

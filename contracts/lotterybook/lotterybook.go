@@ -171,6 +171,11 @@ type Cheque struct {
 	// The signature to protect the correctness of all above fields.
 	Sig [crypto.SignatureLength]byte
 
+	// **Receiver side speicific fields**. These fields will never be assigned
+	// or used in the sender side, but they are important for the receiver.
+	RevealNumber uint64
+	Amount       uint64
+
 	// These following fields are defined and derived locally
 	MerkleRoot common.Hash // The merkle tree root hash of corresponding lottery
 	LotteryId  common.Hash // The id of corresponding lottery
@@ -189,12 +194,15 @@ type chequeRLP struct {
 	Salt         uint64         // The random number of lottery
 	ReceiverSalt uint64         // The random number of receiver
 	Sig          [crypto.SignatureLength]byte
+
+	RevealNumber uint64 // The associated lottery reveal number(0 in sender side)
+	Amount       uint64 // The associated lottery amount(0 in sender side)
 }
 
 // EncodeRLP implements rlp.Encoder, and flattens the necessary fields of a cheque
 // into an RLP stream.
 func (c *Cheque) EncodeRLP(w io.Writer) error {
-	return rlp.Encode(w, &chequeRLP{Witness: c.Witness, ContractAddr: c.ContractAddr, RevealRange: c.RevealRange, Salt: c.Salt, ReceiverSalt: c.ReceiverSalt, Sig: c.Sig})
+	return rlp.Encode(w, &chequeRLP{Witness: c.Witness, ContractAddr: c.ContractAddr, RevealRange: c.RevealRange, Salt: c.Salt, ReceiverSalt: c.ReceiverSalt, Sig: c.Sig, RevealNumber: c.RevealNumber, Amount: c.Amount})
 }
 
 // DecodeRLP implements rlp.Decoder, loads the rlp-encoded fields of a cheque
@@ -204,7 +212,7 @@ func (c *Cheque) DecodeRLP(s *rlp.Stream) error {
 	if err := s.Decode(&dec); err != nil {
 		return err
 	}
-	c.Witness, c.ContractAddr, c.RevealRange, c.Salt, c.ReceiverSalt, c.Sig = dec.Witness, dec.ContractAddr, dec.RevealRange, dec.Salt, dec.ReceiverSalt, dec.Sig
+	c.Witness, c.ContractAddr, c.RevealRange, c.Salt, c.ReceiverSalt, c.Sig, c.RevealNumber, c.Amount = dec.Witness, dec.ContractAddr, dec.RevealRange, dec.Salt, dec.ReceiverSalt, dec.Sig, dec.RevealNumber, dec.Amount
 
 	// RLP wil convert the nil slice to []byte{}, set it back
 	if len(c.RevealRange) == 0 {

@@ -215,7 +215,7 @@ func (db *chequeDB) listLotteries(addr common.Address, tmp bool) []*Lottery {
 //
 // If the caller is cheque sender, all returned addresses are a batch of receiver
 // addresses, otherwise the addresses are senders.
-func (db *chequeDB) listCheques(addr common.Address, filterFn func(common.Address, common.Hash) bool) (cheques []*Cheque, addresses []common.Address) {
+func (db *chequeDB) listCheques(addr common.Address, filterFn func(common.Address, common.Hash, *Cheque) bool) (cheques []*Cheque, addresses []common.Address) {
 	iter := db.db.NewIterator(append(chequePrefix, addr.Bytes()...), nil)
 	defer iter.Release()
 
@@ -226,11 +226,11 @@ func (db *chequeDB) listCheques(addr common.Address, filterFn func(common.Addres
 		}
 		id := iter.Key()[len(iter.Key())-common.HashLength-common.AddressLength : len(iter.Key())-common.AddressLength]
 		addr := iter.Key()[len(iter.Key())-common.AddressLength:]
-		if filterFn != nil && !filterFn(common.BytesToAddress(addr), common.BytesToHash(id)) {
-			continue
-		}
 		var cheque Cheque
 		if err := rlp.DecodeBytes(iter.Value(), &cheque); err != nil {
+			continue
+		}
+		if filterFn != nil && !filterFn(common.BytesToAddress(addr), common.BytesToHash(id), &cheque) {
 			continue
 		}
 		cheques = append(cheques, &cheque)

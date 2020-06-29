@@ -132,6 +132,9 @@ contract LotteryBook {
         // Ensure it's called by owner.
         require(lotteries[id].owner == msg.sender, "only owner is allowed to reset lottery");
 
+        // Ensure there is no duplicated lottery.
+        require(lotteries[newid].revealNumber == 0, "duplicated lottery");
+
         // Now we can make sure the old lottery is expired.
         // There are a few cases can lead to this situation:
         // * the winner doesn't claim the money in 256 blocks.

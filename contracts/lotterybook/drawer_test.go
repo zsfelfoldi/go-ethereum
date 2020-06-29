@@ -56,7 +56,7 @@ func TestCreateLottery(t *testing.T) {
 		return sig, nil
 	}
 	var cases = []struct {
-		payers    []common.Address
+		payees    []common.Address
 		amounts   []uint64
 		reveal    uint64
 		expectErr bool
@@ -68,7 +68,7 @@ func TestCreateLottery(t *testing.T) {
 		{[]common.Address{env.draweeAddr}, []uint64{128}, 1, true},
 	}
 	for index, c := range cases {
-		_, err := drawer.createLottery(context.Background(), c.payers, c.amounts, c.reveal)
+		_, err := drawer.createLottery(context.Background(), c.payees, c.amounts, c.reveal)
 		if c.expectErr {
 			if err == nil {
 				t.Fatalf("Case %d expect error, got nil", index)

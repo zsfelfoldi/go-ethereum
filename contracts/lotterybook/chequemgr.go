@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/contracts/lotterybook/contract"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/log"
@@ -29,20 +30,14 @@ import (
 
 var errChequeManagerClosed = errors.New("cheque manager closed")
 
-// WrappedCheque wraps the cheque and an additional field.
-type WrappedCheque struct {
-	Cheque       *Cheque
-	RevealNumber uint64
-}
-
 // chequeManager the manager of received cheques for all life cycle management.
 type chequeManager struct {
 	address  common.Address
 	chain    Blockchain
 	contract *contract.LotteryBook
 	cdb      *chequeDB
-	queryCh  chan chan []*WrappedCheque
-	chequeCh chan *WrappedCheque
+	queryCh  chan chan []*Cheque
+	chequeCh chan *Cheque
 	closeCh  chan struct{}
 	wg       sync.WaitGroup
 	claim    func(context.Context, *Cheque) error
@@ -56,8 +51,8 @@ func newChequeManager(address common.Address, chain Blockchain, contract *contra
 		chain:    chain,
 		contract: contract,
 		cdb:      cdb,
-		queryCh:  make(chan chan []*WrappedCheque),
-		chequeCh: make(chan *WrappedCheque),
+		queryCh:  make(chan chan []*Cheque),
+		chequeCh: make(chan *Cheque),
 		closeCh:  make(chan struct{}),
 		claim:    claim,
 	}
@@ -80,7 +75,17 @@ func (m *chequeManager) run() {
 
 	var (
 		current = m.chain.CurrentHeader().Number.Uint64()
-		active  = make(map[uint64][]*Cheque)
+
+		// todo if we have lots of cheques maintained in the memory,
+		// it will lead to OOM. We need a better mechanism to load
+		// cheques by demand.
+		active      = make(map[common.Hash]*Cheque)
+		indexes     = make(map[common.Hash]int)
+		activeQueue = prque.New(func(data interface{}, index int) {
+			cheque := data.(*Cheque)
+			indexes[cheque.LotteryId] = index
+			active[cheque.LotteryId] = cheque
+		})
 	)
 	// checkAndClaim checks whether the cheque is the winner or not.
 	// If so, claim the corresponding lottery via sending on-chain
@@ -99,7 +104,7 @@ func (m *chequeManager) run() {
 			return nil
 		}
 		// todo(rjl493456442) if any error occurs(but we are the lucky winner), re-try
-		// is necesssary.
+		// is necesssary. Most of the failures can be timeout, signing failures, etc.
 		winLotteryGauge.Inc(1)
 		ctx, cancelFn := context.WithTimeout(context.Background(), txTimeout)
 		defer cancelFn()
@@ -108,29 +113,17 @@ func (m *chequeManager) run() {
 	// Read all stored cheques received locally
 	cheques, drawers := m.cdb.listCheques(m.address, nil)
 	for index, cheque := range cheques {
-		ret, err := m.contract.Lotteries(nil, cheque.LotteryId)
-		if err != nil {
-			log.Error("Failed to retrieve corresponding lottery", "error", err)
-			continue
-		}
-		// If the amount of corresponding lottery is 0, it means the lottery
-		// is claimed or reset by someone, just delete it.
-		if ret.Amount == 0 {
-			log.Debug("Lottery is claimed")
-			m.cdb.deleteCheque(m.address, drawers[index], cheque.LotteryId, false)
-			continue
-		}
 		// The valid claim block range is [revealNumber+1, revealNumber+256].
 		// However the head block can be reorged with very high chance. So
 		// a small processing confirms is applied to ensure the reveal hash
 		// is stable enough.
 		//
 		// For receiver, the reasonable claim range (revealNumber+6, revealNumber+256].
-		if current < ret.RevealNumber+lotteryProcessConfirms {
-			active[ret.RevealNumber] = append(active[ret.RevealNumber], cheque)
-		} else if current < ret.RevealNumber+lotteryClaimPeriod {
+		if current < cheque.RevealNumber+lotteryProcessConfirms {
+			activeQueue.Push(cheque, -int64(cheque.RevealNumber))
+		} else if current < cheque.RevealNumber+lotteryClaimPeriod {
 			// Lottery can still be claimed, try it!
-			revealHash := m.chain.GetHeaderByNumber(ret.RevealNumber)
+			revealHash := m.chain.GetHeaderByNumber(cheque.RevealNumber)
 
 			// Create an independent routine to claim the lottery.
 			// This function may takes very long time, don't block
@@ -147,53 +140,43 @@ func (m *chequeManager) run() {
 		select {
 		case ev := <-newHeadCh:
 			current = ev.Block.NumberU64()
-			for revealAt, cheques := range active {
+
+		checkExpiration:
+			for !activeQueue.Empty() {
+				item, priority := activeQueue.Pop()
+				height := uint64(-priority)
+
 				// Short circuit if they are still active lotteries.
-				if current < revealAt+lotteryProcessConfirms {
-					continue
+				if current < height+lotteryProcessConfirms {
+					activeQueue.Push(item, priority)
+					break checkExpiration
 				}
-				// Wipe all cheques if they are already stale.
-				if current >= revealAt+lotteryClaimPeriod {
-					for _, cheque := range cheques {
-						m.cdb.deleteCheque(m.address, cheque.Signer(), cheque.LotteryId, false)
-					}
-					delete(active, revealAt)
-					continue
-				}
-				revealHash := m.chain.GetHeaderByNumber(revealAt).Hash()
-				for _, cheque := range cheques {
+				// Wipe the cheque if it's already stale.
+				cheque := item.(*Cheque)
+				delete(indexes, cheque.LotteryId)
+				delete(active, cheque.LotteryId)
+
+				if current < height+lotteryClaimPeriod {
 					// Create an independent routine to claim the lottery.
 					// This function may takes very long time, don't block
 					// the entire thread here. It's ok to spin up routines
 					// blindly here, there won't have too many cheques to claim.
-					go checkAndClaim(cheque, revealHash)
+					go checkAndClaim(cheque, m.chain.GetHeaderByNumber(height).Hash())
+					continue
 				}
-				delete(active, revealAt)
+				m.cdb.deleteCheque(m.address, cheque.Signer(), cheque.LotteryId, false)
 			}
 
-		case req := <-m.chequeCh:
-			var replaced bool
-			cheques := active[req.RevealNumber]
-			for index, cheque := range cheques {
-				if cheque.LotteryId == req.Cheque.LotteryId {
-					cheques[index] = req.Cheque // Replace the original one
-					replaced = true
-					break
-				}
+		case cheque := <-m.chequeCh:
+			if index, exist := indexes[cheque.LotteryId]; exist {
+				activeQueue.Remove(index)
 			}
-			if !replaced {
-				active[req.RevealNumber] = append(active[req.RevealNumber], req.Cheque)
-			}
+			activeQueue.Push(cheque, -int64(cheque.RevealNumber))
 
 		case retCh := <-m.queryCh:
-			var ret []*WrappedCheque
-			for revealAt, cheques := range active {
-				for _, cheque := range cheques {
-					ret = append(ret, &WrappedCheque{
-						Cheque:       cheque,
-						RevealNumber: revealAt,
-					})
-				}
+			var ret []*Cheque
+			for _, cheque := range active {
+				ret = append(ret, cheque)
 			}
 			retCh <- ret
 
@@ -204,9 +187,9 @@ func (m *chequeManager) run() {
 }
 
 // trackCheque adds a newly received cheque for life cycle management.
-func (m *chequeManager) trackCheque(cheque *Cheque, revealAt uint64) error {
+func (m *chequeManager) trackCheque(cheque *Cheque) error {
 	select {
-	case m.chequeCh <- &WrappedCheque{Cheque: cheque, RevealNumber: revealAt}:
+	case m.chequeCh <- cheque:
 		return nil
 	case <-m.closeCh:
 		return errChequeManagerClosed
@@ -215,8 +198,8 @@ func (m *chequeManager) trackCheque(cheque *Cheque, revealAt uint64) error {
 
 // activeCheques returns all active cheques received which is
 // waiting for reveal.
-func (m *chequeManager) activeCheques() []*WrappedCheque {
-	reqCh := make(chan []*WrappedCheque, 1)
+func (m *chequeManager) activeCheques() []*Cheque {
+	reqCh := make(chan []*Cheque, 1)
 	select {
 	case m.queryCh <- reqCh:
 		return <-reqCh

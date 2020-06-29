@@ -48,8 +48,7 @@ func TestChequeManagement(t *testing.T) {
 	})
 	defer mgr.close()
 
-	current := env.backend.Blockchain().CurrentHeader().Number.Uint64()
-	_, cheques, _, _ := env.newRawLottery([]common.Address{env.draweeAddr}, []uint64{128}, 5)
+	lottery, cheques, _, _ := env.newRawLottery([]common.Address{env.draweeAddr}, []uint64{128}, 5)
 
 	var signed = cheques[0]
 	signed.RevealRange = []byte{0xff, 0xff, 0xff, 0xff}
@@ -57,17 +56,21 @@ func TestChequeManagement(t *testing.T) {
 	signed.signWithKey(func(digestHash []byte) ([]byte, error) {
 		return crypto.Sign(digestHash, env.drawerKey)
 	})
+	// Set the additional fields for the receiver.
+	signed.RevealNumber = lottery.RevealNumber
+	signed.Amount = lottery.Amount
+
 	var cases = []struct {
 		testFn func()
-		expect []*WrappedCheque
+		expect []*Cheque
 	}{
-		{func() { mgr.trackCheque(cheques[0], current+5) }, []*WrappedCheque{{cheques[0], current + 5}}},
+		{func() { mgr.trackCheque(signed) }, []*Cheque{signed}},
 
-		// Sign it and re-track, de-duplicated is expected
-		{func() { mgr.trackCheque(signed, current+5) }, []*WrappedCheque{{signed, current + 5}}},
+		// Re-track, de-duplicated is expected
+		{func() { mgr.trackCheque(signed) }, []*Cheque{signed}},
 
 		// Lottery is revealed, but wait more confirmations
-		{func() { env.commitEmptyBlocks(5) }, []*WrappedCheque{{signed, current + 5}}},
+		{func() { env.commitEmptyBlocks(5) }, []*Cheque{signed}},
 
 		// Time to claim the lottery
 		{func() { env.commitEmptyBlocks(lotteryProcessConfirms); <-claim }, nil},
@@ -101,19 +104,23 @@ func TestChequeRecovery(t *testing.T) {
 	signed.signWithKey(func(digestHash []byte) ([]byte, error) {
 		return crypto.Sign(digestHash, env.drawerKey)
 	})
+	// Set the additional fields for the receiver.
+	signed.RevealNumber = lottery.RevealNumber
+	signed.Amount = lottery.Amount
+	cdb.writeCheque(env.draweeAddr, env.drawerAddr, signed, false)
+
 	opt := bind.NewKeyedTransactor(env.drawerKey)
 	opt.Value = big.NewInt(128)
 	contract.NewLottery(opt, lottery.Id, current+5, salt)
 	env.backend.Commit()
-	cdb.writeCheque(env.draweeAddr, env.drawerAddr, signed, false)
 
 	var cases = []struct {
 		testFn func()
 		claim  bool
-		expect []*WrappedCheque
+		expect []*Cheque
 	}{
-		{func() {}, false, []*WrappedCheque{{signed, current + 5}}},
-		{func() { env.commitEmptyUntil(current + 5) }, false, []*WrappedCheque{{signed, current + 5}}},
+		{func() {}, false, []*Cheque{signed}},
+		{func() { env.commitEmptyUntil(current + 5) }, false, []*Cheque{signed}},
 		{func() { env.commitEmptyUntil(current + 5 + lotteryProcessConfirms) }, true, nil},
 	}
 	for _, c := range cases {

@@ -65,21 +65,21 @@ func TestAddCheque(t *testing.T) {
 	// newLottery creates a valid lottery on-chain and generates
 	// cheques with different testing requirements.
 	newLottery := func(include bool, addition bool, reveal uint64) common.Hash {
-		var payers []common.Address
+		var payees []common.Address
 		var amounts []uint64
 		if include {
-			payers = append(payers, env.draweeAddr)
+			payees = append(payees, env.draweeAddr)
 			amounts = append(amounts, 128)
 		}
-		// Padding random payers
+		// Padding random payees
 		if addition {
 			for i := 0; i < 7; i++ {
 				key, _ := crypto.GenerateKey()
-				payers = append(payers, crypto.PubkeyToAddress(key.PublicKey))
+				payees = append(payees, crypto.PubkeyToAddress(key.PublicKey))
 				amounts = append(amounts, 128)
 			}
 		}
-		id, _ := drawer.createLottery(context.Background(), payers, amounts, reveal)
+		id, _ := drawer.createLottery(context.Background(), payees, amounts, reveal)
 		return id
 	}
 	// newRawCheque generates raw cheque to drawee with different testing
@@ -103,7 +103,7 @@ func TestAddCheque(t *testing.T) {
 		{
 			func() *Cheque {
 				id := newLottery(false, true, 10086)
-				cheques, _ := drawer.cdb.listCheques(env.drawerAddr, func(addr common.Address, lid common.Hash) bool { return lid == id })
+				cheques, _ := drawer.cdb.listCheques(env.drawerAddr, func(addr common.Address, lid common.Hash, cheque *Cheque) bool { return lid == id })
 				return cheques[0]
 			}, true, 0,
 		},

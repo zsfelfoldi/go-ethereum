@@ -184,7 +184,9 @@ func TestListCheques(t *testing.T) {
 	}
 	dbCheques, addresses = db.listCheques(
 		drawer,
-		func(addr common.Address, id common.Hash) bool { return addr == common.BytesToAddress(entries[0].Value) },
+		func(addr common.Address, id common.Hash, cheque *Cheque) bool {
+			return addr == common.BytesToAddress(entries[0].Value)
+		},
 	)
 	if len(dbCheques) != 1 || len(addresses) != 1 {
 		t.Fatalf("Should only return 1 element")

@@ -26,43 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
-	lru "github.com/hashicorp/golang-lru"
 )
-
-type lotteryStatus int
-
-const (
-	lotteryNotExistent lotteryStatus = iota
-	lotteryValid
-	lotteryExpired
-)
-
-// lotteryCache is a wrapper of a lru cache which can cache
-// lotteries status to aviod too many expensive queries.
-type lotteryCache struct {
-	lru *lru.Cache
-}
-
-func newLotteryCache() *lotteryCache {
-	lru, _ := lru.New(256)
-	return &lotteryCache{lru: lru}
-}
-
-func (c *lotteryCache) status(id common.Hash, now uint64) (lotteryStatus, *Lottery) {
-	elem, exist := c.lru.Get(id)
-	if !exist {
-		return lotteryNotExistent, nil
-	}
-	lottery := elem.(*Lottery)
-	if now < lottery.RevealNumber {
-		return lotteryValid, lottery
-	}
-	return lotteryExpired, nil
-}
-
-func (c *lotteryCache) add(id common.Hash, lottery *Lottery) {
-	c.lru.Add(id, lottery)
-}
 
 // ChequeDrawee represents the payment drawee in a off-chain payment channel.
 // In chequeDrawee the most basic functions related to payment are defined
@@ -81,7 +45,6 @@ type ChequeDrawee struct {
 	book     *LotteryBook         // Shared lottery contract used to verify deposit and claim payment
 	opts     *bind.TransactOpts   // Signing handler for transaction signing
 	cmgr     *chequeManager       // The manager for all received cheques management
-	lcache   *lotteryCache        // Lottery status cache for avoid too many on-chain queries.
 	cBackend bind.ContractBackend // Blockchain backend for contract interaction
 	dBackend bind.DeployBackend   // Blockchain backend for contract interaction
 	chain    Blockchain           // Backend for local blockchain accessing
@@ -105,7 +68,6 @@ func NewChequeDrawee(opts *bind.TransactOpts, address, contractAddr common.Addre
 		cdb:      cdb,
 		book:     book,
 		opts:     opts,
-		lcache:   newLotteryCache(),
 		cBackend: cBackend,
 		dBackend: dBackend,
 		chain:    chain,
@@ -125,10 +87,12 @@ func (drawee *ChequeDrawee) AddCheque(drawer common.Address, c *Cheque) (uint64,
 	if err := validateCheque(c, drawer, drawee.address, drawee.book.address); err != nil {
 		return 0, err
 	}
+	var revealNumber, amount uint64
 	current := drawee.chain.CurrentHeader().Number.Uint64()
-	status, lottery := drawee.lcache.status(c.LotteryId, current)
-	switch status {
-	case lotteryNotExistent:
+	stored := drawee.cdb.readCheque(drawee.address, c.Signer(), c.LotteryId, false)
+	if stored == nil {
+		// It's the first time the receiver gets the cheque, resolve
+		// the lottery info from the contract.
 		l, err := drawee.book.contract.Lotteries(nil, c.LotteryId)
 		if err != nil {
 			return 0, err
@@ -144,19 +108,17 @@ func (drawee *ChequeDrawee) AddCheque(drawer common.Address, c *Cheque) (uint64,
 			invalidChequeMeter.Mark(1)
 			return 0, errors.New("expired lottery")
 		}
-		// Cache the valid lottery, skip query next time
-		lottery = &Lottery{
-			Amount:       l.Amount,
-			RevealNumber: l.RevealNumber,
+		revealNumber, amount = l.RevealNumber, l.Amount
+	} else {
+		// The lottery info is already saved in the cheque, don't
+		// bother the contract.
+		revealNumber, amount = stored.RevealNumber, stored.Amount
+		if current >= revealNumber {
+			invalidChequeMeter.Mark(1)
+			return 0, errors.New("expired lottery")
 		}
-		drawee.lcache.add(c.LotteryId, lottery)
-	case lotteryValid:
-	case lotteryExpired:
-		invalidChequeMeter.Mark(1)
-		return 0, errors.New("expired lottery")
 	}
 	var diff uint64
-	stored := drawee.cdb.readCheque(drawee.address, c.Signer(), c.LotteryId, false)
 	if stored != nil {
 		if stored.SignedRange >= c.SignedRange {
 			// There are many cases can lead to this situation:
@@ -177,7 +139,7 @@ func (drawee *ChequeDrawee) AddCheque(drawer common.Address, c *Cheque) (uint64,
 		diff = c.SignedRange - c.LowerLimit + 1
 	}
 	// It may lose precision but it's ok.
-	assigned := lottery.Amount >> (len(c.Witness) - 1)
+	assigned := amount >> (len(c.Witness) - 1)
 
 	// Note the following calculation may lose precision, but it's okish.
 	//
@@ -188,8 +150,12 @@ func (drawee *ChequeDrawee) AddCheque(drawer common.Address, c *Cheque) (uint64,
 		invalidChequeMeter.Mark(1)
 		return 0, errors.New("invalid payment amount")
 	}
+	// Tag the additional information(lottery) into the cheque. We have the
+	// assumption that ALL cheques maintained in the receiver side have these
+	// additional fields.
+	c.RevealNumber, c.Amount = revealNumber, amount
 	drawee.cdb.writeCheque(drawee.address, drawer, c, false)
-	drawee.cmgr.trackCheque(c, lottery.RevealNumber)
+	drawee.cmgr.trackCheque(c)
 	return diffAmount, nil
 }
 
@@ -229,6 +195,6 @@ func (drawee *ChequeDrawee) claim(context context.Context, cheque *Cheque) error
 }
 
 // Cheques returns all active cheques locally received.
-func (drawee *ChequeDrawee) Cheques() []*WrappedCheque {
+func (drawee *ChequeDrawee) Cheques() []*Cheque {
 	return drawee.cmgr.activeCheques()
 }
