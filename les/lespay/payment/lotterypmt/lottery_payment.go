@@ -162,7 +162,7 @@ func NewManager(config *Config, chainReader payment.ChainReader, txSigner *bind.
 		cBackend:     cBackend,
 		dBackend:     dBackend,
 	}
-	m.cwatcher.run()
+	go m.cwatcher.run()
 	if m.config.Role == Sender {
 		sender, err := lotterybook.NewChequeDrawer(m.local, contract, txSigner, chequeSigner, chainReader, cBackend, dBackend, db)
 		if err != nil {

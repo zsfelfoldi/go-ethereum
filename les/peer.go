@@ -735,6 +735,11 @@ func (p *serverPeer) answeredRequest(id uint64) {
 	vt.Served(nvt, vtReqs[:reqCount], dt)
 }
 
+// SendPayment sends a payment proof to this peer.
+func (p *serverPeer) SendPayment(proofOfPayment []byte, identity string) error {
+	return p2p.Send(p.rw, PaymentMsg, payment.PaymentPacket{Identity: identity, ProofOfPayment: proofOfPayment})
+}
+
 // clientPeer represents each node to which the les server is connected.
 // The node here refers to the light client.
 type clientPeer struct {

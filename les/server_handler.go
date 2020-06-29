@@ -31,6 +31,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/les/lespay/payment"
+	"github.com/ethereum/go-ethereum/les/lespay/payment/lotterypmt"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
@@ -830,6 +832,19 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 					miscServingTimeTxStatusTimer.Update(time.Duration(task.servingTime))
 				}
 			}()
+		}
+	case PaymentMsg:
+		var packet payment.PaymentPacket
+		if err := msg.Decode(&packet); err != nil {
+			clientErrorMeter.Mark(1)
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		switch {
+		case packet.Identity == lotterypmt.Identity && p.senderList[lotterypmt.Identity] != (common.Address{}):
+			amount, _ := h.server.lotteryMgr.Receive(p.senderList[lotterypmt.Identity], packet.ProofOfPayment)
+			log.Info("Received payment", "amount", amount, "sender", p.senderList[lotterypmt.Identity])
+		default:
+			return errResp(ErrDecode, "identity: %s", packet.Identity)
 		}
 	default:
 		p.Log().Trace("Received invalid message", "code", msg.Code)
