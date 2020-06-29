@@ -841,7 +841,7 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 		}
 		switch {
 		case packet.Identity == lotterypmt.Identity && p.senderList[lotterypmt.Identity] != (common.Address{}):
-			amount, _ := h.server.lotteryMgr.Receive(p.senderList[lotterypmt.Identity], packet.ProofOfPayment)
+			amount, _ := h.server.lotteryReceiver.Receive(p.senderList[lotterypmt.Identity], packet.ProofOfPayment)
 			log.Info("Received payment", "amount", amount, "sender", p.senderList[lotterypmt.Identity])
 		default:
 			return errResp(ErrDecode, "identity: %s", packet.Identity)

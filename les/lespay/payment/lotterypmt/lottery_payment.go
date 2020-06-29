@@ -47,38 +47,7 @@ const (
 	chainSyncedThreshold = time.Minute * 5
 )
 
-var (
-	errInvalidOpt = errors.New("invalid operation")
-	errNotSynced  = errors.New("local chain is not synced")
-)
-
-// Role is the role of user in payment route.
-type Role int
-
-const (
-	Sender Role = iota
-	Receiver
-)
-
-// Config defines all user-selectable options for both
-// sender and receiver.
-type Config struct {
-	// Role is the role of the user in the payment channel, either the
-	// payer or the payee.
-	Role Role
-
-	// todo(rjl493456442) extend config for higher flexibility
-}
-
-// DefaultSenderConfig is the default manager config for sender.
-var DefaultSenderConfig = &Config{
-	Role: Sender,
-}
-
-// DefaultReceiverConfig is the default manager config for receiver.
-var DefaultReceiverConfig = &Config{
-	Role: Receiver,
-}
+var ErrNotSynced = errors.New("local chain is not synced")
 
 // chainWatcher is a special helper structure which can determine whether
 // the local chain is lag behine or keep synced.
@@ -87,8 +56,10 @@ var DefaultReceiverConfig = &Config{
 // with chain height. If the local chain is lag behine, these scenarios can
 // happen:
 // - cheque drawer uses expired lottery for payment
-// - cheque drawee accpets lottery of expired lottery
-// But now this structure is mainly used to limit on client side(payment sender).
+// - cheque drawer will wait very long time for transaction confirmation
+//   (finally lead to a timeout error)
+// Now this structure is mainly used in the client side. Server has this protocol
+// constraint that all client connections will be rejected before finishing sync.
 type chainWatcher struct {
 	chain  payment.ChainReader
 	status uint32
@@ -126,71 +97,41 @@ func (cw *chainWatcher) chainSynced() bool {
 	return atomic.LoadUint32(&cw.status) == 1
 }
 
-// Manager is the enter point of the lottery payment no matter for sender
-// or receiver. It defines the function wrapper of the underlying payment
-// methods and offers the payment scheme codec.
-type Manager struct {
-	config      *Config
-	chainReader payment.ChainReader
+// PaymentSender is the instance can be used to send payment through
+// the underlying lottery contract. Usually the sender is a light client
+// so that an additional chain watcher is necessary to reject operations
+// before the local header chain is synced.
+type PaymentSender struct {
 	contract    common.Address
-	local       common.Address
-	db          ethdb.Database
-
-	txSigner     *bind.TransactOpts                // Signer used to sign transaction
-	chequeSigner func(data []byte) ([]byte, error) // Signer used to sign cheque
-
-	sender   *lotterybook.ChequeDrawer // Nil if manager is opened by receiver
-	receiver *lotterybook.ChequeDrawee // Nil if manager is opened by sender
-	cwatcher *chainWatcher
-
-	// Backends used to interact with the underlying contract
-	cBackend bind.ContractBackend
-	dBackend bind.DeployBackend
+	chainReader payment.ChainReader
+	sender      *lotterybook.ChequeDrawer
+	cwatcher    *chainWatcher
 }
 
-// NewManager returns the manager instance for lottery payment.
-func NewManager(config *Config, chainReader payment.ChainReader, txSigner *bind.TransactOpts, chequeSigner func(digestHash []byte) ([]byte, error), local, contract common.Address, cBackend bind.ContractBackend, dBackend bind.DeployBackend, db ethdb.Database) (*Manager, error) {
-	m := &Manager{
-		config:       config,
-		chainReader:  chainReader,
-		contract:     contract,
-		local:        local,
-		db:           db,
-		txSigner:     txSigner,
-		chequeSigner: chequeSigner,
-		cwatcher:     &chainWatcher{chain: chainReader},
-		cBackend:     cBackend,
-		dBackend:     dBackend,
+func NewPaymentSender(chainReader payment.ChainReader, txSigner *bind.TransactOpts, chequeSigner func(digestHash []byte) ([]byte, error), local, contract common.Address, cBackend bind.ContractBackend, dBackend bind.DeployBackend, db ethdb.Database) (*PaymentSender, error) {
+	s := &PaymentSender{
+		contract:    contract,
+		chainReader: chainReader,
+		cwatcher:    &chainWatcher{chain: chainReader},
 	}
-	go m.cwatcher.run()
-	if m.config.Role == Sender {
-		sender, err := lotterybook.NewChequeDrawer(m.local, contract, txSigner, chequeSigner, chainReader, cBackend, dBackend, db)
-		if err != nil {
-			return nil, err
-		}
-		m.sender = sender
-	} else {
-		receiver, err := lotterybook.NewChequeDrawee(m.txSigner, m.local, contract, m.chainReader, m.cBackend, m.dBackend, m.db)
-		if err != nil {
-			return nil, err
-		}
-		m.receiver = receiver
+	sender, err := lotterybook.NewChequeDrawer(local, contract, txSigner, chequeSigner, chainReader, cBackend, dBackend, db)
+	if err != nil {
+		return nil, err
 	}
-	return m, nil
+	s.sender = sender
+	go s.cwatcher.run()
+	return s, nil
 }
 
-func (m *Manager) deposit(receivers []common.Address, amounts []uint64, revealPeriod uint64) (common.Hash, error) {
-	if m.config.Role != Sender {
-		return common.Hash{}, errInvalidOpt
-	}
-	if !m.cwatcher.chainSynced() {
-		return common.Hash{}, errNotSynced
+func (s *PaymentSender) deposit(receivers []common.Address, amounts []uint64, period uint64) (common.Hash, error) {
+	if !s.cwatcher.chainSynced() {
+		return common.Hash{}, ErrNotSynced
 	}
 	ctx, cancelFn := context.WithTimeout(context.Background(), time.Minute*5)
 	defer cancelFn()
 
-	current := m.chainReader.CurrentHeader().Number.Uint64()
-	id, err := m.sender.Deposit(ctx, receivers, amounts, current+revealPeriod)
+	current := s.chainReader.CurrentHeader().Number.Uint64()
+	id, err := s.sender.Deposit(ctx, receivers, amounts, current+period)
 	return id, err
 }
 
@@ -198,11 +139,11 @@ func (m *Manager) deposit(receivers []common.Address, amounts []uint64, revealPe
 // deposit amount. If wait is true then a channel is returned, the channel will
 // be closed only until the deposit is available for payment and emit a signal
 // for it.
-func (m *Manager) Deposit(receivers []common.Address, amounts []uint64, revealPeriod uint64, wait bool) (chan bool, error) {
-	if revealPeriod == 0 {
-		revealPeriod = revealPeriod
+func (s *PaymentSender) Deposit(receivers []common.Address, amounts []uint64, period uint64, wait bool) (chan bool, error) {
+	if period == 0 {
+		period = revealPeriod
 	}
-	id, err := m.deposit(receivers, amounts, revealPeriod)
+	id, err := s.deposit(receivers, amounts, period)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +153,7 @@ func (m *Manager) Deposit(receivers []common.Address, amounts []uint64, revealPe
 	done := make(chan bool, 1)
 	go func() {
 		sink := make(chan []lotterybook.LotteryEvent, 64)
-		sub := m.sender.SubscribeLotteryEvent(sink)
+		sub := s.sender.SubscribeLotteryEvent(sink)
 		defer sub.Unsubscribe()
 
 		for {
@@ -235,14 +176,11 @@ func (m *Manager) Deposit(receivers []common.Address, amounts []uint64, revealPe
 
 // Pay initiates a payment to the designated payee with specified
 // payemnt amount.
-func (m *Manager) Pay(payee common.Address, amount uint64) ([]byte, error) {
-	if m.config.Role != Sender {
-		return nil, errInvalidOpt
+func (s *PaymentSender) Pay(payee common.Address, amount uint64) ([]byte, error) {
+	if !s.cwatcher.chainSynced() {
+		return nil, ErrNotSynced
 	}
-	if !m.cwatcher.chainSynced() {
-		return nil, errNotSynced
-	}
-	cheque, err := m.sender.IssueCheque(payee, amount)
+	cheque, err := s.sender.IssueCheque(payee, amount)
 	if err != nil {
 		return nil, err
 	}
@@ -254,17 +192,53 @@ func (m *Manager) Pay(payee common.Address, amount uint64) ([]byte, error) {
 	return proofOfPayment, nil
 }
 
+// Destory exits the payment and withdraws all expired lotteries
+func (s *PaymentSender) Destory() error {
+	if !s.cwatcher.chainSynced() {
+		return ErrNotSynced
+	}
+	ctx, cancelFn := context.WithTimeout(context.Background(), time.Minute*5)
+	defer cancelFn()
+	return s.sender.Destroy(ctx)
+}
+
+// Contract returns the contract address used by sender.
+func (r *PaymentSender) Contract() common.Address {
+	return r.contract
+}
+
+// PaymentReceiver is the enter point of the lottery payment receiver
+// It defines the function wrapper of the underlying payment methods
+// and offers the payment scheme codec.
+type PaymentReceiver struct {
+	contract common.Address
+	receiver *lotterybook.ChequeDrawee
+}
+
+// NewPaymentReceiver returns the instance for lottery payment.
+// The biggest different between the receiver and sender is:
+// usually the receiver is a fullnode which already have the
+// protocol constraint that it will reject clients before syncing.
+// So chain watcher is not necessary here.
+func NewPaymentReceiver(chainReader payment.ChainReader, txSigner *bind.TransactOpts, local, contract common.Address, cBackend bind.ContractBackend, dBackend bind.DeployBackend, db ethdb.Database) (*PaymentReceiver, error) {
+	receiver, err := lotterybook.NewChequeDrawee(txSigner, local, contract, chainReader, cBackend, dBackend, db)
+	if err != nil {
+		return nil, err
+	}
+	return &PaymentReceiver{
+		contract: contract,
+		receiver: receiver,
+	}, nil
+}
+
 // Receive receives a payment from the payer and returns any error
 // for payment processing and proving.
-func (m *Manager) Receive(payer common.Address, proofOfPayment []byte) (uint64, error) {
-	if m.config.Role != Receiver {
-		return 0, errInvalidOpt
-	}
+func (r *PaymentReceiver) Receive(payer common.Address, proofOfPayment []byte) (uint64, error) {
 	var cheque lotterybook.Cheque
 	if err := rlp.DecodeBytes(proofOfPayment, &cheque); err != nil {
 		return 0, err
 	}
-	amount, err := m.receiver.AddCheque(payer, &cheque)
+	amount, err := r.receiver.AddCheque(payer, &cheque)
 	if err != nil {
 		return 0, err
 	}
@@ -272,17 +246,9 @@ func (m *Manager) Receive(payer common.Address, proofOfPayment []byte) (uint64, 
 	return amount, nil
 }
 
-// Destory exits the payment and withdraws all expired lotteries
-func (m *Manager) Destory() error {
-	if m.config.Role != Sender {
-		return errInvalidOpt
-	}
-	if !m.cwatcher.chainSynced() {
-		return errNotSynced
-	}
-	ctx, cancelFn := context.WithTimeout(context.Background(), time.Minute*5)
-	defer cancelFn()
-	return m.sender.Destroy(ctx)
+// Contract returns the contract address used by receiver.
+func (r *PaymentReceiver) Contract() common.Address {
+	return r.contract
 }
 
 // LotteryPaymentSchema defines the schema of payment.
@@ -310,19 +276,13 @@ func (schema *LotteryPaymentSchema) Load(key string) (interface{}, error) {
 	return nil, errors.New("not found")
 }
 
-// LocalSchema returns the payment schema of lottery payment.
-func (m *Manager) LocalSchema() (payment.SchemaRLP, error) {
-	var schema *LotteryPaymentSchema
-	if m.config.Role == Sender {
-		schema = &LotteryPaymentSchema{
-			Sender:   m.local,
-			Contract: m.contract,
-		}
+// GenerateSchema returns the payment schema of lottery payment.
+func GenerateSchema(contract, local common.Address, sender bool) (payment.SchemaRLP, error) {
+	schema := &LotteryPaymentSchema{Contract: contract}
+	if sender {
+		schema.Sender = local
 	} else {
-		schema = &LotteryPaymentSchema{
-			Receiver: m.local,
-			Contract: m.contract,
-		}
+		schema.Receiver = local
 	}
 	encoded, err := rlp.EncodeToBytes(schema)
 	if err != nil {
@@ -336,26 +296,23 @@ func (m *Manager) LocalSchema() (payment.SchemaRLP, error) {
 
 // ResolveSchema resolves the remote schema of lottery payment,
 // ensure the schema is compatible with us.
-func (m *Manager) ResolveSchema(blob []byte) (payment.Schema, error) {
+func ResolveSchema(blob []byte, contract common.Address, sender bool) (payment.Schema, error) {
 	var schema LotteryPaymentSchema
 	if err := rlp.DecodeBytes(blob, &schema); err != nil {
 		return nil, err
 	}
-	if m.config.Role == Sender {
+	// Ensure the contract is compatible
+	if schema.Contract != contract {
+		return nil, errors.New("imcompatible contract")
+	}
+	if sender {
 		if schema.Receiver == (common.Address{}) {
 			return nil, errors.New("empty receiver address")
 		}
-		if schema.Contract != m.contract {
-			return nil, errors.New("imcompatible contract")
-		}
-		return &schema, nil
 	} else {
 		if schema.Sender == (common.Address{}) {
 			return nil, errors.New("empty sender address")
 		}
-		if schema.Contract != m.contract {
-			return nil, errors.New("imcompatible contract")
-		}
-		return &schema, nil
 	}
+	return &schema, nil
 }

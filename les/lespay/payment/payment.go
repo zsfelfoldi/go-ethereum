@@ -40,3 +40,17 @@ type PaymentPacket struct {
 	Identity       string
 	ProofOfPayment rlp.RawValue
 }
+
+type Schema interface {
+	// Identity returns string format identity of payment method.
+	Identity() string
+
+	// Load loads the specified entry with given key, returns error
+	// if nothing is found.
+	Load(key string) (interface{}, error)
+}
+
+type SchemaRLP struct {
+	Key   string
+	Value rlp.RawValue
+}

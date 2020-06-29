@@ -65,6 +65,11 @@ type LightEthereum struct {
 	valueTracker   *lpc.ValueTracker
 	dialCandidates enode.Iterator
 
+	// Payment relative handlers
+	lotterySender  *lotterypmt.PaymentSender // Off-chain lottery payment sender
+	lotteryAddress common.Address            // The address used to pay by lottery payment
+	lotteryInited  uint32                    // The status indicator whether lottery payment method are allocated.
+
 	bloomRequests chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bloomIndexer  *core.ChainIndexer             // Bloom indexer operating during block imports
 
@@ -346,13 +351,14 @@ func (s *LightEthereum) setupLotteryPayment(contract bind.ContractBackend, deplo
 	chequeSigner := func(data []byte) ([]byte, error) {
 		return wallet.SignData(account, accounts.MimetypeDataWithValidator, data)
 	}
-	mgr, err := lotterypmt.NewManager(lotterypmt.DefaultSenderConfig, s.chainReader, bind.NewRawTransactor(wallet.SignTx, account), chequeSigner, s.lotteryAddress, paymentContract, contract, deploy, s.paymentDb)
+	sender, err := lotterypmt.NewPaymentSender(s.chainReader, bind.NewRawTransactor(wallet.SignTx, account), chequeSigner, s.lotteryAddress, paymentContract, contract, deploy, s.paymentDb)
 	if err != nil {
 		log.Warn("Failed to setup lottery payment manager", "error", err)
 		return
 	}
-	s.lotteryMgr = mgr
-	schema, err := mgr.LocalSchema()
+	s.lotterySender = sender
+
+	schema, err := lotterypmt.GenerateSchema(paymentContract, s.lotteryAddress, true)
 	if err != nil {
 		log.Warn("Invalid payment schema", "error", err)
 		return

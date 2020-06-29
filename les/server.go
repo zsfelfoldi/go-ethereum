@@ -58,6 +58,11 @@ type LesServer struct {
 	servingQueue *servingQueue
 	clientPool   *clientPool
 
+	// Payment relative handlers
+	lotteryReceiver *lotterypmt.PaymentReceiver // Off-chain lottery payment receiver
+	lotteryAddress  common.Address              // The address used to charge by lottery payment
+	lotteryInited   uint32                      // The status indicator whether lottery payment method is setup
+
 	minCapacity, maxCapacity, freeCapacity uint64
 	threadsIdle                            int // Request serving threads count when system is idle.
 	threadsBusy                            int // Request serving threads count when system is busy(block insertion).
@@ -316,13 +321,13 @@ func (s *LesServer) setupLotteryPayment(cbackend bind.ContractBackend, dbackend 
 		log.Warn("Failed to setup payment manager", "error", err)
 		return
 	}
-	mgr, err := lotterypmt.NewManager(lotterypmt.DefaultReceiverConfig, s.chainReader, bind.NewRawTransactor(wallet.SignTx, account), nil, s.lotteryAddress, paymentContract, cbackend, dbackend, s.paymentDb)
+	receiver, err := lotterypmt.NewPaymentReceiver(s.chainReader, bind.NewRawTransactor(wallet.SignTx, account), s.lotteryAddress, paymentContract, cbackend, dbackend, s.paymentDb)
 	if err != nil {
 		log.Warn("Failed to setup payment manager", "error", err)
 		return
 	}
-	s.lotteryMgr = mgr
-	schema, err := mgr.LocalSchema()
+	s.lotteryReceiver = receiver
+	schema, err := lotterypmt.GenerateSchema(paymentContract, s.lotteryAddress, false)
 	if err != nil {
 		log.Warn("Invalid payment schema", "error", err)
 		return

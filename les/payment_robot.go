@@ -27,14 +27,14 @@ import (
 
 // PaymentRobot is the testing tool for automatic payment cycle.
 type PaymentRobot struct {
-	manager  *lotterypmt.Manager
+	sender   *lotterypmt.PaymentSender
 	receiver common.Address
 	close    chan struct{}
 }
 
-func NewPaymentRobot(manager *lotterypmt.Manager, receiver common.Address, close chan struct{}) *PaymentRobot {
+func NewPaymentRobot(manager *lotterypmt.PaymentSender, receiver common.Address, close chan struct{}) *PaymentRobot {
 	return &PaymentRobot{
-		manager:  manager,
+		sender:   manager,
 		receiver: receiver,
 		close:    close,
 	}
@@ -53,7 +53,7 @@ func (robot *PaymentRobot) Run(sendFn func(proofOfPayment []byte, identity strin
 			log.Error("Depositing, skip new operation")
 			return
 		}
-		deposit, err = robot.manager.Deposit([]common.Address{robot.receiver}, []uint64{100}, 60, true)
+		deposit, err = robot.sender.Deposit([]common.Address{robot.receiver}, []uint64{100}, 60, true)
 		if err != nil {
 			log.Error("Failed to deposit", "err", err)
 		}
@@ -66,7 +66,7 @@ func (robot *PaymentRobot) Run(sendFn func(proofOfPayment []byte, identity strin
 			if deposit != nil {
 				continue
 			}
-			proofOfPayment, err := robot.manager.Pay(robot.receiver, 3)
+			proofOfPayment, err := robot.sender.Pay(robot.receiver, 3)
 			if err != nil {
 				if err == lotterybook.ErrNotEnoughDeposit {
 					depositFn()

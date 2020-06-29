@@ -31,7 +31,6 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/les/checkpointoracle"
 	"github.com/ethereum/go-ethereum/les/lespay/payment"
-	"github.com/ethereum/go-ethereum/les/lespay/payment/lotterypmt"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/discv5"
@@ -80,11 +79,6 @@ type lesCommons struct {
 	paymentDb ethdb.Database      // The database used to store all received payments or payment records
 	am        *accounts.Manager   // The global account manager which holds the local account
 	schemas   []payment.SchemaRLP // The batch of schemas of local supported payment
-
-	// Lottery payment relative fields
-	lotteryMgr     *lotterypmt.Manager // Off-chain lottery payment channel manager
-	lotteryAddress common.Address      // The address used to pay or charge by lottery book
-	lotteryInited  uint32              // The status indicator whether lottery payment method are allocated.
 
 	closeCh chan struct{}
 	wg      sync.WaitGroup

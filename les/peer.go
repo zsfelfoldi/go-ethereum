@@ -637,8 +637,8 @@ func (p *serverPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 		if err := recv.get("payment/schemas", &schemas); err == nil {
 			for _, s := range schemas {
 				switch {
-				case s.Key == lotterypmt.Identity && backend.lotteryMgr != nil:
-					scheme, err := backend.lotteryMgr.ResolveSchema(s.Value)
+				case s.Key == lotterypmt.Identity && backend.lotterySender != nil:
+					scheme, err := lotterypmt.ResolveSchema(s.Value, backend.lotterySender.Contract(), true)
 					if err != nil {
 						continue
 					}
@@ -1015,8 +1015,8 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 			if err := recv.get("payment/schemas", &schemas); err == nil {
 				for _, s := range schemas {
 					switch {
-					case s.Key == lotterypmt.Identity && server.lotteryMgr != nil:
-						scheme, err := server.lotteryMgr.ResolveSchema(s.Value)
+					case s.Key == lotterypmt.Identity && server.lotteryReceiver != nil:
+						scheme, err := lotterypmt.ResolveSchema(s.Value, server.lotteryReceiver.Contract(), false)
 						if err != nil {
 							continue
 						}

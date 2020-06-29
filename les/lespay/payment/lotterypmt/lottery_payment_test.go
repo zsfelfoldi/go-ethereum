@@ -73,16 +73,11 @@ func TestSchema(t *testing.T) {
 		},
 	}
 	for i, c := range cases {
-		config := DefaultSenderConfig
-		if !c.sender {
-			config = DefaultReceiverConfig
-		}
-		mgr := &Manager{config: config, contract: common.HexToAddress("cafebabe")}
 		blob, err := rlp.EncodeToBytes(c.schema)
 		if err != nil {
 			t.Fatalf("Failed to encode schema: %v", err)
 		}
-		schema, err := mgr.ResolveSchema(blob)
+		schema, err := ResolveSchema(blob, common.HexToAddress("cafebabe"), c.sender)
 		if c.expectErr {
 			if err == nil {
 				t.Fatalf("Expect error, but nil")

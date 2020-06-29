@@ -138,7 +138,7 @@ func (h *clientHandler) handle(p *serverPeer) error {
 	// Testing code, should be removed
 	closed := make(chan struct{})
 	defer close(closed)
-	robot := NewPaymentRobot(h.backend.lotteryMgr, p.receiverList[lotterypmt.Identity], closed)
+	robot := NewPaymentRobot(h.backend.lotterySender, p.receiverList[lotterypmt.Identity], closed)
 	go robot.Run(p.SendPayment)
 
 	// Spawn a main loop to handle all incoming messages.
