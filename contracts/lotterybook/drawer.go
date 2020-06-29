@@ -338,24 +338,24 @@ func (drawer *ChequeDrawer) Destroy(context context.Context) error {
 
 // IssueCheque creates a cheque for issuing specified amount for payee.
 //
-// Many active lotteris can be used to create cheque, we use the simplest
+// Many active lotteries can be used to create cheque, we use the simplest
 // strategy here for lottery selection: choose a lottery ticket with the
 // most recent expiration date and the remaining amount can cover the amount
 // paid this time.
 func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) (*Cheque, error) {
-	lotteris, err := drawer.lmgr.activeLotteris()
+	lotteries, err := drawer.lmgr.activeLotteries()
 	if err != nil {
 		return nil, err
 	}
-	sort.Sort(LotteryByRevealTime(lotteris))
-	for _, lottery := range lotteris {
+	sort.Sort(LotteryByRevealTime(lotteries))
+	for _, lottery := range lotteries {
 		// We have another additional check here(but it's optional).
 		// If the reveal time is VERY close, then don't use it anymore.
 		// Seems (1) our chain may lag behind (2) when the receiver
 		// gets this cheque, the associated might expired at that time.
 		// So leave us a few safe time range.
 		current := drawer.chain.CurrentHeader().Number.Uint64()
-		if lottery.RevealNumber + 16 >= current { // 16 blocks is considered safe.
+		if lottery.RevealNumber+16 >= current { // 16 blocks is considered safe.
 			continue
 		}
 		cheque := drawer.cdb.readCheque(payee, drawer.address, lottery.Id, true)

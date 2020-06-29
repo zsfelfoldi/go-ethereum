@@ -268,9 +268,9 @@ func (m *lotteryManager) trackLottery(l *Lottery) error {
 	}
 }
 
-// activeLotteris returns all active lotteris which can be used
+// activeLotteries returns all active lotteries which can be used
 // to make payment.
-func (m *lotteryManager) activeLotteris() ([]*Lottery, error) {
+func (m *lotteryManager) activeLotteries() ([]*Lottery, error) {
 	reqCh := make(chan []*Lottery, 1)
 	select {
 	case m.queryCh <- &queryReq{
@@ -283,7 +283,7 @@ func (m *lotteryManager) activeLotteris() ([]*Lottery, error) {
 	}
 }
 
-// expiredLotteris returns all expired lotteris which can be reowned.
+// expiredLotteris returns all expired lotteries which can be reowned.
 func (m *lotteryManager) expiredLotteris() ([]*Lottery, error) {
 	reqCh := make(chan []*Lottery, 1)
 	select {

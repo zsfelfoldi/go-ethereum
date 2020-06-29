@@ -203,7 +203,7 @@ func (m *chequeManager) run() {
 	}
 }
 
-// trackLottery adds a newly created lottery for life cycle management.
+// trackCheque adds a newly received cheque for life cycle management.
 func (m *chequeManager) trackCheque(cheque *Cheque, revealAt uint64) error {
 	select {
 	case m.chequeCh <- &WrappedCheque{Cheque: cheque, RevealNumber: revealAt}:

@@ -37,7 +37,7 @@ var (
 var app *cli.App
 
 func init() {
-	app = utils.NewApp(gitCommit, gitDate, "ethereum checkpoint helper tool")
+	app = utils.NewApp(gitCommit, gitDate, "ethereum lottery payment tool")
 	app.Commands = []cli.Command{
 		commandDeploy,
 		// todo channel shutdown command

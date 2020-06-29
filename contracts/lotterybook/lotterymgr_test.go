@@ -42,7 +42,7 @@ func TestStateTransition(t *testing.T) {
 	eventSub := mgr.subscribeLotteryEvent(events)
 	defer eventSub.Unsubscribe()
 
-	_, _ = mgr.activeLotteris() // Ensure internal initialization is done
+	_, _ = mgr.activeLotteries() // Ensure internal initialization is done
 	current := env.backend.Blockchain().CurrentHeader().Number.Uint64()
 	l, _, _, _ := env.newRawLottery([]common.Address{env.draweeAddr}, []uint64{128}, 30)
 	var cases = []struct {
@@ -90,12 +90,12 @@ func TestStateRecovery(t *testing.T) {
 	// Close and restart
 	mgr.close()
 	mgr = newLotteryManager(env.drawerAddr, env.backend.Blockchain(), c, cdb)
-	active, err := mgr.activeLotteris()
+	active, err := mgr.activeLotteries()
 	if err != nil {
 		t.Fatalf("Failed to retrieve active lotteries: %v", err)
 	}
 	if len(active) != 2 {
-		t.Fatalf("Expect has 2 active lotteris")
+		t.Fatalf("Expect has 2 active lotteries")
 	}
 	env.commitEmptyUntil(current + 40 + lotteryClaimPeriod + lotteryProcessConfirms)
 	expired, err := mgr.expiredLotteris()
@@ -103,6 +103,6 @@ func TestStateRecovery(t *testing.T) {
 		t.Fatalf("Failed to retrieve active lotteries: %v", err)
 	}
 	if len(expired) != 2 {
-		t.Fatalf("Expect has 2 expired lotteris")
+		t.Fatalf("Expect has 2 expired lotteries")
 	}
 }
