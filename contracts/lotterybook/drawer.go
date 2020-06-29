@@ -220,7 +220,7 @@ func (drawer *ChequeDrawer) createLottery(context context.Context, payees []comm
 // and corresponding amount. Add more funds into lottery ff the deposit of stale
 // lottery is not enough to cover the new amount. Otherwise the deposit given by
 // lottery for each receiver may be higher than the specified value.
-func (drawer *ChequeDrawer) resetLottery(context context.Context, id common.Hash, payers []common.Address, amounts []uint64, revealNumber uint64) (common.Hash, error) {
+func (drawer *ChequeDrawer) resetLottery(context context.Context, id common.Hash, payees []common.Address, amounts []uint64, revealNumber uint64) (common.Hash, error) {
 	// Short circuit if the specified stale lottery doesn't exist.
 	lottery := drawer.cdb.readLottery(drawer.address, id)
 	if lottery == nil {
@@ -241,7 +241,7 @@ func (drawer *ChequeDrawer) resetLottery(context context.Context, id common.Hash
 		// the lottery doesn't exist or lottery hasn't been expired yet.
 		return drawer.book.contract.ResetLottery(opt, id, newid, blockNumber, salt)
 	}
-	newLottery, err := drawer.submitLottery(context, payers, amounts, revealNumber, onchainFn)
+	newLottery, err := drawer.submitLottery(context, payees, amounts, revealNumber, onchainFn)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -354,7 +354,7 @@ func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) (*C
 		// gets this cheque, the lottery might expire at that time.
 		// So leave us a few safe time range.
 		current := drawer.chain.CurrentHeader().Number.Uint64()
-		if lottery.RevealNumber+16 >= current { // 16 blocks is considered safe.
+		if current+2*lotterySafetyMargin >= lottery.RevealNumber {
 			continue
 		}
 		cheque := drawer.cdb.readCheque(payee, drawer.address, lottery.Id, true)

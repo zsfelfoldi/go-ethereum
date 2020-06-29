@@ -139,11 +139,11 @@ func (node *Node) Hash() common.Hash {
 		return node.Nodehash
 	}
 	// It's a branch node, derive the hash via two children.
-	leaf, right := node.Left.Hash(), node.Right.Hash() // Both children should never be nil.
-	if bytes.Compare(leaf.Bytes(), right.Bytes()) < 0 {
-		node.Nodehash = crypto.Keccak256Hash(append(leaf.Bytes(), right.Bytes()...))
+	left, right := node.Left.Hash(), node.Right.Hash() // Both children should never be nil.
+	if bytes.Compare(left.Bytes(), right.Bytes()) < 0 {
+		node.Nodehash = crypto.Keccak256Hash(append(left.Bytes(), right.Bytes()...))
 	} else {
-		node.Nodehash = crypto.Keccak256Hash(append(right.Bytes(), leaf.Bytes()...))
+		node.Nodehash = crypto.Keccak256Hash(append(right.Bytes(), left.Bytes()...))
 	}
 	return node.Nodehash
 }
@@ -238,7 +238,7 @@ func newTree(entries []*Entry) (*Node, []*Node, error) {
 		// grouped as a sub tree.
 		if i == 0 {
 			if entries[0].level != entries[1].level {
-				return nil, nil, errors.New("invalid entries") // Should never happen
+				panic("invalid entries") // Should never happen
 			}
 			n1, n2 := &Node{Value: entries[0], Level: entries[0].level}, &Node{Value: entries[1], Level: entries[1].level}
 			current = &Node{Left: n1, Right: n2, Level: entries[0].level - 1}

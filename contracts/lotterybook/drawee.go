@@ -101,12 +101,10 @@ func (drawee *ChequeDrawee) AddCheque(drawer common.Address, c *Cheque) (uint64,
 		// via sending cheques without deposit? Read status from
 		// contract is not trivial.
 		if l.Amount == 0 {
-			return 0, errors.New("invalid lottery")
+			return 0, errors.New("empty lottery")
 		}
-		// Short circuit if the lottery is already revealed.
-		if current >= l.RevealNumber {
-			invalidChequeMeter.Mark(1)
-			return 0, errors.New("expired lottery")
+		if current+lotterySafetyMargin >= l.RevealNumber {
+			return 0, errors.New("almost expired lottery")
 		}
 		revealNumber, amount = l.RevealNumber, l.Amount
 	} else {

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-// lotterybook is a an on-chain lotterybook which light client can use to
+// lotterybook is an on-chain lotterybook which light client can use to
 // send payments to several different servers cheap and efficiently.
 package lotterybook
 
@@ -53,6 +53,17 @@ type Blockchain interface {
 	SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) event.Subscription
 }
 
+// Lottery payment protocol constraints
+//
+// In order to handle block reorg properly, all newly created lottery has to wait
+// at least lotteryProcessConfirms confirms before it's used.
+//
+// Besides we have to consider the blockchain height bias between the payment sender
+// and receiver. E.g. the sender is lag behine(block N) while the receiver is already
+// in N+5. But the lottery reveal number is at N+2. So in this case we can't use this
+// almost expired lottery anymore. And also for receiver, it's not very safe to accpet
+// the cheques based on the almost expired lottery since the sender may already know
+// the reveal hash. In these two cases lotterySafetyMargin is applied.
 const (
 	// lotteryProcessConfirms is the number of confirmations before a on-chain
 	// status/event is considered stable.
@@ -61,6 +72,9 @@ const (
 	// lotteryClaimPeriod is the maximum block number lottery winner can claim
 	// the whole deposit.
 	lotteryClaimPeriod = 256
+
+	// lotterySafetyMargin is the constraint for accepting or issuing cheque.
+	lotterySafetyMargin = 2
 
 	// maxSignedRange is the maximum uint64 which is used to represent the cheque
 	// is never used.
