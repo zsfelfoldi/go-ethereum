@@ -258,3 +258,64 @@ func TestEstimatedExpiry(t *testing.T) {
 		}
 	}
 }
+
+func TestDepositByReset(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.close()
+
+	var exit = make(chan struct{})
+	defer close(exit)
+
+	// Start the automatic blockchain.
+	go func() {
+		ticker := time.NewTicker(time.Millisecond * 10)
+		for {
+			select {
+			case <-ticker.C:
+				env.backend.Commit()
+			case <-exit:
+				return
+			}
+		}
+	}()
+	drawer, err := NewChequeDrawer(env.drawerAddr, env.contractAddr, bind.NewKeyedTransactor(env.drawerKey), nil, env.backend.Blockchain(), env.backend, env.backend, env.drawerDb)
+	if err != nil {
+		t.Fatalf("Faield to create drawer, err: %v", err)
+	}
+	defer drawer.Close()
+	drawer.keySigner = func(data []byte) ([]byte, error) {
+		sig, _ := crypto.Sign(data, env.drawerKey)
+		return sig, nil
+	}
+	current := env.backend.Blockchain().CurrentHeader().Number.Uint64()
+	id, err := drawer.createLottery(context.Background(), []common.Address{env.draweeAddr}, []uint64{128}, current + 128)
+	if err != nil {
+		t.Fatalf("Faield to create lottery, err: %v", err)
+	}
+	current = env.backend.Blockchain().CurrentHeader().Number.Uint64()
+	_, err = drawer.createLottery(context.Background(), []common.Address{env.draweeAddr}, []uint64{200}, current + 128)
+	if err != nil {
+		t.Fatalf("Faield to create lottery, err: %v", err)
+	}
+	current = env.backend.Blockchain().CurrentHeader().Number.Uint64()
+	_, err = drawer.createLottery(context.Background(), []common.Address{env.draweeAddr}, []uint64{30}, current + 128)
+	if err != nil {
+		t.Fatalf("Faield to create lottery, err: %v", err)
+	}
+	env.commitEmptyUntil(current + 128 + lotteryClaimPeriod + lotteryProcessConfirms)
+
+	// Now the lottery can be reset!
+	current = env.backend.Blockchain().CurrentHeader().Number.Uint64()
+	_, err = drawer.Deposit(context.Background(), []common.Address{env.draweeAddr}, []uint64{96}, current + 128) // lottery 1 is closer
+	if err != nil {
+		t.Fatalf("Faield to create lottery, err: %v", err)
+	}
+	// Ensure the lottery 1 is reset
+	ret, err := drawer.book.contract.Lotteries(nil, id)
+	if err != nil {
+		t.Fatalf("Faield to retrieve lottery, err: %v", err)
+	}
+	if ret.Amount != 0 {
+		t.Fatalf("Lottery is not reset")
+	}
+}

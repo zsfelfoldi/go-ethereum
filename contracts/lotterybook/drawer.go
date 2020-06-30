@@ -283,8 +283,27 @@ func (drawer *ChequeDrawer) Deposit(context context.Context, payees []common.Add
 	}
 	// We have some expired lottery can be reused, don't create a fresh new here.
 	if len(expired) > 0 {
-		// todo implement a better selection algo
-		return drawer.resetLottery(context, expired[0].Id, payees, amounts, revealNumber)
+		// Select a lottery whose amount is closest to the target amount to reset.
+		var (
+			total  uint64
+			bias   uint64
+			picked common.Hash
+		)
+		for _, amount := range amounts {
+			total += amount
+		}
+		for _, l := range expired {
+			var b uint64
+			if l.Amount < total {
+				b = total - l.Amount
+			} else {
+				b = l.Amount - total
+			}
+			if bias == 0 || bias > b {
+				bias, picked = b, l.Id
+			}
+		}
+		return drawer.resetLottery(context, picked, payees, amounts, revealNumber)
 	}
 	// Nothing can be reused, create a new lottery for payment
 	return drawer.createLottery(context, payees, amounts, revealNumber)
