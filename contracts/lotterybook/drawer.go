@@ -42,6 +42,14 @@ import (
 // basic function: Issue, Deposit and some relevant query APIs.
 //
 // Internally it relies on lottery manager for lottery life cycle management.
+//
+// There is an assumption held that the local chain is synced. Otherwise these
+// scenarios can happen:
+// - Drawer needs to wait very long time before an on-chain transaction be
+//   confirmed(create/reset/destory lottery) which eventually lead to timeout
+//   error.
+// - Send invalid cheques based on the revealed(even claimed/resetted/destoryed
+//   lottery). It may lead to a network termination.
 type ChequeDrawer struct {
 	address  common.Address
 	cdb      *chequeDB
@@ -348,6 +356,10 @@ func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) (*C
 	}
 	sort.Sort(LotteryByRevealTime(lotteries))
 	for _, lottery := range lotteries {
+		// Short circuit if the lottery doesn't contain the target payee.
+		if !lottery.hasReceiver(payee) {
+			continue
+		}
 		// We have another additional check here(but it's optional).
 		// If the reveal time is VERY close, then don't use it anymore.
 		// Seems (1) our chain may lag behind (2) when the receiver

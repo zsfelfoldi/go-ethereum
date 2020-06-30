@@ -144,7 +144,7 @@ func TestAddCheque(t *testing.T) {
 				return cheque
 			}, false, 128,
 		},
-		// Drawee should reject cheque is the associated lottery is revealed
+		// Drawee should reject cheque is the associated lottery is revealed(exceeds the safety threshold)
 		{
 			func() *Cheque {
 				opt := bind.NewKeyedTransactor(env.drawerKey)
@@ -168,7 +168,7 @@ func TestAddCheque(t *testing.T) {
 				cheque.deriveFields() // Recompute uint64 format reveal range
 
 				for {
-					if env.backend.Blockchain().CurrentBlock().NumberU64() >= current+30+lotteryClaimPeriod {
+					if env.backend.Blockchain().CurrentBlock().NumberU64() >= current+30+lotterySafetyThreshold {
 						break
 					}
 					time.Sleep(100 * time.Millisecond)
@@ -244,13 +244,13 @@ func TestClaimLottery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Faield to create cheque, err: %v", err)
 	}
-	drawee.AddCheque(env.drawerAddr, cheque)
 	done := make(chan struct{}, 1)
 	drawee.onClaimedHook = func(id common.Hash) {
 		if id == cheque.LotteryId {
 			done <- struct{}{}
 		}
 	}
+	drawee.AddCheque(env.drawerAddr, cheque)
 	select {
 	case <-done:
 	case <-time.NewTimer(10 * time.Second).C:

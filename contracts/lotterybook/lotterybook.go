@@ -76,6 +76,10 @@ const (
 	// lotterySafetyMargin is the constraint for accepting or issuing cheque.
 	lotterySafetyMargin = 2
 
+	// lotterySafetyThreshold is the constraint that we can consider the sender
+	// is deliberately sending us useless cheques.
+	lotterySafetyThreshold = 30
+
 	// maxSignedRange is the maximum uint64 which is used to represent the cheque
 	// is never used.
 	maxSignedRange = math.MaxUint64
@@ -113,6 +117,18 @@ func (l *Lottery) balance(address common.Address, cheque *Cheque) uint64 {
 		return assigned
 	}
 	return uint64(float64(cheque.UpperLimit-cheque.SignedRange) / float64(cheque.UpperLimit-cheque.LowerLimit+1) * float64(assigned))
+}
+
+// copy returns the deep copied lottery.
+func (l *Lottery) copy() *Lottery {
+	var receiver []common.Address
+	copy(receiver, l.Receivers)
+	return &Lottery{
+		Id:           l.Id,
+		Amount:       l.Amount,
+		RevealNumber: l.RevealNumber,
+		Receivers:    receiver,
+	}
 }
 
 // LotteryByRevealTime implements the sort interface to allow sorting a list
@@ -389,6 +405,28 @@ func (c *Cheque) reveal(hash common.Hash) bool {
 	copy(trimmed[:], hash.Bytes()[common.HashLength-4:])
 	value := uint64(binary.BigEndian.Uint32(trimmed[:]))
 	return c.SignedRange >= value && c.LowerLimit <= value
+}
+
+// copy returns the deep copied cheque.
+func (c *Cheque) copy() *Cheque {
+	var witness []common.Hash
+	copy(witness, c.Witness)
+	return &Cheque{
+		Witness:      witness,
+		ContractAddr: c.ContractAddr,
+		RevealRange:  common.CopyBytes(c.RevealRange),
+		Salt:         c.Salt,
+		ReceiverSalt: c.ReceiverSalt,
+		Sig:          c.Sig,
+		RevealNumber: c.RevealNumber,
+		Amount:       c.Amount,
+		MerkleRoot:   c.MerkleRoot,
+		LotteryId:    c.LotteryId,
+		LowerLimit:   c.LowerLimit,
+		UpperLimit:   c.UpperLimit,
+		SignedRange:  c.SignedRange,
+		signer:       c.signer,
+	}
 }
 
 // validateCheque checks whether the provided cheque is valid or not.

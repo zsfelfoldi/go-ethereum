@@ -66,10 +66,19 @@ func TestPersistCheque(t *testing.T) {
 	if !reflect.DeepEqual(cheque, got) {
 		t.Fatalf("Mismatch between the written cheque with the read one")
 	}
+
 	// Try to read in the receiver side
 	got = db.readCheque(drawee, drawer, cheque.LotteryId, false)
 	if got != nil {
 		t.Fatalf("Should return nil for non-existent data")
+	}
+	db.writeCheque(drawee, drawer, cheque, false)
+	got = db.readCheque(drawee, drawer, cheque.LotteryId, false)
+	if got == nil {
+		t.Fatalf("Failed to retrieve cheque from db")
+	}
+	if !reflect.DeepEqual(cheque, got) {
+		t.Fatalf("Mismatch between the written cheque with the read one")
 	}
 }
 

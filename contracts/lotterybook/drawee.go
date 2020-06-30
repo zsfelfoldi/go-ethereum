@@ -38,7 +38,11 @@ import (
 //
 // In addition, the structure depends on the blockchain state of the local node.
 // In order to avoid inconsistency, you need to ensure that the local node has
-// completed synchronization before using drawee.
+// completed synchronization before using drawee. Otherwise these following
+// scenarios can happen:
+// - Accept cheques based on the revealed lottery
+// - Accept cheques based on the claimed/resetted lottery
+// - Reject valid cheques with the NEW lottery(just submitted)
 type ChequeDrawee struct {
 	address  common.Address       // Address used by chequeDrawee to accept payment
 	cdb      *chequeDB            // Database which saves all received payments
@@ -101,20 +105,23 @@ func (drawee *ChequeDrawee) AddCheque(drawer common.Address, c *Cheque) (uint64,
 		// via sending cheques without deposit? Read status from
 		// contract is not trivial.
 		if l.Amount == 0 {
-			return 0, errors.New("empty lottery")
-		}
-		if current+lotterySafetyMargin >= l.RevealNumber {
-			return 0, errors.New("almost expired lottery")
+			return 0, errors.New("empty lottery") // not submitted, claimed, resetted
 		}
 		revealNumber, amount = l.RevealNumber, l.Amount
 	} else {
 		// The lottery info is already saved in the cheque, don't
 		// bother the contract.
 		revealNumber, amount = stored.RevealNumber, stored.Amount
-		if current >= revealNumber {
-			invalidChequeMeter.Mark(1)
-			return 0, errors.New("expired lottery")
-		}
+	}
+	if current >= revealNumber+lotterySafetyThreshold {
+		invalidChequeMeter.Mark(1)
+		return 0, errors.New("expired lottery")
+	}
+	// It's an almost expired lottery, but it's may not a deliberate operation
+	// e.g. the sender is a bit out of sync. Don't return error here(which will
+	// lead to drop the connection).
+	if current+lotterySafetyMargin >= revealNumber {
+		return 0, nil
 	}
 	var diff uint64
 	if stored != nil {

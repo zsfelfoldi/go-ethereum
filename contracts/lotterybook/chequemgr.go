@@ -79,6 +79,12 @@ func (m *chequeManager) run() {
 		// todo if we have lots of cheques maintained in the memory,
 		// it will lead to OOM. We need a better mechanism to load
 		// cheques by demand.
+		//
+		// leave the todo here. Seems if there are N valid cheques,
+		// then it means there are at least N different lotteries.
+		// If the malicious client want to attack us, it has to submit
+		// lots of lotteries which in theory is impossible(cost is too
+		// high).
 		active      = make(map[common.Hash]*Cheque)
 		indexes     = make(map[common.Hash]int)
 		activeQueue = prque.New(func(data interface{}, index int) {
@@ -113,12 +119,12 @@ func (m *chequeManager) run() {
 	// Read all stored cheques received locally
 	cheques, drawers := m.cdb.listCheques(m.address, nil)
 	for index, cheque := range cheques {
-		// The valid claim block range is [revealNumber+1, revealNumber+256].
+		// The valid claim block range is [revealNumber+1, revealNumber+256).
 		// However the head block can be reorged with very high chance. So
 		// a small processing confirms is applied to ensure the reveal hash
 		// is stable enough.
 		//
-		// For receiver, the reasonable claim range (revealNumber+6, revealNumber+256].
+		// For receiver, the reasonable claim range [revealNumber+6, revealNumber+256).
 		if current < cheque.RevealNumber+lotteryProcessConfirms {
 			activeQueue.Push(cheque, -int64(cheque.RevealNumber))
 		} else if current < cheque.RevealNumber+lotteryClaimPeriod {

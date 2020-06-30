@@ -51,8 +51,6 @@ func TestChequeManagement(t *testing.T) {
 	lottery, cheques, _, _ := env.newRawLottery([]common.Address{env.draweeAddr}, []uint64{128}, 5)
 
 	var signed = cheques[0]
-	signed.RevealRange = []byte{0xff, 0xff, 0xff, 0xff}
-	signed.SignedRange = math.MaxUint32
 	signed.signWithKey(func(digestHash []byte) ([]byte, error) {
 		return crypto.Sign(digestHash, env.drawerKey)
 	})
@@ -60,17 +58,25 @@ func TestChequeManagement(t *testing.T) {
 	signed.RevealNumber = lottery.RevealNumber
 	signed.Amount = lottery.Amount
 
+	var payed = signed.copy()
+	payed.RevealRange = []byte{0xff, 0xff, 0xff, 0xff}
+	payed.SignedRange = math.MaxUint32
+	payed.signWithKey(func(digestHash []byte) ([]byte, error) {
+		return crypto.Sign(digestHash, env.drawerKey)
+	})
+
 	var cases = []struct {
 		testFn func()
 		expect []*Cheque
 	}{
+		// Track empty cheque
 		{func() { mgr.trackCheque(signed) }, []*Cheque{signed}},
 
-		// Re-track, de-duplicated is expected
-		{func() { mgr.trackCheque(signed) }, []*Cheque{signed}},
+		// Re-track cheque with higher allowance, de-duplicated is expected
+		{func() { mgr.trackCheque(payed) }, []*Cheque{payed}},
 
 		// Lottery is revealed, but wait more confirmations
-		{func() { env.commitEmptyBlocks(5) }, []*Cheque{signed}},
+		{func() { env.commitEmptyBlocks(5) }, []*Cheque{payed}},
 
 		// Time to claim the lottery
 		{func() { env.commitEmptyBlocks(lotteryProcessConfirms); <-claim }, nil},
@@ -121,6 +127,7 @@ func TestChequeRecovery(t *testing.T) {
 	}{
 		{func() {}, false, []*Cheque{signed}},
 		{func() { env.commitEmptyUntil(current + 5) }, false, []*Cheque{signed}},
+		{func() { env.commitEmptyUntil(current + 5 + lotteryProcessConfirms - 1) }, false, []*Cheque{signed}},
 		{func() { env.commitEmptyUntil(current + 5 + lotteryProcessConfirms) }, true, nil},
 	}
 	for _, c := range cases {
