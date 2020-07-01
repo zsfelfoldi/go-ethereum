@@ -66,7 +66,7 @@ func (robot *PaymentRobot) Run(sendFn func(proofOfPayment []byte, identity strin
 			if deposit != nil {
 				continue
 			}
-			proofOfPayment, err := robot.sender.Pay(robot.receiver, 3)
+			proofOfPayments, err := robot.sender.Pay(robot.receiver, 3)
 			if err != nil {
 				if err == lotterybook.ErrNotEnoughDeposit {
 					depositFn()
@@ -75,7 +75,9 @@ func (robot *PaymentRobot) Run(sendFn func(proofOfPayment []byte, identity strin
 				log.Error("Failed to pay", "error", err)
 				continue
 			}
-			sendFn(proofOfPayment, lotterypmt.Identity)
+			for _, proofOfPayment := range proofOfPayments {
+				sendFn(proofOfPayment, lotterypmt.Identity)
+			}
 
 		case <-deposit:
 			deposit = nil

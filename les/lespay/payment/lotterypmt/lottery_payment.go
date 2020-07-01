@@ -176,20 +176,24 @@ func (s *PaymentSender) Deposit(receivers []common.Address, amounts []uint64, pe
 
 // Pay initiates a payment to the designated payee with specified
 // payemnt amount.
-func (s *PaymentSender) Pay(payee common.Address, amount uint64) ([]byte, error) {
+func (s *PaymentSender) Pay(payee common.Address, amount uint64) ([][]byte, error) {
 	if !s.cwatcher.chainSynced() {
 		return nil, ErrNotSynced
 	}
-	cheque, err := s.sender.IssueCheque(payee, amount)
+	cheques, err := s.sender.IssueCheque(payee, amount)
 	if err != nil {
 		return nil, err
 	}
-	proofOfPayment, err := rlp.EncodeToBytes(cheque)
-	if err != nil {
-		return nil, err
+	proofOfPayments := make([][]byte, len(cheques))
+	for index, cheque := range cheques {
+		proof, err := rlp.EncodeToBytes(cheque)
+		if err != nil {
+			return nil, err
+		}
+		proofOfPayments[index] = proof
 	}
 	log.Debug("Generated payment", "amount", amount, "payee", payee)
-	return proofOfPayment, nil
+	return proofOfPayments, nil
 }
 
 // Destory exits the payment and withdraws all expired lotteries

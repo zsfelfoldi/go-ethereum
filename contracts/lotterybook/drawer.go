@@ -368,12 +368,20 @@ func (drawer *ChequeDrawer) Destroy(context context.Context) error {
 // strategy here for lottery selection: choose a lottery ticket with the
 // most recent expiration date and the remaining amount can cover the amount
 // paid this time.
-func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) (*Cheque, error) {
+func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) ([]*Cheque, error) {
+	if amount == 0 {
+		return nil, errors.New("invalid amount")
+	}
 	lotteries, err := drawer.lmgr.activeLotteries()
 	if err != nil {
 		return nil, err
 	}
 	sort.Sort(LotteryByRevealTime(lotteries))
+
+	var (
+		cheques  []*Cheque
+		remained = amount
+	)
 	for _, lottery := range lotteries {
 		// Short circuit if the lottery doesn't contain the target payee.
 		if !lottery.hasReceiver(payee) {
@@ -392,14 +400,32 @@ func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) (*C
 		if cheque == nil {
 			continue
 		}
-		if lottery.balance(payee, cheque) >= amount {
-			return drawer.issueCheque(payee, lottery.Id, amount)
+		// If the remaining allowance is enough to cover the expense, stop
+		// iteration. Otherwise find more.
+		allowance := lottery.balance(payee, cheque)
+		if allowance >= remained {
+			cheque, err := drawer.issueCheque(payee, lottery.Id, remained)
+			if err != nil {
+				continue
+			}
+			cheques = append(cheques, cheque)
+			remained = 0
+		} else if allowance != 0 {
+			cheque, err := drawer.issueCheque(payee, lottery.Id, allowance)
+			if err != nil {
+				continue
+			}
+			cheques = append(cheques, cheque)
+			remained -= allowance
 		}
-		// todo we need to extend the payment protocol, instead of selecting
-		// a single lottery with sufficient allowance for payment, we can
-		// combine a few lotteries with samller allowance.
+		if remained == 0 {
+			break
+		}
 	}
-	return nil, ErrNotEnoughDeposit // No suitable lottery found for payment
+	if remained != 0 {
+		return nil, ErrNotEnoughDeposit // No suitable lotteries found for payment
+	}
+	return cheques, nil
 }
 
 // issueCheque creates a cheque for issuing specified amount for payee.
