@@ -86,7 +86,9 @@ func (robot *PaymentRobot) Run(sendFn func(proofOfPayment []byte, identity strin
 		deposit, err = robot.sender.Deposit(list, amount, 60, true)
 		if err != nil {
 			log.Error("Failed to deposit", "err", err)
+			return
 		}
+		stat.lotteries += 1
 	}
 	depositFn()
 
@@ -118,12 +120,11 @@ func (robot *PaymentRobot) Run(sendFn func(proofOfPayment []byte, identity strin
 
 		case <-deposit:
 			deposit = nil
-
-			stat.lotteries += 1
 			log.Info("Deposit finished")
 
 		case <-logTicker.C:
 			fmt.Println(stat.log())
+			fmt.Println(robot.sender.DebugInspect())
 
 		case <-robot.close:
 			return

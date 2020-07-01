@@ -82,11 +82,11 @@ func NewChequeDrawer(address, contractAddr common.Address, txSigner *bind.Transa
 		txSigner:     txSigner,
 		chequeSigner: chequeSigner,
 		chain:        chain,
-		lmgr:         newLotteryManager(address, chain, book.contract, cdb),
 		cBackend:     cBackend,
 		dBackend:     dBackend,
 		rand:         rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
+	drawer.lmgr = newLotteryManager(address, chain, book.contract, cdb, drawer.wipeLottery)
 	return drawer, nil
 }
 
@@ -260,15 +260,6 @@ func (drawer *ChequeDrawer) resetLottery(context context.Context, id common.Hash
 	if err := drawer.lmgr.deleteExpired(id); err != nil {
 		return common.Hash{}, err
 	}
-	// Wipe useless old lottery and associated cheques
-	drawer.cdb.deleteLottery(drawer.address, id, false)
-	_, addresses := drawer.cdb.listCheques(
-		drawer.address,
-		func(addr common.Address, lid common.Hash, cheque *Cheque) bool { return lid == id },
-	)
-	for _, addr := range addresses {
-		drawer.cdb.deleteCheque(drawer.address, addr, id, true)
-	}
 	reownLotteryGauge.Inc(1)
 	return newLottery.Id, nil
 }
@@ -332,18 +323,8 @@ func (drawer *ChequeDrawer) destroyLottery(context context.Context, id common.Ha
 		return ErrTransactionFailed
 	}
 	destroyDurationTimer.UpdateSince(start)
-	// Update manager's status
 	if err := drawer.lmgr.deleteExpired(id); err != nil {
 		return err
-	}
-	// Wipe useless lottery and associated cheques
-	drawer.cdb.deleteLottery(drawer.address, id, false)
-	_, addresses := drawer.cdb.listCheques(
-		drawer.address,
-		func(addr common.Address, lid common.Hash, cheque *Cheque) bool { return lid == id },
-	)
-	for _, addr := range addresses {
-		drawer.cdb.deleteCheque(drawer.address, addr, id, true)
 	}
 	return nil
 }
@@ -507,6 +488,18 @@ func (drawer *ChequeDrawer) issueCheque(payee common.Address, lotteryId common.H
 	return cheque, nil
 }
 
+// wipeLottery wipes the lottery and associated cheques.
+func (drawer *ChequeDrawer) wipeLottery(id common.Hash) {
+	drawer.cdb.deleteLottery(drawer.address, id, false)
+	_, addresses := drawer.cdb.listCheques(
+		drawer.address,
+		func(addr common.Address, lid common.Hash, cheque *Cheque) bool { return lid == id },
+	)
+	for _, addr := range addresses {
+		drawer.cdb.deleteCheque(drawer.address, addr, id, true)
+	}
+}
+
 // Allowance returns the allowance remaining in the specified lottery that can
 // be used to make payments to all included receivers.
 func (drawer *ChequeDrawer) Allowance(id common.Hash) map[common.Address]uint64 {
@@ -547,6 +540,12 @@ func (drawer *ChequeDrawer) EstimatedExpiry(lotteryId common.Hash) uint64 {
 		return lottery.RevealNumber - height
 	}
 	return 0 // The lottery is already expired.
+}
+
+// ListLotteries returns all active(not revealed yet) lotteries maintained
+// by drawer. It's only used in testing.
+func (drawer *ChequeDrawer) ListLotteries() []*Lottery{
+	return drawer.cdb.listLotteries(drawer.address, false)
 }
 
 // SubscribeLotteryEvent registers a subscription of LotteryEvent.

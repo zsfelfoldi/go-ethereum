@@ -19,6 +19,7 @@ package lotterypmt
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync/atomic"
 	"time"
@@ -207,8 +208,22 @@ func (s *PaymentSender) Destory() error {
 }
 
 // Contract returns the contract address used by sender.
-func (r *PaymentSender) Contract() common.Address {
-	return r.contract
+func (s *PaymentSender) Contract() common.Address {
+	return s.contract
+}
+
+// DebugInspect returns all maintained lotteries inspection(only in testing)
+func (s *PaymentSender) DebugInspect() string {
+	var msg string
+	lotteries := s.sender.ListLotteries()
+	for _, l := range lotteries {
+		msg += fmt.Sprintf("lottery <%x>: amount: %d, reveal: %d expiration: %d\n", l.Id, l.Amount, l.RevealNumber, s.sender.EstimatedExpiry(l.Id))
+		allowance := s.sender.Allowance(l.Id)
+		for payee, balance := range allowance {
+			msg += fmt.Sprintf("\tpayee %x, balance %d\n", payee, balance)
+		}
+	}
+	return msg
 }
 
 // PaymentReceiver is the enter point of the lottery payment receiver

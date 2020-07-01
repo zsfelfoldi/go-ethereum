@@ -63,11 +63,12 @@ type lotteryManager struct {
 
 	closeCh chan struct{}
 	wg      sync.WaitGroup
+	wipeFn  func(common.Hash)
 }
 
 // newLotteryManager returns an instance of lottery manager and starts
 // the underlying routines for status management.
-func newLotteryManager(address common.Address, chainReader Blockchain, contract *contract.LotteryBook, cdb *chequeDB) *lotteryManager {
+func newLotteryManager(address common.Address, chainReader Blockchain, contract *contract.LotteryBook, cdb *chequeDB, wipeLottery func(common.Hash)) *lotteryManager {
 	m := &lotteryManager{
 		address:     address,
 		chainReader: chainReader,
@@ -81,6 +82,7 @@ func newLotteryManager(address common.Address, chainReader Blockchain, contract 
 		queryCh:     make(chan *queryReq),
 		deleteCh:    make(chan common.Hash),
 		closeCh:     make(chan struct{}),
+		wipeFn:      wipeLottery,
 	}
 	m.wg.Add(1)
 	go m.run()
@@ -216,6 +218,7 @@ func (m *lotteryManager) run() {
 			if _, exist := m.expiredSet[id]; exist {
 				delete(m.expiredSet, id)
 			}
+			m.wipeFn(id)
 			log.Debug("Lottery claimed", "id", id)
 
 		case req := <-m.queryCh:
@@ -235,6 +238,7 @@ func (m *lotteryManager) run() {
 
 		case id := <-m.deleteCh:
 			delete(m.expiredSet, id) // The expired lottery is reset or destroyed
+			m.wipeFn(id)
 
 		case <-ticker.C:
 			for id := range m.expiredSet {
@@ -246,7 +250,7 @@ func (m *lotteryManager) run() {
 				}
 				if ret.Amount == 0 {
 					delete(m.expiredSet, id)
-					m.cdb.deleteLottery(m.address, id, false)
+					m.wipeFn(id)
 					log.Debug("Lottery removed", "id", id)
 				}
 				// Otherwise it can be reowned by sender, keep it.
