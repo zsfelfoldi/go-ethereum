@@ -126,21 +126,21 @@ func TestAddCheque(t *testing.T) {
 		{
 			func() *Cheque {
 				lotteryID = newLottery(true, true, 10086)
-				cheque, _ := drawer.issueCheque(env.draweeAddr, lotteryID, 64)
+				cheque, _ := drawer.issueCheque(env.draweeAddr, lotteryID, 64, true)
 				return cheque
 			}, false, 64,
 		},
 		// Drawee should accept normal cheque with cumulative confirm amount
 		{
 			func() *Cheque {
-				cheque, _ := drawer.issueCheque(env.draweeAddr, lotteryID, 64)
+				cheque, _ := drawer.issueCheque(env.draweeAddr, lotteryID, 64, true)
 				return cheque
 			}, false, 64,
 		},
 		// Drawee should accept normal cheque with the whole amount
 		{
 			func() *Cheque {
-				cheque, _ := drawer.issueCheque(env.draweeAddr, newLottery(true, false, 10086), 128)
+				cheque, _ := drawer.issueCheque(env.draweeAddr, newLottery(true, false, 10086), 128, true)
 				return cheque
 			}, false, 128,
 		},
@@ -240,7 +240,7 @@ func TestClaimLottery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Faield to create lottery, err: %v", err)
 	}
-	cheque, err := drawer.issueCheque(env.draweeAddr, id, 128)
+	cheque, err := drawer.issueCheque(env.draweeAddr, id, 128, true)
 	if err != nil {
 		t.Fatalf("Faield to create cheque, err: %v", err)
 	}

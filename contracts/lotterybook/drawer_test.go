@@ -142,7 +142,7 @@ func TestIssueCheque(t *testing.T) {
 		{env.draweeAddr, id3, 1, true},
 	}
 	for index, c := range cases {
-		_, err := drawer.issueCheque(c.payer, c.id, c.amount)
+		_, err := drawer.issueCheque(c.payer, c.id, c.amount, true)
 		if c.expectErr && err == nil {
 			t.Fatalf("Case %d expect error, got nil", index)
 		}
@@ -190,10 +190,10 @@ func TestAllowance(t *testing.T) {
 	}{
 		{nil, map[common.Address]uint64{env.draweeAddr: 128, env.drawerAddr: 128}},
 		{func() {
-			drawer.issueCheque(env.draweeAddr, id, 32)
+			drawer.issueCheque(env.draweeAddr, id, 32, true)
 		}, map[common.Address]uint64{env.draweeAddr: 96, env.drawerAddr: 128}},
 		{func() {
-			drawer.issueCheque(env.draweeAddr, id, 96)
+			drawer.issueCheque(env.draweeAddr, id, 96, true)
 		}, map[common.Address]uint64{env.draweeAddr: 0, env.drawerAddr: 128}},
 	}
 	for _, c := range cases {

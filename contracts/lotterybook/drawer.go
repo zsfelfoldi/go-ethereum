@@ -404,14 +404,14 @@ func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) ([]
 		// iteration. Otherwise find more.
 		allowance := lottery.balance(payee, cheque)
 		if allowance >= remained {
-			cheque, err := drawer.issueCheque(payee, lottery.Id, remained)
+			cheque, err := drawer.issueCheque(payee, lottery.Id, remained, false)
 			if err != nil {
 				continue
 			}
 			cheques = append(cheques, cheque)
 			remained = 0
 		} else if allowance != 0 {
-			cheque, err := drawer.issueCheque(payee, lottery.Id, allowance)
+			cheque, err := drawer.issueCheque(payee, lottery.Id, allowance, false)
 			if err != nil {
 				continue
 			}
@@ -424,6 +424,10 @@ func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) ([]
 	}
 	if remained != 0 {
 		return nil, ErrNotEnoughDeposit // No suitable lotteries found for payment
+	}
+	// Finally persist all issued cheque into database.
+	for _, cheque := range cheques {
+		drawer.cdb.writeCheque(payee, drawer.address, cheque, true)
 	}
 	return cheques, nil
 }
@@ -441,11 +445,11 @@ func (drawer *ChequeDrawer) IssueCheque(payee common.Address, amount uint64) ([]
 // in every cheque issued. The probability of redemption of a later-issued cheque
 // needs to be strictly greater than that of the first-issued cheque.
 //
-// Because of the possible data loss, we can issue some double-spend cheques,
-// they will be rejected by drawee. Finally we will amend local broken db
-// by the evidence provided by drawee.
-func (drawer *ChequeDrawer) issueCheque(payer common.Address, lotteryId common.Hash, amount uint64) (*Cheque, error) {
-	cheque := drawer.cdb.readCheque(payer, drawer.address, lotteryId, true)
+// Besides, there is another parameter `commit`. If the commit is true, newly
+// generated cheque is persisted immediately. Otherwise external commit operation
+// is required.
+func (drawer *ChequeDrawer) issueCheque(payee common.Address, lotteryId common.Hash, amount uint64, commit bool) (*Cheque, error) {
+	cheque := drawer.cdb.readCheque(payee, drawer.address, lotteryId, true)
 	if cheque == nil {
 		return nil, errors.New("no cheque found")
 	}
@@ -470,6 +474,10 @@ func (drawer *ChequeDrawer) issueCheque(payer common.Address, lotteryId common.H
 	if diff == 0 {
 		return nil, errors.New("invalid payment amount")
 	}
+	// Note it's safe to update cheque here even the commit is false.
+	// We store the cheque structure in the cache(instead of pointer).
+	// So it's safe to modify the uint64(SignedRange), byte slice pointer
+	// (RevealRange) and byte array(Signature) here.
 	if cheque.SignedRange == maxSignedRange {
 		cheque.SignedRange = cheque.LowerLimit + diff - 1
 	} else {
@@ -493,7 +501,9 @@ func (drawer *ChequeDrawer) issueCheque(payer common.Address, lotteryId common.H
 			return nil, err
 		}
 	}
-	drawer.cdb.writeCheque(payer, drawer.address, cheque, true)
+	if commit {
+		drawer.cdb.writeCheque(payee, drawer.address, cheque, true)
+	}
 	return cheque, nil
 }
 
