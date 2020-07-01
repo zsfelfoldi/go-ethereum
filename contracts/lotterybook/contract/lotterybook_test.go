@@ -240,7 +240,7 @@ func TestClaimLottery(t *testing.T) {
 		var claimed bool
 	loop:
 		for _, e := range merkleEntries {
-			proof, err := tree.Prove(e, e.Salt())
+			proof, err := tree.Prove(e)
 			if err != nil {
 				t.Fatalf("Failed to generate merkle proof: %v", err)
 			}

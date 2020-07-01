@@ -55,7 +55,7 @@ func (t *merkleTreeTest) run() bool {
 	}
 	var ranges entryRanges
 	for _, entry := range t.entries {
-		proof, err := tree.Prove(entry, entry.Salt())
+		proof, err := tree.Prove(entry)
 		if err != nil {
 			t.err = err
 			return false

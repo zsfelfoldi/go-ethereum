@@ -45,7 +45,7 @@ func TestPersistCheque(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to build merkle tree: %v", err)
 	}
-	witness, err := tree.Prove(entry, entry.Salt())
+	witness, err := tree.Prove(entry)
 	if err != nil {
 		t.Fatalf("Failed to build merkle proof: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestListCheques(t *testing.T) {
 	}
 	tree, _ := merkletree.NewMerkleTree(entries)
 	for _, e := range entries {
-		witness, _ := tree.Prove(e, e.Salt())
+		witness, _ := tree.Prove(e)
 		cheque, err := newCheque(witness, common.HexToAddress("cafebabe"), 10086, e.Salt())
 		if err != nil {
 			t.Fatalf("Failed to create cheque: %v", err)

@@ -288,17 +288,17 @@ func TestDepositByReset(t *testing.T) {
 		return sig, nil
 	}
 	current := env.backend.Blockchain().CurrentHeader().Number.Uint64()
-	id, err := drawer.createLottery(context.Background(), []common.Address{env.draweeAddr}, []uint64{128}, current + 128)
+	id, err := drawer.createLottery(context.Background(), []common.Address{env.draweeAddr}, []uint64{128}, current+128)
 	if err != nil {
 		t.Fatalf("Faield to create lottery, err: %v", err)
 	}
 	current = env.backend.Blockchain().CurrentHeader().Number.Uint64()
-	_, err = drawer.createLottery(context.Background(), []common.Address{env.draweeAddr}, []uint64{200}, current + 128)
+	_, err = drawer.createLottery(context.Background(), []common.Address{env.draweeAddr}, []uint64{200}, current+128)
 	if err != nil {
 		t.Fatalf("Faield to create lottery, err: %v", err)
 	}
 	current = env.backend.Blockchain().CurrentHeader().Number.Uint64()
-	_, err = drawer.createLottery(context.Background(), []common.Address{env.draweeAddr}, []uint64{30}, current + 128)
+	_, err = drawer.createLottery(context.Background(), []common.Address{env.draweeAddr}, []uint64{30}, current+128)
 	if err != nil {
 		t.Fatalf("Faield to create lottery, err: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestDepositByReset(t *testing.T) {
 
 	// Now the lottery can be reset!
 	current = env.backend.Blockchain().CurrentHeader().Number.Uint64()
-	_, err = drawer.Deposit(context.Background(), []common.Address{env.draweeAddr}, []uint64{96}, current + 128) // lottery 1 is closer
+	_, err = drawer.Deposit(context.Background(), []common.Address{env.draweeAddr}, []uint64{96}, current+128) // lottery 1 is closer
 	if err != nil {
 		t.Fatalf("Faield to create lottery, err: %v", err)
 	}

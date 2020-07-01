@@ -175,7 +175,7 @@ func (drawer *ChequeDrawer) submitLottery(context context.Context, payees []comm
 
 	// Generate empty unused cheques based on the newly created lottery.
 	for _, entry := range entries {
-		witness, err := tree.Prove(entry, entry.Salt())
+		witness, err := tree.Prove(entry)
 		if err != nil {
 			return nil, err
 		}

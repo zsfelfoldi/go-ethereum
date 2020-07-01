@@ -286,12 +286,12 @@ func (t *MerkleTree) Hash() common.Hash {
 }
 
 // Prove constructs a merkle proof for the specified entry.
-func (t *MerkleTree) Prove(e *Entry, salt uint64) ([]common.Hash, error) {
+func (t *MerkleTree) Prove(e *Entry) ([]common.Hash, error) {
 	var n *Node
 	for _, leaf := range t.Leaves {
 		if bytes.Equal(leaf.Value.Value, e.Value) {
 			// Ensure the salt is match.
-			if leaf.Value.salt != salt {
+			if leaf.Value.salt != e.salt {
 				return nil, ErrInvalidEntry
 			}
 			n = leaf

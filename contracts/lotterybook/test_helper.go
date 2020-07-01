@@ -145,7 +145,7 @@ func (env *testEnv) newRawLottery(payers []common.Address, weight []uint64, reve
 		Receivers:    payers,
 	}
 	for _, entry := range entries {
-		witness, _ := tree.Prove(entry, entry.Salt())
+		witness, _ := tree.Prove(entry)
 		c, _ := newCheque(witness, env.contractAddr, salt, entry.Salt())
 		cheques = append(cheques, c)
 	}
