@@ -17,6 +17,8 @@
 package les
 
 import (
+	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -40,20 +42,48 @@ func NewPaymentRobot(manager *lotterypmt.PaymentSender, receiver common.Address,
 	}
 }
 
+type statistic struct {
+	lotteries      uint64 // The total lotteries submitted
+	paid           uint64 // The total paid times
+	paidAmount     uint64 // The total paid amount
+	multiLotteries uint64 // The total times we pay with multi-lotteries
+	errors         uint64 // The total number of errors
+}
+
+func (s statistic) log() string {
+	var msg string
+	msg += "Payment robot stats\n\t"
+	msg += fmt.Sprintf("Total lotteries: %d\n\t", s.lotteries)
+	msg += fmt.Sprintf("Total paid made: %d\n\t", s.paid)
+	msg += fmt.Sprintf("Total paid amount: %d\n\t", s.paidAmount)
+	msg += fmt.Sprintf("Multi-lotteries: %d\n\t", s.multiLotteries)
+	msg += fmt.Sprintf("Total errors: %d\n\t", s.errors)
+	return msg
+}
+
 func (robot *PaymentRobot) Run(sendFn func(proofOfPayment []byte, identity string) error) {
-	ticker := time.NewTicker(time.Second * 5)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+
+	logTicker := time.NewTicker(time.Minute)
+	defer logTicker.Stop()
 
 	var (
 		err     error
 		deposit chan bool
+		stat    statistic
 	)
 	depositFn := func() {
 		if deposit != nil {
 			log.Error("Depositing, skip new operation")
 			return
 		}
-		deposit, err = robot.sender.Deposit([]common.Address{robot.receiver}, []uint64{100}, 60, true)
+		list, amount := []common.Address{robot.receiver}, []uint64{100}
+		if rand.Intn(2) > 0 {
+			list = append(list, common.HexToAddress("0xdeadbeef"))
+			amount = append(amount, uint64(rand.Intn(100)+50))
+		}
+		deposit, err = robot.sender.Deposit(list, amount, 60, true)
 		if err != nil {
 			log.Error("Failed to deposit", "err", err)
 		}
@@ -66,22 +96,34 @@ func (robot *PaymentRobot) Run(sendFn func(proofOfPayment []byte, identity strin
 			if deposit != nil {
 				continue
 			}
-			proofOfPayments, err := robot.sender.Pay(robot.receiver, 3)
+			amount := uint64(3 + rand.Intn(10))
+			proofOfPayments, err := robot.sender.Pay(robot.receiver, amount)
 			if err != nil {
 				if err == lotterybook.ErrNotEnoughDeposit {
 					depositFn()
 					continue
 				}
+				stat.errors += 1
 				log.Error("Failed to pay", "error", err)
 				continue
 			}
 			for _, proofOfPayment := range proofOfPayments {
 				sendFn(proofOfPayment, lotterypmt.Identity)
 			}
+			if len(proofOfPayments) > 1 {
+				stat.multiLotteries += 1
+			}
+			stat.paid += 1
+			stat.paidAmount += amount
 
 		case <-deposit:
 			deposit = nil
+
+			stat.lotteries += 1
 			log.Info("Deposit finished")
+
+		case <-logTicker.C:
+			fmt.Println(stat.log())
 
 		case <-robot.close:
 			return
