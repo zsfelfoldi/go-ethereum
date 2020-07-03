@@ -110,7 +110,7 @@ func getBalance(pool *clientPool, p *poolTestPeer) (pos, neg uint64) {
 
 func addBalance(pool *clientPool, id enode.ID, amount int64) {
 	pool.forClients([]enode.ID{id}, func(c *clientInfo) {
-		c.balance.AddPosBalance(amount)
+		c.balance.AddBalance(amount)
 	})
 }
 

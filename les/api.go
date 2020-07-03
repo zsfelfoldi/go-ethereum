@@ -204,7 +204,7 @@ func (api *PrivateLightServerAPI) SetConnectedBias(bias time.Duration) error {
 // It also updates the balance meta info string.
 func (api *PrivateLightServerAPI) AddBalance(id enode.ID, amount int64) (balance [2]uint64, err error) {
 	api.server.clientPool.forClients([]enode.ID{id}, func(c *clientInfo) {
-		balance[0], balance[1], err = c.balance.AddPosBalance(amount)
+		balance[0], balance[1], err = c.balance.AddBalance(amount)
 	})
 	return
 }
