@@ -23,83 +23,47 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
-type ThresholdTimer struct {
+type UpdateTimer struct {
 	clock     mclock.Clock
 	lock      sync.Mutex
 	last      mclock.AbsTime
 	threshold time.Duration
 }
 
-func NewThresholdTimer(clock mclock.Clock, threshold time.Duration) *ThresholdTimer {
+func NewUpdateTimer(clock mclock.Clock, threshold time.Duration) *UpdateTimer {
+	// We don't accept the update threshold less than 0.
+	if threshold < 0 {
+		return nil
+	}
 	// Don't panic for lazy users
 	if clock == nil {
 		clock = mclock.System{}
 	}
-	return &ThresholdTimer{
+	return &UpdateTimer{
 		clock:     clock,
 		last:      clock.Now(),
 		threshold: threshold,
 	}
 }
 
-func (t *ThresholdTimer) Update(callback func(diff mclock.AbsTime)) bool {
+func (t *UpdateTimer) Update(callback func(diff time.Duration) bool) bool {
+	return t.UpdateAt(t.clock.Now(), callback)
+}
+
+func (t *UpdateTimer) UpdateAt(at mclock.AbsTime, callback func(diff time.Duration) bool) bool {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	now := t.clock.Now()
-	if now < t.last+mclock.AbsTime(t.threshold) {
+	diff := time.Duration(at - t.last)
+	if diff < 0 {
+		diff = 0
+	}
+	if diff < t.threshold {
 		return false
 	}
-	diff := now - t.last
-	t.last = now
-	callback(diff)
-	return true
-}
-
-type DiffTimer struct {
-	lock  sync.Mutex
-	clock mclock.Clock
-	last  mclock.AbsTime
-}
-
-func NewDiffTimer(clock mclock.Clock) *DiffTimer {
-	// Don't panic for lazy users
-	if clock == nil {
-		clock = mclock.System{}
+	if callback(diff) {
+		t.last = at
+		return true
 	}
-	return &DiffTimer{
-		clock: clock,
-		last:  clock.Now(),
-	}
-}
-
-// Update calculates the time difference by local clock invokes the callback.
-func (t *DiffTimer) Update(callback func(diff mclock.AbsTime)) {
-	t.lock.Lock()
-	defer t.lock.Unlock()
-
-	now := t.clock.Now()
-	diff := now - t.last
-	if diff < 0 {
-		diff = mclock.AbsTime(0)
-	}
-	callback(diff)
-	t.last = now
-}
-
-// Diff calculates the time difference by the given future time or
-// local clock and invokes the callback. The different with Update
-// is the local last timestamp won't be updated.
-func (t *DiffTimer) Diff(future mclock.AbsTime, callback func(diff mclock.AbsTime)) {
-	t.lock.Lock()
-	defer t.lock.Unlock()
-
-	if future == 0 {
-		future = t.clock.Now()
-	}
-	diff := future - t.last
-	if diff < 0 {
-		diff = mclock.AbsTime(0)
-	}
-	callback(diff)
+	return false
 }
