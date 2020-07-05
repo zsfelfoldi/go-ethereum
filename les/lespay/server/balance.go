@@ -129,15 +129,13 @@ func (n *NodeBalance) AddBalance(amount int64) (uint64, uint64, error) {
 	}
 
 	// Update the total positive balance counter.
-	defer func(origin utils.ExpiredValue, active bool) {
-		n.bt.adjustBalance(origin, n.balance.pos, active)
-	}(n.balance.pos, n.capacity != 0)
-
+	origin := n.balance.pos
 	n.balance.pos.Add(amount, offset)
 	setPriority := n.checkPriorityStatus()
 	n.checkCallbacks(now)
 	newValue := n.balance.pos.Value(offset)
 	n.storeBalance(true, false)
+	n.bt.adjustBalance(origin, n.balance.pos, n.capacity != 0)
 	n.lock.Unlock()
 
 	if setPriority {
@@ -158,10 +156,7 @@ func (n *NodeBalance) SetBalance(pos, neg uint64) error {
 	n.updateBalance(now)
 
 	// Update the total positive balance counter.
-	defer func(origin utils.ExpiredValue, active bool) {
-		n.bt.adjustBalance(origin, n.balance.pos, active)
-	}(n.balance.pos, n.capacity != 0)
-
+	origin := n.balance.pos
 	var pb, nb utils.ExpiredValue
 	pb.Add(int64(pos), n.bt.posExp.LogOffset(now))
 	nb.Add(int64(neg), n.bt.negExp.LogOffset(now))
@@ -171,6 +166,7 @@ func (n *NodeBalance) SetBalance(pos, neg uint64) error {
 	setPriority := n.checkPriorityStatus()
 	n.checkCallbacks(now)
 	n.storeBalance(true, true)
+	n.bt.adjustBalance(origin, n.balance.pos, n.capacity != 0)
 	n.lock.Unlock()
 
 	if setPriority {

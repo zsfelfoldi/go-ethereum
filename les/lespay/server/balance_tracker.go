@@ -83,7 +83,7 @@ type BalanceTracker struct {
 	posExpTC, negExpTC uint64
 
 	active, inactive utils.ExpiredValue
-	balanceTimer     *utils.ThresholdTimer
+	balanceTimer     *utils.UpdateTimer
 	quit             chan struct{}
 }
 
@@ -97,7 +97,7 @@ func NewBalanceTracker(ns *nodestate.NodeStateMachine, setup BalanceTrackerSetup
 		clock:               clock,
 		posExp:              posExp,
 		negExp:              negExp,
-		balanceTimer:        utils.NewThresholdTimer(clock, time.Second*10),
+		balanceTimer:        utils.NewUpdateTimer(clock, time.Second*10),
 		quit:                make(chan struct{}),
 	}
 	bt.ndb.forEachBalance(false, func(id enode.ID, balance utils.ExpiredValue) bool {
@@ -171,7 +171,7 @@ func (bt *BalanceTracker) TotalTokenAmount() uint64 {
 	bt.lock.Lock()
 	defer bt.lock.Unlock()
 
-	bt.balanceTimer.Update(func(_ mclock.AbsTime) {
+	bt.balanceTimer.Update(func(_ time.Duration) bool {
 		bt.active = utils.ExpiredValue{}
 		bt.ns.ForEach(nodestate.Flags{}, nodestate.Flags{}, func(node *enode.Node, state nodestate.Flags) {
 			if n, ok := bt.ns.GetField(node, bt.BalanceField).(*NodeBalance); ok {
@@ -179,6 +179,7 @@ func (bt *BalanceTracker) TotalTokenAmount() uint64 {
 				bt.active.AddExp(pos)
 			}
 		})
+		return true
 	})
 	total := bt.active
 	total.AddExp(bt.inactive)
