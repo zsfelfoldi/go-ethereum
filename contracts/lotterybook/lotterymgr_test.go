@@ -35,7 +35,7 @@ func TestStateTransition(t *testing.T) {
 	}
 	env.backend.Commit()
 	cdb := newChequeDB(rawdb.NewMemoryDatabase())
-	mgr := newLotteryManager(env.drawerAddr, env.backend.Blockchain(), c, cdb)
+	mgr := newLotteryManager(env.drawerAddr, env.backend.Blockchain(), c, cdb, nil)
 	defer mgr.close()
 
 	events := make(chan []LotteryEvent, 1024)
@@ -79,7 +79,7 @@ func TestStateRecovery(t *testing.T) {
 	}
 	env.backend.Commit()
 	cdb := newChequeDB(rawdb.NewMemoryDatabase())
-	mgr := newLotteryManager(env.drawerAddr, env.backend.Blockchain(), c, cdb)
+	mgr := newLotteryManager(env.drawerAddr, env.backend.Blockchain(), c, cdb, nil)
 
 	current := env.backend.Blockchain().CurrentHeader().Number.Uint64()
 	l1, _, _, _ := env.newRawLottery([]common.Address{env.draweeAddr}, []uint64{128}, 30)
@@ -89,7 +89,7 @@ func TestStateRecovery(t *testing.T) {
 
 	// Close and restart
 	mgr.close()
-	mgr = newLotteryManager(env.drawerAddr, env.backend.Blockchain(), c, cdb)
+	mgr = newLotteryManager(env.drawerAddr, env.backend.Blockchain(), c, cdb, nil)
 	active, err := mgr.activeLotteries()
 	if err != nil {
 		t.Fatalf("Failed to retrieve active lotteries: %v", err)

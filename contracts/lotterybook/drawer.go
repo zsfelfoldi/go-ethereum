@@ -104,14 +104,17 @@ func (drawer *ChequeDrawer) Close() {
 // given list of receivers and corresponding amounts. The payment amount can
 // used as the initial weight for each payee. Since the underlying merkle tree
 // is binary tree, so finally all weights will be adjusted to 1/2^N form.
-func (drawer *ChequeDrawer) newProbabilityTree(payees []common.Address, amounts []uint64) (*merkletree.MerkleTree, []*merkletree.Entry, uint64, error) {
+//
+// If some entries are assigned with a very small weight, then it may not included
+// in the tree. In this case, kick the relevant payee out.
+func (drawer *ChequeDrawer) newProbabilityTree(payees []common.Address, amounts []uint64) (*merkletree.MerkleTree, []*merkletree.Entry, map[string]struct{}, uint64, error) {
 	if len(payees) != len(amounts) {
-		return nil, nil, 0, errors.New("inconsistent payment receivers and amounts")
+		return nil, nil, nil, 0, errors.New("inconsistent payment receivers and amounts")
 	}
 	var totalAmount uint64
 	for _, amount := range amounts {
 		if amount == 0 {
-			return nil, nil, 0, errors.New("invalid payment amount")
+			return nil, nil, nil, 0, errors.New("invalid payment amount")
 		}
 		totalAmount += amount
 	}
@@ -122,11 +125,11 @@ func (drawer *ChequeDrawer) newProbabilityTree(payees []common.Address, amounts 
 			Weight: amount,
 		}
 	}
-	tree, err := merkletree.NewMerkleTree(entries)
+	tree, dropped, err := merkletree.NewMerkleTree(entries)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, nil, 0, err
 	}
-	return tree, entries, totalAmount, nil
+	return tree, entries, dropped, totalAmount, nil
 }
 
 // submitLottery creates the lottery based on the specified batch of payees and
@@ -134,7 +137,7 @@ func (drawer *ChequeDrawer) newProbabilityTree(payees []common.Address, amounts 
 func (drawer *ChequeDrawer) submitLottery(context context.Context, payees []common.Address, amounts []uint64, revealNumber uint64, onchainFn func(amount uint64, id [32]byte, blockNumber uint64, salt uint64) (*types.Transaction, error)) (*Lottery, error) {
 	// Construct merkle probability tree with given payer list and corresponding
 	// payer weight. Return error if the given weight is invalid.
-	tree, entries, amount, err := drawer.newProbabilityTree(payees, amounts)
+	tree, entries, dropped, amount, err := drawer.newProbabilityTree(payees, amounts)
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +146,17 @@ func (drawer *ChequeDrawer) submitLottery(context context.Context, payees []comm
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, salt)
 
+	if len(dropped) > 0 {
+		var removed []int
+		for index, payee := range payees {
+			if _, ok := dropped[string(payee.Bytes())]; ok {
+				removed = append(removed, index)
+			}
+		}
+		for i := 0; i < len(removed); i++ {
+			payees = append(payees[:removed[i]-i], payees[removed[i]-i+1:]...)
+		}
+	}
 	// Generate and store the temporary lottery record before the transaction
 	// submission.
 	//
@@ -175,6 +189,9 @@ func (drawer *ChequeDrawer) submitLottery(context context.Context, payees []comm
 
 	// Generate empty unused cheques based on the newly created lottery.
 	for _, entry := range entries {
+		if _, ok := dropped[string(entry.Value)]; ok {
+			continue
+		}
 		witness, err := tree.Prove(entry)
 		if err != nil {
 			return nil, err
@@ -544,7 +561,7 @@ func (drawer *ChequeDrawer) EstimatedExpiry(lotteryId common.Hash) uint64 {
 
 // ListLotteries returns all active(not revealed yet) lotteries maintained
 // by drawer. It's only used in testing.
-func (drawer *ChequeDrawer) ListLotteries() []*Lottery{
+func (drawer *ChequeDrawer) ListLotteries() []*Lottery {
 	return drawer.cdb.listLotteries(drawer.address, false)
 }
 

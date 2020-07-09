@@ -95,9 +95,18 @@ func (tester *testLotteryBook) newMerkleTree(entries []merkleEntry) (*merkletree
 			Weight: entry.chance,
 		})
 	}
-	tree, err := merkletree.NewMerkleTree(merkleEntries)
+	tree, dropped, err := merkletree.NewMerkleTree(merkleEntries)
 	if err != nil {
 		return nil, nil, err
+	}
+	var removed []int
+	for index, entry := range merkleEntries {
+		if _, ok := dropped[string(entry.Value)]; ok {
+			removed = append(removed, index)
+		}
+	}
+	for i := 0; i < len(removed); i++ {
+		merkleEntries = append(merkleEntries[:removed[i]-i], merkleEntries[removed[i]-i+1:]...)
 	}
 	return tree, merkleEntries, nil
 }

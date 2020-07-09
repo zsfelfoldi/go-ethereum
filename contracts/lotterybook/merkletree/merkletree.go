@@ -49,7 +49,9 @@ func init() {
 
 var (
 	// maxLevel indicates the deepest Level the node can be. It means
-	// the minimal weight supported is 1/1024.
+	// the minimal weight supported is 1/1024. If the assigned initial
+	// weight is too small, it will be assigned to the minimal weight
+	// or zero. If the weight is zero, it means the entry is not included.
 	maxLevel = 10
 
 	// maxWeight indicates the denominator used to calculate weight.
@@ -163,9 +165,9 @@ type MerkleTree struct {
 }
 
 // NewMerkleTree constructs a merkle tree with given entries.
-func NewMerkleTree(entries []*Entry) (*MerkleTree, error) {
+func NewMerkleTree(entries []*Entry) (*MerkleTree, map[string]struct{}, error) {
 	if len(entries) == 0 {
-		return nil, ErrEmptyEntryList
+		return nil, nil, ErrEmptyEntryList
 	}
 	// Assign an unique salt for each entry. The hash
 	// of entry is calculated by keccak256(value, salt)
@@ -177,19 +179,23 @@ func NewMerkleTree(entries []*Entry) (*MerkleTree, error) {
 	var sum, totalWeight uint64
 	for _, entry := range entries {
 		if entry.Weight == 0 {
-			return nil, ErrInvalidWeight
+			return nil, nil, ErrInvalidWeight
 		}
 		sum += entry.Weight
 	}
 	for _, entry := range entries {
 		l := math.Log2(float64(sum) / float64(entry.Weight))
 		c := math.Ceil(l)
-		entry.bias = l - c + 1
 		if int(c) > maxLevel {
-			return nil, ErrInvalidWeight
+			c = float64(maxLevel + 1) // maxLevel+1 means the entry is not included in the tree
+			entry.bias = 0            // mark the minimal bias, always try to assign a minimal weight later
+		} else {
+			entry.bias = l - c + 1
 		}
-		totalWeight += maxWeight >> int(c)
 		entry.level = uint64(c)
+		if entry.level <= uint64(maxLevel) {
+			totalWeight += maxWeight >> entry.level
+		}
 	}
 	sort.Sort(EntryByBias(entries))
 
@@ -198,7 +204,12 @@ func NewMerkleTree(entries []*Entry) (*MerkleTree, error) {
 	for totalWeight < maxWeight && len(shift) > 0 {
 		var limit int
 		for index, entry := range shift {
-			addWeight := maxWeight >> entry.level
+			var addWeight uint64
+			if entry.level <= uint64(maxLevel) {
+				addWeight = maxWeight >> entry.level
+			} else {
+				addWeight = maxWeight >> uint64(maxLevel)
+			}
 			if totalWeight+addWeight <= maxWeight {
 				totalWeight += addWeight
 				entry.level -= 1
@@ -215,12 +226,17 @@ func NewMerkleTree(entries []*Entry) (*MerkleTree, error) {
 	}
 	sort.Sort(EntryByLevel(entries))
 
+	dropped := make(map[string]struct{})
+	for len(entries) > 0 && entries[0].level > uint64(maxLevel) {
+		dropped[string(entries[0].Value)] = struct{}{}
+		entries = entries[1:]
+	}
 	// Start to build the merkle tree, short circuit if there is only 1 entry.
 	root, leaves, err := newTree(entries)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &MerkleTree{Root: root, Leaves: leaves}, nil
+	return &MerkleTree{Root: root, Leaves: leaves}, dropped, nil
 }
 
 func newTree(entries []*Entry) (*Node, []*Node, error) {

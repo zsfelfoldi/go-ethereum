@@ -48,13 +48,16 @@ func (s entryRanges) Less(i, j int) bool {
 func (s entryRanges) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 func (t *merkleTreeTest) run() bool {
-	tree, err := NewMerkleTree(t.entries)
+	tree, dropped, err := NewMerkleTree(t.entries)
 	if err != nil {
 		t.err = err
 		return false
 	}
 	var ranges entryRanges
 	for _, entry := range t.entries {
+		if _, ok := dropped[string(entry.Value)]; ok {
+			continue
+		}
 		proof, err := tree.Prove(entry)
 		if err != nil {
 			t.err = err
@@ -84,13 +87,13 @@ func (t *merkleTreeTest) run() bool {
 // derived from r.
 func (*merkleTreeTest) Generate(r *rand.Rand, size int) reflect.Value {
 	var entries []*Entry
-	length := r.Intn(30) + 1
+	length := r.Intn(100) + 1
 	for i := 0; i < length; i++ {
 		value := make([]byte, 20)
 		r.Read(value)
 		entries = append(entries, &Entry{
 			Value:  value,
-			Weight: uint64(r.Intn(30) + 1),
+			Weight: uint64(r.Intn(100) + 1),
 		})
 	}
 	return reflect.ValueOf(&merkleTreeTest{entries: entries})

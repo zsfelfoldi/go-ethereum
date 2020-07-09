@@ -18,6 +18,7 @@ package lotterybook
 
 import (
 	"context"
+	"math/big"
 	"reflect"
 	"testing"
 	"time"
@@ -77,6 +78,41 @@ func TestCreateLottery(t *testing.T) {
 		}
 		if err != nil {
 			t.Fatalf("Case %d expect no error: %v", index, err)
+		}
+	}
+	var receiver []common.Address
+	var amount []uint64
+	for i := 0; i < 2048; i++ {
+		receiver = append(receiver, common.BigToAddress(big.NewInt(int64(i+1))))
+		amount = append(amount, 128)
+	}
+	id, err := drawer.createLottery(context.Background(), receiver, amount, 10086)
+	if err != nil {
+		t.Fatalf("Failed to create lottery with lots of receivers")
+	}
+	var cheques []*Cheque
+	var receivers []common.Address
+	drawer.cdb.listCheques(drawer.address, func(addr common.Address, hash common.Hash, cheque *Cheque) bool {
+		if id == hash {
+			cheques = append(cheques, cheque)
+			receivers = append(receivers, addr)
+		}
+		return true
+	})
+	lottery := drawer.cdb.readLottery(drawer.address, id)
+	if len(lottery.Receivers) != len(cheques) {
+		t.Fatalf("The receiver number is different")
+	}
+	for _, r := range lottery.Receivers {
+		var find bool
+		for _, rr := range receivers {
+			if r == rr {
+				find = true
+				break
+			}
+		}
+		if !find {
+			t.Fatalf("Receiver mismatch")
 		}
 	}
 }

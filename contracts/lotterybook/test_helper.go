@@ -114,22 +114,31 @@ func (env *testEnv) checkEvent(sink chan []LotteryEvent, expect []LotteryEvent) 
 	}
 }
 
-func (env *testEnv) newRawLottery(payers []common.Address, weight []uint64, revealShift uint64) (*Lottery, []*Cheque, uint64, error) {
+func (env *testEnv) newRawLottery(payees []common.Address, weight []uint64, revealShift uint64) (*Lottery, []*Cheque, uint64, error) {
 	var (
 		total   uint64
 		cheques []*Cheque
 		entries []*merkletree.Entry
 	)
-	for index, p := range payers {
+	for index, p := range payees {
 		entries = append(entries, &merkletree.Entry{
 			Value:  p.Bytes(),
 			Weight: weight[index],
 		})
 		total += weight[index]
 	}
-	tree, err := merkletree.NewMerkleTree(entries)
+	tree, dropped, err := merkletree.NewMerkleTree(entries)
 	if err != nil {
 		return nil, nil, 0, err
+	}
+	var removed []int
+	for index, payee := range payees {
+		if _, ok := dropped[string(payee.Bytes())]; ok {
+			removed = append(removed, index)
+		}
+	}
+	for i := 0; i < len(removed); i++ {
+		payees = append(payees[:removed[i]-i], payees[removed[i]-i+1:]...)
 	}
 	// New random lottery salt to ensure the id is unique.
 	salt := rand.Uint64()
@@ -142,9 +151,12 @@ func (env *testEnv) newRawLottery(payers []common.Address, weight []uint64, reve
 		Id:           lotteryId,
 		RevealNumber: current + revealShift,
 		Amount:       total,
-		Receivers:    payers,
+		Receivers:    payees,
 	}
 	for _, entry := range entries {
+		if _, ok := dropped[string(entry.Value)]; ok {
+			continue
+		}
 		witness, _ := tree.Prove(entry)
 		c, _ := newCheque(witness, env.contractAddr, salt, entry.Salt())
 		cheques = append(cheques, c)
