@@ -19,6 +19,7 @@ package lotterybook
 import (
 	"crypto/ecdsa"
 	"encoding/binary"
+	"errors"
 	"math/big"
 	"math/rand"
 	"testing"
@@ -127,9 +128,9 @@ func (env *testEnv) newRawLottery(payees []common.Address, weight []uint64, reve
 		})
 		total += weight[index]
 	}
-	tree, dropped, err := merkletree.NewMerkleTree(entries)
-	if err != nil {
-		return nil, nil, 0, err
+	tree, dropped := merkletree.NewMerkleTree(entries)
+	if tree == nil {
+		return nil, nil, 0, errors.New("empty tree")
 	}
 	var removed []int
 	for index, payee := range payees {

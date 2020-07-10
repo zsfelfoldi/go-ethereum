@@ -59,12 +59,6 @@ var (
 )
 
 var (
-	// ErrInvalidWeight is returned if the weight of entry is zero or too small.
-	ErrInvalidWeight = errors.New("invalid entry weight")
-
-	// ErrEmptyEntryList is returned if the given entry list is empty
-	ErrEmptyEntryList = errors.New("empty entry list is not allowed to build tree")
-
 	// ErrUnknownEntry is returned if caller wants to prove an non-existent entry.
 	ErrUnknownEntry = errors.New("the entry is non-existent requested for proof")
 
@@ -165,9 +159,10 @@ type MerkleTree struct {
 }
 
 // NewMerkleTree constructs a merkle tree with given entries.
-func NewMerkleTree(entries []*Entry) (*MerkleTree, map[string]struct{}, error) {
+// If there is no entry given, an empty tree is returned.
+func NewMerkleTree(entries []*Entry) (*MerkleTree, map[string]struct{}) {
 	if len(entries) == 0 {
-		return nil, nil, ErrEmptyEntryList
+		return nil, nil
 	}
 	// Assign an unique salt for each entry. The hash
 	// of entry is calculated by keccak256(value, salt)
@@ -175,27 +170,29 @@ func NewMerkleTree(entries []*Entry) (*MerkleTree, map[string]struct{}, error) {
 	for _, entry := range entries {
 		entry.salt = rand.Uint64()
 	}
-	// Verify the validity of the given entries.
 	var sum, totalWeight uint64
 	for _, entry := range entries {
-		if entry.Weight == 0 {
-			return nil, nil, ErrInvalidWeight
-		}
 		sum += entry.Weight
 	}
 	for _, entry := range entries {
+		// If the initial weight is 0, set it maxLevel+1 temporarily.
+		// Will try to allocate some weight if there is some free space.
+		if entry.Weight == 0 {
+			entry.bias = 0
+			entry.level = uint64(maxLevel + 1)
+			continue
+		}
+		// Calculate the node level in the tree based on the proportion.
 		l := math.Log2(float64(sum) / float64(entry.Weight))
 		c := math.Ceil(l)
 		if int(c) > maxLevel {
-			c = float64(maxLevel + 1) // maxLevel+1 means the entry is not included in the tree
-			entry.bias = 0            // mark the minimal bias, always try to assign a minimal weight later
-		} else {
-			entry.bias = l - c + 1
+			entry.bias = 0
+			entry.level = uint64(maxLevel + 1)
+			continue
 		}
+		entry.bias = l - c + 1
 		entry.level = uint64(c)
-		if entry.level <= uint64(maxLevel) {
-			totalWeight += maxWeight >> entry.level
-		}
+		totalWeight += maxWeight >> entry.level
 	}
 	sort.Sort(EntryByBias(entries))
 
@@ -232,19 +229,16 @@ func NewMerkleTree(entries []*Entry) (*MerkleTree, map[string]struct{}, error) {
 		entries = entries[1:]
 	}
 	// Start to build the merkle tree, short circuit if there is only 1 entry.
-	root, leaves, err := newTree(entries)
-	if err != nil {
-		return nil, nil, err
-	}
-	return &MerkleTree{Root: root, Leaves: leaves}, dropped, nil
+	root, leaves := newTree(entries)
+	return &MerkleTree{Root: root, Leaves: leaves}, dropped
 }
 
-func newTree(entries []*Entry) (*Node, []*Node, error) {
+func newTree(entries []*Entry) (*Node, []*Node) {
 	// Short circuit if we only have 1 entry, return it as the root node
 	// of sub tree.
 	if len(entries) == 1 {
 		n := &Node{Value: entries[0], Level: 0}
-		return n, []*Node{n}, nil
+		return n, []*Node{n}
 	}
 	var current *Node
 	var leaves []*Node
@@ -254,7 +248,7 @@ func newTree(entries []*Entry) (*Node, []*Node, error) {
 		// grouped as a sub tree.
 		if i == 0 {
 			if entries[0].level != entries[1].level {
-				panic("invalid entries") // Should never happen
+				panic("invalid level in same group") // Should never happen
 			}
 			n1, n2 := &Node{Value: entries[0], Level: entries[0].level}, &Node{Value: entries[1], Level: entries[1].level}
 			current = &Node{Left: n1, Right: n2, Level: entries[0].level - 1}
@@ -265,7 +259,7 @@ func newTree(entries []*Entry) (*Node, []*Node, error) {
 		}
 		switch {
 		case current.Level > entries[i].level:
-			return nil, nil, errors.New("invalid entries") // Should never happen
+			panic("invalid levels") // Should never happen
 		case current.Level == entries[i].level:
 			n := &Node{Value: entries[i], Level: entries[i].level}
 			tmp := &Node{Left: current, Right: n, Level: current.Level - 1}
@@ -282,10 +276,8 @@ func newTree(entries []*Entry) (*Node, []*Node, error) {
 					break
 				}
 			}
-			right, subLeaves, err := newTree(entries[i : j+1])
-			if err != nil {
-				return nil, nil, err
-			}
+			right, subLeaves := newTree(entries[i : j+1])
+
 			tmp := &Node{Left: current, Right: right, Level: current.Level - 1}
 			current.Parent, right.Parent = tmp, tmp
 			current = tmp
@@ -293,7 +285,7 @@ func newTree(entries []*Entry) (*Node, []*Node, error) {
 			i += len(subLeaves)
 		}
 	}
-	return current, leaves, nil
+	return current, leaves
 }
 
 // Hash calculates the root hash of merkle tree.

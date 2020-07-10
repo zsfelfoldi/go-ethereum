@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/binary"
+	"errors"
 	"math/big"
 	"math/rand"
 	"testing"
@@ -95,9 +96,9 @@ func (tester *testLotteryBook) newMerkleTree(entries []merkleEntry) (*merkletree
 			Weight: entry.chance,
 		})
 	}
-	tree, dropped, err := merkletree.NewMerkleTree(merkleEntries)
-	if err != nil {
-		return nil, nil, err
+	tree, dropped := merkletree.NewMerkleTree(merkleEntries)
+	if tree == nil {
+		return nil, nil, errors.New("invalid entry")
 	}
 	var removed []int
 	for index, entry := range merkleEntries {

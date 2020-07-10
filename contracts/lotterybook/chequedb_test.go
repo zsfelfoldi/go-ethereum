@@ -41,10 +41,7 @@ func TestPersistCheque(t *testing.T) {
 		t.Fatalf("Should return nil for non-existent data")
 	}
 	entry := &merkletree.Entry{Value: drawee.Bytes(), Weight: 1}
-	tree, _, err := merkletree.NewMerkleTree([]*merkletree.Entry{entry})
-	if err != nil {
-		t.Fatalf("Failed to build merkle tree: %v", err)
-	}
+	tree, _ := merkletree.NewMerkleTree([]*merkletree.Entry{entry})
 	witness, err := tree.Prove(entry)
 	if err != nil {
 		t.Fatalf("Failed to build merkle proof: %v", err)
@@ -154,7 +151,7 @@ func TestListCheques(t *testing.T) {
 		drawee := crypto.PubkeyToAddress(key.PublicKey)
 		entries = append(entries, &merkletree.Entry{Value: drawee.Bytes(), Weight: 1})
 	}
-	tree, _, _ := merkletree.NewMerkleTree(entries)
+	tree, _ := merkletree.NewMerkleTree(entries)
 	for _, e := range entries {
 		witness, _ := tree.Prove(e)
 		cheque, err := newCheque(witness, common.HexToAddress("cafebabe"), 10086, e.Salt())

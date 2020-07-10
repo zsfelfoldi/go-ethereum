@@ -107,15 +107,9 @@ func (drawer *ChequeDrawer) Close() {
 //
 // If some entries are assigned with a very small weight, then it may not included
 // in the tree. In this case, kick the relevant payee out.
-func (drawer *ChequeDrawer) newProbabilityTree(payees []common.Address, amounts []uint64) (*merkletree.MerkleTree, []*merkletree.Entry, map[string]struct{}, uint64, error) {
-	if len(payees) != len(amounts) {
-		return nil, nil, nil, 0, errors.New("inconsistent payment receivers and amounts")
-	}
+func (drawer *ChequeDrawer) newProbabilityTree(payees []common.Address, amounts []uint64) (*merkletree.MerkleTree, []*merkletree.Entry, map[string]struct{}, uint64) {
 	var totalAmount uint64
 	for _, amount := range amounts {
-		if amount == 0 {
-			return nil, nil, nil, 0, errors.New("invalid payment amount")
-		}
 		totalAmount += amount
 	}
 	entries := make([]*merkletree.Entry, len(payees))
@@ -125,22 +119,22 @@ func (drawer *ChequeDrawer) newProbabilityTree(payees []common.Address, amounts 
 			Weight: amount,
 		}
 	}
-	tree, dropped, err := merkletree.NewMerkleTree(entries)
-	if err != nil {
-		return nil, nil, nil, 0, err
-	}
-	return tree, entries, dropped, totalAmount, nil
+	tree, dropped := merkletree.NewMerkleTree(entries)
+	return tree, entries, dropped, totalAmount
 }
 
 // submitLottery creates the lottery based on the specified batch of payees and
 // corresponding payment amount. Return the newly created cheque list.
 func (drawer *ChequeDrawer) submitLottery(context context.Context, payees []common.Address, amounts []uint64, revealNumber uint64, onchainFn func(amount uint64, id [32]byte, blockNumber uint64, salt uint64) (*types.Transaction, error)) (*Lottery, error) {
-	// Construct merkle probability tree with given payer list and corresponding
-	// payer weight. Return error if the given weight is invalid.
-	tree, entries, dropped, amount, err := drawer.newProbabilityTree(payees, amounts)
-	if err != nil {
-		return nil, err
+	if len(payees) != len(amounts) {
+		return nil, errors.New("inconsistent payment receivers and amounts")
 	}
+	if len(amounts) == 0 {
+		return nil, errors.New("empty payment list")
+	}
+	// Construct merkle probability tree with given payer list and corresponding weight
+	tree, entries, dropped, amount := drawer.newProbabilityTree(payees, amounts)
+
 	// New random lottery salt to ensure the id is unique.
 	salt := drawer.rand.Uint64()
 	buf := make([]byte, 8)

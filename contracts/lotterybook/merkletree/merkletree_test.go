@@ -48,11 +48,7 @@ func (s entryRanges) Less(i, j int) bool {
 func (s entryRanges) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 func (t *merkleTreeTest) run() bool {
-	tree, dropped, err := NewMerkleTree(t.entries)
-	if err != nil {
-		t.err = err
-		return false
-	}
+	tree, dropped := NewMerkleTree(t.entries)
 	var ranges entryRanges
 	for _, entry := range t.entries {
 		if _, ok := dropped[string(entry.Value)]; ok {
@@ -115,5 +111,34 @@ func TestMerkleTree(t *testing.T) {
 		t.Errorf("%v:\n%s", test.err, test)
 	} else if err != nil {
 		t.Error(err)
+	}
+}
+
+func TestEmptyWeightTree(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		len := rand.Intn(100) + 100
+		var entries []*Entry
+		for i := 0; i < len; i++ {
+			value := make([]byte, 20)
+			rand.Read(value)
+			entries = append(entries, &Entry{
+				Value:  value,
+				Weight: 0,
+			})
+		}
+		tree, dropped := NewMerkleTree(entries)
+		for _, entry := range entries {
+			if _, ok := dropped[string(entry.Value)]; ok {
+				continue
+			}
+			proof, err := tree.Prove(entry)
+			if err != nil {
+				t.Fatalf("Failed to generate proof")
+			}
+			_, err = VerifyProof(tree.Root.Hash(), proof)
+			if err != nil {
+				t.Fatalf("Failed to prove proof")
+			}
+		}
 	}
 }
