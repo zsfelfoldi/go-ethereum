@@ -285,7 +285,7 @@ func (drawer *ChequeDrawer) resetLottery(context context.Context, id common.Hash
 // The strategy of deposit here is very simple: if there are any expired lotteries
 // can be reowned, use these lottery first; otherwise create new lottery for deposit.
 func (drawer *ChequeDrawer) Deposit(context context.Context, payees []common.Address, amounts []uint64, revealNumber uint64) (common.Hash, error) {
-	expired, err := drawer.lmgr.expiredLotteris()
+	expired, err := drawer.lmgr.expiredLotteries()
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -349,7 +349,7 @@ func (drawer *ChequeDrawer) destroyLottery(context context.Context, id common.Ha
 // Destroy is a wrapper function of destroyLottery. It destorys all
 // expired lotteries and claim back all deposit inside.
 func (drawer *ChequeDrawer) Destroy(context context.Context) error {
-	expired, err := drawer.lmgr.expiredLotteris()
+	expired, err := drawer.lmgr.expiredLotteries()
 	if err != nil {
 		return err
 	}

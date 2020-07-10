@@ -60,7 +60,7 @@ func TestStateTransition(t *testing.T) {
 			t.Fatalf("Case %d failed", index)
 		}
 	}
-	lotteries, err := mgr.expiredLotteris()
+	lotteries, err := mgr.expiredLotteries()
 	if err != nil {
 		t.Fatalf("Failed to retrieve lotteries :%v", err)
 	}
@@ -98,7 +98,7 @@ func TestStateRecovery(t *testing.T) {
 		t.Fatalf("Expect has 2 active lotteries")
 	}
 	env.commitEmptyUntil(current + 40 + lotteryClaimPeriod + lotteryProcessConfirms)
-	expired, err := mgr.expiredLotteris()
+	expired, err := mgr.expiredLotteries()
 	if err != nil {
 		t.Fatalf("Failed to retrieve active lotteries: %v", err)
 	}

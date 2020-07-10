@@ -132,8 +132,8 @@ func (m *lotteryManager) run() {
 	// Reload all tmp lottery records which we send the transaction out but
 	// system crash. We need to ensure whether these lotteries are created
 	// or not.
-	tmpLotteris := m.cdb.listLotteries(m.address, true)
-	for _, lottery := range tmpLotteris {
+	tmpLotteries := m.cdb.listLotteries(m.address, true)
+	for _, lottery := range tmpLotteries {
 		ret, err := m.contract.Lotteries(nil, lottery.Id)
 		if err != nil {
 			continue
@@ -287,8 +287,8 @@ func (m *lotteryManager) activeLotteries() ([]*Lottery, error) {
 	}
 }
 
-// expiredLotteris returns all expired lotteries which can be reowned.
-func (m *lotteryManager) expiredLotteris() ([]*Lottery, error) {
+// expiredLotteries returns all expired lotteries which can be reowned.
+func (m *lotteryManager) expiredLotteries() ([]*Lottery, error) {
 	reqCh := make(chan []*Lottery, 1)
 	select {
 	case m.queryCh <- &queryReq{

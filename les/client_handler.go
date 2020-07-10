@@ -27,7 +27,6 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/downloader"
-	"github.com/ethereum/go-ethereum/les/lespay/payment/lotterypmt"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -136,10 +135,10 @@ func (h *clientHandler) handle(p *serverPeer) error {
 	defer atomic.StoreUint32(&p.serving, 0)
 
 	// Testing code, should be removed
-	closed := make(chan struct{})
-	defer close(closed)
-	robot := NewPaymentRobot(h.backend.lotterySender, p.receiverList[lotterypmt.Identity], closed)
-	go robot.Run(p.SendPayment)
+	//closed := make(chan struct{})
+	//defer close(closed)
+	//robot := NewPaymentRobot(h.backend.lotterySender, p.receiverList[lotterypmt.Identity], closed)
+	//go robot.Run(p.SendPayment)
 
 	// Spawn a main loop to handle all incoming messages.
 	for {
