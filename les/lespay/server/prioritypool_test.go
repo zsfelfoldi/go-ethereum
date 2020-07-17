@@ -35,7 +35,7 @@ var (
 )
 
 func init() {
-	ppTestSetup.Connect(ppTestClientField, ppUpdateFlag)
+	ppTestSetup.Connect(ppTestClientField, statusField, ppUpdateFlag)
 }
 
 const (
@@ -94,8 +94,9 @@ func TestPriorityPool(t *testing.T) {
 		}
 		sumBalance += c.balance
 		clients[i] = c
-		ns.SetState(c.node, ppTestSetup.InactiveFlag, nodestate.Flags{}, 0)
+		ns.SetState(c.node, dummyFlag, nodestate.Flags{}, 0)
 		ns.SetField(c.node, ppTestSetup.priorityField, c)
+		ns.SetField(c.node, statusField, NewClientStatus(Inactive, ""))
 		raise(c)
 		check(c)
 	}
@@ -120,4 +121,83 @@ func TestPriorityPool(t *testing.T) {
 	}
 
 	ns.Stop()
+}
+
+// TestPriorityStateTransition ensures whether the proritypool can handle the
+// client state transition correctly. State transition includes:
+//
+//     CONNECTED -> INACTIVE
+//     INACTIVE  -> ACTIVE
+//     ACTIVE    -> INACTIVE
+//     *         -> DISCONNECTED
+func TestPriorityStateTransition(t *testing.T) {
+	clock := &mclock.Simulated{}
+	ns := nodestate.NewNodeStateMachine(nil, nil, clock, testSetup)
+
+	pool := NewPriorityPool(ns, ppTestSetup, clock, 100, 0, testCapacityStepDiv)
+	ns.Start()
+	pool.SetLimits(10, 1000)
+
+	// Connect to empty pool, active status should be marked
+	clients := make([]*ppTestClient, 10)
+	for i := range clients {
+		c := &ppTestClient{
+			node:    enode.SignNull(&enr.Record{}, enode.ID{byte(i)}),
+			balance: 1000,
+			cap:     100,
+		}
+		clients[i] = c
+		ns.SetState(c.node, dummyFlag, nodestate.Flags{}, 0)
+		ns.SetField(c.node, ppTestSetup.priorityField, c)
+		ns.SetField(c.node, statusField, NewClientStatus(Inactive, ""))
+
+		status, _ := ns.GetField(c.node, statusField).(*ClientStatus)
+		if !status.IsStatus(Active) {
+			t.Fatalf("Connected client should be grant an active flag")
+		}
+	}
+
+	// Connect more clients with higher priority, some old clients
+	// should be tagged as inactive
+	clients2 := make([]*ppTestClient, len(clients))
+	for i := 0; i < len(clients); i++ {
+		c := &ppTestClient{
+			node:    enode.SignNull(&enr.Record{}, enode.ID{byte(i + len(clients))}),
+			balance: 100000, // Higher priority
+			cap:     100,
+		}
+		ns.SetState(c.node, dummyFlag, nodestate.Flags{}, 0)
+		ns.SetField(c.node, ppTestSetup.priorityField, c)
+		ns.SetField(c.node, statusField, NewClientStatus(Inactive, ""))
+		clients2[i] = c
+	}
+	for _, client := range clients {
+		status, _ := ns.GetField(client.node, statusField).(*ClientStatus)
+		if !status.IsStatus(Inactive) {
+			t.Fatalf("Connected client should be grant an inactive flag")
+		}
+	}
+
+	// Allocate more tokens for old clients, promotion should happen
+	for _, client := range clients {
+		client.balance = 1000000
+		ns.SetState(client.node, ppUpdateFlag, nodestate.Flags{}, 0)
+		ns.SetState(client.node, nodestate.Flags{}, ppUpdateFlag, 0)
+
+		status, _ := ns.GetField(client.node, statusField).(*ClientStatus)
+		if !status.IsStatus(Active) {
+			t.Fatalf("Connected client should be grant an active flag")
+		}
+	}
+
+	// Drop the old clients, automatic promotion should happen
+	for _, client := range clients {
+		ns.SetField(client.node, statusField, nil)
+	}
+	for _, client := range clients2 {
+		status, _ := ns.GetField(client.node, statusField).(*ClientStatus)
+		if !status.IsStatus(Active) {
+			t.Fatalf("Connected client should be grant an active flag")
+		}
+	}
 }

@@ -24,7 +24,6 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/utils"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/nodestate"
 )
@@ -40,8 +39,10 @@ type BalanceTrackerSetup struct {
 	// controlled by PriorityPool
 	PriorityFlag, UpdateFlag nodestate.Flags
 	BalanceField             nodestate.Field
+
 	// external connections
-	negBalanceKeyField, capacityField nodestate.Field
+	statusField   nodestate.Field
+	capacityField nodestate.Field
 }
 
 // NewBalanceTrackerSetup creates a new BalanceTrackerSetup and initializes the fields
@@ -60,9 +61,9 @@ func NewBalanceTrackerSetup(setup *nodestate.Setup) BalanceTrackerSetup {
 }
 
 // Connect sets the fields used by BalanceTracker as an input
-func (bts *BalanceTrackerSetup) Connect(negBalanceKeyField, capacityField nodestate.Field) {
-	bts.negBalanceKeyField = negBalanceKeyField
+func (bts *BalanceTrackerSetup) Connect(statusField, capacityField nodestate.Field) {
 	bts.capacityField = capacityField
+	bts.statusField = statusField
 }
 
 // BalanceTracker tracks positive and negative balances for connected nodes.
@@ -104,33 +105,49 @@ func NewBalanceTracker(ns *nodestate.NodeStateMachine, setup BalanceTrackerSetup
 		bt.inactive.AddExp(balance)
 		return true
 	})
-
+	// Subscription for updating node capacity.
 	ns.SubscribeField(bt.capacityField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
 		n, _ := ns.GetField(node, bt.BalanceField).(*NodeBalance)
 		if n == nil {
-			log.Error("Capacity field changed while node field is missing")
 			return
 		}
-		newCap, _ := newValue.(uint64)
-		if newCap != 0 {
-			n.setCapacity(newCap)
-		} else {
-			n.deactivate(false)
-		}
+		n.setCapacity(newValue.(uint64))
 	})
-
-	ns.SubscribeField(bt.negBalanceKeyField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
+	// Subscription for updating node status
+	ns.SubscribeField(bt.statusField, func(n *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
+		var (
+			status = Disconnected
+			ipaddr string
+		)
 		if newValue != nil {
-			ns.SetField(node, bt.BalanceField, bt.newNodeBalance(node, newValue.(string)))
-		} else {
-			if n, _ := ns.GetField(node, bt.BalanceField).(*NodeBalance); n != nil {
-				n.deactivate(true)
+			status = newValue.(*ClientStatus).status
+			ipaddr = newValue.(*ClientStatus).ipaddr
+		}
+		switch status {
+		case Connected:
+			ns.SetField(n, bt.BalanceField, bt.newNodeBalance(n, ipaddr))
+		case Disconnected:
+			node, _ := ns.GetField(n, bt.BalanceField).(*NodeBalance)
+			if node == nil {
+				return
 			}
-			ns.SetState(node, nodestate.Flags{}, bt.PriorityFlag, 0)
-			ns.SetField(node, bt.BalanceField, nil)
+			node.deactivate()
+			ns.SetState(n, nodestate.Flags{}, bt.PriorityFlag, 0)
+			ns.SetField(n, bt.BalanceField, nil)
+		case Active:
+			node, _ := ns.GetField(n, bt.BalanceField).(*NodeBalance)
+			if node == nil {
+				return
+			}
+			node.activate()
+		case Inactive:
+			node, _ := ns.GetField(n, bt.BalanceField).(*NodeBalance)
+			if node == nil {
+				return
+			}
+			node.deactivate()
 		}
 	})
-
 	// The positive and negative balances of clients are stored in database
 	// and both of these decay exponentially over time. Delete them if the
 	// value is small enough.
@@ -279,7 +296,7 @@ func (bt *BalanceTracker) updateTotalBalance(n *NodeBalance, callback func() boo
 	} else {
 		bt.inactive.SubExp(original)
 	}
-	if n.capacity != 0 {
+	if n.active {
 		bt.active.AddExp(n.balance.pos)
 	} else {
 		bt.inactive.AddExp(n.balance.pos)

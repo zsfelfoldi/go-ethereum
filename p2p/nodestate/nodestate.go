@@ -422,9 +422,6 @@ func (ns *NodeStateMachine) Start() {
 // Stop stops the state machine and saves its state if a database was supplied
 func (ns *NodeStateMachine) Stop() {
 	ns.lock.Lock()
-	if ns.callbackCount != 0 {
-		ns.callbackWait.Wait()
-	}
 	for _, node := range ns.nodes {
 		fields := make([]interface{}, len(node.fields))
 		copy(fields, node.fields)
@@ -708,9 +705,9 @@ func (ns *NodeStateMachine) processCallbacks(node *nodeInfo, list []func()) {
 			node.pendingCallbacks = nil
 		}
 		ns.callbackCount -= len(list)
-		if ns.callbackCount == 0 {
-			ns.callbackWait.Signal()
-		}
+		//if ns.callbackCount == 0 {
+		//	ns.callbackWait.Signal()
+		//}
 		list = node.pendingCallbacks
 		ns.lock.Unlock()
 	}
@@ -872,21 +869,11 @@ func (ns *NodeStateMachine) SetField(n *enode.Node, field Field, value interface
 	}
 
 	state := node.state
-	callback := func() {
-		if len(f.subs) > 0 {
-			for _, cb := range f.subs {
-				cb(n, Flags{mask: state, setup: ns.setup}, oldValue, value)
-			}
-		}
-	}
-	callNow := node.pendingCallbacks == nil
-	node.pendingCallbacks = append(node.pendingCallbacks, callback)
-	ns.callbackCount++
-	list := node.pendingCallbacks
 	ns.lock.Unlock()
-	// call field update subscription callbacks without holding the mutex
-	if callNow {
-		ns.processCallbacks(node, list)
+	if len(f.subs) > 0 {
+		for _, cb := range f.subs {
+			cb(n, Flags{mask: state, setup: ns.setup}, oldValue, value)
+		}
 	}
 	return nil
 }

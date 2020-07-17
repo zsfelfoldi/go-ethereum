@@ -97,12 +97,12 @@ func getBalance(pool *clientPool, p *poolTestPeer) (pos, neg uint64) {
 	temp := pool.ns.GetField(p.node, clientField) == nil
 	if temp {
 		pool.ns.SetState(p.node, clientFlag, nodestate.Flags{}, 0)
-		pool.ns.SetField(p.node, freeIdField, p.freeClientId())
+		pool.ns.SetField(p.node, statusField, lps.NewClientStatus(lps.Connected, p.freeClientId()))
 	}
 	n, _ := pool.ns.GetField(p.node, pool.BalanceField).(*lps.NodeBalance)
 	pos, neg = n.GetBalance()
 	if temp {
-		pool.ns.SetField(p.node, freeIdField, nil)
+		pool.ns.SetField(p.node, statusField, nil)
 		pool.ns.SetState(p.node, nodestate.Flags{}, clientFlag, 0)
 	}
 	return
@@ -207,7 +207,7 @@ func testClientPool(t *testing.T, activeLimit, clientCount, paidCount int, rando
 			min, max = paidMin, paidMax
 		}
 		if connTicks[i] < min || connTicks[i] > max {
-			t.Errorf("Total connected time of test node #%d (%d) outside expected range (%d to %d)", i, connTicks[i], min, max)
+			t.Fatalf("Total connected time of test node #%d (%d) outside expected range (%d to %d)", i, connTicks[i], min, max)
 		}
 	}
 	pool.stop()
@@ -374,12 +374,6 @@ func TestFreeClientKickedOut(t *testing.T) {
 	if cap, _ := pool.connect(newPoolTestPeer(10, kicked), 1); cap != 0 {
 		t.Fatalf("New free client should be rejected")
 	}
-	select {
-	case <-kicked:
-	case <-time.NewTimer(time.Second).C:
-		t.Fatalf("timeout")
-	}
-	pool.disconnect(newPoolTestPeer(10, kicked))
 	clock.Run(5 * time.Minute)
 	for i := 0; i < 10; i++ {
 		pool.connect(newPoolTestPeer(i+10, kicked), 1)

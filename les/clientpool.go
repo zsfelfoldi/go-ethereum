@@ -26,7 +26,6 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	lps "github.com/ethereum/go-ethereum/les/lespay/server"
 	"github.com/ethereum/go-ethereum/les/utils"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/enr"
 	"github.com/ethereum/go-ethereum/p2p/nodestate"
@@ -43,7 +42,12 @@ const (
 	//
 	// todo(rjl493456442) make it configurable. It can be the option of
 	// free trial time!
-	activeBias      = time.Minute * 3
+	activeBias = time.Minute * 3
+
+	// inactiveTimeout is the time allowance for "free" client to keep
+	// the connection. The rational behine it is clientpool can't keep
+	// too many open inactive connections but the time window is enough
+	// for price negotication, token purchase and so on.
 	inactiveTimeout = time.Second * 10
 )
 
@@ -51,14 +55,14 @@ var (
 	clientPoolSetup     = &nodestate.Setup{}
 	clientFlag          = clientPoolSetup.NewFlag("client")
 	clientField         = clientPoolSetup.NewField("clientInfo", reflect.TypeOf(&clientInfo{}))
-	freeIdField         = clientPoolSetup.NewField("freeID", reflect.TypeOf(""))
+	statusField         = clientPoolSetup.NewField("status", reflect.TypeOf(&lps.ClientStatus{}))
 	balanceTrackerSetup = lps.NewBalanceTrackerSetup(clientPoolSetup)
 	priorityPoolSetup   = lps.NewPriorityPoolSetup(clientPoolSetup)
 )
 
 func init() {
-	balanceTrackerSetup.Connect(freeIdField, priorityPoolSetup.CapacityField)
-	priorityPoolSetup.Connect(balanceTrackerSetup.BalanceField, balanceTrackerSetup.UpdateFlag) // NodeBalance implements nodePriority
+	balanceTrackerSetup.Connect(statusField, priorityPoolSetup.CapacityField)
+	priorityPoolSetup.Connect(balanceTrackerSetup.BalanceField, statusField, balanceTrackerSetup.UpdateFlag) // NodeBalance implements nodePriority
 }
 
 // clientPool implements a client database that assigns a priority to each client
@@ -82,6 +86,7 @@ func init() {
 type clientPool struct {
 	lps.BalanceTrackerSetup
 	lps.PriorityPoolSetup
+
 	lock       sync.Mutex
 	clock      mclock.Clock
 	closed     bool
@@ -118,6 +123,7 @@ type clientInfo struct {
 	connected   bool
 	connectedAt mclock.AbsTime
 	balance     *lps.NodeBalance
+	timer       mclock.Timer
 }
 
 // newClientPool creates a new client pool
@@ -141,40 +147,64 @@ func newClientPool(lespayDb ethdb.Database, minCap, freeClientCap uint64, active
 	// set default expiration constants used by tests
 	// Note: server overwrites this if token sale is active
 	pool.bt.SetExpirationTCs(0, defaultNegExpTC)
-	// calculate total token balance amount
 
-	ns.SubscribeState(pool.InactiveFlag.Or(pool.PriorityFlag), func(node *enode.Node, oldState, newState nodestate.Flags) {
-		if newState.Equals(pool.InactiveFlag) {
-			ns.AddTimeout(node, pool.InactiveFlag, inactiveTimeout)
+	ns.SubscribeState(pool.PriorityFlag, func(n *enode.Node, oldState, newState nodestate.Flags) {
+		// Non-priority client -> priority
+		if oldState.IsEmpty() {
+			// Nothing to do here.
 		}
-		if oldState.Equals(pool.InactiveFlag) && newState.Equals(pool.InactiveFlag.Or(pool.PriorityFlag)) {
-			ns.SetState(node, pool.InactiveFlag, nodestate.Flags{}, 0) // remove timeout
-		}
-	})
-
-	ns.SubscribeState(pool.ActiveFlag.Or(pool.PriorityFlag), func(node *enode.Node, oldState, newState nodestate.Flags) {
-		if newState.Equals(pool.ActiveFlag) {
-			cap, _ := ns.GetField(node, pool.CapacityField).(uint64)
-			if cap > freeClientCap {
-				pool.pp.RequestCapacity(node, freeClientCap, 0, true)
-			}
-		}
-	})
-
-	ns.SubscribeState(pool.InactiveFlag.Or(pool.ActiveFlag), func(node *enode.Node, oldState, newState nodestate.Flags) {
-		if oldState.Equals(pool.ActiveFlag) && newState.Equals(pool.InactiveFlag) {
-			c, _ := ns.GetField(node, clientField).(*clientInfo)
-			if c == nil || !c.peer.allowInactive() {
-				pool.disconnectNode(node)
-				return
-			}
-		}
+		// Priority client -> non-priority, demote the capacity
 		if newState.IsEmpty() {
-			pool.disconnectNode(node)
-			pool.removePeer(node.ID())
+			cap, ok := ns.GetField(n, pool.CapacityField).(uint64)
+			if ok && cap > freeClientCap {
+				pool.pp.RequestCapacity(n, freeClientCap, 0, true)
+			}
 		}
 	})
-
+	ns.SubscribeField(statusField, func(n *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
+		if newValue == nil {
+			return // Client is dropped
+		}
+		status := newValue.(*lps.ClientStatus)
+		switch {
+		case status.IsStatus(lps.Connected):
+		case status.IsStatus(lps.Active):
+			// Stop any eviction timer when the client is activated.
+			c := ns.GetField(n, clientField).(*clientInfo)
+			if c.timer != nil {
+				c.timer.Stop()
+				c.timer = nil
+			}
+		case status.IsStatus(lps.Inactive):
+			// Kick out the client if the transition is ACTIVE -> INACTIVE
+			// and inactive mode is not accpeted by the client.
+			//
+			// This clause can be triggered in other conditions:
+			// e.g. CONNECTED -> INACTIVE. In this case, don't apply the action.
+			if oldValue != nil && oldValue.(*lps.ClientStatus).IsStatus(lps.Active) {
+				c := ns.GetField(n, clientField).(*clientInfo)
+				if !c.peer.allowInactive() {
+					pool.disconnectNode(n)
+					pool.removePeer(n.ID())
+					return
+				}
+			}
+			// Otherwise, schedule a timer for eviction if it's a free client.
+			priority := state.HasAll(pool.PriorityFlag)
+			if !priority {
+				c := ns.GetField(n, clientField).(*clientInfo)
+				if c.timer != nil {
+					c.timer.Stop()
+					c.timer = nil
+				}
+				c.timer = pool.clock.AfterFunc(inactiveTimeout, func() {
+					pool.disconnectNode(n)
+					pool.removePeer(n.ID())
+				})
+			}
+		}
+	})
+	// Subscription for capacity updating.
 	ns.SubscribeField(pool.CapacityField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
 		c, _ := ns.GetField(node, clientField).(*clientInfo)
 		if c != nil {
@@ -192,7 +222,7 @@ func (f *clientPool) stop() {
 	f.lock.Lock()
 	f.closed = true
 	f.lock.Unlock()
-	f.ns.ForEach(f.ActiveFlag.Or(f.InactiveFlag), nodestate.Flags{}, func(node *enode.Node, state nodestate.Flags) {
+	f.ns.ForEach(clientFlag, nodestate.Flags{}, func(node *enode.Node, state nodestate.Flags) {
 		// enforces saving all balances in BalanceTracker
 		f.disconnectNode(node)
 	})
@@ -208,14 +238,13 @@ func (f *clientPool) connect(peer clientPoolPeer, reqCapacity uint64) (uint64, e
 
 	// Short circuit if clientPool is already closed.
 	if f.closed {
-		return 0, fmt.Errorf("Client pool is already closed")
+		return 0, fmt.Errorf("client pool is already closed")
 	}
 	// Dedup connected peers.
 	node, freeID := peer.Node(), peer.freeClientId()
 	if f.ns.GetField(node, clientField) != nil {
 		clientRejectedMeter.Mark(1)
-		log.Debug("Client already connected", "address", freeID, "id", peerIdToString(node.ID()))
-		return 0, fmt.Errorf("Client already connected address=%s id=%s", freeID, peerIdToString(node.ID()))
+		return 0, fmt.Errorf("client already connected address=%s id=%s", freeID, peerIdToString(node.ID()))
 	}
 	now := f.clock.Now()
 	c := &clientInfo{
@@ -227,11 +256,10 @@ func (f *clientPool) connect(peer clientPoolPeer, reqCapacity uint64) (uint64, e
 	}
 	f.ns.SetState(node, clientFlag, nodestate.Flags{}, 0)
 	f.ns.SetField(node, clientField, c)
-	f.ns.SetField(node, freeIdField, freeID)
-	if c.balance, _ = f.ns.GetField(node, f.BalanceField).(*lps.NodeBalance); c.balance == nil {
-		f.disconnect(peer)
-		return 0, nil
-	}
+
+	// The connected status will trigger the balance tracker to be initialized
+	f.ns.SetField(node, statusField, lps.NewClientStatus(lps.Connected, freeID))
+	c.balance = f.ns.GetField(node, f.BalanceField).(*lps.NodeBalance)
 	c.balance.SetPriceFactors(f.defaultPosFactors, f.defaultNegFactors)
 	if reqCapacity < f.minCap {
 		reqCapacity = f.minCap
@@ -240,8 +268,8 @@ func (f *clientPool) connect(peer clientPoolPeer, reqCapacity uint64) (uint64, e
 		f.disconnect(peer)
 		return 0, nil
 	}
+	f.ns.SetField(node, statusField, lps.NewClientStatus(lps.Inactive, freeID))
 
-	f.ns.SetState(node, f.InactiveFlag, nodestate.Flags{}, 0)
 	if _, allowed := f.pp.RequestCapacity(node, reqCapacity, activeBias, true); allowed {
 		return reqCapacity, nil
 	}
@@ -260,9 +288,13 @@ func (f *clientPool) disconnect(p clientPoolPeer) {
 
 // disconnectNode removes node fields and flags related to connected status
 func (f *clientPool) disconnectNode(node *enode.Node) {
-	f.ns.SetField(node, freeIdField, nil)
+	// The empty status will lead to these events:
+	//
+	// - Destruct balance tracker
+	// - Evict from priority pool
+	f.ns.SetField(node, statusField, nil)
 	f.ns.SetField(node, clientField, nil)
-	f.ns.SetState(node, nodestate.Flags{}, f.ActiveFlag.Or(f.InactiveFlag).Or(clientFlag), 0)
+	f.ns.SetState(node, nodestate.Flags{}, clientFlag, 0)
 }
 
 // setDefaultFactors sets the default price factors applied to subsequently connected clients
@@ -304,13 +336,10 @@ func (f *clientPool) setCapacity(node *enode.Node, freeID string, capacity uint6
 		c = &clientInfo{node: node}
 		f.ns.SetState(node, clientFlag, nodestate.Flags{}, 0)
 		f.ns.SetField(node, clientField, c)
-		f.ns.SetField(node, freeIdField, freeID)
-		if c.balance, _ = f.ns.GetField(node, f.BalanceField).(*lps.NodeBalance); c.balance == nil {
-			log.Error("BalanceField is missing", "node", node.ID())
-			return 0, fmt.Errorf("BalanceField of %064x is missing", node.ID())
-		}
+		f.ns.SetField(node, statusField, lps.NewClientStatus(lps.Connected, freeID))
+		f.ns.SetField(node, statusField, lps.NewClientStatus(lps.Inactive, freeID))
 		defer func() {
-			f.ns.SetField(node, freeIdField, nil)
+			f.ns.SetField(node, statusField, nil)
 			f.ns.SetField(node, clientField, nil)
 			f.ns.SetState(node, nodestate.Flags{}, clientFlag, 0)
 		}()
@@ -319,7 +348,8 @@ func (f *clientPool) setCapacity(node *enode.Node, freeID string, capacity uint6
 	if allowed {
 		return 0, nil
 	}
-	missing := c.balance.PosBalanceMissing(minPriority, capacity, bias)
+	balance := f.ns.GetField(c.node, balanceTrackerSetup.BalanceField).(*lps.NodeBalance)
+	missing := balance.PosBalanceMissing(minPriority, capacity, bias)
 	if missing < 1 {
 		// ensure that we never return 0 missing and insufficient priority error
 		missing = 1
@@ -344,7 +374,7 @@ func (f *clientPool) forClients(ids []enode.ID, cb func(client *clientInfo)) {
 	defer f.lock.Unlock()
 
 	if len(ids) == 0 {
-		f.ns.ForEach(f.ActiveFlag.Or(f.InactiveFlag), nodestate.Flags{}, func(node *enode.Node, state nodestate.Flags) {
+		f.ns.ForEach(clientFlag, nodestate.Flags{}, func(node *enode.Node, state nodestate.Flags) {
 			c, _ := f.ns.GetField(node, clientField).(*clientInfo)
 			if c != nil {
 				cb(c)
@@ -363,13 +393,11 @@ func (f *clientPool) forClients(ids []enode.ID, cb func(client *clientInfo)) {
 				c = &clientInfo{node: node}
 				f.ns.SetState(node, clientFlag, nodestate.Flags{}, 0)
 				f.ns.SetField(node, clientField, c)
-				f.ns.SetField(node, freeIdField, "")
+				f.ns.SetField(node, statusField, lps.NewClientStatus(lps.Connected, ""))
 				if c.balance, _ = f.ns.GetField(node, f.BalanceField).(*lps.NodeBalance); c.balance != nil {
 					cb(c)
-				} else {
-					log.Error("BalanceField is missing")
 				}
-				f.ns.SetField(node, freeIdField, nil)
+				f.ns.SetField(node, statusField, nil)
 				f.ns.SetField(node, clientField, nil)
 				f.ns.SetState(node, nodestate.Flags{}, clientFlag, 0)
 			}

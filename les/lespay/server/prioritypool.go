@@ -34,32 +34,31 @@ const (
 )
 
 // PriorityPoolSetup contains node state flags and fields used by PriorityPool
-// Note: ActiveFlag and InactiveFlag can be controlled both externally and by the pool,
 // see PriorityPool description for details.
 type PriorityPoolSetup struct {
 	// controlled by PriorityPool
-	ActiveFlag, InactiveFlag       nodestate.Flags
 	CapacityField, ppNodeInfoField nodestate.Field
+
 	// external connections
 	updateFlag    nodestate.Flags
 	priorityField nodestate.Field
+	statusField   nodestate.Field
 }
 
 // NewPriorityPoolSetup creates a new PriorityPoolSetup and initializes the fields
 // and flags controlled by PriorityPool
 func NewPriorityPoolSetup(setup *nodestate.Setup) PriorityPoolSetup {
 	return PriorityPoolSetup{
-		ActiveFlag:      setup.NewFlag("active"),
-		InactiveFlag:    setup.NewFlag("inactive"),
 		CapacityField:   setup.NewField("capacity", reflect.TypeOf(uint64(0))),
 		ppNodeInfoField: setup.NewField("ppNodeInfo", reflect.TypeOf(&ppNodeInfo{})),
 	}
 }
 
 // Connect sets the fields and flags used by PriorityPool as an input
-func (pps *PriorityPoolSetup) Connect(priorityField nodestate.Field, updateFlag nodestate.Flags) {
+func (pps *PriorityPoolSetup) Connect(priorityField, statusField nodestate.Field, updateFlag nodestate.Flags) {
 	pps.priorityField = priorityField // should implement nodePriority
-	pps.updateFlag = updateFlag       // triggers an immediate priority update
+	pps.statusField = statusField
+	pps.updateFlag = updateFlag // triggers an immediate priority update
 }
 
 // PriorityPool handles a set of nodes where each node has a capacity (a scalar value)
@@ -107,6 +106,7 @@ type PriorityPool struct {
 type nodePriority interface {
 	// Priority should return the current priority of the node (higher is better)
 	Priority(now mclock.AbsTime, cap uint64) int64
+
 	// EstMinPriority should return a lower estimate for the minimum of the node priority
 	// value starting from the current moment until the given time. If the priority goes
 	// under the returned estimate before the specified moment then it is the caller's
@@ -137,36 +137,34 @@ func NewPriorityPool(ns *nodestate.NodeStateMachine, setup PriorityPoolSetup, cl
 		minBias:           minBias,
 		capacityStepDiv:   capacityStepDiv,
 	}
-
-	ns.SubscribeField(pp.priorityField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
+	// Subscription for updating node status
+	ns.SubscribeField(setup.statusField, func(n *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
+		status := Disconnected
 		if newValue != nil {
-			c := &ppNodeInfo{
-				node:          node,
-				nodePriority:  newValue.(nodePriority),
-				activeIndex:   -1,
-				inactiveIndex: -1,
-			}
-			ns.SetField(node, pp.ppNodeInfoField, c)
-			if !state.HasNone(pp.ActiveFlag.Or(pp.InactiveFlag)) {
+			status = newValue.(*ClientStatus).status
+		}
+		switch status {
+		case Connected:
+			// Nothing to do during the initialization, still missing prioritier to be set.
+		case Inactive:
+			first := ns.GetField(n, pp.ppNodeInfoField) == nil
+			if first {
+				c := &ppNodeInfo{
+					node:          n,
+					nodePriority:  ns.GetField(n, setup.priorityField).(nodePriority),
+					activeIndex:   -1,
+					inactiveIndex: -1,
+				}
+				ns.SetField(n, pp.ppNodeInfoField, c)
 				pp.connectedNode(c)
 			}
-		} else {
-			ns.SetState(node, nodestate.Flags{}, pp.ActiveFlag.Or(pp.InactiveFlag), 0)
-			ns.SetField(node, pp.ppNodeInfoField, nil)
-		}
-	})
-	ns.SubscribeField(pp.ppNodeInfoField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
-		if newValue == nil {
-			pp.disconnectedNode(oldValue.(*ppNodeInfo))
-		}
-	})
-	ns.SubscribeState(pp.ActiveFlag.Or(pp.InactiveFlag), func(node *enode.Node, oldState, newState nodestate.Flags) {
-		if c, _ := pp.ns.GetField(node, pp.ppNodeInfoField).(*ppNodeInfo); c != nil {
-			if oldState.IsEmpty() {
-				pp.connectedNode(c)
-			}
-			if newState.IsEmpty() {
-				pp.disconnectedNode(c)
+		case Active:
+		case Disconnected:
+			field, _ := ns.GetField(n, pp.ppNodeInfoField).(*ppNodeInfo)
+			if field != nil {
+				ns.SetField(n, pp.ppNodeInfoField, nil)
+				ns.SetField(n, pp.CapacityField, nil)
+				pp.disconnectedNode(field)
 			}
 		}
 	})
@@ -300,7 +298,7 @@ func (pp *PriorityPool) inactivePriority(p *ppNodeInfo) int64 {
 	return p.nodePriority.Priority(pp.clock.Now(), pp.minCap)
 }
 
-// connectedNode is called when a new node has been added to the pool (InactiveFlag set)
+// connectedNode is called when a new node has been added to the pool.
 func (pp *PriorityPool) connectedNode(c *ppNodeInfo) {
 	pp.lock.Lock()
 	pp.activeQueue.Refresh()
@@ -318,8 +316,7 @@ func (pp *PriorityPool) connectedNode(c *ppNodeInfo) {
 	updates = pp.tryActivate()
 }
 
-// disconnectedNode is called when a node has been removed from the pool (both InactiveFlag
-// and ActiveFlag reset)
+// disconnectedNode is called when a node has been removed from the pool.
 func (pp *PriorityPool) disconnectedNode(c *ppNodeInfo) {
 	pp.lock.Lock()
 	pp.activeQueue.Refresh()
@@ -431,16 +428,16 @@ type capUpdate struct {
 	oldCap, newCap uint64
 }
 
-// updateFlags performs CapacityField and ActiveFlag/InactiveFlag updates while the
+// updateFlags performs CapacityField and status updates while the
 // pool mutex is not held
 func (pp *PriorityPool) updateFlags(updates []capUpdate) {
 	for _, f := range updates {
 		pp.ns.SetField(f.node, pp.CapacityField, f.newCap)
 		if f.oldCap == 0 {
-			pp.ns.SetState(f.node, pp.ActiveFlag, pp.InactiveFlag, 0)
+			pp.ns.SetField(f.node, pp.statusField, pp.ns.GetField(f.node, pp.statusField).(*ClientStatus).WithStatus(Active))
 		}
 		if f.newCap == 0 {
-			pp.ns.SetState(f.node, pp.InactiveFlag, pp.ActiveFlag, 0)
+			pp.ns.SetField(f.node, pp.statusField, pp.ns.GetField(f.node, pp.statusField).(*ClientStatus).WithStatus(Inactive))
 		}
 	}
 }
@@ -479,11 +476,11 @@ func (pp *PriorityPool) updatePriority(node *enode.Node) {
 	if c == nil || !c.connected {
 		return
 	}
-	pp.activeQueue.Remove(c.activeIndex)
-	pp.inactiveQueue.Remove(c.inactiveIndex)
 	if c.capacity != 0 {
+		pp.activeQueue.Remove(c.activeIndex)
 		pp.activeQueue.Push(c)
 	} else {
+		pp.inactiveQueue.Remove(c.inactiveIndex)
 		pp.inactiveQueue.Push(c, pp.inactivePriority(c))
 	}
 	updates = pp.tryActivate()

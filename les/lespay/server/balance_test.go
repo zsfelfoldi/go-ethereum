@@ -17,6 +17,7 @@
 package server
 
 import (
+	"math/rand"
 	"reflect"
 	"testing"
 	"time"
@@ -30,13 +31,13 @@ import (
 )
 
 var (
-	testFlag    = testSetup.NewFlag("testFlag")
-	nbKeyField  = testSetup.NewField("nbKey", reflect.TypeOf(""))
+	dummyFlag   = testSetup.NewFlag("dummy")
+	statusField = testSetup.NewField("status", reflect.TypeOf(&ClientStatus{}))
 	btTestSetup = NewBalanceTrackerSetup(testSetup)
 )
 
 func init() {
-	btTestSetup.Connect(nbKeyField, ppTestSetup.CapacityField)
+	btTestSetup.Connect(statusField, ppTestSetup.CapacityField)
 }
 
 type zeroExpirer struct{}
@@ -54,8 +55,7 @@ type balanceTestSetup struct {
 func newBalanceTestSetup() *balanceTestSetup {
 	clock := &mclock.Simulated{}
 	ns := nodestate.NewNodeStateMachine(nil, nil, clock, testSetup)
-	db := memorydb.New()
-	bt := NewBalanceTracker(ns, btTestSetup, db, clock, zeroExpirer{}, zeroExpirer{})
+	bt := NewBalanceTracker(ns, btTestSetup, memorydb.New(), clock, zeroExpirer{}, zeroExpirer{})
 	ns.Start()
 	return &balanceTestSetup{
 		clock: clock,
@@ -66,16 +66,52 @@ func newBalanceTestSetup() *balanceTestSetup {
 
 func (b *balanceTestSetup) newNode(capacity uint64) *NodeBalance {
 	node := enode.SignNull(&enr.Record{}, enode.ID{})
-	b.ns.SetState(node, testFlag, nodestate.Flags{}, 0)
-	b.ns.SetField(node, btTestSetup.negBalanceKeyField, "")
+	b.ns.SetState(node, dummyFlag, nodestate.Flags{}, 0)
+	b.ns.SetField(node, btTestSetup.statusField, NewClientStatus(Connected, ""))
 	b.ns.SetField(node, ppTestSetup.CapacityField, capacity)
-	n, _ := b.ns.GetField(node, btTestSetup.BalanceField).(*NodeBalance)
-	return n
+	b.ns.SetField(node, btTestSetup.statusField, NewClientStatus(Active, ""))
+	return b.ns.GetField(node, btTestSetup.BalanceField).(*NodeBalance)
 }
 
 func (b *balanceTestSetup) stop() {
 	b.bt.Stop()
 	b.ns.Stop()
+}
+
+func TestAddBalance(t *testing.T) {
+	b := newBalanceTestSetup()
+	defer b.stop()
+
+	node := b.newNode(1000)
+	var inputs = []struct {
+		delta     int64
+		expect    [2]uint64
+		total     uint64
+		expectErr bool
+	}{
+		{100, [2]uint64{0, 100}, 100, false},
+		{-100, [2]uint64{100, 0}, 0, false},
+		{-100, [2]uint64{0, 0}, 0, false},
+		{1, [2]uint64{0, 1}, 1, false},
+		{maxBalance, [2]uint64{0, 0}, 0, true},
+	}
+	for _, i := range inputs {
+		old, new, err := node.AddBalance(i.delta)
+		if i.expectErr {
+			if err == nil {
+				t.Fatalf("Expect get error but nil")
+			}
+			continue
+		} else if err != nil {
+			t.Fatalf("Expect get no error but %v", err)
+		}
+		if old != i.expect[0] || new != i.expect[1] {
+			t.Fatalf("Positive balance mismatch, got %v -> %v", old, new)
+		}
+		if b.bt.TotalTokenAmount() != i.total {
+			t.Fatalf("Total positive balance mismatch, want %v, got %v", i.total, b.bt.TotalTokenAmount())
+		}
+	}
 }
 
 func TestSetBalance(t *testing.T) {
@@ -232,6 +268,128 @@ func TestEstimatedPriority(t *testing.T) {
 		if priority != i.priority {
 			t.Fatalf("Estimated priority mismatch, want %v, got %v", i.priority, priority)
 		}
+	}
+}
+
+func TestPosBalanceMissing(t *testing.T) {
+	b := newBalanceTestSetup()
+	defer b.stop()
+	node := b.newNode(1000)
+	node.SetPriceFactors(PriceFactors{1, 0, 1}, PriceFactors{1, 0, 1})
+
+	var inputs = []struct {
+		pos, neg uint64
+		priority int64
+		cap      uint64
+		after    time.Duration
+		expect   uint64
+	}{
+		{uint64(time.Second * 2), 0, 0, 1, time.Second, 0},
+		{uint64(time.Second * 2), 0, 0, 1, 2 * time.Second, 1},
+		{uint64(time.Second * 2), 0, int64(time.Second), 1, 2 * time.Second, uint64(time.Second) + 1},
+		{0, 0, int64(time.Second), 1, time.Second, uint64(2*time.Second) + 1},
+		{0, 0, -int64(time.Second), 1, time.Second, 1},
+	}
+	for _, i := range inputs {
+		node.SetBalance(i.pos, i.neg)
+		got := node.PosBalanceMissing(i.priority, i.cap, i.after)
+		if got != i.expect {
+			t.Fatalf("Missing budget mismatch, want %v, got %v", i.expect, got)
+		}
+	}
+}
+
+func TestStatusSwitch(t *testing.T) {
+	b := newBalanceTestSetup()
+	defer b.stop()
+	node := b.newNode(1000000)
+	node.SetPriceFactors(PriceFactors{1, 0, 1}, PriceFactors{1, 0, 1})
+
+	var steps = []struct {
+		run      func()
+		pos, neg uint64
+	}{
+		{
+			func() {
+				s := b.ns.GetField(node.node, statusField).(*ClientStatus)
+				b.ns.SetField(node.node, statusField, s.WithStatus(Inactive))
+
+				b.clock.Run(time.Second)
+			}, 0, 0, // No cost
+		},
+		{
+			func() {
+				s := b.ns.GetField(node.node, statusField).(*ClientStatus)
+				b.ns.SetField(node.node, statusField, s.WithStatus(Active))
+
+				b.clock.Run(time.Second)
+			}, 0, uint64(time.Second), // Accumulate negative balance
+		},
+		{
+			func() {
+				s := b.ns.GetField(node.node, statusField).(*ClientStatus)
+				b.ns.SetField(node.node, statusField, s.WithStatus(Inactive))
+
+				b.clock.Run(time.Second)
+			}, 0, uint64(time.Second), // No token deduction when inactive
+		},
+		{
+			func() {
+				node.RequestServed(uint64(time.Second))
+			}, 0, uint64(2 * time.Second), // Request cost is still applied when inactive
+		},
+	}
+	for _, step := range steps {
+		step.run()
+		b := b.ns.GetField(node.node, btTestSetup.BalanceField).(*NodeBalance)
+		pos, neg := b.GetBalance()
+		if pos != step.pos {
+			t.Fatalf("Positive balance mismatch, want=%v, got=%v", step.pos, pos)
+		}
+		if neg != step.neg {
+			t.Fatalf("Negative balance mismatch, want=%v, got=%v", step.neg, neg)
+		}
+	}
+}
+
+func TestPostiveBalanceCounting(t *testing.T) {
+	b := newBalanceTestSetup()
+	defer b.stop()
+
+	var nodes []*NodeBalance
+	for i := 0; i < 100; i += 1 {
+		node := b.newNode(1000000)
+		node.SetPriceFactors(PriceFactors{1, 0, 1}, PriceFactors{1, 0, 1})
+		nodes = append(nodes, node)
+	}
+
+	// Allocate service token
+	var sum uint64
+	for i := 0; i < 100; i += 1 {
+		amount := int64(rand.Intn(100) + 100)
+		nodes[i].AddBalance(amount)
+		sum += uint64(amount)
+	}
+	if b.bt.TotalTokenAmount() != sum {
+		t.Fatalf("Invalid token amount")
+	}
+
+	// Change client status
+	for i := 0; i < 100; i += 1 {
+		if rand.Intn(2) == 0 {
+			b.ns.SetField(nodes[i].node, statusField, NewClientStatus(Active, ""))
+		}
+	}
+	if b.bt.TotalTokenAmount() != sum {
+		t.Fatalf("Invalid token amount")
+	}
+	for i := 0; i < 100; i += 1 {
+		if rand.Intn(2) == 0 {
+			b.ns.SetField(nodes[i].node, statusField, NewClientStatus(Inactive, ""))
+		}
+	}
+	if b.bt.TotalTokenAmount() != sum {
+		t.Fatalf("Invalid token amount")
 	}
 }
 
