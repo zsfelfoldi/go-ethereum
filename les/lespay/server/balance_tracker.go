@@ -262,30 +262,34 @@ func (bt *BalanceTracker) canDropBalance(now mclock.AbsTime, neg bool, b utils.E
 	}
 }
 
-// switchBalance switchs the status of service token.
-func (bt *BalanceTracker) switchBalance(amount utils.ExpiredValue, active bool) {
+// updateTotalBalance adjusts the total balance after executing given callback.
+func (bt *BalanceTracker) updateTotalBalance(n *NodeBalance, callback func() bool) {
 	bt.lock.Lock()
 	defer bt.lock.Unlock()
 
-	if !active {
-		bt.active.SubExp(amount)
-		bt.inactive.AddExp(amount)
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	var (
+		original utils.ExpiredValue
+		active   bool
+	)
+	if n.capacity != 0 {
+		original, active = n.balance.pos, true
+	} else {
+		original, active = n.balance.neg, false
+	}
+	if !callback() {
 		return
 	}
-	bt.active.AddExp(amount)
-	bt.inactive.SubExp(amount)
-}
-
-// adjustBalance adjusts the amount of service token.
-func (bt *BalanceTracker) adjustBalance(old, new utils.ExpiredValue, active bool) {
-	bt.lock.Lock()
-	defer bt.lock.Unlock()
-
-	if !active {
-		bt.inactive.SubExp(old)
-		bt.inactive.AddExp(new)
-		return
+	if active {
+		bt.active.SubExp(original)
+	} else {
+		bt.inactive.SubExp(original)
 	}
-	bt.active.SubExp(old)
-	bt.active.AddExp(new)
+	if n.capacity != 0 {
+		bt.active.AddExp(n.balance.pos)
+	} else {
+		bt.inactive.AddExp(n.balance.pos)
+	}
 }

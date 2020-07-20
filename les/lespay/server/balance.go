@@ -117,33 +117,40 @@ func (n *NodeBalance) GetRawBalance() (utils.ExpiredValue, utils.ExpiredValue) {
 // unchanged) while adding a negative amount higher than the current balance results in
 // zero balance.
 func (n *NodeBalance) AddBalance(amount int64) (uint64, uint64, error) {
-	n.lock.Lock()
-	now := n.bt.clock.Now()
-	n.updateBalance(now)
+	var (
+		err         error
+		old, new    uint64
+		setPriority bool
+	)
+	n.bt.updateTotalBalance(n, func() bool {
+		now := n.bt.clock.Now()
+		n.updateBalance(now)
 
-	// Ensure the given amount is valid to apply.
-	offset := n.bt.posExp.LogOffset(now)
-	oldValue := n.balance.pos.Value(offset)
-	if amount > 0 && (amount > maxBalance || oldValue > maxBalance-uint64(amount)) {
-		return oldValue, oldValue, errBalanceOverflow
+		// Ensure the given amount is valid to apply.
+		offset := n.bt.posExp.LogOffset(now)
+		old = n.balance.pos.Value(offset)
+		if amount > 0 && (amount > maxBalance || old > maxBalance-uint64(amount)) {
+			err = errBalanceOverflow
+			return false
+		}
+
+		// Update the total positive balance counter.
+		n.balance.pos.Add(amount, offset)
+		setPriority = n.checkPriorityStatus()
+		n.checkCallbacks(now)
+		new = n.balance.pos.Value(offset)
+		n.storeBalance(true, false)
+		return true
+	})
+	if err != nil {
+		return old, old, err
 	}
-
-	// Update the total positive balance counter.
-	origin := n.balance.pos
-	n.balance.pos.Add(amount, offset)
-	setPriority := n.checkPriorityStatus()
-	n.checkCallbacks(now)
-	newValue := n.balance.pos.Value(offset)
-	n.storeBalance(true, false)
-	n.bt.adjustBalance(origin, n.balance.pos, n.capacity != 0)
-	n.lock.Unlock()
-
 	if setPriority {
 		n.bt.ns.SetState(n.node, n.bt.PriorityFlag, nodestate.Flags{}, 0)
 	}
 	n.signalPriorityUpdate()
 
-	return oldValue, newValue, nil
+	return old, new, nil
 }
 
 // SetBalance sets the positive and negative balance to the given values
@@ -151,24 +158,21 @@ func (n *NodeBalance) SetBalance(pos, neg uint64) error {
 	if pos > maxBalance || neg > maxBalance {
 		return errBalanceOverflow
 	}
-	n.lock.Lock()
-	now := n.bt.clock.Now()
-	n.updateBalance(now)
+	var setPriority bool
+	n.bt.updateTotalBalance(n, func() bool {
+		now := n.bt.clock.Now()
+		n.updateBalance(now)
 
-	// Update the total positive balance counter.
-	origin := n.balance.pos
-	var pb, nb utils.ExpiredValue
-	pb.Add(int64(pos), n.bt.posExp.LogOffset(now))
-	nb.Add(int64(neg), n.bt.negExp.LogOffset(now))
-
-	n.balance.pos = pb
-	n.balance.neg = nb
-	setPriority := n.checkPriorityStatus()
-	n.checkCallbacks(now)
-	n.storeBalance(true, true)
-	n.bt.adjustBalance(origin, n.balance.pos, n.capacity != 0)
-	n.lock.Unlock()
-
+		var pb, nb utils.ExpiredValue
+		pb.Add(int64(pos), n.bt.posExp.LogOffset(now))
+		nb.Add(int64(neg), n.bt.negExp.LogOffset(now))
+		n.balance.pos = pb
+		n.balance.neg = nb
+		setPriority = n.checkPriorityStatus()
+		n.checkCallbacks(now)
+		n.storeBalance(true, true)
+		return true
+	})
 	if setPriority {
 		n.bt.ns.SetState(n.node, n.bt.PriorityFlag, nodestate.Flags{}, 0)
 	}
@@ -304,20 +308,20 @@ func (n *NodeBalance) GetPriceFactors() (posFactor, negFactor PriceFactors) {
 
 // deactivate stops time/capacity cost deduction and saves the balances in the database
 func (n *NodeBalance) deactivate(close bool) {
-	n.lock.Lock()
-	defer n.lock.Unlock()
-	if n.closed || n.capacity == 0 {
-		return
-	}
-	n.updateBalance(n.bt.clock.Now())
-	n.capacity = 0
-	if n.updateEvent != nil {
-		n.updateEvent.Stop()
-		n.updateEvent = nil
-	}
-	n.storeBalance(true, true)
-	n.bt.switchBalance(n.balance.pos, false)
-	n.closed = close
+	n.bt.updateTotalBalance(n, func() bool {
+		if n.closed || n.capacity == 0 {
+			return false
+		}
+		n.updateBalance(n.bt.clock.Now())
+		n.capacity = 0
+		if n.updateEvent != nil {
+			n.updateEvent.Stop()
+			n.updateEvent = nil
+		}
+		n.storeBalance(true, true)
+		n.closed = close
+		return true
+	})
 }
 
 // updateBalance updates balance based on the time factor
@@ -468,19 +472,16 @@ func (n *NodeBalance) setCapacity(capacity uint64) {
 	if capacity == 0 {
 		panic(nil)
 	}
-	n.lock.Lock()
-	defer n.lock.Unlock()
-
-	if n.closed {
-		return
-	}
-	now := n.bt.clock.Now()
-	n.updateBalance(now)
-	if n.capacity == 0 {
-		n.bt.switchBalance(n.balance.pos, false)
-	}
-	n.capacity = capacity
-	n.checkCallbacks(now)
+	n.bt.updateTotalBalance(n, func() bool {
+		if n.closed {
+			return false
+		}
+		now := n.bt.clock.Now()
+		n.updateBalance(now)
+		n.capacity = capacity
+		n.checkCallbacks(now)
+		return true
+	})
 }
 
 // balanceToPriority converts a balance to a priority value. Lower priority means
