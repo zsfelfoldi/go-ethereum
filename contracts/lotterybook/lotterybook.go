@@ -89,10 +89,11 @@ var txTimeout = 5 * time.Minute // The maxmium waiting time for blockchain to in
 
 // Lottery defines the minimal required fields
 type Lottery struct {
-	Id           common.Hash      // The id of lottery
-	Amount       uint64           // The amount of lottery
-	RevealNumber uint64           // The reveal number of lottery
-	Receivers    []common.Address // A batch of receivers included in this lottery
+	Id              common.Hash      // The id of lottery
+	Amount          uint64           // The amount of lottery
+	RevealNumber    uint64           // The reveal number of lottery
+	TransactionCost uint64           //TODO implement
+	Receivers       []common.Address // A batch of receivers included in this lottery
 }
 
 // hasReceiver returns an indicator whether the given address is the
@@ -145,6 +146,7 @@ type LotteryStatus int
 const (
 	LotteryPending LotteryStatus = iota
 	LotteryActive
+	LotteryRevealSoon //TODO implement; in this state it is too late to write cheques and too early to cash the winner
 	LotteryRevealed
 	LotteryExpired
 )
