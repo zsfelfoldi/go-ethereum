@@ -270,15 +270,7 @@ func (bt *BalanceTracker) updateTotalBalance(n *NodeBalance, callback func() boo
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
-	var (
-		original utils.ExpiredValue
-		active   bool
-	)
-	if n.capacity != 0 {
-		original, active = n.balance.pos, true
-	} else {
-		original, active = n.balance.neg, false
-	}
+	original, active := n.balance.pos, n.capacity != 0
 	if !callback() {
 		return
 	}
