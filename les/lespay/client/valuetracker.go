@@ -48,6 +48,7 @@ type NodeValueTracker struct {
 	rtStats, lastRtStats ResponseTimeStats
 	lastTransfer         mclock.AbsTime
 	basket               serverBasket
+	tokens               tokenMirror
 	reqCosts             []uint64
 	reqValues            *[]float64
 }
