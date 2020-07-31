@@ -235,3 +235,128 @@ func (rt ResponseTimeStats) Distribution(normalized bool, expFactor utils.Expira
 	}
 	return
 }
+
+type expFilter struct {
+	value    utils.ExpiredValue
+	logShift int
+}
+
+func (ef *expFilter) add(amount int64, logOffset utils.Fixed64) {
+	ef.value.Add(amount, logOffset>>ef.logShift)
+}
+
+func (ef *expFilter) value(logOffset utils.Fixed64) {
+	return ef.value.Value(logOffset >> ef.logShift)
+}
+
+type quadExpFilter struct {
+	timeConst, expSum, quadExpSum float64
+}
+
+func (qf *quadExpFilter) add(value, dt, exp float64) {
+	e := math.Expm1(dt * qf.timeConst)
+	qf.expSum += value
+	d := qf.expSum * e
+	qf.quadExpSum += qf.expSum*d*(-1-e*0.5)*qf.timeConst + qf.quadExpSum*exp
+	qf.expSum += d
+}
+
+type usagePatternStats struct {
+	lock            sync.RWMutex
+	lastUpdate      int64  // 64bit aligned mclock.AbsTime
+	lastSumValue    uint64 // 64bit aligned
+	usageFilters    []expFilter
+	usageExpirer    utils.Expirer
+	capacityFilters []quadExpFilter
+	capExpRate      float64
+}
+
+// call add(now, 0) to update before accessing the contents of the filters
+func (ups *usagePatternStats) add(now mclock.AbsTime, value uint64) {
+	for {
+		lastUpdate := mclock.AbsTime(atomic.LoadInt64(&ups.lastUpdate))
+		dt := time.Duration(now - lastUpdate)
+		if dt < time.Millisecond*50 {
+			atomic.AddUint64(&ups.lastSumValue, value)
+			return
+		}
+		lastSumValue := atomic.LoadUint64(&ups.lastSumValue)
+		ups.lock.Lock()
+		if atomic.CompareAndSwapInt64(&ups.lastUpdate, int64(lastUpdate), int64(now)) {
+			// add lastSumValue to the filters at lastUpdate
+			// current value is not added to the filters yet
+			// make sure that if another thread added some value since the load then it is not lost
+			atomic.AddUint64(&ups.lastSumValue, value-lastSumValue)
+			sumValue := float64(lastSumValue)
+			dtf := float64(dt)
+			exp := math.Expm1(dtf * ups.capExpRate)
+			logOffset := ups.usageExpirer.LogOffset(now)
+			for i := range ups.usageFilters {
+				ups.usageFilters[i].add(int64(lastSumValue), logOffset)
+			}
+			for i := range ups.capacityFilters {
+				ups.capacityFilters[i].add(sumValue, dtf, exp)
+			}
+			ups.lock.Unlock()
+			return
+		}
+		ups.lock.Unlock()
+	}
+}
+
+func (ups *usagePatternStats) predictDemand(now mclock.AbsTime, dt time.Duration) float64 {
+	r := float64(dt) / float64(firstUsageFilterTC)
+	i := -1
+	if r >= 1 {
+		i = int(math.Log2(r))
+	}
+	if i > len(ups.usageFilters)-2 {
+		i = len(ups.usageFilters) - 2
+	}
+	var r1, v1 float64
+	logOffset := ups.usageExpirer.LogOffset(now)
+	if i >= 0 {
+		r1 = float64(uint64(1) << i)
+		v1 = float64(ups.usageFilters[i].value(logOffset))
+	}
+	i++
+	r2 := float64(uint64(1) << i)
+	v2 := float64(ups.usageFilters[i].value(logOffset))
+	return v1 + (v2-v1)*(r-r1)/(r2-r1)
+}
+
+func (ups *usagePatternStats) predictTime(now mclock.AbsTime, demand float64) (float64, float64) {
+	logOffset := ups.usageExpirer.LogOffset(now)
+	i1 := -1
+	i2 := len(ups.usageFilters) - 1
+	v1 := float64(0)
+	v2 := float64(ups.usageFilters[i2].value(logOffset))
+	for i2 > i1+1 {
+		i := (i1 + i2) / 2
+		v := float64(ups.usageFilters[i].value(logOffset))
+		if v > demand {
+			i2 = i
+			v2 = v
+		} else {
+			i1 = i
+			v1 = v
+		}
+	}
+	r1 := float64(uint64(1) << i1)
+	r2 := float64(uint64(1) << i2)
+	var r float64
+	if v2-v1 > 1e-100 {
+		r = r1 + (r2-r1)*(demand-v1)/(v2-v1)
+	} else {
+		if demand > v1 {
+			r = r2
+		} else {
+			r = r1
+		}
+	}
+	return time.Duration(r * float64(firstUsageFilterTC))
+}
+
+func (ups *usagePatternStats) capacityRatio(bufLimitRatio float64) float64 {
+
+}
