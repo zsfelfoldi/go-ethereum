@@ -97,12 +97,12 @@ func getBalance(pool *clientPool, p *poolTestPeer) (pos, neg uint64) {
 	temp := pool.ns.GetField(p.node, clientField) == nil
 	if temp {
 		pool.ns.SetState(p.node, clientFlag, nodestate.Flags{}, 0)
-		pool.ns.SetField(p.node, freeIdField, p.freeClientId())
+		pool.ns.SetField(p.node, connAddressField, p.freeClientId())
 	}
 	n, _ := pool.ns.GetField(p.node, pool.BalanceField).(*lps.NodeBalance)
 	pos, neg = n.GetBalance()
 	if temp {
-		pool.ns.SetField(p.node, freeIdField, nil)
+		pool.ns.SetField(p.node, connAddressField, nil)
 		pool.ns.SetState(p.node, nodestate.Flags{}, clientFlag, 0)
 	}
 	return

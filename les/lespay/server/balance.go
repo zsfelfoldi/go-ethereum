@@ -49,9 +49,6 @@ type PriceFactors struct {
 
 // timePrice returns the price of connection per nanosecond at the given capacity
 func (p PriceFactors) timePrice(cap uint64) float64 {
-	if cap == 0 {
-		return 0 // no pricing applied for inactive nodes
-	}
 	return p.TimeFactor + float64(cap)*p.CapacityFactor/1000000
 }
 
@@ -62,8 +59,9 @@ type NodeBalance struct {
 	bt                               *BalanceTracker
 	lock                             sync.RWMutex
 	node                             *enode.Node
-	negBalanceKey                    string
-	priorityFlag, closed             bool
+	connAddress                      string
+	active                           bool
+	priority                         bool
 	capacity                         uint64
 	balance                          balance
 	posFactor, negFactor             PriceFactors
@@ -185,9 +183,6 @@ func (n *NodeBalance) RequestServed(cost uint64) uint64 {
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
-	if n.closed {
-		return 0
-	}
 	now := n.bt.clock.Now()
 	n.updateBalance(now)
 	fcost := float64(cost)
@@ -289,9 +284,6 @@ func (n *NodeBalance) SetPriceFactors(posFactor, negFactor PriceFactors) {
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
-	if n.closed {
-		return
-	}
 	now := n.bt.clock.Now()
 	n.updateBalance(now)
 	n.posFactor, n.negFactor = posFactor, negFactor
@@ -306,27 +298,38 @@ func (n *NodeBalance) GetPriceFactors() (posFactor, negFactor PriceFactors) {
 	return n.posFactor, n.negFactor
 }
 
-// deactivate stops time/capacity cost deduction and saves the balances in the database
-func (n *NodeBalance) deactivate(close bool) {
+// activate starts time/capacity cost deduction.
+func (n *NodeBalance) activate() {
 	n.bt.updateTotalBalance(n, func() bool {
-		if n.closed || n.capacity == 0 {
+		if n.active {
+			return false
+		}
+		n.active = true
+		n.lastUpdate = n.bt.clock.Now()
+		return true
+	})
+}
+
+// deactivate stops time/capacity cost deduction and saves the balances in the database
+func (n *NodeBalance) deactivate() {
+	n.bt.updateTotalBalance(n, func() bool {
+		if !n.active {
 			return false
 		}
 		n.updateBalance(n.bt.clock.Now())
-		n.capacity = 0
 		if n.updateEvent != nil {
 			n.updateEvent.Stop()
 			n.updateEvent = nil
 		}
 		n.storeBalance(true, true)
-		n.closed = close
+		n.active = false
 		return true
 	})
 }
 
 // updateBalance updates balance based on the time factor
 func (n *NodeBalance) updateBalance(now mclock.AbsTime) {
-	if now > n.lastUpdate {
+	if n.active && now > n.lastUpdate {
 		n.balance = n.reducedBalance(now, n.capacity, 0)
 		n.lastUpdate = now
 	}
@@ -338,7 +341,7 @@ func (n *NodeBalance) storeBalance(pos, neg bool) {
 		n.bt.storeBalance(n.node.ID().Bytes(), false, n.balance.pos)
 	}
 	if neg {
-		n.bt.storeBalance([]byte(n.negBalanceKey), true, n.balance.neg)
+		n.bt.storeBalance([]byte(n.connAddress), true, n.balance.neg)
 	}
 }
 
@@ -443,7 +446,7 @@ func (n *NodeBalance) updateAfter(dt time.Duration) {
 func (n *NodeBalance) balanceExhausted() {
 	n.lock.Lock()
 	n.storeBalance(true, false)
-	n.priorityFlag = false
+	n.priority = false
 	n.lock.Unlock()
 	n.bt.ns.SetState(n.node, nodestate.Flags{}, n.bt.PriorityFlag, 0)
 }
@@ -452,8 +455,8 @@ func (n *NodeBalance) balanceExhausted() {
 // callback if necessary. It assumes that the balance has been recently updated.
 // Note that the priority flag has to be set by the caller after the mutex has been released.
 func (n *NodeBalance) checkPriorityStatus() bool {
-	if !n.priorityFlag && !n.balance.pos.IsZero() {
-		n.priorityFlag = true
+	if !n.priority && !n.balance.pos.IsZero() {
+		n.priority = true
 		n.addCallback(balanceCallbackZero, 0, func() { n.balanceExhausted() })
 		return true
 	}
@@ -469,19 +472,13 @@ func (n *NodeBalance) signalPriorityUpdate() {
 // setCapacity updates the capacity value used for priority calculation
 // Note: capacity should never be zero
 func (n *NodeBalance) setCapacity(capacity uint64) {
-	if capacity == 0 {
-		panic(nil)
-	}
-	n.bt.updateTotalBalance(n, func() bool {
-		if n.closed {
-			return false
-		}
-		now := n.bt.clock.Now()
-		n.updateBalance(now)
-		n.capacity = capacity
-		n.checkCallbacks(now)
-		return true
-	})
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	now := n.bt.clock.Now()
+	n.updateBalance(now)
+	n.capacity = capacity
+	n.checkCallbacks(now)
 }
 
 // balanceToPriority converts a balance to a priority value. Lower priority means

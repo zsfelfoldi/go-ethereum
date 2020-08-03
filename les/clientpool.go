@@ -51,13 +51,13 @@ var (
 	clientPoolSetup     = &nodestate.Setup{}
 	clientFlag          = clientPoolSetup.NewFlag("client")
 	clientField         = clientPoolSetup.NewField("clientInfo", reflect.TypeOf(&clientInfo{}))
-	freeIdField         = clientPoolSetup.NewField("freeID", reflect.TypeOf(""))
+	connAddressField    = clientPoolSetup.NewField("connAddr", reflect.TypeOf(""))
 	balanceTrackerSetup = lps.NewBalanceTrackerSetup(clientPoolSetup)
 	priorityPoolSetup   = lps.NewPriorityPoolSetup(clientPoolSetup)
 )
 
 func init() {
-	balanceTrackerSetup.Connect(freeIdField, priorityPoolSetup.CapacityField)
+	balanceTrackerSetup.Connect(connAddressField, priorityPoolSetup.CapacityField, priorityPoolSetup.ActiveFlag, priorityPoolSetup.InactiveFlag)
 	priorityPoolSetup.Connect(balanceTrackerSetup.BalanceField, balanceTrackerSetup.UpdateFlag) // NodeBalance implements nodePriority
 }
 
@@ -227,7 +227,7 @@ func (f *clientPool) connect(peer clientPoolPeer, reqCapacity uint64) (uint64, e
 	}
 	f.ns.SetState(node, clientFlag, nodestate.Flags{}, 0)
 	f.ns.SetField(node, clientField, c)
-	f.ns.SetField(node, freeIdField, freeID)
+	f.ns.SetField(node, connAddressField, freeID)
 	if c.balance, _ = f.ns.GetField(node, f.BalanceField).(*lps.NodeBalance); c.balance == nil {
 		f.disconnect(peer)
 		return 0, nil
@@ -260,7 +260,7 @@ func (f *clientPool) disconnect(p clientPoolPeer) {
 
 // disconnectNode removes node fields and flags related to connected status
 func (f *clientPool) disconnectNode(node *enode.Node) {
-	f.ns.SetField(node, freeIdField, nil)
+	f.ns.SetField(node, connAddressField, nil)
 	f.ns.SetField(node, clientField, nil)
 	f.ns.SetState(node, nodestate.Flags{}, f.ActiveFlag.Or(f.InactiveFlag).Or(clientFlag), 0)
 }
@@ -304,13 +304,13 @@ func (f *clientPool) setCapacity(node *enode.Node, freeID string, capacity uint6
 		c = &clientInfo{node: node}
 		f.ns.SetState(node, clientFlag, nodestate.Flags{}, 0)
 		f.ns.SetField(node, clientField, c)
-		f.ns.SetField(node, freeIdField, freeID)
+		f.ns.SetField(node, connAddressField, freeID)
 		if c.balance, _ = f.ns.GetField(node, f.BalanceField).(*lps.NodeBalance); c.balance == nil {
 			log.Error("BalanceField is missing", "node", node.ID())
 			return 0, fmt.Errorf("BalanceField of %064x is missing", node.ID())
 		}
 		defer func() {
-			f.ns.SetField(node, freeIdField, nil)
+			f.ns.SetField(node, connAddressField, nil)
 			f.ns.SetField(node, clientField, nil)
 			f.ns.SetState(node, nodestate.Flags{}, clientFlag, 0)
 		}()
@@ -363,13 +363,13 @@ func (f *clientPool) forClients(ids []enode.ID, cb func(client *clientInfo)) {
 				c = &clientInfo{node: node}
 				f.ns.SetState(node, clientFlag, nodestate.Flags{}, 0)
 				f.ns.SetField(node, clientField, c)
-				f.ns.SetField(node, freeIdField, "")
+				f.ns.SetField(node, connAddressField, "")
 				if c.balance, _ = f.ns.GetField(node, f.BalanceField).(*lps.NodeBalance); c.balance != nil {
 					cb(c)
 				} else {
 					log.Error("BalanceField is missing")
 				}
-				f.ns.SetField(node, freeIdField, nil)
+				f.ns.SetField(node, connAddressField, nil)
 				f.ns.SetField(node, clientField, nil)
 				f.ns.SetState(node, nodestate.Flags{}, clientFlag, 0)
 			}
