@@ -41,7 +41,8 @@ type BalanceTrackerSetup struct {
 	PriorityFlag, UpdateFlag nodestate.Flags
 	BalanceField             nodestate.Field
 	// external connections
-	negBalanceKeyField, capacityField nodestate.Field
+	connAddressField, capacityField nodestate.Field
+	activeFlag, inactiveFlag        nodestate.Flags
 }
 
 // NewBalanceTrackerSetup creates a new BalanceTrackerSetup and initializes the fields
@@ -60,13 +61,15 @@ func NewBalanceTrackerSetup(setup *nodestate.Setup) BalanceTrackerSetup {
 }
 
 // Connect sets the fields used by BalanceTracker as an input
-func (bts *BalanceTrackerSetup) Connect(negBalanceKeyField, capacityField nodestate.Field) {
-	bts.negBalanceKeyField = negBalanceKeyField
+func (bts *BalanceTrackerSetup) Connect(connAddressField, capacityField nodestate.Field, activeFlag, inactiveFlag nodestate.Flags) {
+	bts.connAddressField = connAddressField
 	bts.capacityField = capacityField
+	bts.activeFlag = activeFlag
+	bts.inactiveFlag = inactiveFlag
 }
 
 // BalanceTracker tracks positive and negative balances for connected nodes.
-// After negBalanceKeyField is set externally, a NodeBalance is created and previous
+// After connAddressField is set externally, a NodeBalance is created and previous
 // balance values are loaded from the database. Both balances are exponentially expired
 // values. Costs are deducted from the positive balance if present, otherwise added to
 // the negative balance. If the capacity is non-zero then a time cost is applied
@@ -111,23 +114,31 @@ func NewBalanceTracker(ns *nodestate.NodeStateMachine, setup BalanceTrackerSetup
 			log.Error("Capacity field changed while node field is missing")
 			return
 		}
-		newCap, _ := newValue.(uint64)
-		if newCap != 0 {
-			n.setCapacity(newCap)
-		} else {
-			n.deactivate(false)
-		}
+		n.setCapacity(newValue.(uint64))
 	})
 
-	ns.SubscribeField(bt.negBalanceKeyField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
+	ns.SubscribeField(bt.connAddressField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
 		if newValue != nil {
 			ns.SetField(node, bt.BalanceField, bt.newNodeBalance(node, newValue.(string)))
 		} else {
 			if n, _ := ns.GetField(node, bt.BalanceField).(*NodeBalance); n != nil {
-				n.deactivate(true)
+				n.deactivate()
 			}
 			ns.SetState(node, nodestate.Flags{}, bt.PriorityFlag, 0)
 			ns.SetField(node, bt.BalanceField, nil)
+		}
+	})
+
+	ns.SubscribeState(bt.inactiveFlag.Or(bt.activeFlag), func(n *enode.Node, oldState, newState nodestate.Flags) {
+		node, _ := ns.GetField(n, bt.BalanceField).(*NodeBalance)
+		if node == nil {
+			return
+		}
+		if newState.Equals(bt.activeFlag) {
+			node.activate()
+		}
+		if newState.Equals(bt.inactiveFlag) {
+			node.deactivate()
 		}
 	})
 
@@ -227,12 +238,12 @@ func (bt *BalanceTracker) newNodeBalance(node *enode.Node, negBalanceKey string)
 	pb := bt.ndb.getOrNewBalance(node.ID().Bytes(), false)
 	nb := bt.ndb.getOrNewBalance([]byte(negBalanceKey), true)
 	n := &NodeBalance{
-		bt:            bt,
-		node:          node,
-		negBalanceKey: negBalanceKey,
-		balance:       balance{pos: pb, neg: nb},
-		initTime:      bt.clock.Now(),
-		lastUpdate:    bt.clock.Now(),
+		bt:          bt,
+		node:        node,
+		connAddress: negBalanceKey,
+		balance:     balance{pos: pb, neg: nb},
+		initTime:    bt.clock.Now(),
+		lastUpdate:  bt.clock.Now(),
 	}
 	for i := range n.callbackIndex {
 		n.callbackIndex[i] = -1
@@ -270,7 +281,7 @@ func (bt *BalanceTracker) updateTotalBalance(n *NodeBalance, callback func() boo
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
-	original, active := n.balance.pos, n.capacity != 0
+	original, active := n.balance.pos, n.active
 	if !callback() {
 		return
 	}
@@ -279,7 +290,7 @@ func (bt *BalanceTracker) updateTotalBalance(n *NodeBalance, callback func() boo
 	} else {
 		bt.inactive.SubExp(original)
 	}
-	if n.capacity != 0 {
+	if n.active {
 		bt.active.AddExp(n.balance.pos)
 	} else {
 		bt.inactive.AddExp(n.balance.pos)

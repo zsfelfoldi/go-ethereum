@@ -57,7 +57,7 @@ var (
 )
 
 func init() {
-	balanceTrackerSetup.Connect(freeIdField, priorityPoolSetup.CapacityField)
+	balanceTrackerSetup.Connect(connAddressField, priorityPoolSetup.CapacityField, priorityPoolSetup.ActiveFlag, priorityPoolSetup.InactiveFlag)
 	priorityPoolSetup.Connect(balanceTrackerSetup.BalanceField, balanceTrackerSetup.UpdateFlag) // NodeBalance implements nodePriority
 }
 
