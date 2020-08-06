@@ -61,15 +61,6 @@ type blockchain interface {
 	SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) event.Subscription
 }
 
-type depositStatus int
-
-const (
-	depositPending depositStatus = iota
-	depositActiveLong
-	depositActiveShort
-	depositWaitReuse
-)
-
 type DepositCreatorSetup struct {
 	supportedFlag, CanPayFlag    nodestate.Flags
 	allowanceField, addressField nodestate.Field
@@ -324,7 +315,7 @@ func (dc *DepositCreator) updateAllowances(id common.Hash, add bool) {
 					a.oldRemain += a.newRemain
 					a.newTotal, a.newRemain = allowance[0], allowance[1]
 					if a.newTotal != a.newRemain {
-						dc.lastActive.amortizedCost(a.newTotal, 0, a.newTotal-a.newRemain, true)
+						dc.lastActive.balancedSpendingCost(a.newTotal, 0, a.newTotal-a.newRemain, true)
 					}
 				} else {
 					if a.newTotal != allowance[0] || a.newRemain != allowance[1] {
@@ -391,7 +382,7 @@ func (dc *DepositCreator) Pay(node *enode.Node, minAmount, maxAmount uint64) (am
 	}
 	allowance.future += amount * allowanceExpFactor
 	dc.ns.SetField(node, dc.allowanceField, allowance)
-	cost = amount + dc.lastActive.amortizedCost(allowance.newTotal, spentBefore, allowance.newTotal-allowance.newRemain, true)
+	cost = amount + dc.lastActive.balancedSpendingCost(allowance.newTotal, spentBefore, allowance.newTotal-allowance.newRemain, true)
 	if dc.lastActive.triggerCh == nil && dc.triggerHook != nil {
 		dc.triggerHook()
 		dc.triggerHook = nil
@@ -399,28 +390,17 @@ func (dc *DepositCreator) Pay(node *enode.Node, minAmount, maxAmount uint64) (am
 	return
 }
 
-func (dc *DepositCreator) EstimateCost(node *enode.Node, minAmount, maxAmount uint64) (amount, cost uint64) {
+func (dc *DepositCreator) EstimateCost(node *enode.Node, amount uint64) uint64 {
 	dc.lock.Lock()
 	defer dc.lock.Unlock()
 
 	allowance, _ := dc.ns.GetField(node, dc.allowanceField).(nodeAllowance)
-	if allowance.oldRemain >= maxAmount {
-		return maxAmount, maxAmount
+	if allowance.oldRemain >= amount {
+		return amount
 	}
-	amount = allowance.oldRemain
+	spendNow := amount - allowance.oldRemain // do not check new allowance exhaustion, let TokenBuyer try paying and fail
 	spentBefore := allowance.newTotal - allowance.newRemain
-	if amount+allowance.newRemain >= maxAmount {
-		allowance.newRemain -= maxAmount - amount
-		amount = maxAmount
-	} else {
-		amount += allowance.newRemain
-		allowance.newRemain = 0
-	}
-	if amount < minAmount {
-		return 0, 0
-	}
-	cost = amount + dc.lastActive.amortizedCost(allowance.newTotal, spentBefore, allowance.newTotal-allowance.newRemain, false)
-	return
+	return amount + dc.lastActive.balancedSpendingCost(allowance.newTotal, spentBefore, spentBefore+spendNow, false)
 }
 
 type depositState struct {
@@ -437,7 +417,7 @@ func (ds *depositState) scaleAmount(amount uint64) uint64 {
 }
 
 func spentRatioIndex(allowance, spent uint64) (int, uint64) {
-	ratio := float64(spent) / (float64(allowance) * 0.95)
+	ratio := float64(spent) / float64(allowance)
 	if ratio > 1 {
 		ratio = 1
 	}
@@ -468,26 +448,32 @@ func addSpentRatio(r *uint64, a uint64, add bool) uint64 {
 	return n - v
 }
 
-func (ds *depositState) amortizedCost(amount, oldSpent, newSpent uint64, add bool) uint64 {
+func (ds *depositState) balancedSpendingCost(allowance, oldSpent, newSpent uint64, add bool) uint64 {
 	if ds.sumRatio == spentRatioThreshold*spentRatioLength {
 		return 0
 	}
-	amount = ds.scaleAmount(amount)
+	allowance = ds.scaleAmount(allowance)
 	oldSpent = ds.scaleAmount(oldSpent)
 	newSpent = ds.scaleAmount(newSpent)
-	oldIndex, oldPartial := spentRatioIndex(amount, oldSpent)
-	newIndex, newPartial := spentRatioIndex(amount, newSpent)
+	oldIndex, oldPartial := spentRatioIndex(allowance, oldSpent)
+	newIndex, newPartial := spentRatioIndex(allowance, newSpent)
 	sum := ds.sumRatio
 	if oldIndex == newIndex {
 		sum += addSpentRatio(&ds.spentRatio[oldIndex], newPartial-oldPartial, add)
 	} else {
-		sum += addSpentRatio(&ds.spentRatio[oldIndex], amount-oldPartial, add)
+		sum += addSpentRatio(&ds.spentRatio[oldIndex], allowance-oldPartial, add)
 		for i := oldIndex + 1; i < newIndex; i++ {
-			sum += addSpentRatio(&ds.spentRatio[i], amount, add)
+			sum += addSpentRatio(&ds.spentRatio[i], allowance, add)
 		}
 		sum += addSpentRatio(&ds.spentRatio[newIndex], newPartial, add)
 	}
-	newTotalCost := uint64(float64(ds.cost) * (float64(sum) / float64(spentRatioThreshold*spentRatioLength)))
+	if newSpent > allowance {
+		sum += (newSpent - allowance) * spentRatioLength
+	}
+	newTotalCost := uint64(float64(ds.cost) * (float64(sum) / float64(spentRatioThreshold*spentRatioLength*0.95)))
+	if newTotalCost > ds.cost {
+		newTotalCost = ds.cost
+	}
 	if newTotalCost < ds.accounted {
 		newTotalCost = ds.accounted
 	}
@@ -495,7 +481,7 @@ func (ds *depositState) amortizedCost(amount, oldSpent, newSpent uint64, add boo
 	if add {
 		ds.sumRatio = sum
 		ds.accounted = newTotalCost
-		if ds.triggerCh != nil && ds.sumRatio == spentRatioThreshold*spentRatioLength {
+		if ds.triggerCh != nil && newTotalCost == ds.cost {
 			close(ds.triggerCh)
 			ds.triggerCh = nil
 		}

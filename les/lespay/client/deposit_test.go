@@ -86,16 +86,16 @@ func TestDepositTrigger(t *testing.T) {
 
 func TestDepositCostAmortization(t *testing.T) {
 	dt := newDepositTestBackend()
-	amortizedCost := float64(dcTestDepositTxCost) / float64(dcTestDepositAmount) * float64(spentRatioMax) / float64(spentRatioThreshold)
+	balancedSpendingCost := float64(dcTestDepositTxCost) / float64(dcTestDepositAmount) * float64(spentRatioMax) / float64(spentRatioThreshold)
 	count := int(dcTestNodeCount * spentRatioThreshold / spentRatioMax)
 	dt.nodePrice = func(i int) float64 {
 		if i < count {
 			return 1
 		}
 		if i < count*2 {
-			return 1 + amortizedCost/2 // expect to spend allowance at this price
+			return 1 + balancedSpendingCost/2 // expect to spend allowance at this price
 		}
-		return 1 + amortizedCost*2 // do not expect to spend allowance at this price
+		return 1 + balancedSpendingCost*2 // do not expect to spend allowance at this price
 	}
 	dt.runCycle(t, false)
 	maxExpTotal := dcTestDepositAmount * uint64(count*2) / dcTestNodeCount

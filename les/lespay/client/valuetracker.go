@@ -25,6 +25,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/les/lespay"
 	"github.com/ethereum/go-ethereum/les/utils"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -48,8 +49,8 @@ type NodeValueTracker struct {
 	rtStats, lastRtStats ResponseTimeStats
 	lastTransfer         mclock.AbsTime
 	basket               serverBasket
-	tokens               tokenMirror
-	reqCosts             []uint64
+	token                tokenMirror
+	price                lespay.PriceInfo
 	reqValues            *[]float64
 }
 
@@ -68,11 +69,14 @@ func (nv *NodeValueTracker) init(now mclock.AbsTime, reqValues *[]float64) {
 // is also updated based on the given cost table and the current reference basket.
 // Note that the contents of the referenced reqValues slice will not change; a new
 // reference is passed if the values are updated by ValueTracker.
-func (nv *NodeValueTracker) updateCosts(reqCosts []uint64, reqValues *[]float64, rvFactor float64) {
+func (nv *NodeValueTracker) updateCosts(priceInfo *lespay.PriceInfo, reqValues *[]float64, rvFactor float64) {
 	nv.lock.Lock()
 	defer nv.lock.Unlock()
 
-	nv.reqCosts = reqCosts
+	if priceInfo != &nv.priceInfo {
+		nv.reqCosts = priceInfo.RequestCosts
+		nv.token.setPriceInfo(rvFactor, float64(priceInfo.CapacityCost)/1e12, priceInfo.BufferRatio, priceInfo.Expiration)
+	}
 	nv.reqValues = reqValues
 	nv.basket.updateRvFactor(rvFactor)
 }
@@ -427,11 +431,11 @@ func (vt *ValueTracker) saveNode(id enode.ID, nv *NodeValueTracker) {
 }
 
 // UpdateCosts updates the node value tracker's request cost table
-func (vt *ValueTracker) UpdateCosts(nv *NodeValueTracker, reqCosts []uint64) {
+func (vt *ValueTracker) UpdateCosts(nv *NodeValueTracker, priceInfo lespay.PriceInfo) {
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 
-	nv.updateCosts(reqCosts, &vt.refBasket.reqValues, vt.refBasket.reqValueFactor(reqCosts))
+	nv.updateCosts(priceInfo, &vt.refBasket.reqValues, vt.refBasket.reqValueFactor(priceInfo.RequestCosts))
 }
 
 // RtStats returns the global response time distribution statistics

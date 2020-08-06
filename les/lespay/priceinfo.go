@@ -14,24 +14,11 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package utils
+package lespay
 
-import (
-	"math"
-)
-
-type PieceWiseLinear interface {
-	X(int) float64
-	Y(int) float64
-	Len() int
-}
-
-func PwlValue(p PieceWiseLinear, x float64) float64 {
-	first, last := 0, p.Len()-1
-	if x < p.X(first) || x > p.X(last) {
-		return math.NAN
-	}
-	for last > first {
-		mid := (first + last) / 2
-	}
+type PriceInfo struct {
+	ProtocolVersion          string
+	RequestCosts             []uint32
+	CapacityCost, Expiration uint32
+	MinCapacity, BufferRatio uint32
 }
