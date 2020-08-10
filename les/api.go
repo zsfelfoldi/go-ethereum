@@ -192,14 +192,13 @@ func (api *PrivateLightServerAPI) SetDefaultParams(params map[string]interface{}
 // So that already connected client won't be kicked out very soon and we can ensure all
 // connected clients can have enough time to request or sync some data.
 // When the input parameter `bias` < 0 (illegal), return error.
-/*func (api *PrivateLightServerAPI) SetConnectedBias(bias time.Duration) error {
+func (api *PrivateLightServerAPI) SetConnectedBias(bias time.Duration) error {
 	if bias < time.Duration(0) {
 		return fmt.Errorf("bias illegal: %v less than 0", bias)
 	}
 	api.server.clientPool.setConnectedBias(bias)
 	return nil
-}*/
-//TODO fix regression
+}
 
 // AddBalance updates the balance of a client (either overwrites it or adds to it).
 // It also updates the balance meta info string.

@@ -99,7 +99,7 @@ type PriorityPool struct {
 	activeCount, activeCap uint64
 	maxCount, maxCap       uint64
 	minCap                 uint64
-	minBias                time.Duration
+	activeBias             time.Duration
 	capacityStepDiv        uint64
 }
 
@@ -126,7 +126,7 @@ type ppNodeInfo struct {
 }
 
 // NewPriorityPool creates a new PriorityPool
-func NewPriorityPool(ns *nodestate.NodeStateMachine, setup PriorityPoolSetup, clock mclock.Clock, minCap uint64, minBias time.Duration, capacityStepDiv uint64) *PriorityPool {
+func NewPriorityPool(ns *nodestate.NodeStateMachine, setup PriorityPoolSetup, clock mclock.Clock, minCap uint64, activeBias time.Duration, capacityStepDiv uint64) *PriorityPool {
 	pp := &PriorityPool{
 		ns:                ns,
 		PriorityPoolSetup: setup,
@@ -134,7 +134,7 @@ func NewPriorityPool(ns *nodestate.NodeStateMachine, setup PriorityPoolSetup, cl
 		activeQueue:       prque.NewLazyQueue(activeSetIndex, activePriority, activeMaxPriority, clock, lazyQueueRefresh),
 		inactiveQueue:     prque.New(inactiveSetIndex),
 		minCap:            minCap,
-		minBias:           minBias,
+		activeBias:        activeBias,
 		capacityStepDiv:   capacityStepDiv,
 	}
 
@@ -244,6 +244,15 @@ func (pp *PriorityPool) SetLimits(maxCount, maxCap uint64) {
 	if inc {
 		updates = pp.tryActivate()
 	}
+}
+
+// SetActiveBias sets the bias applied when trying to activate inactive nodes
+func (pp *PriorityPool) SetActiveBias(bias time.Duration) {
+	pp.lock.Lock()
+	defer pp.lock.Unlock()
+
+	pp.activeBias = bias
+	pp.tryActivate()
 }
 
 // ActiveCapacity returns the total capacity of currently active nodes
@@ -452,7 +461,7 @@ func (pp *PriorityPool) tryActivate() []capUpdate {
 		c := pp.inactiveQueue.PopItem().(*ppNodeInfo)
 		pp.markForChange(c)
 		pp.setCapacity(c, pp.minCap)
-		c.bias = pp.minBias
+		c.bias = pp.activeBias
 		pp.activeQueue.Push(c)
 		pp.enforceLimits()
 		if c.capacity > 0 {

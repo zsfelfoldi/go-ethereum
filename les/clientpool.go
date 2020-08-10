@@ -36,15 +36,15 @@ const (
 	defaultPosExpTC = 36000 // default time constant (in seconds) for exponentially reducing positive balance
 	defaultNegExpTC = 3600  // default time constant (in seconds) for exponentially reducing negative balance
 
-	// activeBias is applied to already connected clients So that
+	// defaultConnectedBias is applied to already connected clients So that
 	// already connected client won't be kicked out very soon and we
 	// can ensure all connected clients can have enough time to request
 	// or sync some data.
 	//
 	// todo(rjl493456442) make it configurable. It can be the option of
 	// free trial time!
-	activeBias      = time.Minute * 3
-	inactiveTimeout = time.Second * 10
+	defaultConnectedBias = time.Minute * 3
+	inactiveTimeout      = time.Second * 10
 )
 
 var (
@@ -93,6 +93,7 @@ type clientPool struct {
 	defaultPosFactors, defaultNegFactors lps.PriceFactors
 	posExpTC, negExpTC                   uint64
 	minCap                               uint64 // The minimal capacity value allowed for any client
+	connectedBias                        time.Duration
 	capLimit                             uint64
 	freeClientCap                        uint64 // The capacity value of each free client
 }
@@ -121,7 +122,7 @@ type clientInfo struct {
 }
 
 // newClientPool creates a new client pool
-func newClientPool(lespayDb ethdb.Database, minCap, freeClientCap uint64, activeBias time.Duration, clock mclock.Clock, removePeer func(enode.ID)) *clientPool {
+func newClientPool(lespayDb ethdb.Database, minCap, freeClientCap uint64, connectedBias time.Duration, clock mclock.Clock, removePeer func(enode.ID)) *clientPool {
 	if minCap > freeClientCap {
 		panic(nil)
 	}
@@ -132,11 +133,12 @@ func newClientPool(lespayDb ethdb.Database, minCap, freeClientCap uint64, active
 		PriorityPoolSetup:   priorityPoolSetup,
 		clock:               clock,
 		minCap:              minCap,
+		connectedBias:       connectedBias,
 		freeClientCap:       freeClientCap,
 		removePeer:          removePeer,
 	}
 	pool.bt = lps.NewBalanceTracker(ns, balanceTrackerSetup, lespayDb, clock, &utils.Expirer{}, &utils.Expirer{})
-	pool.pp = lps.NewPriorityPool(ns, priorityPoolSetup, clock, minCap, activeBias, 4)
+	pool.pp = lps.NewPriorityPool(ns, priorityPoolSetup, clock, minCap, connectedBias, 4)
 
 	// set default expiration constants used by tests
 	// Note: server overwrites this if token sale is active
@@ -242,13 +244,24 @@ func (f *clientPool) connect(peer clientPoolPeer, reqCapacity uint64) (uint64, e
 	}
 
 	f.ns.SetState(node, f.InactiveFlag, nodestate.Flags{}, 0)
-	if _, allowed := f.pp.RequestCapacity(node, reqCapacity, activeBias, true); allowed {
+	if _, allowed := f.pp.RequestCapacity(node, reqCapacity, f.connectedBias, true); allowed {
 		return reqCapacity, nil
 	}
 	if !peer.allowInactive() {
 		f.disconnect(peer)
 	}
 	return 0, nil
+}
+
+// setConnectedBias sets the connection bias, which is applied to already connected clients
+// So that already connected client won't be kicked out very soon and we can ensure all
+// connected clients can have enough time to request or sync some data.
+func (f *clientPool) setConnectedBias(bias time.Duration) {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+
+	f.connectedBias = bias
+	f.pp.SetActiveBias(bias)
 }
 
 // disconnect should be called when a connection is terminated. If the disconnection
