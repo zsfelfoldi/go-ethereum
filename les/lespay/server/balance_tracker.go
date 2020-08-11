@@ -42,7 +42,6 @@ type BalanceTrackerSetup struct {
 	BalanceField             nodestate.Field
 	// external connections
 	connAddressField, capacityField nodestate.Field
-	activeFlag, inactiveFlag        nodestate.Flags
 }
 
 // NewBalanceTrackerSetup creates a new BalanceTrackerSetup and initializes the fields
@@ -61,11 +60,9 @@ func NewBalanceTrackerSetup(setup *nodestate.Setup) BalanceTrackerSetup {
 }
 
 // Connect sets the fields used by BalanceTracker as an input
-func (bts *BalanceTrackerSetup) Connect(connAddressField, capacityField nodestate.Field, activeFlag, inactiveFlag nodestate.Flags) {
+func (bts *BalanceTrackerSetup) Connect(connAddressField, capacityField nodestate.Field) {
 	bts.connAddressField = connAddressField
 	bts.capacityField = capacityField
-	bts.activeFlag = activeFlag
-	bts.inactiveFlag = inactiveFlag
 }
 
 // BalanceTracker tracks positive and negative balances for connected nodes.
@@ -114,7 +111,18 @@ func NewBalanceTracker(ns *nodestate.NodeStateMachine, setup BalanceTrackerSetup
 			log.Error("Capacity field changed while node field is missing")
 			return
 		}
-		n.setCapacity(newValue.(uint64))
+
+		ov, _ := oldValue.(uint64)
+		nv, _ := newValue.(uint64)
+		if ov == 0 && nv != 0 {
+			n.activate()
+		}
+		if nv != 0 {
+			n.setCapacity(nv)
+		}
+		if ov != 0 && nv == 0 {
+			n.deactivate()
+		}
 	})
 
 	ns.SubscribeField(bt.connAddressField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
@@ -126,19 +134,6 @@ func NewBalanceTracker(ns *nodestate.NodeStateMachine, setup BalanceTrackerSetup
 			}
 			ns.SetState(node, nodestate.Flags{}, bt.PriorityFlag, 0)
 			ns.SetField(node, bt.BalanceField, nil)
-		}
-	})
-
-	ns.SubscribeState(bt.inactiveFlag.Or(bt.activeFlag), func(n *enode.Node, oldState, newState nodestate.Flags) {
-		node, _ := ns.GetField(n, bt.BalanceField).(*NodeBalance)
-		if node == nil {
-			return
-		}
-		if newState.Equals(bt.activeFlag) {
-			node.activate()
-		}
-		if newState.Equals(bt.inactiveFlag) {
-			node.deactivate()
 		}
 	})
 

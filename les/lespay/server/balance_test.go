@@ -37,7 +37,7 @@ var (
 )
 
 func init() {
-	btTestSetup.Connect(connAddrFlag, ppTestSetup.CapacityField, ppTestSetup.ActiveFlag, ppTestSetup.InactiveFlag)
+	btTestSetup.Connect(connAddrFlag, ppTestSetup.CapacityField)
 }
 
 type zeroExpirer struct{}
@@ -145,7 +145,7 @@ func TestBalanceTimeCost(t *testing.T) {
 	defer b.stop()
 	node := b.newNode(1000)
 
-	b.ns.SetState(node.node, ppTestSetup.ActiveFlag, nodestate.Flags{}, 0)
+	b.ns.SetField(node.node, ppTestSetup.CapacityField, uint64(1))
 	node.SetPriceFactors(PriceFactors{1, 0, 1}, PriceFactors{1, 0, 1})
 	node.SetBalance(uint64(time.Minute), 0) // 1 minute time allowance
 
@@ -187,7 +187,7 @@ func TestBalanceReqCost(t *testing.T) {
 	node := b.newNode(1000)
 	node.SetPriceFactors(PriceFactors{1, 0, 1}, PriceFactors{1, 0, 1})
 
-	b.ns.SetState(node.node, ppTestSetup.ActiveFlag, nodestate.Flags{}, 0)
+	b.ns.SetField(node.node, ppTestSetup.CapacityField, uint64(1))
 	node.SetBalance(uint64(time.Minute), 0) // 1 minute time serving time allowance
 	var inputs = []struct {
 		reqCost uint64
@@ -241,7 +241,7 @@ func TestEstimatedPriority(t *testing.T) {
 	node := b.newNode(1000000000)
 	node.SetPriceFactors(PriceFactors{1, 0, 1}, PriceFactors{1, 0, 1})
 
-	b.ns.SetState(node.node, ppTestSetup.ActiveFlag, nodestate.Flags{}, 0)
+	b.ns.SetField(node.node, ppTestSetup.CapacityField, uint64(1))
 	node.SetBalance(uint64(time.Minute), 0)
 	var inputs = []struct {
 		runTime    time.Duration // time cost
@@ -282,7 +282,7 @@ func TestPosBalanceMissing(t *testing.T) {
 	node := b.newNode(1000)
 	node.SetPriceFactors(PriceFactors{1, 0, 1}, PriceFactors{1, 0, 1})
 
-	b.ns.SetState(node.node, ppTestSetup.ActiveFlag, nodestate.Flags{}, 0)
+	b.ns.SetField(node.node, ppTestSetup.CapacityField, uint64(1))
 	var inputs = []struct {
 		pos, neg uint64
 		priority int64
@@ -330,7 +330,7 @@ func TestPostiveBalanceCounting(t *testing.T) {
 	// Change client status
 	for i := 0; i < 100; i += 1 {
 		if rand.Intn(2) == 0 {
-			b.ns.SetState(nodes[i].node, ppTestSetup.ActiveFlag, ppTestSetup.InactiveFlag, 0)
+			b.ns.SetField(nodes[i].node, ppTestSetup.CapacityField, uint64(1))
 		}
 	}
 	if b.bt.TotalTokenAmount() != sum {
@@ -338,7 +338,7 @@ func TestPostiveBalanceCounting(t *testing.T) {
 	}
 	for i := 0; i < 100; i += 1 {
 		if rand.Intn(2) == 0 {
-			b.ns.SetState(nodes[i].node, ppTestSetup.InactiveFlag, ppTestSetup.ActiveFlag, 0)
+			b.ns.SetField(nodes[i].node, ppTestSetup.CapacityField, uint64(1))
 		}
 	}
 	if b.bt.TotalTokenAmount() != sum {
@@ -374,7 +374,7 @@ func TestCallback(t *testing.T) {
 	defer b.stop()
 	node := b.newNode(1000)
 	node.SetPriceFactors(PriceFactors{1, 0, 1}, PriceFactors{1, 0, 1})
-	b.ns.SetState(node.node, ppTestSetup.ActiveFlag, nodestate.Flags{}, 0)
+	b.ns.SetField(node.node, ppTestSetup.CapacityField, uint64(1))
 
 	callCh := make(chan struct{}, 1)
 	node.SetBalance(uint64(time.Minute), 0)
