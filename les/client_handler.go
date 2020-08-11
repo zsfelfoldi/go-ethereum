@@ -140,7 +140,6 @@ func (h *clientHandler) handle(p *serverPeer) error {
 		}
 		h.backend.peers.disconnect(p.id)
 	}()
-	h.fetcher.announce(p, &announceData{Hash: p.headInfo.Hash, Number: p.headInfo.Number, Td: p.headInfo.Td})
 
 	// Mark the peer starts to be served.
 	atomic.StoreUint32(&p.serving, 1)
