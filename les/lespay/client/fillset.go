@@ -47,7 +47,7 @@ func NewFillSet(ns *nodestate.NodeStateMachine, input enode.Iterator, flags node
 	}
 	fs.cond = sync.NewCond(&fs.lock)
 
-	ns.SubscribeState(flags, func(n *enode.Node, oldState, newState nodestate.Flags) {
+	ns.SubscribeState(flags, func(n *enode.Node, oldState, newState nodestate.Flags, caller *nodestate.Caller) {
 		fs.lock.Lock()
 		if oldState.Equals(flags) {
 			fs.count--
@@ -78,7 +78,7 @@ func (fs *FillSet) readLoop() {
 		if !fs.input.Next() {
 			return
 		}
-		fs.ns.SetState(fs.input.Node(), fs.flags, nodestate.Flags{}, 0)
+		fs.ns.SetState(fs.input.Node(), fs.flags, nodestate.Flags{}, 0, nil)
 	}
 }
 

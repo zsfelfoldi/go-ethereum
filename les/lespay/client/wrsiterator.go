@@ -55,7 +55,7 @@ func NewWrsIterator(ns *nodestate.NodeStateMachine, requireFlags, disableFlags n
 	}
 	w.cond = sync.NewCond(&w.lock)
 
-	ns.SubscribeField(weightField, func(n *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
+	ns.SubscribeField(weightField, func(n *enode.Node, state nodestate.Flags, oldValue, newValue interface{}, caller *nodestate.Caller) {
 		if state.HasAll(requireFlags) && state.HasNone(disableFlags) {
 			w.lock.Lock()
 			w.wrs.Update(n.ID())
@@ -64,7 +64,7 @@ func NewWrsIterator(ns *nodestate.NodeStateMachine, requireFlags, disableFlags n
 		}
 	})
 
-	ns.SubscribeState(requireFlags.Or(disableFlags), func(n *enode.Node, oldState, newState nodestate.Flags) {
+	ns.SubscribeState(requireFlags.Or(disableFlags), func(n *enode.Node, oldState, newState nodestate.Flags, caller *nodestate.Caller) {
 		oldMatch := oldState.HasAll(requireFlags) && oldState.HasNone(disableFlags)
 		newMatch := newState.HasAll(requireFlags) && newState.HasNone(disableFlags)
 		if newMatch == oldMatch {

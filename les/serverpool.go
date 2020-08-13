@@ -157,16 +157,16 @@ func newServerPool(db ethdb.KeyValueStore, dbKey []byte, vt *lpc.ValueTracker, d
 		iter = s.addPreNegFilter(iter, query)
 	}
 	s.dialIterator = enode.Filter(iter, func(node *enode.Node) bool {
-		s.ns.SetState(node, sfDialing, sfCanDial, 0)
-		s.ns.SetState(node, sfWaitDialTimeout, nodestate.Flags{}, time.Second*10)
+		s.ns.SetState(node, sfDialing, sfCanDial, 0, nil)
+		s.ns.SetState(node, sfWaitDialTimeout, nodestate.Flags{}, time.Second*10, nil)
 		return true
 	})
 
-	s.ns.SubscribeState(nodestate.MergeFlags(sfWaitDialTimeout, sfConnected), func(n *enode.Node, oldState, newState nodestate.Flags) {
+	s.ns.SubscribeState(nodestate.MergeFlags(sfWaitDialTimeout, sfConnected), func(n *enode.Node, oldState, newState nodestate.Flags, caller *nodestate.Caller) {
 		if oldState.Equals(sfWaitDialTimeout) && newState.IsEmpty() {
 			// dial timeout, no connection
 			s.setRedialWait(n, dialCost, dialWaitStep)
-			s.ns.SetState(n, nodestate.Flags{}, sfDialing, 0)
+			s.ns.SetState(n, nodestate.Flags{}, sfDialing, 0, caller)
 		}
 	})
 
@@ -181,7 +181,7 @@ func newServerPool(db ethdb.KeyValueStore, dbKey []byte, vt *lpc.ValueTracker, d
 // into redialWait state.
 func (s *serverPool) addPreNegFilter(input enode.Iterator, query queryFunc) enode.Iterator {
 	s.fillSet = lpc.NewFillSet(s.ns, input, sfQueried)
-	s.ns.SubscribeState(sfQueried, func(n *enode.Node, oldState, newState nodestate.Flags) {
+	s.ns.SubscribeState(sfQueried, func(n *enode.Node, oldState, newState nodestate.Flags, caller *nodestate.Caller) {
 		if newState.Equals(sfQueried) {
 			fails := atomic.LoadUint32(&s.queryFails)
 			if fails == maxQueryFails {
@@ -193,10 +193,10 @@ func (s *serverPool) addPreNegFilter(input enode.Iterator, query queryFunc) enod
 			if rand.Intn(maxQueryFails*2) < int(fails) {
 				// skip pre-negotiation with increasing chance, max 50%
 				// this ensures that the client can operate even if UDP is not working at all
-				s.ns.SetState(n, sfCanDial, nodestate.Flags{}, time.Second*10)
+				s.ns.SetState(n, sfCanDial, nodestate.Flags{}, time.Second*10, caller)
 				// set canDial before resetting queried so that FillSet will not read more
 				// candidates unnecessarily
-				s.ns.SetState(n, nodestate.Flags{}, sfQueried, 0)
+				s.ns.SetState(n, nodestate.Flags{}, sfQueried, 0, caller)
 				return
 			}
 			go func() {
@@ -207,11 +207,11 @@ func (s *serverPool) addPreNegFilter(input enode.Iterator, query queryFunc) enod
 					atomic.StoreUint32(&s.queryFails, 0)
 				}
 				if q == 1 {
-					s.ns.SetState(n, sfCanDial, nodestate.Flags{}, time.Second*10)
+					s.ns.SetState(n, sfCanDial, nodestate.Flags{}, time.Second*10, nil)
 				} else {
 					s.setRedialWait(n, queryCost, queryWaitStep)
 				}
-				s.ns.SetState(n, nodestate.Flags{}, sfQueried, 0)
+				s.ns.SetState(n, nodestate.Flags{}, sfQueried, 0, nil)
 			}()
 		}
 	})
@@ -234,7 +234,7 @@ func (s *serverPool) start() {
 	}
 	for _, url := range s.trustedURLs {
 		if node, err := enode.Parse(s.validSchemes, url); err == nil {
-			s.ns.SetState(node, sfAlwaysConnect, nodestate.Flags{}, 0)
+			s.ns.SetState(node, sfAlwaysConnect, nodestate.Flags{}, 0, nil)
 		} else {
 			log.Error("Invalid trusted server URL", "url", url, "error", err)
 		}
@@ -250,7 +250,7 @@ func (s *serverPool) start() {
 				// waiting time then the system clock was probably adjusted
 				wait = lastWait
 			}
-			s.ns.SetState(node, sfRedialWait, nodestate.Flags{}, time.Duration(wait)*time.Second)
+			s.ns.SetState(node, sfRedialWait, nodestate.Flags{}, time.Duration(wait)*time.Second, nil)
 		}
 	})
 }
@@ -270,9 +270,9 @@ func (s *serverPool) stop() {
 
 // registerPeer implements serverPeerSubscriber
 func (s *serverPool) registerPeer(p *serverPeer) {
-	s.ns.SetState(p.Node(), sfConnected, sfDialing.Or(sfWaitDialTimeout), 0)
+	s.ns.SetState(p.Node(), sfConnected, sfDialing.Or(sfWaitDialTimeout), 0, nil)
 	nvt := s.vt.Register(p.ID())
-	s.ns.SetField(p.Node(), sfiConnectedStats, nvt.RtStats())
+	s.ns.SetField(p.Node(), sfiConnectedStats, nvt.RtStats(), nil)
 	p.setValueTracker(s.vt, nvt)
 	p.updateVtParams()
 }
@@ -280,8 +280,8 @@ func (s *serverPool) registerPeer(p *serverPeer) {
 // unregisterPeer implements serverPeerSubscriber
 func (s *serverPool) unregisterPeer(p *serverPeer) {
 	s.setRedialWait(p.Node(), dialCost, dialWaitStep)
-	s.ns.SetState(p.Node(), nodestate.Flags{}, sfConnected, 0)
-	s.ns.SetField(p.Node(), sfiConnectedStats, nil)
+	s.ns.SetState(p.Node(), nodestate.Flags{}, sfConnected, 0, nil)
+	s.ns.SetField(p.Node(), sfiConnectedStats, nil, nil)
 	s.vt.Unregister(p.ID())
 	p.setValueTracker(nil, nil)
 }
@@ -383,11 +383,11 @@ func (s *serverPool) serviceValue(node *enode.Node) (sessionValue, totalValue fl
 func (s *serverPool) updateWeight(node *enode.Node, totalValue float64, totalDialCost uint64) {
 	weight := uint64(totalValue * nodeWeightMul / float64(totalDialCost))
 	if weight >= nodeWeightThreshold {
-		s.ns.SetState(node, sfHasValue, nodestate.Flags{}, 0)
-		s.ns.SetField(node, sfiNodeWeight, weight)
+		s.ns.SetState(node, sfHasValue, nodestate.Flags{}, 0, nil)
+		s.ns.SetField(node, sfiNodeWeight, weight, nil)
 	} else {
-		s.ns.SetState(node, nodestate.Flags{}, sfHasValue, 0)
-		s.ns.SetField(node, sfiNodeWeight, nil)
+		s.ns.SetState(node, nodestate.Flags{}, sfHasValue, 0, nil)
+		s.ns.SetField(node, sfiNodeWeight, nil, nil)
 	}
 	s.ns.Persist(node) // saved if node history or hasValue changed
 }
@@ -450,15 +450,15 @@ func (s *serverPool) setRedialWait(node *enode.Node, addDialCost int64, waitStep
 	if wait < waitThreshold {
 		n.redialWaitStart = unixTime
 		n.redialWaitEnd = unixTime + int64(nextTimeout)
-		s.ns.SetField(node, sfiNodeHistory, n)
-		s.ns.SetState(node, sfRedialWait, nodestate.Flags{}, wait)
+		s.ns.SetField(node, sfiNodeHistory, n, nil)
+		s.ns.SetState(node, sfRedialWait, nodestate.Flags{}, wait, nil)
 		s.updateWeight(node, totalValue, totalDialCost)
 	} else {
 		// discard known node statistics if waiting time is very long because the node
 		// hasn't been responsive for a very long time
-		s.ns.SetField(node, sfiNodeHistory, nil)
-		s.ns.SetField(node, sfiNodeWeight, nil)
-		s.ns.SetState(node, nodestate.Flags{}, sfHasValue, 0)
+		s.ns.SetField(node, sfiNodeHistory, nil, nil)
+		s.ns.SetField(node, sfiNodeWeight, nil, nil)
+		s.ns.SetState(node, nodestate.Flags{}, sfHasValue, 0, nil)
 	}
 }
 

@@ -54,7 +54,7 @@ func testQueueIterator(t *testing.T, fifo bool) {
 	qi := NewQueueIterator(ns, sfTest2, sfTest3.Or(sfTest4), fifo, nil)
 	ns.Start()
 	for i := 1; i <= iterTestNodeCount; i++ {
-		ns.SetState(testNode(i), sfTest1, nodestate.Flags{}, 0)
+		ns.SetState(testNode(i), sfTest1, nodestate.Flags{}, 0, nil)
 	}
 	next := func() int {
 		ch := make(chan struct{})
@@ -68,7 +68,7 @@ func testQueueIterator(t *testing.T, fifo bool) {
 			t.Fatalf("Iterator.Next() timeout")
 		}
 		node := qi.Node()
-		ns.SetState(node, sfTest4, nodestate.Flags{}, 0)
+		ns.SetState(node, sfTest4, nodestate.Flags{}, 0, nil)
 		return testNodeIndex(node.ID())
 	}
 	exp := func(i int) {
@@ -87,20 +87,20 @@ func testQueueIterator(t *testing.T, fifo bool) {
 		}
 	}
 
-	ns.SetState(testNode(1), sfTest2, nodestate.Flags{}, 0)
-	ns.SetState(testNode(2), sfTest2, nodestate.Flags{}, 0)
-	ns.SetState(testNode(3), sfTest2, nodestate.Flags{}, 0)
+	ns.SetState(testNode(1), sfTest2, nodestate.Flags{}, 0, nil)
+	ns.SetState(testNode(2), sfTest2, nodestate.Flags{}, 0, nil)
+	ns.SetState(testNode(3), sfTest2, nodestate.Flags{}, 0, nil)
 	explist([]int{1, 2, 3})
-	ns.SetState(testNode(4), sfTest2, nodestate.Flags{}, 0)
-	ns.SetState(testNode(5), sfTest2, nodestate.Flags{}, 0)
-	ns.SetState(testNode(6), sfTest2, nodestate.Flags{}, 0)
-	ns.SetState(testNode(5), sfTest3, nodestate.Flags{}, 0)
+	ns.SetState(testNode(4), sfTest2, nodestate.Flags{}, 0, nil)
+	ns.SetState(testNode(5), sfTest2, nodestate.Flags{}, 0, nil)
+	ns.SetState(testNode(6), sfTest2, nodestate.Flags{}, 0, nil)
+	ns.SetState(testNode(5), sfTest3, nodestate.Flags{}, 0, nil)
 	explist([]int{4, 6})
-	ns.SetState(testNode(1), nodestate.Flags{}, sfTest4, 0)
-	ns.SetState(testNode(2), nodestate.Flags{}, sfTest4, 0)
-	ns.SetState(testNode(3), nodestate.Flags{}, sfTest4, 0)
-	ns.SetState(testNode(2), sfTest3, nodestate.Flags{}, 0)
-	ns.SetState(testNode(2), nodestate.Flags{}, sfTest3, 0)
+	ns.SetState(testNode(1), nodestate.Flags{}, sfTest4, 0, nil)
+	ns.SetState(testNode(2), nodestate.Flags{}, sfTest4, 0, nil)
+	ns.SetState(testNode(3), nodestate.Flags{}, sfTest4, 0, nil)
+	ns.SetState(testNode(2), sfTest3, nodestate.Flags{}, 0, nil)
+	ns.SetState(testNode(2), nodestate.Flags{}, sfTest3, 0, nil)
 	explist([]int{1, 3, 2})
 	ns.Stop()
 }

@@ -47,7 +47,7 @@ func NewQueueIterator(ns *nodestate.NodeStateMachine, requireFlags, disableFlags
 	}
 	qi.cond = sync.NewCond(&qi.lock)
 
-	ns.SubscribeState(requireFlags.Or(disableFlags), func(n *enode.Node, oldState, newState nodestate.Flags) {
+	ns.SubscribeState(requireFlags.Or(disableFlags), func(n *enode.Node, oldState, newState nodestate.Flags, caller *nodestate.Caller) {
 		oldMatch := oldState.HasAll(requireFlags) && oldState.HasNone(disableFlags)
 		newMatch := newState.HasAll(requireFlags) && newState.HasNone(disableFlags)
 		if newMatch == oldMatch {
