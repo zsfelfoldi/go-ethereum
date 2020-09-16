@@ -197,7 +197,7 @@ func (s *LesServer) Start() error {
 	go s.capacityManagement()
 
 	if s.p2pSrv.DiscV5 != nil {
-		for _, topic := range s.lesTopics {
+		/*for _, topic := range s.lesTopics {
 			topic := topic
 			go func() {
 				logger := log.New("topic", topic)
@@ -206,7 +206,10 @@ func (s *LesServer) Start() error {
 
 				s.p2pSrv.DiscV5.RegisterTopic(topic, s.closeCh)
 			}()
-		}
+		}*/
+		s.p2pSrv.DiscV5.RegisterTalkHandler("lespay", func(req []byte) []byte {
+			return append(append([]byte("123"), req...), []byte("456")...)
+		})
 	}
 
 	return nil
