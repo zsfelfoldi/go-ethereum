@@ -603,7 +603,7 @@ func (srv *Server) setupDiscovery() error {
 		}
 		var err error
 		if sconn != nil {
-			srv.DiscV5, err = discover.ListenV5(conn, srv.localnode, cfg)
+			srv.DiscV5, err = discover.ListenV5(sconn, srv.localnode, cfg)
 		} else {
 			srv.DiscV5, err = discover.ListenV5(conn, srv.localnode, cfg)
 		}
