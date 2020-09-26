@@ -35,7 +35,6 @@ type Limiter struct {
 	cond       *sync.Cond
 	clock      mclock.Clock
 	quit       bool
-	process    func(interface{}) float64
 	costFilter *CostFilter
 
 	nodes                      map[enode.ID]*nodeQueue
@@ -45,7 +44,7 @@ type Limiter struct {
 }
 
 type nodeQueue struct {
-	queue                   []cmd
+	queue                   []request
 	id                      enode.ID
 	address                 string
 	value                   float64
@@ -107,14 +106,13 @@ func (ag *addressGroup) choose() *nodeQueue {
 	return ag.nodeSelect.Choose().(*nodeQueue)
 }
 
-type cmd struct {
-	data        interface{}
+type request struct {
+	process     chan chan float64
 	priorWeight float64 // <= 1
 }
 
-func NewLimiter(process func(interface{}) float64, costFilter *CostFilter, sleepFactor float64, clock mclock.Clock) *Limiter {
+func NewLimiter(sleepFactor float64, costFilter *CostFilter, clock mclock.Clock) *Limiter {
 	l := &Limiter{
-		process:       process,
 		costFilter:    costFilter,
 		clock:         clock,
 		addressSelect: NewWeightedRandomSelect(func(item interface{}) uint64 { return item.(*addressGroup).groupWeight }),
@@ -143,7 +141,7 @@ func selectionWeights(relCost, value float64) (flatWeight, valueWeight uint64) {
 }
 
 // Note: priorWeight <= 1
-func (l *Limiter) Add(id enode.ID, address string, value, priorWeight float64, data interface{}) {
+func (l *Limiter) Add(id enode.ID, address string, value float64, process chan chan float64, priorWeight float64) {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 
@@ -159,10 +157,10 @@ func (l *Limiter) Add(id enode.ID, address string, value, priorWeight float64, d
 	}
 
 	if nq, ok := l.nodes[id]; ok {
-		nq.queue = append(nq.queue, cmd{data, priorWeight})
+		nq.queue = append(nq.queue, request{process, priorWeight})
 	} else {
 		nq := &nodeQueue{
-			queue:       []cmd{{data, priorWeight}},
+			queue:       []request{{process, priorWeight}},
 			id:          id,
 			address:     address,
 			value:       value,
@@ -232,11 +230,12 @@ func (l *Limiter) processLoop() {
 			continue
 		}
 		if len(nq.queue) > 0 {
-			cmd := nq.queue[0]
+			request := nq.queue[0]
 			nq.queue = nq.queue[1:]
 			l.lock.Unlock()
-			cost := l.process(cmd.data)
-			fcost, limit := l.costFilter.Filter(cost, cmd.priorWeight)
+			costCh := make(chan float64)
+			request.process <- costCh
+			fcost, limit := l.costFilter.Filter(<-costCh, request.priorWeight)
 			var relCost float64
 			if limit > fcost {
 				relCost = fcost / limit
