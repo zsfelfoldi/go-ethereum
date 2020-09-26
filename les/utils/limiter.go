@@ -18,6 +18,7 @@ package utils
 
 import (
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
@@ -37,25 +38,31 @@ type Limiter struct {
 	quit       bool
 	costFilter *CostFilter
 
-	nodes                      map[enode.ID]*nodeQueue
-	addresses                  map[string]*addressGroup
-	addressSelect, valueSelect *WeightedRandomSelect
-	maxValue, sleepFactor      float64
+	nodes                                             map[enode.ID]*nodeQueue
+	addresses                                         map[string]*addressGroup
+	addressSelect, valueSelect                        *WeightedRandomSelect
+	maxValue, sleepFactor                             float64
+	maxPriorWeight, totalPriorWeight, totalPriorLimit uint64
 }
 
 type nodeQueue struct {
-	queue                   []request
-	id                      enode.ID
-	address                 string
-	value                   float64
-	flatWeight, valueWeight uint64
-	groupIndex              int
+	queue                                     []request
+	id                                        enode.ID
+	address                                   string
+	value                                     float64
+	flatWeight, valueWeight, totalPriorWeight uint64
+	groupIndex                                int
 }
 
 type addressGroup struct {
 	nodes                      []*nodeQueue
 	nodeSelect                 *WeightedRandomSelect
 	sumFlatWeight, groupWeight uint64
+}
+
+type request struct {
+	process     chan chan float64
+	priorWeight uint64
 }
 
 func flatWeight(item interface{}) uint64 { return item.(*nodeQueue).flatWeight }
@@ -106,20 +113,16 @@ func (ag *addressGroup) choose() *nodeQueue {
 	return ag.nodeSelect.Choose().(*nodeQueue)
 }
 
-type request struct {
-	process     chan chan float64
-	priorWeight float64 // <= 1
-}
-
-func NewLimiter(sleepFactor float64, costFilter *CostFilter, clock mclock.Clock) *Limiter {
+func NewLimiter(sleepFactor float64, totalPriorLimit uint64, costFilter *CostFilter, clock mclock.Clock) *Limiter {
 	l := &Limiter{
-		costFilter:    costFilter,
-		clock:         clock,
-		addressSelect: NewWeightedRandomSelect(func(item interface{}) uint64 { return item.(*addressGroup).groupWeight }),
-		valueSelect:   NewWeightedRandomSelect(func(item interface{}) uint64 { return item.(*nodeQueue).valueWeight }),
-		nodes:         make(map[enode.ID]*nodeQueue),
-		addresses:     make(map[string]*addressGroup),
-		sleepFactor:   sleepFactor,
+		costFilter:      costFilter,
+		clock:           clock,
+		addressSelect:   NewWeightedRandomSelect(func(item interface{}) uint64 { return item.(*addressGroup).groupWeight }),
+		valueSelect:     NewWeightedRandomSelect(func(item interface{}) uint64 { return item.(*nodeQueue).valueWeight }),
+		nodes:           make(map[enode.ID]*nodeQueue),
+		addresses:       make(map[string]*addressGroup),
+		sleepFactor:     sleepFactor,
+		totalPriorLimit: totalPriorLimit,
 	}
 	l.cond = sync.NewCond(&l.lock)
 	return l
@@ -140,8 +143,8 @@ func selectionWeights(relCost, value float64) (flatWeight, valueWeight uint64) {
 	return
 }
 
-// Note: priorWeight <= 1
-func (l *Limiter) Add(id enode.ID, address string, value float64, process chan chan float64, priorWeight float64) {
+// Note: priorWeight > 0, normalized internally
+func (l *Limiter) Add(id enode.ID, address string, value float64, process chan chan float64, priorWeight uint64) {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 
@@ -155,19 +158,22 @@ func (l *Limiter) Add(id enode.ID, address string, value float64, process chan c
 		// normalize value to <= 1
 		value /= l.maxValue
 	}
+	if priorWeight > l.maxPriorWeight {
+		l.maxPriorWeight = priorWeight
+	}
 
 	if nq, ok := l.nodes[id]; ok {
 		nq.queue = append(nq.queue, request{process, priorWeight})
+		nq.totalPriorWeight += priorWeight
 	} else {
 		nq := &nodeQueue{
-			queue:       []request{{process, priorWeight}},
-			id:          id,
-			address:     address,
-			value:       value,
-			flatWeight:  uint64(priorWeight * maxSelectWeight),
-			valueWeight: uint64(value * priorWeight * maxSelectWeight),
+			queue:            []request{{process, priorWeight}},
+			id:               id,
+			address:          address,
+			value:            value,
+			totalPriorWeight: priorWeight,
 		}
-		nq.flatWeight, nq.valueWeight = selectionWeights(priorWeight, value)
+		nq.flatWeight, nq.valueWeight = selectionWeights(0, value)
 		l.nodes[id] = nq
 		if nq.valueWeight != 0 {
 			l.valueSelect.Update(nq)
@@ -179,6 +185,10 @@ func (l *Limiter) Add(id enode.ID, address string, value float64, process chan c
 		}
 		ag.add(nq)
 		l.addressSelect.Update(ag)
+	}
+	l.totalPriorWeight += priorWeight
+	if l.totalPriorWeight > l.totalPriorLimit {
+		l.dropRequests()
 	}
 }
 
@@ -232,17 +242,21 @@ func (l *Limiter) processLoop() {
 		if len(nq.queue) > 0 {
 			request := nq.queue[0]
 			nq.queue = nq.queue[1:]
+			nq.totalPriorWeight -= request.priorWeight
+			l.totalPriorWeight -= request.priorWeight
+			sleepFactor := l.sleepFactor
+			pw := float64(request.priorWeight) / float64(l.maxPriorWeight)
 			l.lock.Unlock()
 			costCh := make(chan float64)
 			request.process <- costCh
-			fcost, limit := l.costFilter.Filter(<-costCh, request.priorWeight)
+			fcost, limit := l.costFilter.Filter(<-costCh, pw)
 			var relCost float64
 			if limit > fcost {
 				relCost = fcost / limit
 			} else {
 				relCost = 1
 			}
-			l.clock.Sleep(time.Duration(fcost * l.sleepFactor))
+			l.clock.Sleep(time.Duration(fcost * sleepFactor))
 			l.lock.Lock()
 			l.update(nq, relCost)
 		} else {
@@ -257,4 +271,58 @@ func (l *Limiter) Stop() {
 
 	l.quit = true
 	l.cond.Signal()
+}
+
+type (
+	dropList     []dropListItem
+	dropListItem struct {
+		nq       *nodeQueue
+		priority float64
+	}
+)
+
+func (l dropList) Len() int {
+	return len(l)
+}
+
+func (l dropList) Less(i, j int) bool {
+	return l[i].priority < l[j].priority
+}
+
+func (l dropList) Swap(i, j int) {
+	l[i], l[j] = l[j], l[i]
+}
+
+func (l *Limiter) dropRequests() {
+	var (
+		sumValue float64
+		list     dropList
+	)
+	for _, nq := range l.nodes {
+		sumValue += nq.value
+	}
+	for _, nq := range l.nodes {
+		if nq.totalPriorWeight == 0 {
+			continue
+		}
+		w := 1 / float64(len(l.addresses)*len(l.addresses[nq.address].nodes))
+		if sumValue > 0 {
+			w += nq.value / sumValue
+		}
+		list = append(list, dropListItem{
+			nq:       nq,
+			priority: w / float64(nq.totalPriorWeight),
+		})
+	}
+	sort.Sort(list)
+	for _, item := range list {
+		for _, request := range item.nq.queue {
+			close(request.process)
+		}
+		l.totalPriorWeight -= item.nq.totalPriorWeight
+		l.remove(item.nq)
+		if l.totalPriorWeight <= l.totalPriorLimit/2 {
+			return
+		}
+	}
 }
