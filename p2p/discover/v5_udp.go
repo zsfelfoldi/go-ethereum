@@ -85,7 +85,7 @@ type UDPv5 struct {
 
 	// talkreq handler registry
 	trlock     sync.Mutex
-	trhandlers map[string]func([]byte) []byte
+	trhandlers map[string]TalkRequestHandler
 
 	// channels into dispatch
 	packetInCh    chan ReadPacket
@@ -106,6 +106,9 @@ type UDPv5 struct {
 	cancelCloseCtx context.CancelFunc
 	wg             sync.WaitGroup
 }
+
+// TalkRequestHandler callback processes a talk request and optionally returns a reply
+type TalkRequestHandler func(enode.ID, *net.UDPAddr, []byte) []byte
 
 // callV5 represents a remote procedure call against another node.
 type callV5 struct {
@@ -156,7 +159,7 @@ func newUDPv5(conn UDPConn, ln *enode.LocalNode, cfg Config) (*UDPv5, error) {
 		log:          cfg.Log,
 		validSchemes: cfg.ValidSchemes,
 		clock:        cfg.Clock,
-		trhandlers:   make(map[string]func([]byte) []byte),
+		trhandlers:   make(map[string]TalkRequestHandler),
 		// channels into dispatch
 		packetInCh:    make(chan ReadPacket, 1),
 		readNextCh:    make(chan struct{}, 1),
@@ -244,7 +247,7 @@ func (t *UDPv5) LocalNode() *enode.LocalNode {
 // RegisterTalkHandler adds a handler for 'talk requests'. The handler function is called
 // whenever a request for the given protocol is received and should return the response
 // data or nil.
-func (t *UDPv5) RegisterTalkHandler(protocol string, handler func([]byte) []byte) {
+func (t *UDPv5) RegisterTalkHandler(protocol string, handler TalkRequestHandler) {
 	t.trlock.Lock()
 	defer t.trlock.Unlock()
 	t.trhandlers[protocol] = handler
@@ -872,7 +875,7 @@ func (p *talkreqV5) handle(t *UDPv5, fromID enode.ID, fromAddr *net.UDPAddr) {
 
 	var response []byte
 	if handler != nil {
-		response = handler(p.Message)
+		response = handler(fromID, fromAddr, p.Message)
 	}
 	if len(p.ReqID) > 0 {
 		t.sendResponse(fromID, fromAddr, &talkrespV5{ReqID: p.ReqID, Message: response})
