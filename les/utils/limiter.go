@@ -144,12 +144,14 @@ func selectionWeights(relCost, value float64) (flatWeight, valueWeight uint64) {
 }
 
 // Note: priorWeight > 0, normalized internally
-func (l *Limiter) Add(id enode.ID, address string, value float64, process chan chan float64, priorWeight uint64) {
+func (l *Limiter) Add(id enode.ID, address string, value float64, priorWeight uint64) chan chan float64 {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 
+	process := make(chan chan float64, 1)
 	if l.quit {
-		return
+		close(process)
+		return process
 	}
 	if value > l.maxValue {
 		l.maxValue = value
@@ -190,6 +192,7 @@ func (l *Limiter) Add(id enode.ID, address string, value float64, process chan c
 	if l.totalPriorWeight > l.totalPriorLimit {
 		l.dropRequests()
 	}
+	return process
 }
 
 func (l *Limiter) update(nq *nodeQueue, relCost float64) {
