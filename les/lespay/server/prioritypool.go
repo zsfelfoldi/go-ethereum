@@ -106,7 +106,7 @@ type PriorityPool struct {
 // nodePriority interface provides current and estimated future priorities on demand
 type nodePriority interface {
 	// Priority should return the current priority of the node (higher is better)
-	Priority(now mclock.AbsTime, cap uint64) int64
+	Priority(now mclock.AbsTime) int64
 	// EstMinPriority should return a lower estimate for the minimum of the node priority
 	// value starting from the current moment until the given time. If the priority goes
 	// under the returned estimate before the specified moment then it is the caller's
@@ -204,9 +204,9 @@ func (pp *PriorityPool) RequestCapacity(node *enode.Node, targetCap uint64, bias
 	}
 	var priority int64
 	if targetCap > c.capacity {
-		priority = c.nodePriority.EstMinPriority(pp.clock.Now()+mclock.AbsTime(bias), targetCap, false)
+		priority = c.nodePriority.EstMinPriority(pp.clock.Now()+mclock.AbsTime(bias), targetCap, false) / int64(targetCap)
 	} else {
-		priority = c.nodePriority.Priority(pp.clock.Now(), targetCap)
+		priority = c.nodePriority.Priority(pp.clock.Now()) / int64(targetCap)
 	}
 	pp.markForChange(c)
 	pp.setCapacity(c, targetCap)
@@ -287,9 +287,9 @@ func activePriority(a interface{}, now mclock.AbsTime) int64 {
 		return math.MinInt64
 	}
 	if c.bias == 0 {
-		return invertPriority(c.nodePriority.Priority(now, c.capacity))
+		return invertPriority(c.nodePriority.Priority(now) / int64(c.capacity))
 	} else {
-		return invertPriority(c.nodePriority.EstMinPriority(now+mclock.AbsTime(c.bias), c.capacity, true))
+		return invertPriority(c.nodePriority.EstMinPriority(now+mclock.AbsTime(c.bias), c.capacity, true) / int64(c.capacity))
 	}
 }
 
@@ -299,12 +299,12 @@ func activeMaxPriority(a interface{}, until mclock.AbsTime) int64 {
 	if c.forced {
 		return math.MinInt64
 	}
-	return invertPriority(c.nodePriority.EstMinPriority(until+mclock.AbsTime(c.bias), c.capacity, false))
+	return invertPriority(c.nodePriority.EstMinPriority(until+mclock.AbsTime(c.bias), c.capacity, false) / int64(c.capacity))
 }
 
 // inactivePriority callback returns actual priority of ppNodeInfo item in inactiveQueue
 func (pp *PriorityPool) inactivePriority(p *ppNodeInfo) int64 {
-	return p.nodePriority.Priority(pp.clock.Now(), pp.minCap)
+	return p.nodePriority.Priority(pp.clock.Now()) / int64(pp.minCap)
 }
 
 // connectedNode is called when a new node has been added to the pool (InactiveFlag set)

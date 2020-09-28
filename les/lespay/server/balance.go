@@ -243,12 +243,12 @@ func (n *NodeBalance) RequestServed(cost uint64) uint64 {
 }
 
 // Priority returns the actual priority based on the current balance
-func (n *NodeBalance) Priority(now mclock.AbsTime, capacity uint64) int64 {
+func (n *NodeBalance) Priority(now mclock.AbsTime) int64 {
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
 	n.updateBalance(now)
-	return n.balanceToPriority(n.balance, capacity)
+	return n.balanceToPriority(n.balance)
 }
 
 // EstMinPriority gives a lower estimate for the priority at a given time in the future.
@@ -265,7 +265,7 @@ func (n *NodeBalance) EstMinPriority(at mclock.AbsTime, capacity uint64, update 
 	if dt > time.Second {
 		avgReqCost = float64(n.sumReqCost) * 2 / float64(dt)
 	}
-	pri := n.balanceToPriority(n.reducedBalance(at, capacity, avgReqCost), capacity)
+	pri := n.balanceToPriority(n.reducedBalance(at, capacity, avgReqCost))
 	if update {
 		n.addCallback(balanceCallbackUpdate, pri, n.signalPriorityUpdate)
 	}
@@ -297,7 +297,7 @@ func (n *NodeBalance) PosBalanceMissing(targetPriority int64, targetCapacity uin
 		targetPriority = 0
 	}
 	timePrice := n.posFactor.timePrice(targetCapacity)
-	posRequired := uint64(float64(targetPriority)*float64(targetCapacity)+float64(after)*timePrice) + 1
+	posRequired := uint64(float64(targetPriority)+float64(after)*timePrice) + 1
 	if posRequired >= maxBalance {
 		return math.MaxUint64 // target not reachable
 	}
@@ -427,7 +427,7 @@ func (n *NodeBalance) checkCallbacks(now mclock.AbsTime) (callbacks []func()) {
 	if n.callbackCount == 0 || n.capacity == 0 {
 		return
 	}
-	pri := n.balanceToPriority(n.balance, n.capacity)
+	pri := n.balanceToPriority(n.balance)
 	for n.callbackCount != 0 && n.callbacks[n.callbackCount-1].threshold >= pri {
 		n.callbackCount--
 		n.callbackIndex[n.callbacks[n.callbackCount].id] = -1
@@ -538,9 +538,9 @@ func (n *NodeBalance) setCapacity(capacity uint64) {
 // balanceToPriority converts a balance to a priority value. Lower priority means
 // first to disconnect. Positive balance translates to positive priority. If positive
 // balance is zero then negative balance translates to a negative priority.
-func (n *NodeBalance) balanceToPriority(b balance, capacity uint64) int64 {
+func (n *NodeBalance) balanceToPriority(b balance) int64 {
 	if !b.pos.IsZero() {
-		return int64(b.pos.Value(n.bt.posExp.LogOffset(n.bt.clock.Now())) / capacity)
+		return int64(b.pos.Value(n.bt.posExp.LogOffset(n.bt.clock.Now())))
 	}
 	return -int64(b.neg.Value(n.bt.negExp.LogOffset(n.bt.clock.Now())))
 }

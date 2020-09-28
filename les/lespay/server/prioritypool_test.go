@@ -49,12 +49,12 @@ type ppTestClient struct {
 	balance, cap uint64
 }
 
-func (c *ppTestClient) Priority(now mclock.AbsTime, cap uint64) int64 {
-	return int64(c.balance / cap)
+func (c *ppTestClient) Priority(now mclock.AbsTime) int64 {
+	return int64(c.balance)
 }
 
 func (c *ppTestClient) EstMinPriority(until mclock.AbsTime, cap uint64, update bool) int64 {
-	return int64(c.balance / cap)
+	return int64(c.balance)
 }
 
 func TestPriorityPool(t *testing.T) {
