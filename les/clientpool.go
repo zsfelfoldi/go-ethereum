@@ -385,11 +385,22 @@ func (f *clientPool) forClients(ids []enode.ID, cb func(client *clientInfo)) {
 	}
 }
 
+func (f *clientPool) updateCapacityCurve(forced bool) {
+	now := f.clock.Now()
+	dt := time.Duration(now - f.capacityCurveUpdated)
+	if !forced && f.capacityCurve != nil && dt < time.Second*10 {
+		return
+	}
+	f.capacityCurveUpdated = now
+	f.capacityCurve = f.pp.GetCapacityCurve()
+}
+
 func (f *clientPool) serveCapQuery(id enode.ID, address string, data []byte) []byte {
 	type params struct {
 		ReqTime   uint64
 		AddTokens []uint64
 	}
 	type results struct{}
+	//TODO use lps.CapacityCurve to answer request for multiple newly bought token amounts
 	return nil
 }

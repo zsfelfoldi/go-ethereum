@@ -101,6 +101,11 @@ type PriorityPool struct {
 	minCap                 uint64
 	activeBias             time.Duration
 	capacityStepDiv        uint64
+
+	cachedCurve    *CapacityCurve
+	ccLock         sync.Mutex
+	ccUpdatedAt    mclock.AbsTime
+	ccUpdateForced bool
 }
 
 // nodePriority interface provides current and estimated future priorities on demand
@@ -500,4 +505,183 @@ func (pp *PriorityPool) updatePriority(node *enode.Node) {
 		pp.inactiveQueue.Push(c, pp.inactivePriority(c))
 	}
 	updates = pp.tryActivate()
+}
+
+// CapacityCurve is a snapshot of the priority pool contents in a format that can efficiently
+// estimate how much capacity could be granted to a given node at any priority level.
+type CapacityCurve struct {
+	points           []curveSection      // curve points sorted in descending order of relative priority
+	ids              []enode.ID          // node IDs belonging to each curve point (only used during sorting)
+	index            map[enode.ID][2]int // curve points belonging to each node (second one is -1 if not used)
+	maxCount, maxCap uint64
+	exclude          [2]int // curve points of excluded node (-1 if not used)
+}
+
+type curvePoint struct {
+	relPri int64 // relative priority of the curve point
+	// the fields below apply if the relative priority threshold is between the current and the next curve point
+	sumRawPri  int64  // total raw priority of nodes with reduced capacity at threshold priority
+	capOverPri uint64 // total capacity of untouched nodes with a relative priority over the threshold
+	count      uint64 // number of active nodes
+}
+
+func (pp *PriorityPool) forceCurveUpdate() {
+	pp.ccLock.Lock()
+	pp.ccUpdateForced = true
+	pp.ccLock.Unlock()
+}
+
+func (pp *PriorityPool) GetCapacityCurve() *CapacityCurve {
+	pp.ccLock.Lock()
+	defer pp.ccLock.Unlock()
+
+	now := pp.clock.Now()
+	dt := time.Duration(now - pp.ccUpdatedAt)
+	if !pp.ccUpdateForced && pp.cachedCurve != nil && dt < time.Second*10 {
+		return pp.cachedCurve
+	}
+
+	pp.ccUpdateForced = false
+	pp.ccUpdatedAt = now
+	curve := &CapacityCurve{
+		index:    make(map[enode.ID][2]int),
+		maxCount: pp.maxCount,
+		maxCap:   pp.maxCap,
+		exclude:  [2]int{-1, -1},
+	}
+	pp.cachedCurve = curve
+
+	pp.ns.Operation(func() {
+		pp.ns.ForEach(nodestate.Flags{}, nodestate.Flags{}, func(node *enode.Node, state nodestate.Flags) {
+			if capacity, _ := f.ns.GetField(node, pp.CapacityField).(uint64); capacity > 0 {
+				balance := f.ns.GetField(node, pp.priorityField).(*lps.NodeBalance)
+				rawPriority := balance.Priority(now)
+				relPriority, minCapPriority := rawPriority/int64(capacity), rawPriority/int64(f.minCap)
+				id := node.ID()
+				curve.index[id] = [2]int{-1, -1}
+				curve.ids = append(curve.ids, id)
+				if relPriority == minCapPriority || relPriority <= 0 {
+					curve.points = append(curve.points, capacityCurvePoint{
+						priority:   relPriority,
+						capOverPri: capacity,
+						count:      1,
+					})
+				} else {
+					curve.points = append(curve.points, capacityCurvePoint{
+						priority:  minCapPriority,
+						sumRawPri: rawPriority,
+						count:     1,
+					})
+					curve.points = append(curve.points, capacityCurvePoint{
+						priority:   relPriority,
+						capOverPri: capacity,
+						sumRawPri:  -rawPriority,
+					})
+					curve.ids = append(curve.ids, id)
+				}
+			}
+		})
+	})
+	sort.Sort(curve)
+	for i := range curve.points {
+		index := curve.index[curve.ids[i]]
+		if index[0] == -1 {
+			index[0] = i
+		} else {
+			index[1] = i
+		}
+		curve.index[curve.ids[i]] = index
+		if i > 0 {
+			curve.points[i].add(curve.points[i-1])
+		}
+	}
+	return curve
+}
+
+func (cp *curvePoint) add(cp2 curvePoint) {
+	cp.capOverPri += cp2.capOverPri
+	cp.sumRawPri += cp2.sumRawPri
+	cp.count += cp2.count
+
+}
+
+func (cp *curvePoint) sub(cp2 curvePoint) {
+	cp.capOverPri -= cp2.capOverPri
+	cp.sumRawPri -= cp2.sumRawPri
+	cp.count -= cp2.count
+}
+
+func (cp *curvePoint) usedCap(relPri int64) uint64 {
+	if relPri < 1 {
+		return math.MaxUint64
+	}
+	return cp.capOverPri + uint64(cp.sumRawPri/relPri)
+}
+
+func (cc *CapacityCurve) Len() int {
+	return len(cc.points)
+}
+
+func (cc *CapacityCurve) Less(i, j int) bool {
+	return cc.points[i].relPri > cc.points[j].relPri
+}
+
+func (cc *CapacityCurve) Swap(i, j int) {
+	cc.points[i], cc.points[j] = cc.points[j], cc.points[i]
+	cc.ids[i], cc.ids[j] = cc.ids[j], cc.ids[i]
+}
+
+func (cc *CapacityCurve) Exclude(id enode.ID) *CapacityCurve {
+	if exclude, ok := cc.index[id]; ok {
+		return &CapacityCurve{
+			points:  cc.points,
+			index:   cc.index,
+			exclude: exclude,
+		}
+	}
+	return cc
+}
+
+func (cc *CapacityCurve) getPoint(i int) curvePoint {
+	c := cc.points[i]
+	for _, ei := range cc.exclude {
+		if ei == -1 || ei > i {
+			break
+		}
+		ex := cc.points[ei]
+		if ei > 0 {
+			ex.sub(cc.points[ei-1])
+		}
+		c.sub(ex)
+	}
+	return c
+}
+
+func (cc *CapacityCurve) MaxCapacity(relPriority func(cap uint64) int64) uint64 {
+	//TODO empty curve check
+	min, max := -1, len(cc.points)-1
+
+	for min < max {
+		mid := (min + max + 1) / 2
+		//??freeCap mezo, ami a pontra vonatkozik
+		usedCap := cc.points[mid].usedCap(cc.points[mid].relPri)
+		var freeCap uint64
+		if cc.maxCap > usedCap {
+			freeCap = cc.maxCap - usedCap
+		}
+		if freeCap < f.minCap || cc.points[mid].count >= cc.maxCount || relPriority(freeCap) > cc.points[mid].relPri {
+			max = mid - 1
+		} else {
+			min = mid
+		}
+	}
+	if min == -1 {
+		if relPriority(f.capLimit) > cc.points[0].relPri {
+			return f.capLimit
+		} else {
+			return 0
+		}
+	}
+	c := cc.points[min]
+	//TODO interval search between minCap and c.freeCap, return result
 }
