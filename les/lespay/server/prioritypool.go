@@ -117,7 +117,7 @@ type nodePriority interface {
 	// value starting from the current moment until the given time. If the priority goes
 	// under the returned estimate before the specified moment then it is the caller's
 	// responsibility to signal with updateFlag.
-	EstMinPriority(until mclock.AbsTime, cap uint64, update bool) int64
+	EstimatePriority(now mclock.AbsTime, cap uint64, addBalance int64, future, bias time.Duration, update bool) int64
 }
 
 // ppNodeInfo is the internal node descriptor of PriorityPool
@@ -210,7 +210,7 @@ func (pp *PriorityPool) RequestCapacity(node *enode.Node, targetCap uint64, bias
 	}
 	var priority int64
 	if targetCap > c.capacity {
-		priority = c.nodePriority.EstMinPriority(pp.clock.Now()+mclock.AbsTime(bias), targetCap, false) / int64(targetCap)
+		priority = c.nodePriority.EstimatePriority(pp.clock.Now(), targetCap, 0, 0, bias, false) / int64(targetCap)
 	} else {
 		priority = c.nodePriority.Priority(pp.clock.Now()) / int64(targetCap)
 	}
@@ -295,17 +295,17 @@ func activePriority(a interface{}, now mclock.AbsTime) int64 {
 	if c.bias == 0 {
 		return invertPriority(c.nodePriority.Priority(now) / int64(c.capacity))
 	} else {
-		return invertPriority(c.nodePriority.EstMinPriority(now+mclock.AbsTime(c.bias), c.capacity, true) / int64(c.capacity))
+		return invertPriority(c.nodePriority.EstimatePriority(now, c.capacity, 0, 0, c.bias, true) / int64(c.capacity))
 	}
 }
 
 // activeMaxPriority callback returns estimated maximum priority of ppNodeInfo item in activeQueue
-func activeMaxPriority(a interface{}, until mclock.AbsTime) int64 {
+func activeMaxPriority(a interface{}, now, until mclock.AbsTime) int64 {
 	c := a.(*ppNodeInfo)
 	if c.forced {
 		return math.MinInt64
 	}
-	return invertPriority(c.nodePriority.EstMinPriority(until+mclock.AbsTime(c.bias), c.capacity, false) / int64(c.capacity))
+	return invertPriority(c.nodePriority.EstimatePriority(now, c.capacity, 0, time.Duration(until-now), c.bias, false) / int64(c.capacity))
 }
 
 // inactivePriority callback returns actual priority of ppNodeInfo item in inactiveQueue

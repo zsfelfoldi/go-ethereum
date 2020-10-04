@@ -269,7 +269,7 @@ func TestEstimatedPriority(t *testing.T) {
 	for _, i := range inputs {
 		b.clock.Run(i.runTime)
 		node.RequestServed(i.reqCost)
-		priority := node.EstMinPriority(b.clock.Now()+mclock.AbsTime(i.futureTime), 1000000000, false) / 1000000000
+		priority := node.EstimatePriority(b.clock.Now(), 1000000000, 0, i.futureTime, 0, false) / 1000000000
 		if priority != i.priority {
 			t.Fatalf("Estimated priority mismatch, want %v, got %v", i.priority, priority)
 		}

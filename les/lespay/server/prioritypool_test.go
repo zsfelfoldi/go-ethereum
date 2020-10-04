@@ -20,6 +20,7 @@ import (
 	"math/rand"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -53,7 +54,7 @@ func (c *ppTestClient) Priority(now mclock.AbsTime) int64 {
 	return int64(c.balance)
 }
 
-func (c *ppTestClient) EstMinPriority(until mclock.AbsTime, cap uint64, update bool) int64 {
+func (c *ppTestClient) EstimatePriority(now mclock.AbsTime, cap uint64, addBalance int64, future, bias time.Duration, update bool) int64 {
 	return int64(c.balance)
 }
 
