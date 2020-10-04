@@ -377,7 +377,7 @@ func (n *NodeBalance) deactivate() {
 // updateBalance updates balance based on the time factor
 func (n *NodeBalance) updateBalance(now mclock.AbsTime) {
 	if n.active && now > n.lastUpdate {
-		n.balance = n.reducedBalance(n.balance, now, time.Duration(now-n.lastUpdate), n.capacity, 0)
+		n.balance = n.reducedBalance(n.balance, n.lastUpdate, time.Duration(now-n.lastUpdate), n.capacity, 0)
 		n.lastUpdate = now
 	}
 }
@@ -558,8 +558,8 @@ func (n *NodeBalance) balanceToPriority(b balance) int64 {
 
 // reducedBalance estimates the reduced balance at a given time in the fututre based
 // on the given balance, the time factor and an estimated average request cost per time ratio
-func (n *NodeBalance) reducedBalance(b balance, now mclock.AbsTime, dt time.Duration, capacity uint64, avgReqCost float64) balance {
-	at := now + mclock.AbsTime(dt/2)
+func (n *NodeBalance) reducedBalance(b balance, start mclock.AbsTime, dt time.Duration, capacity uint64, avgReqCost float64) balance {
+	at := start + mclock.AbsTime(dt/2)
 	dtf := float64(dt)
 	if !b.pos.IsZero() {
 		factor := n.posFactor.timePrice(capacity) + n.posFactor.RequestFactor*avgReqCost
