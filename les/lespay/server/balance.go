@@ -263,7 +263,14 @@ func (n *NodeBalance) EstimatePriority(now mclock.AbsTime, capacity uint64, addB
 	n.updateBalance(now)
 	b := n.balance
 	if addBalance != 0 {
-		b.pos.Add(addBalance, n.bt.posExp.LogOffset(now))
+		offset := n.bt.posExp.LogOffset(now)
+		old := n.balance.pos.Value(offset)
+		if addBalance > 0 && (old > maxBalance-uint64(addBalance)) {
+			b.pos = utils.ExpiredValue{}
+			b.pos.Add(maxBalance, offset)
+		} else {
+			b.pos.Add(addBalance, offset)
+		}
 	}
 	if future > 0 {
 		var avgReqCost float64
