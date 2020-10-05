@@ -329,3 +329,29 @@ func (l *Limiter) dropRequests() {
 		}
 	}
 }
+
+type CostFilter struct {
+	cutRatio, updateRate, limit float64
+}
+
+func NewCostFilter(cutRatio, updateRate float64) *CostFilter {
+	return &CostFilter{
+		cutRatio:   cutRatio,
+		updateRate: updateRate,
+	}
+}
+
+// 0 < priorWeight <= 1, filteredCost <= costLimit * priorWeight
+func (cf *CostFilter) Filter(cost, priorWeight float64) (filteredCost, costLimit float64) {
+	var cut float64
+	limit := cf.limit * priorWeight
+	if cost > limit {
+		filteredCost = limit
+		cut = cost - limit
+	} else {
+		filteredCost = cost
+	}
+	costLimit = cf.limit
+	cf.limit += (cut - cost*cf.cutRatio) * cf.updateRate
+	return
+}
