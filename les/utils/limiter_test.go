@@ -72,7 +72,7 @@ func TestLimiter(t *testing.T) {
 		stop:      make(chan struct{}),
 		processed: make(chan struct{}),
 		nodes: []*ltNode{
-			//{addr: 0, id: 0, value: 0, pw: 1, exp: 0.5},
+			{addr: 0, id: 0, value: 0, pw: 1, exp: 0.5},
 			{addr: 1, id: 1, value: 0, pw: 1, exp: 0.5},
 			{addr: 1, id: 2, value: 0, pw: 1, exp: 0.5},
 		},
