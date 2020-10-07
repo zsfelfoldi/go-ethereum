@@ -16,21 +16,91 @@
 
 package utils
 
-import "testing"
+import (
+	"fmt"
+	"sync"
+	"testing"
 
-func TestLimiter(t *testing.T) {
+	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/p2p/enode"
+)
+
+type (
+	ltNode struct {
+		addr, id   byte
+		value, exp float64
+		pw         uint64
+
+		served, dropped int
+	}
+
+	limTest struct {
+		limiter         *Limiter
+		wg              sync.WaitGroup
+		stop, processed chan struct{}
+		nodes           []*ltNode
+	}
+)
+
+func (lt *limTest) start(n *ltNode) {
+	lt.wg.Add(1)
+	go func() {
+		address := string([]byte{n.addr})
+		id := enode.ID{n.id}
+		for {
+			cch := lt.limiter.Add(id, address, n.value, n.pw)
+			select {
+			case ch := <-cch:
+				if ch != nil {
+					n.served++
+					ch <- float64(n.pw * 1000000)
+				} else {
+					n.dropped++
+				}
+				lt.processed <- struct{}{}
+			case <-lt.stop:
+				lt.wg.Done()
+				return
+			}
+		}
+	}()
 }
 
+func TestLimiter(t *testing.T) {
+	lt := &limTest{
+		limiter:   NewLimiter(0, 1000, NewCostFilter(0, 1), &mclock.Simulated{}),
+		stop:      make(chan struct{}),
+		processed: make(chan struct{}),
+		nodes: []*ltNode{
+			//{addr: 0, id: 0, value: 0, pw: 1, exp: 0.5},
+			{addr: 1, id: 1, value: 0, pw: 1, exp: 0.5},
+			{addr: 1, id: 2, value: 0, pw: 1, exp: 0.5},
+		},
+	}
+	for _, n := range lt.nodes {
+		lt.start(n)
+	}
+	for i := 0; i < 1000000; i++ {
+		<-lt.processed
+	}
+	close(lt.stop)
+	lt.wg.Wait()
+	for _, n := range lt.nodes {
+		fmt.Println(n.served)
+	}
+}
+
+type (
+	cfPoint struct {
+		cost, pw float64
+	}
+	cfTest struct {
+		cutRatio, expLimit float64
+		period             []cfPoint
+	}
+)
+
 func TestCostFilter(t *testing.T) {
-	type (
-		cfPoint struct {
-			cost, pw float64
-		}
-		cfTest struct {
-			cutRatio, expLimit float64
-			period             []cfPoint
-		}
-	)
 	tests := []cfTest{
 		cfTest{0.5, 50, []cfPoint{{100, 1}}},
 		cfTest{0.1, 800, []cfPoint{{100, 1}, {900, 1}}},

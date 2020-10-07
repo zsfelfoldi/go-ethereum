@@ -99,7 +99,11 @@ func (ag *addressGroup) remove(nq *nodeQueue) {
 	}
 	ag.nodes = ag.nodes[:l]
 	ag.sumFlatWeight -= nq.flatWeight
-	ag.groupWeight = ag.sumFlatWeight / uint64(l)
+	if l >= 1 {
+		ag.groupWeight = ag.sumFlatWeight / uint64(l)
+	} else {
+		ag.groupWeight = 0
+	}
 	if l == 1 {
 		ag.nodeSelect = nil
 	}
@@ -125,6 +129,7 @@ func NewLimiter(sleepFactor float64, totalPriorLimit uint64, costFilter *CostFil
 		totalPriorLimit: totalPriorLimit,
 	}
 	l.cond = sync.NewCond(&l.lock)
+	go l.processLoop()
 	return l
 }
 
@@ -176,6 +181,9 @@ func (l *Limiter) Add(id enode.ID, address string, value float64, priorWeight ui
 			totalPriorWeight: priorWeight,
 		}
 		nq.flatWeight, nq.valueWeight = selectionWeights(0, value)
+		if len(l.nodes) == 0 {
+			l.cond.Signal()
+		}
 		l.nodes[id] = nq
 		if nq.valueWeight != 0 {
 			l.valueSelect.Update(nq)
@@ -212,7 +220,7 @@ func (l *Limiter) remove(nq *nodeQueue) {
 	if len(ag.nodes) == 0 {
 		delete(l.addresses, nq.address)
 	}
-	l.addressSelect.Remove(ag)
+	l.addressSelect.Update(ag)
 	if nq.valueWeight != 0 {
 		l.valueSelect.Remove(nq)
 	}
@@ -259,7 +267,9 @@ func (l *Limiter) processLoop() {
 			} else {
 				relCost = 1
 			}
-			l.clock.Sleep(time.Duration(fcost * sleepFactor))
+			if dt := time.Duration(fcost * sleepFactor); dt > 0 {
+				l.clock.Sleep(dt)
+			}
 			l.lock.Lock()
 			l.update(nq, relCost)
 		} else {
