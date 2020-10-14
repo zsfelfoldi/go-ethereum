@@ -16,12 +16,42 @@
 
 package lespay
 
+import "bytes"
+
+const (
+	ServiceMapFilterName = "f"
+	ServiceMapQueryName  = "q"
+	CapacityQueryName    = "cq"
+)
+
 type (
 	Request struct {
-		Name   string
-		Params []byte
+		Service, Name string
+		Params        []byte
 	}
 	Requests []Request
+
+	Range struct {
+		Shared, From, To []byte
+	}
+	ServiceDimension struct {
+		Key   string
+		Range Range
+	}
+	ServiceRange []ServiceDimension
+
+	ServiceMapFilterReq struct {
+		FilterRange ServiceRange
+		SetAlias    string
+	}
+	ServiceMapFilterResp []string // service IDs
+
+	ServiceMapQueryReq  string
+	ServiceMapQueryResp struct {
+		Id, Desc string
+		Delay    uint64 // microseconds (for request forwarding; not used yet)
+		Range    ServiceRange
+	}
 
 	CapacityQueryReq struct {
 		Bias      uint64 // seconds
@@ -29,3 +59,50 @@ type (
 	}
 	CapacityQueryResp []uint64
 )
+
+func NewRange(begin, end []byte, includeBegin, includeEnd bool) Range {
+	if !includeBegin {
+		begin = append(begin, 0)
+	}
+	if includeEnd {
+		end = append(end, 0)
+	}
+	if len(end) > 0 && bytes.Compare(begin, end) != -1 {
+		panic("Invalid range")
+	}
+	var i int
+	for i < len(begin) && i < len(end) && begin[i] == end[i] {
+		i++
+	}
+	return Range{
+		Shared: begin[:i],
+		From:   begin[i:],
+		To:     end[i:],
+	}
+}
+
+func (r *Range) Includes(i *Range) bool {
+	if !bytes.HasPrefix(i.Shared, r.Shared) {
+		return false
+	}
+	from, to := i.From, i.To
+	if len(i.Shared) > len(r.Shared) {
+		diff := i.Shared[len(r.Shared):]
+		from = append(diff, from...)
+		to = append(diff, to...)
+	}
+	return bytes.Compare(r.From, from) <= 0 && bytes.Compare(r.To, to) >= 0
+}
+
+func (r *ServiceRange) Includes(i ServiceRange) bool {
+	m := make(map[string]Range)
+	for _, dim := range *r {
+		m[dim.Key] = dim.Range
+	}
+	for _, dim := range i {
+		if r, ok := m[dim.Key]; !ok || !r.Includes(&dim.Range) {
+			return false
+		}
+	}
+	return true
+}

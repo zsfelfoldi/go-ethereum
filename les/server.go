@@ -137,7 +137,18 @@ func NewLesServer(node *node.Node, e *eth.Ethereum, config *eth.Config) (*LesSer
 	srv.fcManager.SetCapacityLimits(srv.minCapacity, srv.maxCapacity, srv.minCapacity*2)
 	srv.clientPool = newClientPool(ns, srv.chainDb, srv.minCapacity, defaultConnectedBias, mclock.System{}, srv.dropClient)
 	srv.clientPool.setDefaultFactors(lps.PriceFactors{TimeFactor: 0, CapacityFactor: 1, RequestFactor: 1}, lps.PriceFactors{TimeFactor: 0, CapacityFactor: 1, RequestFactor: 1})
-	srv.lespayServer.RegisterHandler("capQuery", srv.clientPool.serveCapQuery)
+
+	// construct and register lespay service
+	service := lps.NewService("les", "Ethereum light client service")
+	var firstVersion, lastVersion [4]byte
+	firstVersion[1] = byte(ServerProtocolVersions[0])
+	lastVersion[1] = byte(ServerProtocolVersions[len(ServerProtocolVersions)-1])
+	service.AddDimension("les", lespay.NewRange(firstVersion[:], lastVersion[:], true, true))
+	service.AddDimension("genesis", lespay.NewRange(srv.genesis[:], srv.genesis[:], true, true))
+	chainId := srv.chainConfig.ChainID.Bytes()
+	service.AddDimension("chainId", lespay.NewRange(chainId, chainId, true, true))
+	service.RegisterHandler(lespay.CapacityQueryName, srv.clientPool.serveCapQuery)
+	srv.lespayServer.RegisterService(service)
 
 	checkpoint := srv.latestLocalCheckpoint()
 	if !checkpoint.Empty() {

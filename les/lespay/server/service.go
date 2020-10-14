@@ -35,25 +35,37 @@ const (
 type Server struct {
 	costFilter                  *utils.CostFilter
 	limiter                     *utils.Limiter
-	handlers                    map[string]Handler
+	services, alias             map[string]*Service
+	priority                    []*Service
 	sleepFactor, sizeCostFactor float64
+}
+
+type Service struct {
+	id, desc     string
+	serviceRange lespay.ServiceRange
+	handlers     map[string]Handler
 }
 
 type Handler func(id enode.ID, address string, data []byte) []byte
 
 func NewServer(maxThreadTime, maxBandwidth float64) *Server {
-	return &Server{
+	s := &Server{
 		costFilter:     utils.NewCostFilter(costCutRatio, 0.01),
 		limiter:        utils.NewLimiter(1000),
 		sleepFactor:    (1/maxThreadTime - 1) / (1 - costCutRatio),
 		sizeCostFactor: maxThreadTime * 1000000000 / maxBandwidth,
-		handlers:       make(map[string]Handler),
+		services:       make(map[string]*Service),
 	}
+	sm := NewService("sm", "Service map")
+	sm.RegisterHandler(lespay.ServiceMapFilterName, s.serveFilter)
+	sm.RegisterHandler(lespay.ServiceMapQueryName, s.serveQuery)
+	s.RegisterService(sm)
+	return s
 }
 
-// Note: register every handler before serving requests
-func (s *Server) RegisterHandler(name string, handler Handler) {
-	s.handlers[name] = handler
+func (s *Server) RegisterService(srv *Service) {
+	s.services[srv.id] = srv
+	s.priority = append(s.priority, srv)
 }
 
 func (s *Server) Serve(id enode.ID, addr *net.UDPAddr, req []byte) []byte {
@@ -72,11 +84,22 @@ func (s *Server) Serve(id enode.ID, addr *net.UDPAddr, req []byte) []byte {
 	}
 	start := mclock.Now()
 	results := make([][]byte, len(requests))
+	s.alias = make(map[string]*Service)
 	for i, req := range requests {
-		if handler, ok := s.handlers[req.Name]; ok {
-			results[i] = handler(id, address, req.Params)
+		var service *Service
+		if len(req.Service) > 0 && req.Service[0] == '$' {
+			// service alias
+			service = s.alias[req.Service[1:]]
+		} else {
+			service = s.services[req.Service]
+		}
+		if service != nil {
+			if handler, ok := service.handlers[req.Name]; ok {
+				results[i] = handler(id, address, req.Params)
+			}
 		}
 	}
+	s.alias = nil
 	res, err := rlp.EncodeToBytes(&results)
 	cost := float64(mclock.Now() - start)
 	sizeCost := float64(len(res)+100) * s.sizeCostFactor
@@ -99,4 +122,63 @@ func (s *Server) Serve(id enode.ID, addr *net.UDPAddr, req []byte) []byte {
 
 func (s *Server) Stop() {
 	s.limiter.Stop()
+}
+
+func (s *Server) serveFilter(id enode.ID, freeID string, data []byte) []byte {
+	var req lespay.ServiceMapFilterReq
+	if rlp.DecodeBytes(data, &req) != nil {
+		return nil
+	}
+	var resp lespay.ServiceMapFilterResp
+	for _, srv := range s.priority {
+		if srv.serviceRange.Includes(req.FilterRange) {
+			if resp == nil && req.SetAlias != "" {
+				s.alias[req.SetAlias] = srv
+			}
+			resp = append(resp, srv.id)
+		}
+	}
+	res, _ := rlp.EncodeToBytes(&resp)
+	return res
+}
+
+func (s *Server) serveQuery(id enode.ID, freeID string, data []byte) []byte {
+	var req lespay.ServiceMapQueryReq
+	if rlp.DecodeBytes(data, &req) != nil {
+		return nil
+	}
+	var service *Service
+	if len(req) > 0 && req[0] == '$' {
+		// service alias
+		service = s.alias[string(req[1:])]
+	} else {
+		service = s.services[string(req)]
+	}
+	if service == nil {
+		return nil
+	}
+	resp := lespay.ServiceMapQueryResp{
+		Id:    service.id,
+		Desc:  service.desc,
+		Range: service.serviceRange,
+	}
+	res, _ := rlp.EncodeToBytes(&resp)
+	return res
+}
+
+func NewService(id, desc string) *Service {
+	return &Service{
+		id:       id,
+		desc:     desc,
+		handlers: make(map[string]Handler),
+	}
+}
+
+func (s *Service) AddDimension(key string, serviceRange lespay.Range) {
+	s.serviceRange = append(s.serviceRange, lespay.ServiceDimension{Key: key, Range: serviceRange})
+}
+
+// Note: register every handler before serving requests
+func (s *Service) RegisterHandler(name string, handler Handler) {
+	s.handlers[name] = handler
 }
