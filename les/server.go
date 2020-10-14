@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
+	"github.com/ethereum/go-ethereum/les/lespay"
 	lps "github.com/ethereum/go-ethereum/les/lespay/server"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
