@@ -49,7 +49,7 @@ type (
 	ServiceMapQueryReq  string
 	ServiceMapQueryResp struct {
 		Id, Desc string
-		Delay    uint64 // microseconds (for request forwarding; not used yet)
+		Distance uint64 // for request forwarding; not used yet
 		Range    ServiceRange
 	}
 
@@ -105,4 +105,8 @@ func (r *ServiceRange) Includes(i ServiceRange) bool {
 		}
 	}
 	return true
+}
+
+func (r *ServiceRange) AddDimension(key string, servedRange Range) {
+	*r = append(*r, ServiceDimension{Key: key, Range: servedRange})
 }

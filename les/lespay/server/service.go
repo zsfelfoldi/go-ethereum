@@ -18,12 +18,15 @@ package server
 
 import (
 	"net"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/lespay"
 	"github.com/ethereum/go-ethereum/les/utils"
 	"github.com/ethereum/go-ethereum/p2p/enode"
+	"github.com/ethereum/go-ethereum/p2p/nodestate"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -32,40 +35,81 @@ const (
 	costCutRatio     = 0.1
 )
 
-type Server struct {
-	costFilter                  *utils.CostFilter
-	limiter                     *utils.Limiter
-	services, alias             map[string]*Service
-	priority                    []*Service
-	sleepFactor, sizeCostFactor float64
-}
+type (
+	Server struct {
+		ns                          *nodestate.NodeStateMachine
+		db                          ethdb.Database
+		costFilter                  *utils.CostFilter
+		limiter                     *utils.Limiter
+		services, alias             map[string]*service
+		priority                    []*service
+		sleepFactor, sizeCostFactor float64
 
-type Service struct {
-	id, desc     string
-	serviceRange lespay.ServiceRange
-	handlers     map[string]Handler
-}
+		opService *service
+		opBatch   ethdb.Batch
+	}
 
-type Handler func(id enode.ID, address string, data []byte) []byte
+	serviceBackend interface {
+		ServiceInfo() (string, string, lespay.ServiceRange) // only called during registration
+		Distance() uint64
+		Handle(id enode.ID, address string, name string, data []byte) []byte
+	}
 
-func NewServer(maxThreadTime, maxBandwidth float64) *Server {
+	serviceWithBalance interface {
+		serviceBackend
+		GetBalance(id enode.ID) uint64
+		AddBalance(id enode.ID, amount int64) (uint64, uint64, error)
+	}
+
+	service struct {
+		id, desc     string
+		serviceRange lespay.ServiceRange
+		backend      serviceBackend
+	}
+
+	DbAccess struct {
+		server  *Server
+		service *service
+		prefix  []byte
+	}
+)
+
+func NewServer(ns *nodestate.NodeStateMachine, db ethdb.Database, maxThreadTime, maxBandwidth float64) *Server {
 	s := &Server{
+		ns:             ns,
+		db:             db,
 		costFilter:     utils.NewCostFilter(costCutRatio, 0.01),
 		limiter:        utils.NewLimiter(1000),
 		sleepFactor:    (1/maxThreadTime - 1) / (1 - costCutRatio),
 		sizeCostFactor: maxThreadTime * 1000000000 / maxBandwidth,
-		services:       make(map[string]*Service),
+		services:       make(map[string]*service),
 	}
-	sm := NewService("sm", "Service map")
-	sm.RegisterHandler(lespay.ServiceMapFilterName, s.serveFilter)
-	sm.RegisterHandler(lespay.ServiceMapQueryName, s.serveQuery)
-	s.RegisterService(sm)
+	s.Register(s)
 	return s
 }
 
-func (s *Server) RegisterService(srv *Service) {
+func (s *Server) Register(b serviceBackend) *DbAccess {
+	srv := &service{backend: b}
+	srv.id, srv.desc, srv.serviceRange = b.ServiceInfo()
+	if strings.Contains(srv.id, ":") {
+		panic("Service ID contains ':'")
+	}
 	s.services[srv.id] = srv
 	s.priority = append(s.priority, srv)
+	return &DbAccess{
+		server:  s,
+		service: srv,
+		prefix:  append([]byte(srv.id), byte(':')),
+	}
+}
+
+func (s *Server) Resolve(serviceID string) *service {
+	if len(serviceID) > 0 && serviceID[0] == ':' {
+		// service alias
+		return s.alias[serviceID[1:]]
+	} else {
+		return s.services[serviceID]
+	}
 }
 
 func (s *Server) Serve(id enode.ID, addr *net.UDPAddr, req []byte) []byte {
@@ -84,19 +128,10 @@ func (s *Server) Serve(id enode.ID, addr *net.UDPAddr, req []byte) []byte {
 	}
 	start := mclock.Now()
 	results := make([][]byte, len(requests))
-	s.alias = make(map[string]*Service)
+	s.alias = make(map[string]*service)
 	for i, req := range requests {
-		var service *Service
-		if len(req.Service) > 0 && req.Service[0] == '$' {
-			// service alias
-			service = s.alias[req.Service[1:]]
-		} else {
-			service = s.services[req.Service]
-		}
-		if service != nil {
-			if handler, ok := service.handlers[req.Name]; ok {
-				results[i] = handler(id, address, req.Params)
-			}
+		if service := s.Resolve(req.Service); service != nil {
+			results[i] = service.backend.Handle(id, address, req.Name, req.Params)
 		}
 	}
 	s.alias = nil
@@ -124,7 +159,25 @@ func (s *Server) Stop() {
 	s.limiter.Stop()
 }
 
-func (s *Server) serveFilter(id enode.ID, freeID string, data []byte) []byte {
+func (s *Server) ServiceInfo() (string, string, lespay.ServiceRange) {
+	return "sm", "Service map", nil
+}
+
+func (s *Server) Distance() uint64 {
+	return 0
+}
+
+func (s *Server) Handle(id enode.ID, address string, name string, data []byte) []byte {
+	switch name {
+	case lespay.ServiceMapFilterName:
+		return s.serveFilter(data)
+	case lespay.ServiceMapQueryName:
+		return s.serveQuery(data)
+	}
+	return nil
+}
+
+func (s *Server) serveFilter(data []byte) []byte {
 	var req lespay.ServiceMapFilterReq
 	if rlp.DecodeBytes(data, &req) != nil {
 		return nil
@@ -142,12 +195,12 @@ func (s *Server) serveFilter(id enode.ID, freeID string, data []byte) []byte {
 	return res
 }
 
-func (s *Server) serveQuery(id enode.ID, freeID string, data []byte) []byte {
+func (s *Server) serveQuery(data []byte) []byte {
 	var req lespay.ServiceMapQueryReq
 	if rlp.DecodeBytes(data, &req) != nil {
 		return nil
 	}
-	var service *Service
+	var service *service
 	if len(req) > 0 && req[0] == '$' {
 		// service alias
 		service = s.alias[string(req[1:])]
@@ -158,27 +211,68 @@ func (s *Server) serveQuery(id enode.ID, freeID string, data []byte) []byte {
 		return nil
 	}
 	resp := lespay.ServiceMapQueryResp{
-		Id:    service.id,
-		Desc:  service.desc,
-		Range: service.serviceRange,
+		Id:       service.id,
+		Desc:     service.desc,
+		Distance: service.backend.Distance(),
+		Range:    service.serviceRange,
 	}
 	res, _ := rlp.EncodeToBytes(&resp)
 	return res
 }
 
-func NewService(id, desc string) *Service {
-	return &Service{
-		id:       id,
-		desc:     desc,
-		handlers: make(map[string]Handler),
+func (d *DbAccess) Operation(fn func(), write bool) {
+	d.server.opService = d.service
+	if write {
+		d.server.opBatch = d.server.db.NewBatch()
+	}
+	d.server.ns.Operation(fn)
+	d.server.opService = nil
+	if write {
+		d.server.opBatch.Write()
+		d.server.opBatch = nil
 	}
 }
 
-func (s *Service) AddDimension(key string, serviceRange lespay.Range) {
-	s.serviceRange = append(s.serviceRange, lespay.ServiceDimension{Key: key, Range: serviceRange})
+func (d *DbAccess) SubOperation(srv *service, fn func()) {
+	if d.server.opService != d.service {
+		panic("Database access not allowed")
+	}
+	d.server.opService = srv
+	fn()
+	d.server.opService = d.service
 }
 
-// Note: register every handler before serving requests
-func (s *Service) RegisterHandler(name string, handler Handler) {
-	s.handlers[name] = handler
+func (d *DbAccess) Has(key []byte) (bool, error) {
+	if d.server.opService != d.service {
+		panic("Database access not allowed")
+	}
+	return d.server.db.Has(append(d.prefix, key...))
+}
+
+func (d *DbAccess) Get(key []byte) ([]byte, error) {
+	if d.server.opService != d.service {
+		panic("Database access not allowed")
+	}
+	return d.server.db.Get(append(d.prefix, key...))
+}
+
+func (d *DbAccess) Put(key []byte, value []byte) error {
+	if d.server.opService != d.service {
+		panic("Database access not allowed")
+	}
+	return d.server.opBatch.Put(append(d.prefix, key...), value)
+}
+
+func (d *DbAccess) Delete(key []byte) error {
+	if d.server.opService != d.service {
+		panic("Database access not allowed")
+	}
+	return d.server.opBatch.Delete(append(d.prefix, key...))
+}
+
+func (d *DbAccess) NewIterator(prefix []byte, start []byte) ethdb.Iterator {
+	if d.server.opService != d.service {
+		panic("Database access not allowed")
+	}
+	return d.server.db.NewIterator(append(d.prefix, prefix...), start)
 }

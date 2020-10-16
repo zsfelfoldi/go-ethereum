@@ -55,13 +55,14 @@ func init() {
 type LesServer struct {
 	lesCommons
 
-	ns           *nodestate.NodeStateMachine
-	archiveMode  bool // Flag whether the ethereum node runs in archive mode.
-	handler      *serverHandler
-	broadcaster  *broadcaster
-	lesTopics    []discv5.Topic
-	lespayServer *lps.Server
-	privateKey   *ecdsa.PrivateKey
+	ns             *nodestate.NodeStateMachine
+	archiveMode    bool // Flag whether the ethereum node runs in archive mode.
+	handler        *serverHandler
+	broadcaster    *broadcaster
+	lesTopics      []discv5.Topic
+	lespayServer   *lps.Server
+	lespayDbAccess *lps.DbAccess
+	privateKey     *ecdsa.PrivateKey
 
 	// Flow control and capacity management
 	fcManager    *flowcontrol.ClientManager
@@ -78,6 +79,10 @@ type LesServer struct {
 }
 
 func NewLesServer(node *node.Node, e *eth.Ethereum, config *eth.Config) (*LesServer, error) {
+	lespayDb, err := node.OpenDatabase("lespay", 0, 0, "eth/db/lespay")
+	if err != nil {
+		return nil, err
+	}
 	ns := nodestate.NewNodeStateMachine(nil, nil, mclock.System{}, serverSetup)
 	// Collect les protocol version information supported by local node.
 	lesTopics := make([]discv5.Topic, len(AdvertiseProtocolVersions))
@@ -105,7 +110,7 @@ func NewLesServer(node *node.Node, e *eth.Ethereum, config *eth.Config) (*LesSer
 		ns:           ns,
 		archiveMode:  e.ArchiveMode(),
 		broadcaster:  newBroadcaster(ns),
-		lespayServer: lps.NewServer(0.01, 10000),
+		lespayServer: lps.NewServer(ns, lespayDb, 0.01, 10000),
 		lesTopics:    lesTopics,
 		fcManager:    flowcontrol.NewClientManager(nil, &mclock.System{}),
 		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
@@ -113,6 +118,7 @@ func NewLesServer(node *node.Node, e *eth.Ethereum, config *eth.Config) (*LesSer
 		threadsIdle:  threads,
 		p2pSrv:       node.Server(),
 	}
+	srv.lespayDbAccess = srv.lespayServer.Register(srv)
 	srv.handler = newServerHandler(srv, e.BlockChain(), e.ChainDb(), e.TxPool(), e.Synced)
 	srv.costTracker, srv.minCapacity = newCostTracker(e.ChainDb(), config)
 	srv.oracle = srv.setupOracle(node, e.BlockChain().Genesis().Hash(), config)
@@ -136,20 +142,8 @@ func NewLesServer(node *node.Node, e *eth.Ethereum, config *eth.Config) (*LesSer
 		srv.maxCapacity = totalRecharge
 	}
 	srv.fcManager.SetCapacityLimits(srv.minCapacity, srv.maxCapacity, srv.minCapacity*2)
-	srv.clientPool = newClientPool(ns, srv.chainDb, srv.minCapacity, defaultConnectedBias, mclock.System{}, srv.dropClient)
+	srv.clientPool = newClientPool(ns, lespayDb, srv.minCapacity, defaultConnectedBias, mclock.System{}, srv.dropClient)
 	srv.clientPool.setDefaultFactors(lps.PriceFactors{TimeFactor: 0, CapacityFactor: 1, RequestFactor: 1}, lps.PriceFactors{TimeFactor: 0, CapacityFactor: 1, RequestFactor: 1})
-
-	// construct and register lespay service
-	service := lps.NewService("les", "Ethereum light client service")
-	var firstVersion, lastVersion [4]byte
-	firstVersion[1] = byte(ServerProtocolVersions[0])
-	lastVersion[1] = byte(ServerProtocolVersions[len(ServerProtocolVersions)-1])
-	service.AddDimension("les", lespay.NewRange(firstVersion[:], lastVersion[:], true, true))
-	service.AddDimension("genesis", lespay.NewRange(srv.genesis[:], srv.genesis[:], true, true))
-	chainId := srv.chainConfig.ChainID.Bytes()
-	service.AddDimension("chainId", lespay.NewRange(chainId, chainId, true, true))
-	service.RegisterHandler(lespay.CapacityQueryName, srv.clientPool.serveCapQuery)
-	srv.lespayServer.RegisterService(service)
 
 	checkpoint := srv.latestLocalCheckpoint()
 	if !checkpoint.Empty() {
@@ -327,4 +321,30 @@ func (s *LesServer) dropClient(id enode.ID) {
 	if p := s.getClient(id); p != nil {
 		p.Peer.Disconnect(p2p.DiscRequested)
 	}
+}
+
+func (s *LesServer) ServiceInfo() (string, string, lespay.ServiceRange) {
+	var (
+		sr                        lespay.ServiceRange
+		firstVersion, lastVersion [4]byte
+	)
+	firstVersion[1] = byte(ServerProtocolVersions[0])
+	lastVersion[1] = byte(ServerProtocolVersions[len(ServerProtocolVersions)-1])
+	sr.AddDimension("les", lespay.NewRange(firstVersion[:], lastVersion[:], true, true))
+	sr.AddDimension("genesis", lespay.NewRange(s.genesis[:], s.genesis[:], true, true))
+	chainId := s.chainConfig.ChainID.Bytes()
+	sr.AddDimension("chainId", lespay.NewRange(chainId, chainId, true, true))
+	return "les", "Ethereum light client service", sr
+}
+
+func (s *LesServer) Distance() uint64 {
+	return 0
+}
+
+func (s *LesServer) Handle(id enode.ID, address string, name string, data []byte) []byte {
+	switch name {
+	case lespay.CapacityQueryName:
+		return s.clientPool.serveCapQuery(id, address, data)
+	}
+	return nil
 }
