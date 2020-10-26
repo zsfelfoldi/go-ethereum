@@ -25,7 +25,7 @@ import (
 const (
 	ServiceMapFilterName = "f"
 	ServiceMapQueryName  = "q"
-	CapacityQueryName    = "capq"
+	CapacityQueryName    = "cq"
 	ExchangeName         = "ex"
 	PriceQueryName       = "pq"
 )
