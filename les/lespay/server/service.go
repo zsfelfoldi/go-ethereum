@@ -17,6 +17,7 @@
 package server
 
 import (
+	"math/big"
 	"net"
 	"strings"
 	"time"
@@ -41,35 +42,42 @@ type (
 		db                          ethdb.Database
 		costFilter                  *utils.CostFilter
 		limiter                     *utils.Limiter
-		services, alias             map[string]*service
-		priority                    []*service
+		services, alias             map[string]*serviceEntry
+		priority                    []*serviceEntry
 		sleepFactor, sizeCostFactor float64
 
-		opService *service
+		opService *serviceEntry
 		opBatch   ethdb.Batch
 	}
 
-	serviceBackend interface {
+	Service interface {
 		ServiceInfo() (string, string, lespay.ServiceRange) // only called during registration
 		Distance() uint64
 		Handle(id enode.ID, address string, name string, data []byte) []byte
 	}
 
-	serviceWithBalance interface {
-		serviceBackend
-		GetBalance(id enode.ID) uint64
-		AddBalance(id enode.ID, amount int64) (uint64, uint64, error)
+	ServiceWithBalance interface {
+		Service
+		GetBalance(id enode.ID) int64
+		AddBalance(id enode.ID, amount int64) (int64, int64, error)
 	}
 
-	service struct {
+	PaymentService interface {
+		Service
+		CurrencyId() string
+		GetBalance(id enode.ID) *big.Int
+		AddBalance(id enode.ID, amount *big.Int) (*big.Int, *big.Int, error)
+	}
+
+	serviceEntry struct {
 		id, desc     string
 		serviceRange lespay.ServiceRange
-		backend      serviceBackend
+		backend      Service
 	}
 
 	DbAccess struct {
 		server  *Server
-		service *service
+		service *serviceEntry
 		prefix  []byte
 	}
 )
@@ -82,14 +90,14 @@ func NewServer(ns *nodestate.NodeStateMachine, db ethdb.Database, maxThreadTime,
 		limiter:        utils.NewLimiter(1000),
 		sleepFactor:    (1/maxThreadTime - 1) / (1 - costCutRatio),
 		sizeCostFactor: maxThreadTime * 1000000000 / maxBandwidth,
-		services:       make(map[string]*service),
+		services:       make(map[string]*serviceEntry),
 	}
 	s.Register(s)
 	return s
 }
 
-func (s *Server) Register(b serviceBackend) *DbAccess {
-	srv := &service{backend: b}
+func (s *Server) Register(b Service) *DbAccess {
+	srv := &serviceEntry{backend: b}
 	srv.id, srv.desc, srv.serviceRange = b.ServiceInfo()
 	if strings.Contains(srv.id, ":") {
 		panic("Service ID contains ':'")
@@ -103,13 +111,18 @@ func (s *Server) Register(b serviceBackend) *DbAccess {
 	}
 }
 
-func (s *Server) Resolve(serviceID string) *service {
+func (s *Server) Resolve(serviceID string) Service {
+	var srv *serviceEntry
 	if len(serviceID) > 0 && serviceID[0] == ':' {
 		// service alias
-		return s.alias[serviceID[1:]]
+		srv = s.alias[serviceID[1:]]
 	} else {
-		return s.services[serviceID]
+		srv = s.services[serviceID]
 	}
+	if srv != nil {
+		return srv.backend
+	}
+	return nil
 }
 
 func (s *Server) Serve(id enode.ID, addr *net.UDPAddr, req []byte) []byte {
@@ -128,10 +141,10 @@ func (s *Server) Serve(id enode.ID, addr *net.UDPAddr, req []byte) []byte {
 	}
 	start := mclock.Now()
 	results := make([][]byte, len(requests))
-	s.alias = make(map[string]*service)
+	s.alias = make(map[string]*serviceEntry)
 	for i, req := range requests {
 		if service := s.Resolve(req.Service); service != nil {
-			results[i] = service.backend.Handle(id, address, req.Name, req.Params)
+			results[i] = service.Handle(id, address, req.Name, req.Params)
 		}
 	}
 	s.alias = nil
@@ -200,7 +213,7 @@ func (s *Server) serveQuery(data []byte) []byte {
 	if rlp.DecodeBytes(data, &req) != nil {
 		return nil
 	}
-	var service *service
+	var service *serviceEntry
 	if len(req) > 0 && req[0] == '$' {
 		// service alias
 		service = s.alias[string(req[1:])]
@@ -233,7 +246,7 @@ func (d *DbAccess) Operation(fn func(), write bool) {
 	}
 }
 
-func (d *DbAccess) SubOperation(srv *service, fn func()) {
+func (d *DbAccess) SubOperation(srv *serviceEntry, fn func()) {
 	if d.server.opService != d.service {
 		panic("Database access not allowed")
 	}

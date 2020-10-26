@@ -62,6 +62,7 @@ type LesServer struct {
 	lesTopics      []discv5.Topic
 	lespayServer   *lps.Server
 	lespayDbAccess *lps.DbAccess
+	tokenSale      *lps.TokenSale
 	privateKey     *ecdsa.PrivateKey
 
 	// Flow control and capacity management
@@ -118,6 +119,7 @@ func NewLesServer(node *node.Node, e *eth.Ethereum, config *eth.Config) (*LesSer
 		threadsIdle:  threads,
 		p2pSrv:       node.Server(),
 	}
+	srv.tokenSale = lps.NewTokenSale(srv.lespayServer, srv, &mclock.System{}, 1e-6)
 	srv.lespayDbAccess = srv.lespayServer.Register(srv)
 	srv.handler = newServerHandler(srv, e.BlockChain(), e.ChainDb(), e.TxPool(), e.Synced)
 	srv.costTracker, srv.minCapacity = newCostTracker(e.ChainDb(), config)
@@ -345,6 +347,7 @@ func (s *LesServer) Handle(id enode.ID, address string, name string, data []byte
 	switch name {
 	case lespay.CapacityQueryName:
 		return s.clientPool.serveCapQuery(id, address, data)
+	default:
+		return s.tokenSale.Handle(id, address, name, data)
 	}
-	return nil
 }
