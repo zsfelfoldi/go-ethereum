@@ -657,12 +657,11 @@ type FuzzerServer struct {
 	clients []*FuzzerClient
 }
 
-func NewFuzzerServer(clock mclock.Clock) *FuzzerServer {
+func NewFuzzerServer(clock mclock.Clock, blocks int) *FuzzerServer {
 	sdb := rawdb.NewMemoryDatabase()
 	sindexers := testIndexers(sdb, nil, light.TestServerIndexerConfig, true)
 	scIndexer, sbIndexer, sbtIndexer := sindexers[0], sindexers[1], sindexers[2]
-	server, _ := newTestServerHandler(1000, nil, sdb, clock)
-	fmt.Println("server head", server.blockchain.CurrentHeader().Number.Uint64())
+	server, _ := newTestServerHandler(blocks, nil, sdb, clock)
 	scIndexer.Start(server.blockchain)
 	sbIndexer.Start(server.blockchain)
 	return &FuzzerServer{

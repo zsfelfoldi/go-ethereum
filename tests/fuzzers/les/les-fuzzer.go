@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"fmt"
+	//	"fmt"
 	"io"
 	"time"
 
@@ -65,19 +65,22 @@ func (f *fuzzer) randomInt(max int) int {
 
 //TODO block generator/count, ??indexer epoch, protocol version
 
+const chainLength = 20
+
 func (f *fuzzer) fuzz() int {
 	clock := &mclock.Simulated{}
-	server := les.NewFuzzerServer(clock)
+	server := les.NewFuzzerServer(clock, chainLength)
 	client := les.NewFuzzerClient(clock)
 	serverPipe, clientPipe := p2p.MsgPipe()
 	les.NewFuzzerConnection(server, client, serverPipe, clientPipe)
 	for {
 		headNum, _ := client.GetHead()
-		fmt.Println(headNum)
-		if headNum == 1000 {
+		//fmt.Println(headNum)
+		if headNum == chainLength {
 			break
 		}
-		time.Sleep(time.Millisecond * 10)
+		//clock.Run(time.Second)
+		time.Sleep(time.Millisecond)
 	}
 	for {
 		b := f.randomByte()
@@ -85,7 +88,8 @@ func (f *fuzzer) fuzz() int {
 			return 0
 		}
 		//fmt.Print(b, " ")
-		req := &les.BlockRequest{Hash: client.BlockHash(uint64(b)), Number: uint64(b)}
+		number := uint64(b % chainLength)
+		req := &les.BlockRequest{Hash: client.BlockHash(number), Number: number}
 		client.Request(context.Background(), server, req)
 	}
 	return 0
