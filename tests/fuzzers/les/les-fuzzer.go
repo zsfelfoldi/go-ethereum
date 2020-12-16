@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/les"
 	"github.com/ethereum/go-ethereum/p2p"
-	"github.com/ethereum/go-ethereum/p2p/enode"
-	"github.com/ethereum/go-ethereum/p2p/nodestate"
 	//	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -33,8 +33,6 @@ type fuzzer struct {
 	input     io.Reader
 	exhausted bool
 	debugging bool
-	enodes    []*enode.Node
-	setup     *nodestate.Setup
 }
 
 func (f *fuzzer) read(size int) []byte {
@@ -74,11 +72,20 @@ func (f *fuzzer) fuzz() int {
 	serverPipe, clientPipe := p2p.MsgPipe()
 	les.NewFuzzerConnection(server, client, serverPipe, clientPipe)
 	for {
+		headNum, _ := client.GetHead()
+		fmt.Println(headNum)
+		if headNum == 1000 {
+			break
+		}
+		time.Sleep(time.Millisecond * 10)
+	}
+	for {
 		b := f.randomByte()
-		if b == 255 {
+		if b == 255 || f.exhausted {
 			return 0
 		}
-		req := &les.BlockRequest{Number: uint64(b)}
+		//fmt.Print(b, " ")
+		req := &les.BlockRequest{Hash: client.BlockHash(uint64(b)), Number: uint64(b)}
 		client.Request(context.Background(), server, req)
 	}
 	return 0

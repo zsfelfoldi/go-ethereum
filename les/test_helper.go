@@ -643,6 +643,15 @@ func (f *FuzzerClient) Request(ctx context.Context, server *FuzzerServer, req Le
 	return f.retriever.retrieve(ctx, reqID, rq, func(p distPeer, msg *Msg) error { return req.Validate(f.db, msg) }, nil)
 }
 
+func (f *FuzzerClient) GetHead() (uint64, common.Hash) {
+	head := f.handler.backend.blockchain.CurrentHeader()
+	return head.Number.Uint64(), head.Hash()
+}
+
+func (f *FuzzerClient) BlockHash(number uint64) common.Hash {
+	return f.handler.backend.blockchain.GetCanonicalHash(number)
+}
+
 type FuzzerServer struct {
 	testServer
 	clients []*FuzzerClient
@@ -652,7 +661,8 @@ func NewFuzzerServer(clock mclock.Clock) *FuzzerServer {
 	sdb := rawdb.NewMemoryDatabase()
 	sindexers := testIndexers(sdb, nil, light.TestServerIndexerConfig, true)
 	scIndexer, sbIndexer, sbtIndexer := sindexers[0], sindexers[1], sindexers[2]
-	server, _ := newTestServerHandler(10, nil, sdb, clock)
+	server, _ := newTestServerHandler(1000, nil, sdb, clock)
+	fmt.Println("server head", server.blockchain.CurrentHeader().Number.Uint64())
 	scIndexer.Start(server.blockchain)
 	sbIndexer.Start(server.blockchain)
 	return &FuzzerServer{
