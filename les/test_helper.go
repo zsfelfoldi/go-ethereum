@@ -586,3 +586,131 @@ func newClientServerEnv(t *testing.T, blocks int, protocol int, callback indexer
 	}
 	return s, c, teardown
 }
+
+type FuzzerClient struct {
+	testClient
+	retriever   *retrieveManager
+	serverPeers map[*FuzzerServer]*serverPeer
+}
+
+func NewFuzzerClient(clock mclock.Clock) *FuzzerClient {
+	cdb := rawdb.NewMemoryDatabase()
+	speers := newServerPeerSet()
+	dist := newRequestDistributor(speers, clock)
+	rm := newRetrieveManager(speers, dist, func() time.Duration { return time.Millisecond * 500 })
+	odr := NewLesOdr(cdb, light.TestClientIndexerConfig, rm)
+	cIndexers := testIndexers(cdb, odr, light.TestClientIndexerConfig, true)
+	ccIndexer, cbIndexer, cbtIndexer := cIndexers[0], cIndexers[1], cIndexers[2]
+	odr.SetIndexers(ccIndexer, cbIndexer, cbtIndexer)
+	client := newTestClientHandler(nil, odr, nil, cdb, speers, nil, 0)
+	ccIndexer.Start(client.backend.blockchain)
+	cbIndexer.Start(client.backend.blockchain)
+	return &FuzzerClient{
+		testClient: testClient{
+			clock:            clock,
+			db:               cdb,
+			handler:          client,
+			chtIndexer:       ccIndexer,
+			bloomIndexer:     cbIndexer,
+			bloomTrieIndexer: cbtIndexer,
+		},
+		retriever:   rm,
+		serverPeers: make(map[*FuzzerServer]*serverPeer),
+	}
+}
+
+func (f *FuzzerClient) Close() {
+	f.chtIndexer.Close()
+	f.bloomIndexer.Close()
+}
+
+func (f *FuzzerClient) Request(ctx context.Context, server *FuzzerServer, req LesOdrRequest) error {
+	reqID := genReqID()
+	rq := &distReq{
+		getCost: func(dp distPeer) uint64 {
+			return req.GetCost(dp.(*serverPeer))
+		},
+		canSend: func(dp distPeer) bool {
+			return f.serverPeers[server] == dp.(*serverPeer)
+		},
+		request: func(dp distPeer) func() {
+			p := dp.(*serverPeer)
+			cost := req.GetCost(p)
+			p.fcServer.QueuedRequest(reqID, cost)
+			return func() { req.Request(reqID, p) }
+		},
+	}
+	return f.retriever.retrieve(ctx, reqID, rq, func(p distPeer, msg *Msg) error { return req.Validate(f.db, msg) }, nil)
+}
+
+type FuzzerServer struct {
+	testServer
+	clients []*FuzzerClient
+}
+
+func NewFuzzerServer(clock mclock.Clock) *FuzzerServer {
+	sdb := rawdb.NewMemoryDatabase()
+	sindexers := testIndexers(sdb, nil, light.TestServerIndexerConfig, true)
+	scIndexer, sbIndexer, sbtIndexer := sindexers[0], sindexers[1], sindexers[2]
+	server, _ := newTestServerHandler(10, nil, sdb, clock)
+	scIndexer.Start(server.blockchain)
+	sbIndexer.Start(server.blockchain)
+	return &FuzzerServer{
+		testServer: testServer{
+			clock:            clock,
+			db:               sdb,
+			handler:          server,
+			chtIndexer:       scIndexer,
+			bloomIndexer:     sbIndexer,
+			bloomTrieIndexer: sbtIndexer,
+		},
+	}
+}
+
+func (f *FuzzerServer) Close() {
+	f.chtIndexer.Close()
+	f.bloomIndexer.Close()
+}
+
+func NewFuzzerConnection(server *FuzzerServer, client *FuzzerClient, serverPipe, clientPipe p2p.MsgReadWriter) error {
+	// Generate a random id and create the peer
+	var id enode.ID
+	rand.Read(id[:])
+
+	peer1 := newClientPeer(lpv3, NetworkId, p2p.NewPeer(id, "", nil), clientPipe)
+	peer2 := newServerPeer(lpv3, NetworkId, false, p2p.NewPeer(id, "", nil), serverPipe)
+
+	// Start the peer on a new thread
+	errc1 := make(chan error, 1)
+	errc2 := make(chan error, 1)
+	go func() {
+		select {
+		case <-server.handler.closeCh:
+			errc1 <- p2p.DiscQuitting
+		case errc1 <- server.handler.handle(peer1):
+		}
+	}()
+	go func() {
+		select {
+		case <-client.handler.closeCh:
+			errc2 <- p2p.DiscQuitting
+		case errc2 <- client.handler.handle(peer2):
+		}
+	}()
+	// Ensure the connection is established or exits when any error occurs
+	for {
+		select {
+		case err := <-errc1:
+			return fmt.Errorf("Failed to establish protocol connection %v", err)
+		case err := <-errc2:
+			return fmt.Errorf("Failed to establish protocol connection %v", err)
+		default:
+		}
+		if atomic.LoadUint32(&peer1.serving) == 1 && atomic.LoadUint32(&peer2.serving) == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	client.serverPeers[server] = peer2
+	return nil
+}
