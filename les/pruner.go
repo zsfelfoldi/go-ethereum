@@ -17,6 +17,7 @@
 package les
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -58,6 +59,9 @@ func (p *pruner) close() {
 // that light client can prune cached chain data that was ODRed after pruning
 // that section.
 func (p *pruner) loop() {
+	fmt.Println("pruner 1")
+	defer fmt.Println("pruner 2")
+
 	defer p.wg.Done()
 
 	// cleanTicker is the ticker used to trigger a history clean 2 times a day.

@@ -116,6 +116,9 @@ func NewClientManager(curve PieceWiseLinear, clock mclock.Clock) *ClientManager 
 		cm.SetRechargeCurve(curve)
 	}
 	go func() {
+		fmt.Println("fcm 1")
+		defer fmt.Println("fcm 2")
+
 		// regularly recalculate and update total capacity
 		for {
 			select {

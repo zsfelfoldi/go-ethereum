@@ -19,6 +19,7 @@ package server
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -210,6 +211,9 @@ func (db *nodeDB) forEachBalance(neg bool, callback func(id enode.ID, balance ut
 }
 
 func (db *nodeDB) expirer() {
+	fmt.Println("expirer 1")
+	defer fmt.Println("expirer 2")
+
 	for {
 		select {
 		case <-db.clock.After(dbCleanupCycle):

@@ -75,7 +75,8 @@ type ChainIndexer struct {
 	backend  ChainIndexerBackend // Background processor generating the index data content
 	children []*ChainIndexer     // Child indexers to cascade chain updates to
 
-	active    uint32          // Flag whether the event loop was started
+	active    uint32 // Flag whether the event loop was started
+	closed    bool
 	update    chan struct{}   // Notification channel that headers should be processed
 	quit      chan chan error // Quit channel to tear down running goroutines
 	ctx       context.Context
@@ -149,6 +150,8 @@ func (c *ChainIndexer) Start(chain ChainIndexerChain) {
 	events := make(chan ChainHeadEvent, 10)
 	sub := chain.SubscribeChainHeadEvent(events)
 
+	// Mark the chain indexer as active, requiring an additional teardown
+	atomic.StoreUint32(&c.active, 1)
 	go c.eventLoop(chain.CurrentHeader(), events, sub)
 }
 
@@ -172,6 +175,10 @@ func (c *ChainIndexer) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	c.closed = true
 	// Close all children
 	for _, child := range c.children {
 		if err := child.Close(); err != nil {
@@ -195,8 +202,8 @@ func (c *ChainIndexer) Close() error {
 // started for the outermost indexer to push chain head events into a processing
 // queue.
 func (c *ChainIndexer) eventLoop(currentHeader *types.Header, events chan ChainHeadEvent, sub event.Subscription) {
-	// Mark the chain indexer as active, requiring an additional teardown
-	atomic.StoreUint32(&c.active, 1)
+	fmt.Println("indexer event 1")
+	defer fmt.Println("indexer event 2")
 
 	defer sub.Unsubscribe()
 
@@ -302,6 +309,9 @@ func (c *ChainIndexer) newHead(head uint64, reorg bool) {
 // updateLoop is the main event loop of the indexer which pushes chain segments
 // down into the processing backend.
 func (c *ChainIndexer) updateLoop() {
+	fmt.Println("indexer update 1")
+	defer fmt.Println("indexer update 2")
+
 	var (
 		updating bool
 		updated  time.Time
@@ -447,6 +457,10 @@ func (c *ChainIndexer) AddChildIndexer(indexer *ChainIndexer) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
+	if c.closed {
+		indexer.Close()
+		return
+	}
 	c.children = append(c.children, indexer)
 
 	// Cascade any pending updates to new children too

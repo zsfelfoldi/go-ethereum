@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -934,6 +935,9 @@ func (h *serverHandler) txStatus(hash common.Hash) light.TxStatus {
 // only broadcast new announcement if the total difficulty is higher than the
 // last one. Besides server will add the signature if client requires.
 func (h *serverHandler) broadcastLoop() {
+	fmt.Println("broadcastLoop 1")
+	defer fmt.Println("broadcastLoop 2")
+
 	defer h.wg.Done()
 
 	headCh := make(chan core.ChainHeadEvent, 10)

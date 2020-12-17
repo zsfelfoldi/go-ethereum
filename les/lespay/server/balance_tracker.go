@@ -17,6 +17,7 @@
 package server
 
 import (
+	"fmt"
 	"reflect"
 	"sync"
 	"time"
@@ -140,6 +141,9 @@ func NewBalanceTracker(ns *nodestate.NodeStateMachine, setup BalanceTrackerSetup
 	bt.ndb.evictCallBack = bt.canDropBalance
 
 	go func() {
+		fmt.Println("btexp 1")
+		defer fmt.Println("btexp 2")
+
 		for {
 			select {
 			case <-clock.After(persistExpirationRefresh):

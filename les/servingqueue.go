@@ -17,6 +17,7 @@
 package les
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -159,6 +160,9 @@ func (sq *servingQueue) newTask(peer *clientPeer, maxTime uint64, priority int64
 // run tokens from the token channel and allow the corresponding tasks to run
 // without entering the priority queue.
 func (sq *servingQueue) threadController() {
+	fmt.Println("tctrl 1")
+	defer fmt.Println("tctrl 2")
+
 	for {
 		token := make(runToken)
 		select {
@@ -298,6 +302,9 @@ func (sq *servingQueue) addTask(task *servingTask) {
 // and always tries to send the highest priority task to queueBestCh. Successfully sent
 // tasks are removed from the queue.
 func (sq *servingQueue) queueLoop() {
+	fmt.Println("qloop 1")
+	defer fmt.Println("qloop 2")
+
 	for {
 		if sq.best != nil {
 			expTime := sq.best.expTime
@@ -334,6 +341,9 @@ func (sq *servingQueue) queueLoop() {
 // threadCountLoop is an event loop running in a goroutine. It adjusts the number
 // of active thread controller goroutines.
 func (sq *servingQueue) threadCountLoop() {
+	fmt.Println("tcloop 1")
+	defer fmt.Println("tcloop 2")
+
 	var threadCountTarget int
 	for {
 		for threadCountTarget > sq.threadCount {

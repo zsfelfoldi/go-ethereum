@@ -18,6 +18,7 @@ package les
 
 import (
 	"container/list"
+	"fmt"
 	"sync"
 	"time"
 
@@ -123,6 +124,9 @@ var (
 
 // main event loop
 func (d *requestDistributor) loop() {
+	fmt.Println("dist 1")
+	defer fmt.Println("dist 2")
+
 	defer d.wg.Done()
 	for {
 		select {

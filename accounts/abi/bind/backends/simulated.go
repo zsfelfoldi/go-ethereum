@@ -78,7 +78,13 @@ type SimulatedBackend struct {
 func NewSimulatedBackendWithDatabase(database ethdb.Database, alloc core.GenesisAlloc, gasLimit uint64) *SimulatedBackend {
 	genesis := core.Genesis{Config: params.AllEthashProtocolChanges, GasLimit: gasLimit, Alloc: alloc}
 	genesis.MustCommit(database)
-	blockchain, _ := core.NewBlockChain(database, nil, genesis.Config, ethash.NewFaker(), vm.Config{}, nil, nil)
+	// construct custom config to disable snapshotter
+	cacheConfig := &core.CacheConfig{
+		TrieCleanLimit: 256,
+		TrieDirtyLimit: 256,
+		TrieTimeLimit:  5 * time.Minute,
+	}
+	blockchain, _ := core.NewBlockChain(database, cacheConfig, genesis.Config, ethash.NewFaker(), vm.Config{}, nil, nil)
 
 	backend := &SimulatedBackend{
 		database:   database,

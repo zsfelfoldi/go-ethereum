@@ -17,6 +17,7 @@
 package client
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -68,6 +69,9 @@ func NewFillSet(ns *nodestate.NodeStateMachine, input enode.Iterator, flags node
 // readLoop keeps reading nodes from the input and setting the specified flags for them
 // whenever the node set size is under the current target
 func (fs *FillSet) readLoop() {
+	fmt.Println("fillset 1")
+	defer fmt.Println("fillset 2")
+
 	for {
 		fs.lock.Lock()
 		for fs.target <= fs.count && !fs.closed {

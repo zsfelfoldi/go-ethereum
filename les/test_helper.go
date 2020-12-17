@@ -229,7 +229,7 @@ func newTestClientHandler(backend *backends.SimulatedBackend, odr *LesOdr, index
 	return client.handler
 }
 
-func newTestServerHandler(blocks int, indexers []*core.ChainIndexer, db ethdb.Database, clock mclock.Clock) (*serverHandler, *backends.SimulatedBackend) {
+func newTestServerHandler(blocks int, indexers []*core.ChainIndexer, db ethdb.Database, clock mclock.Clock) (*serverHandler, *LesServer, *backends.SimulatedBackend) {
 	var (
 		gspec = core.Genesis{
 			Config:   params.AllEthashProtocolChanges,
@@ -297,7 +297,7 @@ func newTestServerHandler(blocks int, indexers []*core.ChainIndexer, db ethdb.Da
 	server.servingQueue.setThreads(4)
 	ns.Start()
 	server.handler.start()
-	return server.handler, simulation
+	return server.handler, server, simulation
 }
 
 // testPeer is a simulated peer to allow testing direct network calls.
@@ -468,7 +468,7 @@ func newServerEnv(t *testing.T, blocks int, protocol int, callback indexerCallba
 	if simClock {
 		clock = &mclock.Simulated{}
 	}
-	handler, b := newTestServerHandler(blocks, indexers, db, clock)
+	handler, _, b := newTestServerHandler(blocks, indexers, db, clock)
 
 	var peer *testPeer
 	if newPeer {
@@ -524,7 +524,7 @@ func newClientServerEnv(t *testing.T, blocks int, protocol int, callback indexer
 	ccIndexer, cbIndexer, cbtIndexer := cIndexers[0], cIndexers[1], cIndexers[2]
 	odr.SetIndexers(ccIndexer, cbIndexer, cbtIndexer)
 
-	server, b := newTestServerHandler(blocks, sindexers, sdb, clock)
+	server, _, b := newTestServerHandler(blocks, sindexers, sdb, clock)
 	client := newTestClientHandler(b, odr, cIndexers, cdb, speers, ulcServers, ulcFraction)
 
 	scIndexer.Start(server.blockchain)
@@ -602,14 +602,14 @@ func NewFuzzerClient(clock mclock.Clock) *FuzzerClient {
 	cIndexers := testIndexers(cdb, odr, light.TestClientIndexerConfig, true)
 	ccIndexer, cbIndexer, cbtIndexer := cIndexers[0], cIndexers[1], cIndexers[2]
 	odr.SetIndexers(ccIndexer, cbIndexer, cbtIndexer)
-	client := newTestClientHandler(nil, odr, nil, cdb, speers, nil, 0)
-	ccIndexer.Start(client.backend.blockchain)
-	cbIndexer.Start(client.backend.blockchain)
+	handler := newTestClientHandler(nil, odr, nil, cdb, speers, nil, 0)
+	ccIndexer.Start(handler.backend.blockchain)
+	cbIndexer.Start(handler.backend.blockchain)
 	return &FuzzerClient{
 		testClient: testClient{
 			clock:            clock,
 			db:               cdb,
-			handler:          client,
+			handler:          handler,
 			chtIndexer:       ccIndexer,
 			bloomIndexer:     cbIndexer,
 			bloomTrieIndexer: cbtIndexer,
@@ -620,8 +620,10 @@ func NewFuzzerClient(clock mclock.Clock) *FuzzerClient {
 }
 
 func (f *FuzzerClient) Close() {
+	f.handler.stop()
 	f.chtIndexer.Close()
 	f.bloomIndexer.Close()
+	f.db.Close()
 }
 
 func (f *FuzzerClient) Request(ctx context.Context, server *FuzzerServer, req LesOdrRequest) error {
@@ -654,6 +656,7 @@ func (f *FuzzerClient) BlockHash(number uint64) common.Hash {
 
 type FuzzerServer struct {
 	testServer
+	server  *LesServer
 	clients []*FuzzerClient
 }
 
@@ -661,24 +664,32 @@ func NewFuzzerServer(clock mclock.Clock, blocks int) *FuzzerServer {
 	sdb := rawdb.NewMemoryDatabase()
 	sindexers := testIndexers(sdb, nil, light.TestServerIndexerConfig, true)
 	scIndexer, sbIndexer, sbtIndexer := sindexers[0], sindexers[1], sindexers[2]
-	server, _ := newTestServerHandler(blocks, nil, sdb, clock)
-	scIndexer.Start(server.blockchain)
-	sbIndexer.Start(server.blockchain)
+	handler, server, backend := newTestServerHandler(blocks, nil, sdb, clock)
+	server.chtIndexer = scIndexer
+	scIndexer.Start(handler.blockchain)
+	sbIndexer.Start(handler.blockchain)
 	return &FuzzerServer{
 		testServer: testServer{
 			clock:            clock,
 			db:               sdb,
-			handler:          server,
+			backend:          backend,
+			handler:          handler,
 			chtIndexer:       scIndexer,
 			bloomIndexer:     sbIndexer,
 			bloomTrieIndexer: sbtIndexer,
 		},
+		server: server,
 	}
 }
 
 func (f *FuzzerServer) Close() {
-	f.chtIndexer.Close()
+	fmt.Println("stop a")
+	f.server.Stop()
+	fmt.Println("stop b")
 	f.bloomIndexer.Close()
+	fmt.Println("stop c")
+	f.backend.Close()
+	f.db.Close()
 }
 
 func NewFuzzerConnection(server *FuzzerServer, client *FuzzerClient, serverPipe, clientPipe p2p.MsgReadWriter) error {
@@ -693,18 +704,22 @@ func NewFuzzerConnection(server *FuzzerServer, client *FuzzerClient, serverPipe,
 	errc1 := make(chan error, 1)
 	errc2 := make(chan error, 1)
 	go func() {
+		fmt.Println("serverconn 1")
 		select {
 		case <-server.handler.closeCh:
 			errc1 <- p2p.DiscQuitting
 		case errc1 <- server.handler.handle(peer1):
 		}
+		fmt.Println("serverconn 2")
 	}()
 	go func() {
+		fmt.Println("clientconn 1")
 		select {
 		case <-client.handler.closeCh:
 			errc2 <- p2p.DiscQuitting
 		case errc2 <- client.handler.handle(peer2):
 		}
+		fmt.Println("clientconn 2")
 	}()
 	// Ensure the connection is established or exits when any error occurs
 	for {

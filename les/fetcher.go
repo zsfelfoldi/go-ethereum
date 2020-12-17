@@ -17,6 +17,7 @@
 package les
 
 import (
+	"fmt"
 	"math/big"
 	"math/rand"
 	"sync"
@@ -257,6 +258,9 @@ func (f *lightFetcher) forEachPeer(check func(id enode.ID, p *fetcherPeer) bool)
 //   If the local chain lags too much, then the fetcher will enter "synnchronise"
 //   mode to retrieve missing headers in batch.
 func (f *lightFetcher) mainloop() {
+	fmt.Println("fetcher 1")
+	defer fmt.Println("fetcher 2")
+
 	defer f.wg.Done()
 
 	var (

@@ -17,6 +17,7 @@
 package les
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/bitutil"
@@ -46,6 +47,9 @@ const (
 func (eth *LightEthereum) startBloomHandlers(sectionSize uint64) {
 	for i := 0; i < bloomServiceThreads; i++ {
 		go func() {
+			fmt.Println("bloom 1")
+			defer fmt.Println("bloom 2")
+
 			defer eth.wg.Done()
 			for {
 				select {

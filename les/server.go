@@ -18,6 +18,7 @@ package les
 
 import (
 	"crypto/ecdsa"
+	"fmt"
 	"reflect"
 	"time"
 
@@ -207,11 +208,13 @@ func (s *LesServer) Start() error {
 		for _, topic := range s.lesTopics {
 			topic := topic
 			go func() {
+				fmt.Println("regtopic 1")
 				logger := log.New("topic", topic)
 				logger.Info("Starting topic registration")
 				defer logger.Info("Terminated topic registration")
 
 				s.p2pSrv.DiscV5.RegisterTopic(topic, s.closeCh)
+				fmt.Println("regtopic 2")
 			}()
 		}
 	}
@@ -242,6 +245,9 @@ func (s *LesServer) Stop() error {
 // the client manager and adjusts the client pool's size according to the total
 // capacity updates coming from the client manager
 func (s *LesServer) capacityManagement() {
+	fmt.Println("capman 1")
+	defer fmt.Println("capman 2")
+
 	defer s.wg.Done()
 
 	processCh := make(chan bool, 100)

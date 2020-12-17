@@ -18,6 +18,7 @@ package les
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -262,6 +263,9 @@ func (ct *costTracker) gfLoop() {
 	threshold := gfUsageThreshold * float64(gfUsageTC) * ct.utilTarget / flowcontrol.FixedPointMultiplier
 
 	go func() {
+		fmt.Println("gfloop 1")
+		defer fmt.Println("gfloop 2")
+
 		saveCostFactor := func() {
 			var data [8]byte
 			binary.BigEndian.PutUint64(data[:], math.Float64bits(gfLog))

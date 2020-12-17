@@ -16,7 +16,10 @@
 
 package utils
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 // ExecQueue implements a queue that executes function calls in a single thread,
 // in the same order as they have been queued.
@@ -36,10 +39,12 @@ func NewExecQueue(capacity int) *ExecQueue {
 }
 
 func (q *ExecQueue) loop() {
+	fmt.Println("execq 1")
 	for f := q.waitNext(false); f != nil; f = q.waitNext(true) {
 		f()
 	}
 	close(q.closeWait)
+	fmt.Println("execq 2")
 }
 
 func (q *ExecQueue) waitNext(drop bool) (f func()) {

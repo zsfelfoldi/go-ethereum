@@ -1,16 +1,20 @@
 package les
 
 import (
+	"bufio"
 	"bytes"
-	"context"
+	"os"
+	//"runtime/debug"
+	"runtime/pprof"
+	//"context"
 	"encoding/binary"
-	//	"fmt"
+	//"fmt"
 	"io"
-	"time"
+	//"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/les"
-	"github.com/ethereum/go-ethereum/p2p"
+	//"github.com/ethereum/go-ethereum/p2p"
 	//	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -22,6 +26,27 @@ import (
 // 0  otherwise
 // other values are reserved for future use.
 func Fuzz(data []byte) int {
+
+	for i := 0; i < 10000; i++ {
+		f := fuzzer{
+			input:     bytes.NewReader(data),
+			exhausted: false,
+		}
+		f.fuzz()
+		/*if i%100 == 0 {
+			fmt.Println(i)
+		}*/
+	}
+	ff, _ := os.Create("heap")
+	//ff, _ := os.Create("gr")
+	w := bufio.NewWriter(ff)
+	pprof.WriteHeapProfile(w)
+	//pprof.Lookup("goroutine").WriteTo(w, 1)
+	w.Flush()
+	ff.Close()
+	//debug.SetTraceback("all")
+	//panic(nil)
+
 	f := fuzzer{
 		input:     bytes.NewReader(data),
 		exhausted: false,
@@ -32,7 +57,6 @@ func Fuzz(data []byte) int {
 type fuzzer struct {
 	input     io.Reader
 	exhausted bool
-	debugging bool
 }
 
 func (f *fuzzer) read(size int) []byte {
@@ -70,10 +94,10 @@ const chainLength = 20
 func (f *fuzzer) fuzz() int {
 	clock := &mclock.Simulated{}
 	server := les.NewFuzzerServer(clock, chainLength)
-	client := les.NewFuzzerClient(clock)
+	/*client := les.NewFuzzerClient(clock)
 	serverPipe, clientPipe := p2p.MsgPipe()
-	les.NewFuzzerConnection(server, client, serverPipe, clientPipe)
-	for {
+	les.NewFuzzerConnection(server, client, serverPipe, clientPipe)*/
+	/*for {
 		headNum, _ := client.GetHead()
 		//fmt.Println(headNum)
 		if headNum == chainLength {
@@ -81,8 +105,8 @@ func (f *fuzzer) fuzz() int {
 		}
 		//clock.Run(time.Second)
 		time.Sleep(time.Millisecond)
-	}
-	for {
+	}*/
+	/*	for {
 		b := f.randomByte()
 		if b == 255 || f.exhausted {
 			return 0
@@ -90,8 +114,13 @@ func (f *fuzzer) fuzz() int {
 		//fmt.Print(b, " ")
 		number := uint64(b % chainLength)
 		req := &les.BlockRequest{Hash: client.BlockHash(number), Number: number}
-		client.Request(context.Background(), server, req)
-	}
+		if err := client.Request(context.Background(), server, req); err != nil {
+			panic(err)
+		}
+	}*/
+	//client.Close()
+	server.Close()
+	//time.Sleep(time.Second)
 	return 0
 
 }
