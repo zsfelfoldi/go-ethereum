@@ -249,6 +249,10 @@ func Float64ToFixed64(f float64) Fixed64 {
 	return Fixed64(f * fixedFactor)
 }
 
+func LogToFixed64(f float64) Fixed64 {
+	return Fixed64(logToFixedFactor * fixedFactor)
+}
+
 // toUint64 converts Fixed64 format to uint64.
 func (f64 Fixed64) ToUint64() uint64 {
 	return uint64(f64) / fixedFactor

@@ -105,6 +105,7 @@ func (odr *LesOdr) Retrieve(ctx context.Context, req light.OdrRequest) (err erro
 
 	reqID := genReqID()
 	rq := &distReq{
+		id: reqID,
 		getCost: func(dp distPeer) uint64 {
 			return lreq.GetCost(dp.(*serverPeer))
 		},

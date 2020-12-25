@@ -389,7 +389,9 @@ func (pc *peerConnection) Head() (common.Hash, *big.Int) {
 }
 
 func (pc *peerConnection) RequestHeadersByHash(origin common.Hash, amount int, skip int, reverse bool) error {
+	reqID := genReqID()
 	rq := &distReq{
+		id: reqID,
 		getCost: func(dp distPeer) uint64 {
 			peer := dp.(*serverPeer)
 			return peer.getRequestCost(GetBlockHeadersMsg, amount)
@@ -398,7 +400,6 @@ func (pc *peerConnection) RequestHeadersByHash(origin common.Hash, amount int, s
 			return dp.(*serverPeer) == pc.peer
 		},
 		request: func(dp distPeer) func() {
-			reqID := genReqID()
 			peer := dp.(*serverPeer)
 			cost := peer.getRequestCost(GetBlockHeadersMsg, amount)
 			peer.fcServer.QueuedRequest(reqID, cost)
@@ -413,7 +414,9 @@ func (pc *peerConnection) RequestHeadersByHash(origin common.Hash, amount int, s
 }
 
 func (pc *peerConnection) RequestHeadersByNumber(origin uint64, amount int, skip int, reverse bool) error {
+	reqID := genReqID()
 	rq := &distReq{
+		id: reqID,
 		getCost: func(dp distPeer) uint64 {
 			peer := dp.(*serverPeer)
 			return peer.getRequestCost(GetBlockHeadersMsg, amount)
@@ -422,7 +425,6 @@ func (pc *peerConnection) RequestHeadersByNumber(origin uint64, amount int, skip
 			return dp.(*serverPeer) == pc.peer
 		},
 		request: func(dp distPeer) func() {
-			reqID := genReqID()
 			peer := dp.(*serverPeer)
 			cost := peer.getRequestCost(GetBlockHeadersMsg, amount)
 			peer.fcServer.QueuedRequest(reqID, cost)
@@ -441,6 +443,7 @@ func (pc *peerConnection) RequestHeadersByNumber(origin uint64, amount int, skip
 func (pc *peerConnection) RetrieveSingleHeaderByNumber(context context.Context, number uint64) (*types.Header, error) {
 	reqID := genReqID()
 	rq := &distReq{
+		id: reqID,
 		getCost: func(dp distPeer) uint64 {
 			peer := dp.(*serverPeer)
 			return peer.getRequestCost(GetBlockHeadersMsg, 1)

@@ -73,30 +73,68 @@ type NodeValueTracker struct {
 	basket               serverBasket
 	reqCosts             []uint64
 	reqValues            *[]float64
+	peakDetector         peakDetector
+	peakFilter           peakFilter
+	model                serverModel
 }
 
 // init initializes a NodeValueTracker.
 // Note that the contents of the referenced reqValues slice will not change; a new
 // reference is passed if the values are updated by ValueTracker.
-func (nv *NodeValueTracker) init(now mclock.AbsTime, reqValues *[]float64) {
+func (nv *NodeValueTracker) init(now mclock.AbsTime, reqValues *[]float64, events chan cmEvent) {
 	reqTypeCount := len(*reqValues)
 	nv.reqCosts = make([]uint64, reqTypeCount)
 	nv.lastTransfer = now
 	nv.reqValues = reqValues
 	nv.basket.init(reqTypeCount)
+	nv.model.init()
+	nv.peakDetector.init(events, &nv.model)
+}
+
+// Served adds a served request to the node's statistics. An actual request may be composed
+// of one or more request types (service vector indices).
+func (nv *NodeValueTracker) Served(vt *ValueTracker, reqs []ServedRequest, queued bool, sent, answered mclock.AbsTime) {
+	vt.statsExpLock.RLock()
+	expFactor := vt.statsExpFactor
+	vt.statsExpLock.RUnlock()
+
+	nv.lock.Lock()
+	defer nv.lock.Unlock()
+
+	var (
+		value float64
+		cost  uint64
+	)
+	for _, r := range reqs {
+		rcost := nv.reqCosts[r.ReqType] * uint64(r.Amount)
+		cost += rcost
+		nv.basket.add(r.ReqType, r.Amount, rcost, expFactor)
+		value += (*nv.reqValues)[r.ReqType] * float64(r.Amount)
+	}
+	respTime := time.Duration(answered - sent)
+	nv.rtStats.Add(respTime, value, vt.statsExpFactor)
+	vt.model.events <- cmEvent{cmeRequest, value}                                                           //TODO use quality corrected value
+	if updated, peakStart, length, cost, qcCost := nv.peakDetector.add(queued, sent, cost, cost); updated { //TODO use quality corrected cost
+		value := float64(cost) * nv.basket.rvFactor
+		qcValue := float64(qcCost) * nv.basket.rvFactor
+		nv.peakFilter.addPeak(peakStart, length, value, qcValue)
+		//TODO call capacity control
+	}
 }
 
 // updateCosts updates the request cost table of the server. The request value factor
 // is also updated based on the given cost table and the current reference basket.
 // Note that the contents of the referenced reqValues slice will not change; a new
 // reference is passed if the values are updated by ValueTracker.
-func (nv *NodeValueTracker) updateCosts(reqCosts []uint64, reqValues *[]float64, rvFactor float64) {
+func (nv *NodeValueTracker) updateCosts(reqCosts []uint64, reqValues *[]float64, rvFactor, reqCostFactor, capCostFactor float64) {
 	nv.lock.Lock()
 	defer nv.lock.Unlock()
 
 	nv.reqCosts = reqCosts
 	nv.reqValues = reqValues
 	nv.basket.updateRvFactor(rvFactor)
+	nv.model.reqCostFactor = reqCostFactor
+	nv.model.capCostFactor = capCostFactor
 }
 
 // transferStats returns request basket and response time statistics that should be
@@ -145,6 +183,7 @@ type ValueTracker struct {
 	currentMapping int
 	initRefBasket  requestBasket
 	rtStats        ResponseTimeStats
+	model          clientModel
 
 	transferRate                 float64
 	statsExpLock                 sync.RWMutex
@@ -235,6 +274,7 @@ func NewValueTracker(ns *nodestate.NodeStateMachine, vts ValueTrackerSetup, db e
 			ns.SetFieldSub(node, vts.ValueTrackerField, nil)
 		}
 	})
+	vt.model.init()
 
 	go func() {
 		for {
@@ -445,11 +485,11 @@ func (vt *ValueTracker) saveNode(id enode.ID, nv *NodeValueTracker) {
 }
 
 // UpdateCosts updates the node value tracker's request cost table
-func (vt *ValueTracker) UpdateCosts(nv *NodeValueTracker, reqCosts []uint64) {
+func (vt *ValueTracker) UpdateCosts(nv *NodeValueTracker, reqCosts []uint64, reqCostFactor, capCostFactor float64) {
 	vt.lock.Lock()
 	defer vt.lock.Unlock()
 
-	nv.updateCosts(reqCosts, &vt.refBasket.reqValues, vt.refBasket.reqValueFactor(reqCosts))
+	nv.updateCosts(reqCosts, &vt.refBasket.reqValues, vt.refBasket.reqValueFactor(reqCosts), reqCostFactor, capCostFactor)
 }
 
 // RtStats returns the global response time distribution statistics
@@ -487,24 +527,6 @@ func (vt *ValueTracker) periodicUpdate() {
 
 type ServedRequest struct {
 	ReqType, Amount uint32
-}
-
-// Served adds a served request to the node's statistics. An actual request may be composed
-// of one or more request types (service vector indices).
-func (vt *ValueTracker) Served(nv *NodeValueTracker, reqs []ServedRequest, respTime time.Duration) {
-	vt.statsExpLock.RLock()
-	expFactor := vt.statsExpFactor
-	vt.statsExpLock.RUnlock()
-
-	nv.lock.Lock()
-	defer nv.lock.Unlock()
-
-	var value float64
-	for _, r := range reqs {
-		nv.basket.add(r.ReqType, r.Amount, nv.reqCosts[r.ReqType]*uint64(r.Amount), expFactor)
-		value += (*nv.reqValues)[r.ReqType] * float64(r.Amount)
-	}
-	nv.rtStats.Add(respTime, value, vt.statsExpFactor)
 }
 
 type RequestStatsItem struct {

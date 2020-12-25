@@ -121,6 +121,8 @@ func (p *testDistPeer) queueSend(f func()) bool {
 	return true
 }
 
+func (p *testDistPeer) queuedRequest(id uint64) {}
+
 func TestRequestDistributor(t *testing.T) {
 	testRequestDistributor(t, false)
 }

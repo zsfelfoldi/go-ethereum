@@ -410,6 +410,9 @@ func (p *serverPeer) freeze() {
 // unfreeze processes Resume messages from the given server and set the status
 // as unfrozen.
 func (p *serverPeer) unfreeze() {
+	p.vtLock.Lock()
+	p.sentReqs = make(map[uint64]sentReqEntry)
+	p.vtLock.Unlock()
 	atomic.StoreUint32(&p.frozen, 0)
 }
 
@@ -705,20 +708,32 @@ func (p *serverPeer) updateVtParams() {
 			}
 		}
 	}
-	p.valueTracker.UpdateCosts(p.nodeValueTracker, reqCosts)
+	//TODO communicate reqCostFactor and capCostFactor through the protocol
+	p.valueTracker.UpdateCosts(p.nodeValueTracker, reqCosts, 1, float64(p.fcParams.MinRecharge)*1000)
 }
 
 // sentReqEntry remembers sent requests and their sending times
 type sentReqEntry struct {
 	reqType, amount uint32
-	at              mclock.AbsTime
+	queued          bool
+	sent            mclock.AbsTime
+}
+
+func (p *serverPeer) queuedRequest(id uint64) {
+	p.vtLock.Lock()
+	if p.sentReqs != nil {
+		p.sentReqs[id] = sentReqEntry{queued: true}
+	}
+	p.vtLock.Unlock()
 }
 
 // sentRequest marks a request sent at the current moment to this server.
 func (p *serverPeer) sentRequest(id uint64, reqType, amount uint32) {
 	p.vtLock.Lock()
 	if p.sentReqs != nil {
-		p.sentReqs[id] = sentReqEntry{reqType, amount, mclock.Now()}
+		e := p.sentReqs[id]
+		e.reqType, e.amount, e.sent = reqType, amount, mclock.Now() //TODO should also work with simulated clock
+		p.sentReqs[id] = e
 	}
 	p.vtLock.Unlock()
 }
@@ -751,8 +766,7 @@ func (p *serverPeer) answeredRequest(id uint64) {
 		vtReqs[0] = lpc.ServedRequest{ReqType: uint32(m.first), Amount: 1}
 		vtReqs[1] = lpc.ServedRequest{ReqType: uint32(m.rest), Amount: e.amount - 1}
 	}
-	dt := time.Duration(mclock.Now() - e.at)
-	vt.Served(nvt, vtReqs[:reqCount], dt)
+	nvt.Served(vt, vtReqs[:reqCount], e.queued, e.sent, mclock.Now()) //TODO should also work with simulated clock
 }
 
 // clientPeer represents each node to which the les server is connected.

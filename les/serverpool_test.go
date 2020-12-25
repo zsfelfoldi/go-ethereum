@@ -229,7 +229,7 @@ func (s *serverPoolTest) run() {
 				n.peer = &serverPeer{peerCommons: peerCommons{Peer: p2p.NewPeer(id, "", nil)}}
 				s.ns.SetField(n.peer.Node(), serverPeerField, n.peer)
 				if n.service {
-					s.vt.Served(s.vt.GetNode(id), []lpc.ServedRequest{{ReqType: 0, Amount: 100}}, 0)
+					s.vt.GetNode(id).Served(s.vt, []lpc.ServedRequest{{ReqType: 0, Amount: 100}}, 0, 0, 0)
 				}
 			}
 		}

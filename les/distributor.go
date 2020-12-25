@@ -31,14 +31,14 @@ import (
 // suitable peers, obeying flow control rules and prioritizing them in creation
 // order (even when a resend is necessary).
 type requestDistributor struct {
-	ns           *nodestate.NodeStateMachine
-	peerField    nodestate.Field
-	clock        mclock.Clock
-	reqQueue     *list.List
-	lastReqOrder uint64
-	loopChn      chan struct{}
-	loopNextSent bool
-	lock         sync.Mutex
+	ns                       *nodestate.NodeStateMachine
+	peerField                nodestate.Field
+	clock                    mclock.Clock
+	reqQueue                 *list.List
+	lastReqOrder             uint64
+	loopChn                  chan struct{}
+	loopCount, loopTriggered int
+	lock                     sync.Mutex
 
 	closeCh chan struct{}
 	wg      sync.WaitGroup
@@ -53,6 +53,7 @@ type distPeer interface {
 	waitBefore(uint64) (time.Duration, float64)
 	canQueue() bool
 	queueSend(f func()) bool
+	queuedRequest(id uint64)
 }
 
 // distReq is the request abstraction used by the distributor. It is based on
@@ -64,11 +65,13 @@ type distPeer interface {
 // block until it is sent because other peers might still be able to receive requests while
 // one of them is blocking. Instead, the returned function is put in the peer's send queue.
 type distReq struct {
+	id      uint64
 	getCost func(distPeer) uint64
 	canSend func(distPeer) bool
 	request func(distPeer) func()
 
 	reqOrder     uint64
+	loopCount    int
 	sentChn      chan distPeer
 	element      *list.Element
 	waitForPeers mclock.AbsTime
@@ -118,13 +121,16 @@ func (d *requestDistributor) loop() {
 			return
 		case <-d.loopChn:
 			d.lock.Lock()
-			d.loopNextSent = false
+			d.loopCount++
 		loop:
 			for {
 				peer, req, wait := d.nextRequest()
 				if req != nil && wait == 0 {
 					chn := req.sentChn // save sentChn because remove sets it to nil
 					d.remove(req)
+					if req.loopCount != d.loopCount {
+						peer.queuedRequest(req.id)
+					}
 					send := req.request(peer)
 					if send != nil {
 						peer.queueSend(send)
@@ -138,7 +144,7 @@ func (d *requestDistributor) loop() {
 						// queued request will wake up the loop
 						break loop
 					}
-					d.loopNextSent = true // a "next" signal has been sent, do not send another one until this one has been received
+					d.loopTriggered++ // a "next" signal has been sent, do not send another one until this one has been received
 					if wait > distMaxWait {
 						// waiting times may be reduced by incoming request replies, if it is too long, recalculate it periodically
 						wait = distMaxWait
@@ -252,12 +258,13 @@ func (d *requestDistributor) queue(r *distReq) chan distPeer {
 		r.element = d.reqQueue.InsertBefore(r, before)
 	}
 
-	if !d.loopNextSent {
-		d.loopNextSent = true
+	if d.loopTriggered == d.loopCount {
+		d.loopTriggered++
 		d.loopChn <- struct{}{}
 	}
 
 	r.sentChn = make(chan distPeer, 1)
+	r.loopCount = d.loopTriggered
 	return r.sentChn
 }
 
