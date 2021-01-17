@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
+	"github.com/ethereum/go-ethereum/les/lespay"
 	lps "github.com/ethereum/go-ethereum/les/lespay/server"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
@@ -64,11 +65,12 @@ type ethBackend interface {
 type LesServer struct {
 	lesCommons
 
-	ns          *nodestate.NodeStateMachine
-	archiveMode bool // Flag whether the ethereum node runs in archive mode.
-	handler     *serverHandler
-	broadcaster *broadcaster
-	privateKey  *ecdsa.PrivateKey
+	ns           *nodestate.NodeStateMachine
+	archiveMode  bool // Flag whether the ethereum node runs in archive mode.
+	handler      *serverHandler
+	broadcaster  *broadcaster
+	lespayServer *lps.Server
+	privateKey   *ecdsa.PrivateKey
 
 	// Flow control and capacity management
 	fcManager    *flowcontrol.ClientManager
@@ -107,12 +109,14 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		ns:           ns,
 		archiveMode:  e.ArchiveMode(),
 		broadcaster:  newBroadcaster(ns),
+		lespayServer: lps.NewServer(time.Millisecond * 10),
 		fcManager:    flowcontrol.NewClientManager(nil, &mclock.System{}),
 		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
 		threadsBusy:  config.LightServ/100 + 1,
 		threadsIdle:  threads,
 		p2pSrv:       node.Server(),
 	}
+	srv.lespayServer.Register(srv)
 	srv.handler = newServerHandler(srv, e.BlockChain(), e.ChainDb(), e.TxPool(), e.Synced)
 	srv.costTracker, srv.minCapacity = newCostTracker(e.ChainDb(), config)
 	srv.oracle = srv.setupOracle(node, e.BlockChain().Genesis().Hash(), config)
@@ -192,7 +196,10 @@ func (s *LesServer) Protocols() []p2p.Protocol {
 	}, nil)
 	// Add "les" ENR entries.
 	for i := range ps {
-		ps[i].Attributes = []enr.Entry{&lesEntry{}}
+		ps[i].Attributes = []enr.Entry{&lesEntry{
+			LESversion: ServerProtocolVersions[len(ServerProtocolVersions)-1],
+			UDPversion: 1,
+		}}
 	}
 	return ps
 }
@@ -202,10 +209,9 @@ func (s *LesServer) Start() error {
 	s.privateKey = s.p2pSrv.PrivateKey
 	s.broadcaster.setSignerKey(s.privateKey)
 	s.handler.start()
-
 	s.wg.Add(1)
 	go s.capacityManagement()
-
+	s.p2pSrv.DiscV5.RegisterTalkHandler("lespay", s.lespayServer.ServeEncoded)
 	return nil
 }
 
@@ -219,6 +225,7 @@ func (s *LesServer) Stop() error {
 	s.costTracker.stop()
 	s.handler.stop()
 	s.servingQueue.stop()
+	s.lespayServer.Stop()
 
 	// Note, bloom trie indexer is closed by parent bloombits indexer.
 	s.chtIndexer.Close()
@@ -299,5 +306,20 @@ func (s *LesServer) getClient(id enode.ID) *clientPeer {
 func (s *LesServer) dropClient(id enode.ID) {
 	if p := s.getClient(id); p != nil {
 		p.Peer.Disconnect(p2p.DiscRequested)
+	}
+}
+
+// ServiceInfo implements lps.Service
+func (s *LesServer) ServiceInfo() (string, string) {
+	return "les", "Ethereum light client service"
+}
+
+// Handle implements lps.Service
+func (s *LesServer) Handle(id enode.ID, address string, name string, data []byte) []byte {
+	switch name {
+	case lespay.CapacityQueryName:
+		return s.clientPool.serveCapQuery(id, address, data)
+	default:
+		return nil
 	}
 }

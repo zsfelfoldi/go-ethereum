@@ -127,6 +127,22 @@ var (
 	)
 	sfiNodeWeight     = clientSetup.NewField("nodeWeight", reflect.TypeOf(uint64(0)))
 	sfiConnectedStats = clientSetup.NewField("connectedStats", reflect.TypeOf(lpc.ResponseTimeStats{}))
+	sfiLocalAddress   = clientSetup.NewPersistentField("localAddress", reflect.TypeOf(&enr.Record{}),
+		func(field interface{}) ([]byte, error) {
+			if enr, ok := field.(*enr.Record); ok {
+				enc, err := rlp.EncodeToBytes(enr)
+				return enc, err
+			}
+			return nil, errors.New("invalid field type")
+		},
+		func(enc []byte) (interface{}, error) {
+			var enr enr.Record
+			if err := rlp.DecodeBytes(enc, &enr); err != nil {
+				return nil, err
+			}
+			return &enr, nil
+		},
+	)
 )
 
 // newServerPool creates a new server pool
@@ -146,15 +162,10 @@ func newServerPool(ns *nodestate.NodeStateMachine, db ethdb.KeyValueStore, vt *l
 	s.mixSources = append(s.mixSources, knownSelector)
 	s.mixSources = append(s.mixSources, alwaysConnect)
 
-	iter := enode.Iterator(s.mixer)
+	s.dialIterator = s.mixer
 	if query != nil {
-		iter = s.addPreNegFilter(iter, query)
+		s.dialIterator = s.addPreNegFilter(s.dialIterator, query)
 	}
-	s.dialIterator = enode.Filter(iter, func(node *enode.Node) bool {
-		s.ns.SetState(node, sfDialing, sfCanDial, 0)
-		s.ns.SetState(node, sfWaitDialTimeout, nodestate.Flags{}, time.Second*10)
-		return true
-	})
 
 	s.ns.SubscribeState(nodestate.MergeFlags(sfWaitDialTimeout, sfConnected), func(n *enode.Node, oldState, newState nodestate.Flags) {
 		if oldState.Equals(sfWaitDialTimeout) && newState.IsEmpty() {
@@ -186,6 +197,27 @@ func newServerPool(ns *nodestate.NodeStateMachine, db ethdb.KeyValueStore, vt *l
 	s.ns.AddLogMetrics(sfDialing, nodestate.Flags{}, "dialed", serverDialedMeter, nil, nil)
 	s.ns.AddLogMetrics(sfConnected, nodestate.Flags{}, "connected", nil, nil, serverConnectedGauge)
 	return s
+}
+
+// Next implements enode.Iterator
+func (s *serverPool) Next() bool {
+	if s.dialIterator.Next() {
+		node := s.dialIterator.Node()
+		s.ns.SetState(node, sfDialing, sfCanDial, 0)
+		s.ns.SetState(node, sfWaitDialTimeout, nodestate.Flags{}, time.Second*10)
+		return true
+	}
+	return false
+}
+
+// Node implements enode.Iterator
+func (s *serverPool) Node() *enode.Node {
+	return s.dialNode(s.dialIterator.Node())
+}
+
+// Close implements enode.Iterator
+func (s *serverPool) Close() {
+	s.dialIterator.Close()
 }
 
 // addSource adds a node discovery source to the server pool (should be called before start)
@@ -281,7 +313,6 @@ func (s *serverPool) start() {
 
 // stop stops the server pool
 func (s *serverPool) stop() {
-	s.dialIterator.Close()
 	if s.fillSet != nil {
 		s.fillSet.Close()
 	}
@@ -397,6 +428,7 @@ func (s *serverPool) updateWeight(node *enode.Node, totalValue float64, totalDia
 		s.ns.SetStateSub(node, nodestate.Flags{}, sfHasValue, 0)
 		s.ns.SetFieldSub(node, sfiNodeWeight, nil)
 		s.ns.SetFieldSub(node, sfiNodeHistory, nil)
+		s.ns.SetFieldSub(node, sfiLocalAddress, nil)
 	}
 	s.ns.Persist(node) // saved if node history or hasValue changed
 }
@@ -481,4 +513,24 @@ func (s *serverPool) calculateWeight(node *enode.Node) {
 	_, totalValue := s.serviceValue(node)
 	totalDialCost := s.addDialCost(&n, 0)
 	s.updateWeight(node, totalValue, totalDialCost)
+}
+
+type dummyIdentity enode.ID
+
+func (id dummyIdentity) Verify(r *enr.Record, sig []byte) error { return nil }
+func (id dummyIdentity) NodeAddr(r *enr.Record) []byte          { return id[:] }
+
+// dialNode replaces the given enode with a locally generated one containing the ENR
+// stored in the sfiLocalAddress field if present. This workaround ensures that nodes
+// on the local network can be dialed at the local address if a connection has been
+// successfully established previously.
+// Note that NodeStateMachine always remembers the enode with the latest version of
+// the remote signed ENR. ENR filtering should be performed on that version while
+// dialNode should be used for dialing the node over TCP or UDP.
+func (s *serverPool) dialNode(n *enode.Node) *enode.Node {
+	if enr, ok := s.ns.GetField(n, sfiLocalAddress).(*enr.Record); ok {
+		n, _ := enode.New(dummyIdentity(n.ID()), enr)
+		return n
+	}
+	return n
 }

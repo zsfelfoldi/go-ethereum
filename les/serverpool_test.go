@@ -212,9 +212,9 @@ func (s *serverPoolTest) run() {
 		if s.conn < spTestTarget {
 			s.dialCount++
 			s.beginWait()
-			s.sp.dialIterator.Next()
+			s.sp.Next()
 			s.endWait()
-			dial := s.sp.dialIterator.Node()
+			dial := s.sp.Node()
 			id := dial.ID()
 			idx := testNodeIndex(id)
 			n := &s.testNodes[idx]
