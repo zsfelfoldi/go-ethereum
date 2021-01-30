@@ -213,6 +213,7 @@ func newTestClientHandler(backend *backends.SimulatedBackend, odr *LesOdr, index
 			chainReader: chain,
 			closeCh:     make(chan struct{}),
 		},
+		ns:         peers.ns,
 		peers:      peers,
 		reqDist:    odr.retriever.dist,
 		retriever:  odr.retriever,
@@ -366,7 +367,7 @@ func newTestPeerPair(name string, version int, server *serverHandler, client *cl
 	rand.Read(id[:])
 
 	peer1 := newClientPeer(version, NetworkId, p2p.NewPeer(id, name, nil), net)
-	peer2 := newServerPeer(version, NetworkId, false, p2p.NewPeer(id, name, nil), app)
+	peer2 := newServerPeer(client.backend, version, NetworkId, false, p2p.NewPeer(id, name, nil), app)
 
 	// Start the peer on a new thread
 	errc1 := make(chan error, 1)

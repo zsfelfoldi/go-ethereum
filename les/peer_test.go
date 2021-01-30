@@ -91,7 +91,7 @@ func TestPeerSubscription(t *testing.T) {
 	// Generate a random id and create the peer
 	var id enode.ID
 	rand.Read(id[:])
-	peer := newServerPeer(2, NetworkId, false, p2p.NewPeer(id, "name", nil), nil)
+	peer := newServerPeer(nil, 2, NetworkId, false, p2p.NewPeer(id, "name", nil), nil)
 	peers.register(peer)
 
 	checkIds([]string{peer.id})
@@ -119,7 +119,7 @@ func TestHandshake(t *testing.T) {
 	rand.Read(id[:])
 
 	peer1 := newClientPeer(2, NetworkId, p2p.NewPeer(id, "name", nil), net)
-	peer2 := newServerPeer(2, NetworkId, true, p2p.NewPeer(id, "name", nil), app)
+	peer2 := newServerPeer(nil, 2, NetworkId, true, p2p.NewPeer(id, "name", nil), app)
 
 	var (
 		errCh1 = make(chan error, 1)

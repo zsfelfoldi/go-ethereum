@@ -52,13 +52,16 @@ import (
 )
 
 var (
-	clientSetup       = &nodestate.Setup{Version: 1}
-	serverPeerField   = clientSetup.NewField("serverPeer", reflect.TypeOf(&serverPeer{}))
-	valueTrackerSetup = lpc.NewValueTrackerSetup(clientSetup)
+	clientSetup          = &nodestate.Setup{Version: 1}
+	serverPeerField      = clientSetup.NewField("serverPeer", reflect.TypeOf(&serverPeer{}))
+	capacityField        = clientSetup.NewField("capacity", reflect.TypeOf(uint64(0)))
+	valueTrackerSetup    = lpc.NewValueTrackerSetup(clientSetup)
+	capacityControlSetup = lpc.NewCapacityControlSetup(clientSetup)
 )
 
 func init() {
 	valueTrackerSetup.Connect(serverPeerField)
+	capacityControlSetup.Connect(capacityField)
 }
 
 type LightEthereum struct {

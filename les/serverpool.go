@@ -193,6 +193,12 @@ func newServerPool(ns *nodestate.NodeStateMachine, db ethdb.KeyValueStore, vt *l
 		}
 	})
 
+	s.ns.SubscribeField(capacityControlSetup.CapacityControlField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
+		cc, _ := newValue.(*lpc.NodeCapacityControl)
+		p := s.ns.GetField(node, serverPeerField).(*serverPeer)
+		p.setCapacityControl(cc)
+	})
+
 	s.ns.AddLogMetrics(sfHasValue, sfDisableSelection, "selectable", nil, nil, serverSelectableGauge)
 	s.ns.AddLogMetrics(sfDialing, nodestate.Flags{}, "dialed", serverDialedMeter, nil, nil)
 	s.ns.AddLogMetrics(sfConnected, nodestate.Flags{}, "connected", nil, nil, serverConnectedGauge)

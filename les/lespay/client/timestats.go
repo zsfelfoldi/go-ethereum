@@ -75,6 +75,14 @@ func StatScaleToTime(r float64) time.Duration {
 	return time.Duration(r * float64(minResponseTime))
 }
 
+func QualityFactor(respTime, timeout time.Duration) float64 {
+	if respTime < 2*timeout {
+		return math.Cos(math.Pi / 2 * float64(respTime) / float64(timeout))
+	} else {
+		return -1
+	}
+}
+
 // TimeoutWeights calculates the weight function used for calculating service value
 // based on the response time distribution of the received service.
 // It is based on the request timeout value of the system. It consists of a half cosine
@@ -82,12 +90,7 @@ func StatScaleToTime(r float64) time.Duration {
 // After 2*timeout the weight is constant -1.
 func TimeoutWeights(timeout time.Duration) (res ResponseTimeWeights) {
 	for i := range res {
-		t := StatScaleToTime(float64(i))
-		if t < 2*timeout {
-			res[i] = math.Cos(math.Pi / 2 * float64(t) / float64(timeout))
-		} else {
-			res[i] = -1
-		}
+		res[i] = QualityFactor(StatScaleToTime(float64(i)), timeout)
 	}
 	return
 }

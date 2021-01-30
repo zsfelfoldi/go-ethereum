@@ -349,12 +349,15 @@ type serverPeer struct {
 	checkpointNumber uint64                   // The block height which the checkpoint is registered.
 	checkpoint       params.TrustedCheckpoint // The advertised checkpoint sent by server.
 
+	backend          *LightEthereum
 	fcServer         *flowcontrol.ServerNode // Client side mirror token bucket.
 	vtLock           sync.Mutex
 	valueTracker     *lpc.ValueTracker
 	nodeValueTracker *lpc.NodeValueTracker
+	capControl       *lpc.NodeCapacityControl
 	sentReqs         map[uint64]sentReqEntry
 	fetcherPeer      *fetcherPeer
+	peakInfo         *lpc.PeakInfo
 
 	// Statistics
 	errCount    utils.LinearExpiredValue // Counter the invalid responses server has replied
@@ -365,7 +368,7 @@ type serverPeer struct {
 	hasBlockHook func(common.Hash, uint64, bool) bool // Used to determine whether the server has the specified block.
 }
 
-func newServerPeer(version int, network uint64, trusted bool, p *p2p.Peer, rw p2p.MsgReadWriter) *serverPeer {
+func newServerPeer(backend *LightEthereum, version int, network uint64, trusted bool, p *p2p.Peer, rw p2p.MsgReadWriter) *serverPeer {
 	return &serverPeer{
 		peerCommons: peerCommons{
 			Peer:      p,
@@ -376,6 +379,7 @@ func newServerPeer(version int, network uint64, trusted bool, p *p2p.Peer, rw p2
 			sendQueue: utils.NewExecQueue(100),
 			closeCh:   make(chan struct{}),
 		},
+		backend:  backend,
 		trusted:  trusted,
 		errCount: utils.LinearExpiredValue{Rate: mclock.AbsTime(time.Hour)},
 	}
@@ -566,20 +570,28 @@ func (p *serverPeer) HasBlock(hash common.Hash, number uint64, hasState bool) bo
 // node if the announced key/value set contains relevant fields
 func (p *serverPeer) updateFlowControl(update keyValueMap) {
 	p.lock.Lock()
-	defer p.lock.Unlock()
-
 	// If any of the flow control params is nil, refuse to update.
+	oldCapacity := p.fcParams.MinRecharge
 	var params flowcontrol.ServerParams
 	if update.get("flowControl/BL", &params.BufLimit) == nil && update.get("flowControl/MRR", &params.MinRecharge) == nil {
 		// todo can light client set a minimal acceptable flow control params?
 		p.fcParams = params
 		p.fcServer.UpdateParams(params)
 	}
+	newCapacity := p.fcParams.MinRecharge
 	var MRC RequestCostList
 	if update.get("flowControl/MRC", &MRC) == nil {
 		costUpdate := MRC.decode(ProtocolLengths[uint(p.version)])
 		for code, cost := range costUpdate {
 			p.fcCosts[code] = cost
+		}
+	}
+	p.lock.Unlock()
+	if newCapacity != oldCapacity {
+		if newCapacity != 0 {
+			p.backend.ns.SetField(p.Node(), capacityField, newCapacity)
+		} else {
+			p.backend.ns.SetField(p.Node(), capacityField, nil)
 		}
 	}
 }
@@ -707,6 +719,12 @@ func (p *serverPeer) setValueTracker(vt *lpc.ValueTracker, nvt *lpc.NodeValueTra
 	p.vtLock.Unlock()
 }
 
+func (p *serverPeer) setCapacityControl(cc *lpc.NodeCapacityControl) {
+	p.vtLock.Lock()
+	p.capControl = cc
+	p.vtLock.Unlock()
+}
+
 // updateVtParams updates the server's price table in the value tracker.
 func (p *serverPeer) updateVtParams() {
 	p.vtLock.Lock()
@@ -731,13 +749,37 @@ func (p *serverPeer) updateVtParams() {
 type sentReqEntry struct {
 	reqType, amount uint32
 	at              mclock.AbsTime
+	peakInfo        *lpc.PeakInfo
+}
+
+func (p *serverPeer) setQueuedState(queued bool) {
+	if p.backend == nil {
+		return
+	}
+	now := mclock.Now()
+	p.queueSend(func() {
+		p.vtLock.Lock()
+		if p.peakInfo != nil {
+			if !p.peakInfo.SetQueuedState(now, queued) {
+				p.peakInfo = nil
+			}
+		}
+		if p.peakInfo == nil && p.capControl != nil && queued {
+			p.peakInfo = p.capControl.NewPeak(now)
+		}
+		p.vtLock.Unlock()
+	})
 }
 
 // sentRequest marks a request sent at the current moment to this server.
 func (p *serverPeer) sentRequest(id uint64, reqType, amount uint32) {
 	p.vtLock.Lock()
+	now := mclock.Now()
 	if p.sentReqs != nil {
-		p.sentReqs[id] = sentReqEntry{reqType, amount, mclock.Now()}
+		p.sentReqs[id] = sentReqEntry{reqType, amount, now, p.peakInfo}
+	}
+	if p.peakInfo != nil && !p.peakInfo.SentRequest(now, id) {
+		p.peakInfo = nil
 	}
 	p.vtLock.Unlock()
 }
@@ -770,8 +812,18 @@ func (p *serverPeer) answeredRequest(id uint64) {
 		vtReqs[0] = lpc.ServedRequest{ReqType: uint32(m.first), Amount: 1}
 		vtReqs[1] = lpc.ServedRequest{ReqType: uint32(m.rest), Amount: e.amount - 1}
 	}
-	dt := time.Duration(mclock.Now() - e.at)
-	vt.Served(nvt, vtReqs[:reqCount], dt)
+	now := mclock.Now()
+	dt := time.Duration(now - e.at)
+	cost := vt.Served(nvt, vtReqs[:reqCount], dt)
+	if e.peakInfo != nil {
+		var qfactor float64
+		if p.backend != nil {
+			qfactor = lpc.QualityFactor(dt, p.backend.serverPool.getTimeout())
+		} else {
+			qfactor = 1
+		}
+		e.peakInfo.AnsweredRequest(now, id, int64(cost), int64(float64(cost)*qfactor))
+	}
 }
 
 // clientPeer represents each node to which the les server is connected.

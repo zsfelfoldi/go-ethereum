@@ -93,7 +93,7 @@ func connect(server *serverHandler, serverId enode.ID, client *clientHandler, pr
 	var id enode.ID
 	rand.Read(id[:])
 
-	peer1 := newServerPeer(protocol, NetworkId, true, p2p.NewPeer(serverId, "", nil), net) // Mark server as trusted
+	peer1 := newServerPeer(client.backend, protocol, NetworkId, true, p2p.NewPeer(serverId, "", nil), net) // Mark server as trusted
 	peer2 := newClientPeer(protocol, NetworkId, p2p.NewPeer(id, "", nil), app)
 
 	// Start the peerLight on a new thread

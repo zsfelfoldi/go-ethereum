@@ -96,7 +96,7 @@ func (h *clientHandler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter)
 	if h.ulc != nil {
 		trusted = h.ulc.trusted(p.ID())
 	}
-	peer := newServerPeer(int(version), h.backend.config.NetworkId, trusted, p, newMeteredMsgWriter(rw, int(version)))
+	peer := newServerPeer(h.backend, int(version), h.backend.config.NetworkId, trusted, p, newMeteredMsgWriter(rw, int(version)))
 	defer peer.close()
 	h.wg.Add(1)
 	defer h.wg.Done()
@@ -121,10 +121,14 @@ func (h *clientHandler) handle(p *serverPeer) error {
 		p.Log().Error("Light Ethereum peer registration failed", "err", err)
 		return err
 	}
+	if p.fcParams.MinRecharge != 0 {
+		h.backend.ns.SetField(p.Node(), capacityField, p.fcParams.MinRecharge)
+	}
 	serverConnectionGauge.Update(int64(h.backend.peers.len()))
 
 	connectedAt := mclock.Now()
 	defer func() {
+		h.backend.ns.SetField(p.Node(), capacityField, nil)
 		h.backend.peers.unregister(p.ID())
 		connectionTimer.Update(time.Duration(mclock.Now() - connectedAt))
 		serverConnectionGauge.Update(int64(h.backend.peers.len()))
