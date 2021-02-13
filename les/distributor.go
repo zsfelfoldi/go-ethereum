@@ -29,14 +29,14 @@ import (
 // suitable peers, obeying flow control rules and prioritizing them in creation
 // order (even when a resend is necessary).
 type requestDistributor struct {
-	clock        mclock.Clock
-	reqQueue     *list.List
-	lastReqOrder uint64
-	peers        map[distPeer]struct{}
-	peerLock     sync.RWMutex
-	loopChn      chan struct{}
-	loopNextSent bool
-	lock         sync.Mutex
+	clock         mclock.Clock
+	reqQueue      *list.List
+	lastReqOrder  uint64
+	peers, queued map[distPeer]struct{} //TODO maybe one map is enough?
+	peerLock      sync.RWMutex
+	loopChn       chan struct{}
+	loopNextSent  bool
+	lock          sync.Mutex
 
 	closeCh chan struct{}
 	wg      sync.WaitGroup
@@ -51,6 +51,7 @@ type distPeer interface {
 	waitBefore(uint64) (time.Duration, float64)
 	canQueue() bool
 	queueSend(f func()) bool
+	setQueuedState(bool)
 }
 
 // distReq is the request abstraction used by the distributor. It is based on
@@ -81,6 +82,7 @@ func newRequestDistributor(peers *serverPeerSet, clock mclock.Clock) *requestDis
 		loopChn:  make(chan struct{}, 2),
 		closeCh:  make(chan struct{}),
 		peers:    make(map[distPeer]struct{}),
+		queued:   make(map[distPeer]struct{}),
 	}
 	if peers != nil {
 		peers.subscribe(d)
@@ -142,7 +144,7 @@ func (d *requestDistributor) loop() {
 			d.loopNextSent = false
 		loop:
 			for {
-				peer, req, wait := d.nextRequest()
+				peer, req, wait, queued := d.nextRequest()
 				if req != nil && wait == 0 {
 					chn := req.sentChn // save sentChn because remove sets it to nil
 					d.remove(req)
@@ -154,6 +156,7 @@ func (d *requestDistributor) loop() {
 					chn <- peer
 					close(chn)
 				} else {
+					d.updateQueuedState(queued)
 					if wait == 0 {
 						// no request to send and nothing to wait for; the next
 						// queued request will wake up the loop
@@ -176,6 +179,22 @@ func (d *requestDistributor) loop() {
 	}
 }
 
+func (d *requestDistributor) updateQueuedState(queued map[distPeer]bool) {
+	for p := range d.queued {
+		if !queued[p] {
+			p.setQueuedState(false)
+			delete(d.queued, p)
+		}
+		delete(queued, p)
+	}
+	for p, q := range queued {
+		if q {
+			p.setQueuedState(true)
+			d.queued[p] = struct{}{}
+		}
+	}
+}
+
 // selectPeerItem represents a peer to be selected for a request by weightedRandomSelect
 type selectPeerItem struct {
 	peer   distPeer
@@ -189,8 +208,8 @@ func selectPeerWeight(i interface{}) uint64 {
 
 // nextRequest returns the next possible request from any peer, along with the
 // associated peer and necessary waiting time
-func (d *requestDistributor) nextRequest() (distPeer, *distReq, time.Duration) {
-	checkedPeers := make(map[distPeer]struct{})
+func (d *requestDistributor) nextRequest() (distPeer, *distReq, time.Duration, map[distPeer]bool) {
+	checkedPeers := make(map[distPeer]bool) // true if the first sendable request needs to wait
 	elem := d.reqQueue.Front()
 	var (
 		bestWait time.Duration
@@ -201,10 +220,10 @@ func (d *requestDistributor) nextRequest() (distPeer, *distReq, time.Duration) {
 	defer d.peerLock.RUnlock()
 
 	peerCount := len(d.peers)
+	now := d.clock.Now()
 	for (len(checkedPeers) < peerCount || elem == d.reqQueue.Front()) && elem != nil {
 		req := elem.Value.(*distReq)
 		canSend := false
-		now := d.clock.Now()
 		if req.waitForPeers > now {
 			canSend = true
 			wait := time.Duration(req.waitForPeers - now)
@@ -222,12 +241,13 @@ func (d *requestDistributor) nextRequest() (distPeer, *distReq, time.Duration) {
 						sel = utils.NewWeightedRandomSelect(selectPeerWeight)
 					}
 					sel.Update(selectPeerItem{peer: peer, req: req, weight: uint64(bufRemain*1000000) + 1})
+					checkedPeers[peer] = false
 				} else {
 					if bestWait == 0 || wait < bestWait {
 						bestWait = wait
 					}
+					checkedPeers[peer] = true
 				}
-				checkedPeers[peer] = struct{}{}
 			}
 		}
 		next := elem.Next()
@@ -240,9 +260,9 @@ func (d *requestDistributor) nextRequest() (distPeer, *distReq, time.Duration) {
 
 	if sel != nil {
 		c := sel.Choose().(selectPeerItem)
-		return c.peer, c.req, 0
+		return c.peer, c.req, 0, nil
 	}
-	return nil, nil, bestWait
+	return nil, nil, bestWait, checkedPeers
 }
 
 // queue adds a request to the distribution queue, returns a channel where the

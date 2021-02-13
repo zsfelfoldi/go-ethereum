@@ -59,6 +59,7 @@ type ServerPool struct {
 
 	ns                  *nodestate.NodeStateMachine
 	vt                  *ValueTracker
+	cc                  *CapacityControl
 	mixer               *enode.FairMix
 	mixSources          []enode.Iterator
 	dialIterator        enode.Iterator
@@ -150,7 +151,8 @@ var (
 )
 
 // NewServerPool creates a new server pool
-func NewServerPool(db ethdb.KeyValueStore, dbKey []byte, mixTimeout time.Duration, query queryFunc, clock mclock.Clock, trustedURLs []string, requestList []RequestInfo) (*ServerPool, enode.Iterator) {
+func NewServerPool(db ethdb.KeyValueStore, dbKey []byte, mixTimeout time.Duration, query queryFunc, capRequest capRequestFunc, clock mclock.Clock, trustedURLs []string, requestList []RequestInfo) (*ServerPool, enode.Iterator) {
+	ns := nodestate.NewNodeStateMachine(db, []byte(string(dbKey)+"ns:"), clock, clientSetup)
 	s := &ServerPool{
 		db:           db,
 		clock:        clock,
@@ -158,7 +160,8 @@ func NewServerPool(db ethdb.KeyValueStore, dbKey []byte, mixTimeout time.Duratio
 		validSchemes: enode.ValidSchemes,
 		trustedURLs:  trustedURLs,
 		vt:           NewValueTracker(db, &mclock.System{}, requestList, time.Minute, 1/float64(time.Hour), 1/float64(time.Hour*100), 1/float64(time.Hour*1000)),
-		ns:           nodestate.NewNodeStateMachine(db, []byte(string(dbKey)+"ns:"), clock, clientSetup),
+		cc:           NewCapacityControl(ns, clock, capRequest),
+		ns:           ns,
 	}
 	s.recalTimeout()
 	s.mixer = enode.NewFairMix(mixTimeout)
@@ -344,11 +347,12 @@ func (s *ServerPool) Stop() {
 }
 
 // RegisterNode implements serverPeerSubscriber
-func (s *ServerPool) RegisterNode(node *enode.Node) (*NodeValueTracker, error) {
+func (s *ServerPool) RegisterNode(node *enode.Node, minCap uint64) (*NodeValueTracker, *NodeCapacityControl, error) {
 	if atomic.LoadUint32(&s.started) == 0 {
-		return nil, errors.New("server pool not started yet")
+		return nil, nil, errors.New("server pool not started yet")
 	}
 	nvt := s.vt.Register(node.ID())
+	ncc := s.cc.Register(node, minCap)
 	s.ns.Operation(func() {
 		s.ns.SetStateSub(node, sfConnected, sfDialing.Or(sfWaitDialTimeout), 0)
 		s.ns.SetFieldSub(node, sfiConnectedStats, nvt.RtStats())
@@ -356,7 +360,7 @@ func (s *ServerPool) RegisterNode(node *enode.Node) (*NodeValueTracker, error) {
 			s.ns.SetFieldSub(node, sfiLocalAddress, node.Record())
 		}
 	})
-	return nvt, nil
+	return nvt, ncc, nil
 }
 
 // UnregisterNode implements serverPeerSubscriber
@@ -367,6 +371,7 @@ func (s *ServerPool) UnregisterNode(node *enode.Node) {
 		s.ns.SetFieldSub(node, sfiConnectedStats, nil)
 	})
 	s.vt.Unregister(node.ID())
+	s.cc.Unregister(node)
 }
 
 // recalTimeout calculates the current recommended timeout. This value is used by

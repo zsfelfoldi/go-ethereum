@@ -110,6 +110,8 @@ func (p *testDistPeer) queueSend(f func()) bool {
 	return true
 }
 
+func (p *testDistPeer) setQueuedState(bool) {}
+
 func TestRequestDistributor(t *testing.T) {
 	testRequestDistributor(t, false)
 }

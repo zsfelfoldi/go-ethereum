@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/forkid"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/downloader"
+	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -94,7 +95,7 @@ func (h *clientHandler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter)
 	if h.ulc != nil {
 		trusted = h.ulc.trusted(p.ID())
 	}
-	peer := newServerPeer(int(version), h.backend.config.NetworkId, trusted, p, newMeteredMsgWriter(rw, int(version)))
+	peer := newServerPeer(h.backend, int(version), h.backend.config.NetworkId, trusted, p, newMeteredMsgWriter(rw, int(version)))
 	defer peer.close()
 	h.wg.Add(1)
 	defer h.wg.Done()
@@ -116,10 +117,15 @@ func (h *clientHandler) handle(p *serverPeer) error {
 	}
 	// Register peer with the server pool
 	if h.backend.serverPool != nil {
-		if nvt, err := h.backend.serverPool.RegisterNode(p.Node()); err == nil {
+		if nvt, ncc, err := h.backend.serverPool.RegisterNode(p.Node(), p.minParams.MinRecharge); err == nil {
 			p.setValueTracker(nvt)
+			p.setCapacityControl(ncc)
 			p.updateVtParams()
+			if p.fcParams.MinRecharge != 0 {
+				ncc.UpdateCapacity(p.fcParams.MinRecharge, false)
+			}
 			defer func() {
+				p.setCapacityControl(nil) //TODO is this necesary?  ??vtLock
 				p.setValueTracker(nil)
 				h.backend.serverPool.UnregisterNode(p.Node())
 			}()
@@ -132,7 +138,6 @@ func (h *clientHandler) handle(p *serverPeer) error {
 		p.Log().Error("Light Ethereum peer registration failed", "err", err)
 		return err
 	}
-
 	serverConnectionGauge.Update(int64(h.backend.peers.len()))
 
 	connectedAt := mclock.Now()
@@ -349,6 +354,23 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 		p.fcServer.ResumeFreeze(bv)
 		p.unfreeze()
 		p.Log().Debug("Service resumed")
+	case msg.Code == CapacityUpdateMsg && p.version >= lpv5:
+		p.Log().Trace("Received capacity update")
+		var resp struct {
+			ReqID, BV uint64
+			Update    capacityUpdate
+		}
+		if err := msg.Decode(&resp); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		if p.rejectUpdate(uint64(msg.Size)) {
+			return errResp(ErrRequestRejected, "")
+		}
+		p.updateCapacity(flowcontrol.ServerParams{MinRecharge: resp.Update.MinRecharge, BufLimit: resp.Update.BufLimit})
+		p.capControl.UpdateCapacity(p.fcParams.MinRecharge, resp.ReqID != 0)
+		if resp.ReqID != 0 {
+			p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		}
 	default:
 		p.Log().Trace("Received invalid message", "code", msg.Code)
 		return errResp(ErrInvalidMsgCode, "%v", msg.Code)

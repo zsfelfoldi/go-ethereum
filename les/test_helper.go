@@ -86,7 +86,7 @@ var (
 	testBufLimit = uint64(1000000)
 
 	// The buffer recharging speed for testing purpose.
-	testBufRecharge = uint64(1000)
+	testMinCap = uint64(1000)
 )
 
 /*
@@ -301,13 +301,13 @@ func newTestServerHandler(blocks int, indexers []*core.ChainIndexer, db ethdb.Da
 		servingQueue: newServingQueue(int64(time.Millisecond*10), 1),
 		defParams: flowcontrol.ServerParams{
 			BufLimit:    testBufLimit,
-			MinRecharge: testBufRecharge,
+			MinRecharge: testMinCap,
 		},
 		fcManager: flowcontrol.NewClientManager(nil, clock),
 	}
 	server.costTracker, server.minCapacity = newCostTracker(db, server.config)
 	server.costTracker.testCostList = testCostList(0) // Disable flow control mechanism.
-	server.clientPool = newClientPool(ns, db, testBufRecharge, defaultConnectedBias, clock, func(id enode.ID) {})
+	server.clientPool = newClientPool(ns, db, testMinCap, defaultConnectedBias, clock, func(id enode.ID) {})
 	server.clientPool.setLimits(10000, 10000) // Assign enough capacity for clientpool
 	server.handler = newServerHandler(server, simulation.Blockchain(), db, txpool, func() bool { return true })
 	if server.oracle != nil {
@@ -371,7 +371,7 @@ func (p *testPeer) handshakeWithClient(t *testing.T, td *big.Int, head common.Ha
 	sendList = sendList.add("serveRecentState", uint64(core.TriesInMemory-4))
 	sendList = sendList.add("txRelay", nil)
 	sendList = sendList.add("flowControl/BL", testBufLimit)
-	sendList = sendList.add("flowControl/MRR", testBufRecharge)
+	sendList = sendList.add("flowControl/MRR", testMinCap)
 	sendList = sendList.add("flowControl/MRC", costList)
 	if p.speer.version >= lpv4 {
 		sendList = sendList.add("forkID", &forkID)
@@ -400,7 +400,7 @@ func newTestPeerPair(name string, version int, server *serverHandler, client *cl
 	rand.Read(id[:])
 
 	peer1 := newClientPeer(version, NetworkId, p2p.NewPeer(id, name, nil), net)
-	peer2 := newServerPeer(version, NetworkId, false, p2p.NewPeer(id, name, nil), app)
+	peer2 := newServerPeer(client.backend, version, NetworkId, false, p2p.NewPeer(id, name, nil), app)
 
 	// Start the peer on a new thread
 	errc1 := make(chan error, 1)
@@ -458,7 +458,7 @@ func (client *testClient) newRawPeer(t *testing.T, name string, version int, rec
 	// Generate a random id and create the peer
 	var id enode.ID
 	rand.Read(id[:])
-	peer := newServerPeer(version, NetworkId, false, p2p.NewPeer(id, name, nil), net)
+	peer := newServerPeer(nil, version, NetworkId, false, p2p.NewPeer(id, name, nil), net)
 
 	// Start the peer on a new thread
 	errCh := make(chan error, 1)

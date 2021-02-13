@@ -101,7 +101,7 @@ type ServedRequest struct {
 
 // Served adds a served request to the node's statistics. An actual request may be composed
 // of one or more request types (service vector indices).
-func (nv *NodeValueTracker) Served(reqs []ServedRequest, respTime time.Duration) {
+func (nv *NodeValueTracker) Served(reqs []ServedRequest, respTime time.Duration) (cost uint64) {
 	nv.vt.statsExpLock.RLock()
 	expFactor := nv.vt.statsExpFactor
 	nv.vt.statsExpLock.RUnlock()
@@ -111,10 +111,13 @@ func (nv *NodeValueTracker) Served(reqs []ServedRequest, respTime time.Duration)
 
 	var value float64
 	for _, r := range reqs {
-		nv.basket.add(r.ReqType, r.Amount, nv.reqCosts[r.ReqType]*uint64(r.Amount), expFactor)
+		rcost := nv.reqCosts[r.ReqType] * uint64(r.Amount)
+		cost += rcost
+		nv.basket.add(r.ReqType, r.Amount, rcost, expFactor)
 		value += (*nv.reqValues)[r.ReqType] * float64(r.Amount)
 	}
 	nv.rtStats.Add(respTime, value, expFactor)
+	return
 }
 
 // RtStats returns the node's own response time distribution statistics

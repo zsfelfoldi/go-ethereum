@@ -115,7 +115,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		p2pConfig:      &stack.Config().P2P,
 	}
 
-	leth.serverPool, leth.serverPoolIterator = vfc.NewServerPool(lesDb, []byte("serverpool:"), time.Second, leth.prenegQuery, &mclock.System{}, config.UltraLightServers, requestList)
+	leth.serverPool, leth.serverPoolIterator = vfc.NewServerPool(lesDb, []byte("serverpool:"), time.Second, leth.prenegQuery, leth.capacityRequest, &mclock.System{}, config.UltraLightServers, requestList)
 	leth.serverPool.AddMetrics(suggestedTimeoutGauge, totalValueGauge, serverSelectableGauge, serverConnectedGauge, sessionValueMeter, serverDialedMeter)
 
 	leth.retriever = newRetrieveManager(peers, leth.reqDist, leth.serverPool.GetTimeout)
@@ -246,6 +246,16 @@ func (s *LightEthereum) prenegQuery(n *enode.Node) int {
 		return 1
 	}
 	return 0
+}
+
+func (s *LightEthereum) capacityRequest(n *enode.Node, reqCap uint64) {
+	if peer := s.peers.peer(n.ID().String()); peer != nil {
+		reqID := genReqID()
+		peer.fcServer.QueuedRequest(reqID, 0) //TODO lock (also in distributor)   ??cost
+		peer.queueSend(func() {
+			peer.sendCapacityRequest(reqID, capacityRequest{MinRecharge: reqCap, Bias: 60}) //TODO bias
+		})
+	}
 }
 
 type LightDummyAPI struct{}
