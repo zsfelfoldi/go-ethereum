@@ -493,6 +493,12 @@ func (p *serverPeer) sendTxs(reqID uint64, amount int, txs rlp.RawValue) error {
 	return p.sendRequest(SendTxV2Msg, reqID, txs, amount)
 }
 
+// sendCapacityRequest sends a capacity request
+func (p *serverPeer) sendCapacityRequest(reqID uint64, req capacityRequest) error {
+	p.Log().Debug("Sending capacity request")
+	return sendRequest(p.rw, CapacityRequestMsg, reqID, req)
+}
+
 // waitBefore implements distPeer interface
 func (p *serverPeer) waitBefore(maxCost uint64) (time.Duration, float64) {
 	return p.fcServer.CanSend(maxCost)
@@ -576,6 +582,16 @@ func (p *serverPeer) updateFlowControl(update keyValueMap) {
 			p.fcCosts[code] = cost
 		}
 	}
+}
+
+// updateCapacity updates the capacity provided by the server in the local peer models
+func (p *serverPeer) updateCapacity(params flowcontrol.ServerParams) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	p.fcParams = params
+	p.fcServer.UpdateParams(params)
+	p.updateVtParams()
 }
 
 // updateHead updates the head information based on the announcement from
@@ -921,6 +937,15 @@ func (p *clientPeer) replyTxStatus(reqID uint64, stats []light.TxStatus) *reply 
 	return &reply{p.rw, TxStatusMsg, reqID, data}
 }
 
+// sendCapacityUpdate sends a capacity update
+func (p *clientPeer) sendCapacityUpdate(reqID, bv uint64, update capacityUpdate) error {
+	type capUpdate struct {
+		ReqID, BV uint64
+		Update    capacityUpdate
+	}
+	return p2p.Send(p.rw, CapacityUpdateMsg, capUpdate{reqID, bv, update})
+}
+
 // sendAnnounce announces the availability of a number of blocks through
 // a hash notification.
 func (p *clientPeer) sendAnnounce(request announceData) error {
@@ -934,17 +959,31 @@ func (p *clientPeer) allowInactive() bool {
 
 // updateCapacity updates the request serving capacity assigned to a given client
 // and also sends an announcement about the updated flow control parameters
-func (p *clientPeer) updateCapacity(cap uint64) {
+func (p *clientPeer) updateCapacity(cap, reqID uint64, requested bool) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
-	if cap != p.fcParams.MinRecharge {
+	if cap != p.fcParams.MinRecharge || requested {
 		p.fcParams = flowcontrol.ServerParams{MinRecharge: cap, BufLimit: cap * bufLimitRatio}
 		p.fcClient.UpdateParams(p.fcParams)
-		var kvList keyValueList
-		kvList = kvList.add("flowControl/MRR", cap)
-		kvList = kvList.add("flowControl/BL", cap*bufLimitRatio)
-		p.queueSend(func() { p.sendAnnounce(announceData{Update: kvList}) })
+		bv, _ := p.fcClient.BufferStatus()
+		p.queueSend(func() {
+			var err error
+			if p.version >= lpv5 {
+				err = p.sendCapacityUpdate(reqID, bv, capacityUpdate{MinRecharge: cap, BufLimit: cap * bufLimitRatio})
+			} else {
+				var kvList keyValueList
+				kvList = kvList.add("flowControl/MRR", cap)
+				kvList = kvList.add("flowControl/BL", cap*bufLimitRatio)
+				err = p.sendAnnounce(announceData{Update: kvList})
+			}
+			if err != nil {
+				select {
+				case p.errCh <- err:
+				default:
+				}
+			}
+		})
 	}
 }
 
@@ -980,6 +1019,14 @@ func (p *clientPeer) freezeClient() {
 			}
 		}()
 	}
+}
+
+// getCapacity returns the current peer capacity
+func (p *clientPeer) getCapacity() uint64 {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	return p.fcParams.MinRecharge
 }
 
 // Handshake executes the les protocol handshake, negotiating version number,
@@ -1021,9 +1068,11 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 		if p.version >= lpv4 {
 			*lists = (*lists).add("recentTxLookup", recentTx)
 		}
-		*lists = (*lists).add("flowControl/BL", server.defParams.BufLimit)
-		*lists = (*lists).add("flowControl/MRR", server.defParams.MinRecharge)
-
+		if p.version < lpv5 {
+			p.fcParams = server.defParams
+		}
+		*lists = (*lists).add("flowControl/BL", p.fcParams.BufLimit)
+		*lists = (*lists).add("flowControl/MRR", p.fcParams.MinRecharge)
 		var costList RequestCostList
 		if server.costTracker.testCostList != nil {
 			costList = server.costTracker.testCostList
@@ -1032,7 +1081,6 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 		}
 		*lists = (*lists).add("flowControl/MRC", costList)
 		p.fcCosts = costList.decode(ProtocolLengths[uint(p.version)])
-		p.fcParams = server.defParams
 
 		// Add advertised checkpoint and register block height which
 		// client can verify the checkpoint validity.

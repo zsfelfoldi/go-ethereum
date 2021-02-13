@@ -860,6 +860,22 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 			}()
 		}
 
+	case CapacityRequestMsg:
+		p.Log().Trace("Received capacity request")
+		var req struct {
+			ReqID  uint64
+			CapReq capacityRequest
+		}
+		if err := msg.Decode(&req); err != nil {
+			clientErrorMeter.Mark(1)
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		reqCap := (req.CapReq.BufLimit + bufLimitRatio - 1) / bufLimitRatio
+		if req.CapReq.MinRecharge > reqCap {
+			reqCap = req.CapReq.MinRecharge
+		}
+		h.server.clientPool.setCapacityLocked(p.Node(), reqCap, time.Duration(req.CapReq.Bias)*time.Second, req.ReqID, true)
+
 	default:
 		p.Log().Trace("Received invalid message", "code", msg.Code)
 		clientErrorMeter.Mark(1)

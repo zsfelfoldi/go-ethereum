@@ -91,7 +91,8 @@ type clientPool struct {
 type clientPoolPeer interface {
 	Node() *enode.Node
 	freeClientId() string
-	updateCapacity(uint64)
+	updateCapacity(uint64, uint64, bool)
+	getCapacity() uint64
 	freeze()
 	allowInactive() bool
 }
@@ -179,7 +180,7 @@ func newClientPool(ns *nodestate.NodeStateMachine, lespayDb ethdb.Database, minC
 		totalConnectedGauge.Update(int64(totalConnected))
 		c, _ := ns.GetField(node, clientInfoField).(*clientInfo)
 		if c != nil {
-			c.peer.updateCapacity(newCap)
+			c.peer.updateCapacity(newCap, 0, false)
 		}
 	})
 	return pool
@@ -297,52 +298,82 @@ func (f *clientPool) setLimits(totalConn int, totalCap uint64) {
 	f.pp.SetLimits(uint64(totalConn), totalCap)
 }
 
-// setCapacity sets the assigned capacity of a connected client
-func (f *clientPool) setCapacity(node *enode.Node, freeID string, capacity uint64, bias time.Duration, setCap bool) (uint64, error) {
+// setCapacity sets the assigned capacity of a connected client to the given value or
+// the maximum value allowed by its current balance. The final capacity is returned.
+// Note: reducing the capacity always succeeds. An increase attempt never reduces the
+// current capacity. Error is only returned if the client is not connected.
+func (f *clientPool) setCapacity(node *enode.Node, reqCap uint64, bias time.Duration, reqID uint64, requested bool) (capacity uint64, err error) {
 	c, _ := f.ns.GetField(node, clientInfoField).(*clientInfo)
 	if c == nil {
-		if setCap {
-			return 0, fmt.Errorf("client %064x is not connected", node.ID())
-		}
-		c = &clientInfo{node: node}
-		f.ns.SetField(node, clientInfoField, c)
-		f.ns.SetField(node, connAddressField, freeID)
-		if c.balance, _ = f.ns.GetField(node, f.BalanceField).(*lps.NodeBalance); c.balance == nil {
-			log.Error("BalanceField is missing", "node", node.ID())
-			return 0, fmt.Errorf("BalanceField of %064x is missing", node.ID())
-		}
-		defer func() {
-			f.ns.SetField(node, connAddressField, nil)
-			f.ns.SetField(node, clientInfoField, nil)
-		}()
+		return 0, fmt.Errorf("client %064x is not connected", node.ID())
 	}
-	var (
-		minPriority int64
-		allowed     bool
-	)
+	if f.connectedBias > bias {
+		bias = f.connectedBias
+	}
+	if capacity < f.minCap {
+		capacity = f.minCap
+	}
+	curveBias := bias
 	f.ns.Operation(func() {
-		if !setCap || c.priority {
-			// check clientInfo.priority inside Operation to ensure thread safety
-			minPriority, allowed = f.pp.RequestCapacity(node, capacity, bias, setCap)
+		var (
+			count   int
+			updated bool
+		)
+		if requested {
+			defer func() {
+				if !updated {
+					c.peer.updateCapacity(capacity, reqID, true)
+				}
+			}()
+		}
+		for {
+			curveBias += time.Second * 10
+			capacity = c.peer.getCapacity()
+			count++
+			if count == 100 {
+				log.Error("Unable to find maximum allowed capacity")
+				return
+			}
+			if reqCap == capacity {
+				return
+			}
+			if reqCap > capacity {
+				if pb, _ := c.balance.GetBalance(); pb == 0 {
+					return
+				}
+				curve := f.pp.GetCapacityCurve().Exclude(node.ID())
+				now := f.clock.Now()
+				maxCap := curve.MaxCapacity(func(capacity uint64) int64 {
+					return c.balance.EstimatePriority(now, capacity, 0, 0, curveBias, false) / int64(capacity)
+				})
+				if maxCap < reqCap {
+					if maxCap > capacity {
+						capacity = maxCap
+					} else {
+						return
+					}
+				} else {
+					capacity = reqCap
+				}
+			}
+			if _, allowed := f.pp.RequestCapacity(node, capacity, bias, true); allowed {
+				if requested {
+					c.peer.updateCapacity(capacity, reqID, true)
+					updated = true
+				}
+				return
+			}
 		}
 	})
-	if allowed {
-		return 0, nil
-	}
-	missing := c.balance.PosBalanceMissing(minPriority, capacity, bias)
-	if missing < 1 {
-		// ensure that we never return 0 missing and insufficient priority error
-		missing = 1
-	}
-	return missing, errNoPriority
+	return
 }
 
 // setCapacityLocked is the equivalent of setCapacity used when f.lock is already locked
-func (f *clientPool) setCapacityLocked(node *enode.Node, freeID string, capacity uint64, minConnTime time.Duration, setCap bool) (uint64, error) {
+func (f *clientPool) setCapacityLocked(node *enode.Node, capacity uint64, bias time.Duration, reqID uint64, requested bool) (uint64, error) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 
-	return f.setCapacity(node, freeID, capacity, minConnTime, setCap)
+	return f.setCapacity(node, capacity, bias, reqID, requested)
 }
 
 // forClients calls the supplied callback for either the listed node IDs or all connected

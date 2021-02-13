@@ -85,7 +85,7 @@ var (
 	testBufLimit = uint64(1000000)
 
 	// The buffer recharging speed for testing purpose.
-	testBufRecharge = uint64(1000)
+	testMinCap = uint64(1000)
 )
 
 /*
@@ -283,13 +283,13 @@ func newTestServerHandler(blocks int, indexers []*core.ChainIndexer, db ethdb.Da
 		servingQueue: newServingQueue(int64(time.Millisecond*10), 1),
 		defParams: flowcontrol.ServerParams{
 			BufLimit:    testBufLimit,
-			MinRecharge: testBufRecharge,
+			MinRecharge: testMinCap,
 		},
 		fcManager: flowcontrol.NewClientManager(nil, clock),
 	}
 	server.costTracker, server.minCapacity = newCostTracker(db, server.config)
 	server.costTracker.testCostList = testCostList(0) // Disable flow control mechanism.
-	server.clientPool = newClientPool(ns, db, testBufRecharge, defaultConnectedBias, clock, func(id enode.ID) {})
+	server.clientPool = newClientPool(ns, db, testMinCap, defaultConnectedBias, clock, func(id enode.ID) {})
 	server.clientPool.setLimits(10000, 10000) // Assign enough capacity for clientpool
 	server.handler = newServerHandler(server, simulation.Blockchain(), db, txpool, func() bool { return true })
 	if server.oracle != nil {
@@ -425,8 +425,13 @@ func (p *testPeer) handshake(t *testing.T, td *big.Int, head common.Hash, headNu
 	if p.cpeer.version >= lpv4 {
 		expList = expList.add("recentTxLookup", uint64(0))
 	}
-	expList = expList.add("flowControl/BL", testBufLimit)
-	expList = expList.add("flowControl/MRR", testBufRecharge)
+	if p.cpeer.version >= lpv5 {
+		expList = expList.add("flowControl/BL", uint64(0))
+		expList = expList.add("flowControl/MRR", uint64(0))
+	} else {
+		expList = expList.add("flowControl/BL", testBufLimit)
+		expList = expList.add("flowControl/MRR", testMinCap)
+	}
 	expList = expList.add("flowControl/MRC", costList)
 
 	if err := p2p.ExpectMsg(p.app, StatusMsg, expList); err != nil {
@@ -435,10 +440,14 @@ func (p *testPeer) handshake(t *testing.T, td *big.Int, head common.Hash, headNu
 	if err := p2p.Send(p.app, StatusMsg, sendList); err != nil {
 		t.Fatalf("status send: %v", err)
 	}
-	p.cpeer.fcParams = flowcontrol.ServerParams{
-		BufLimit:    testBufLimit,
-		MinRecharge: testBufRecharge,
+	p.cpeer.lock.Lock() // ensure that handshake has been finished
+	if p.cpeer.version < lpv5 {
+		p.cpeer.fcParams = flowcontrol.ServerParams{
+			BufLimit:    testBufLimit,
+			MinRecharge: testMinCap,
+		}
 	}
+	p.cpeer.lock.Unlock()
 }
 
 type indexerCallback func(*core.ChainIndexer, *core.ChainIndexer, *core.ChainIndexer)
@@ -481,6 +490,17 @@ func newServerEnv(t *testing.T, blocks int, protocol int, callback indexerCallba
 	var peer *testPeer
 	if newPeer {
 		peer, _ = newTestPeer(t, "peer", protocol, handler, true, testCost)
+	}
+
+	if protocol >= lpv5 {
+		type update struct {
+			ReqID, BV uint64
+			Data      capacityUpdate
+		}
+		p2p.ExpectMsg(peer.app, CapacityUpdateMsg, update{0, testBufLimit, capacityUpdate{
+			MinRecharge: testMinCap,
+			BufLimit:    testBufLimit,
+		}})
 	}
 
 	cIndexer, bIndexer, btIndexer := indexers[0], indexers[1], indexers[2]
