@@ -17,6 +17,7 @@
 package les
 
 import (
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"math/big"
@@ -37,6 +38,7 @@ import (
 	vfs "github.com/ethereum/go-ethereum/les/vflux/server"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/p2p"
+	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 )
@@ -768,9 +770,14 @@ type clientPeer struct {
 	invalidLock  sync.RWMutex
 	invalidCount utils.LinearExpiredValue // Counter the invalid request the client peer has made.
 
-	server   bool
-	errCh    chan error
-	fcClient *flowcontrol.ClientNode // Server side mirror token bucket.
+	capacity         uint64
+	lastAnnounce     announceData
+	lastAnnounceSent bool
+
+	connectedAt mclock.AbsTime
+	server      bool
+	errCh       chan error
+	fcClient    *flowcontrol.ClientNode // Server side mirror token bucket.
 }
 
 func newClientPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *clientPeer {
@@ -789,9 +796,9 @@ func newClientPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWrite
 	}
 }
 
-// freeClientId returns a string identifier for the peer. Multiple peers with
+// FreeClientId returns a string identifier for the peer. Multiple peers with
 // the same identifier can not be connected in free mode simultaneously.
-func (p *clientPeer) freeClientId() string {
+func (p *clientPeer) FreeClientId() string {
 	if addr, ok := p.RemoteAddr().(*net.TCPAddr); ok {
 		if addr.IP.IsLoopback() {
 			// using peer id instead of loopback ip address allows multiple free
@@ -921,24 +928,66 @@ func (p *clientPeer) sendAnnounce(request announceData) error {
 	return p2p.Send(p.rw, AnnounceMsg, request)
 }
 
-// allowInactive implements clientPoolPeer
-func (p *clientPeer) allowInactive() bool {
-	return false
+// InactiveTimeout implements vfs.clientPeer
+func (p *clientPeer) InactiveTimeout() time.Duration {
+	return 0 // will return more than zero for les/5 clients
 }
 
-// updateCapacity updates the request serving capacity assigned to a given client
+func (p *clientPeer) getCapacity() uint64 {
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+
+	return p.capacity
+}
+
+// UpdateCapacity updates the request serving capacity assigned to a given client
 // and also sends an announcement about the updated flow control parameters
-func (p *clientPeer) updateCapacity(cap uint64) {
+// Note: UpdateCapacity is a ClientPool callback and should not block.
+func (p *clientPeer) UpdateCapacity(newCap uint64, requested bool) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
-	if cap != p.fcParams.MinRecharge {
-		p.fcParams = flowcontrol.ServerParams{MinRecharge: cap, BufLimit: cap * bufLimitRatio}
+	if newCap != p.fcParams.MinRecharge {
+		p.fcParams = flowcontrol.ServerParams{MinRecharge: newCap, BufLimit: newCap * bufLimitRatio}
 		p.fcClient.UpdateParams(p.fcParams)
 		var kvList keyValueList
-		kvList = kvList.add("flowControl/MRR", cap)
-		kvList = kvList.add("flowControl/BL", cap*bufLimitRatio)
+		kvList = kvList.add("flowControl/MRR", newCap)
+		kvList = kvList.add("flowControl/BL", newCap*bufLimitRatio)
 		p.queueSend(func() { p.sendAnnounce(announceData{Update: kvList}) })
+	}
+
+	if p.capacity == 0 && newCap != 0 {
+		p.announce(p.lastAnnounce)
+	}
+	p.capacity = newCap
+}
+
+// announceOrStore sends the given head announcement to the client if the client is
+// active (capacity != 0) and the same announcement hasn't been sent before. If the
+// client is inactive the announcement is stored and sent later if the client is
+// activated again.
+func (p *clientPeer) announceOrStore(announce announceData) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	if p.capacity != 0 {
+		p.announce(announce)
+	} else if announce.Hash != p.lastAnnounce.Hash {
+		p.lastAnnounce = announce
+		p.lastAnnounceSent = false
+	}
+}
+
+// announce sends the given head announcement to the client if it hasn't been sent before
+func (p *clientPeer) announce(announce announceData) {
+	if !p.lastAnnounceSent || announce.Hash != p.lastAnnounce.Hash {
+		if !p.queueSend(func() { p.sendAnnounce(announce) }) {
+			p.Log().Debug("Dropped announcement because queue is full", "number", announce.Number, "hash", announce.Hash)
+		} else {
+			p.Log().Debug("Sent announcement", "number", announce.Number, "hash", announce.Hash)
+		}
+		p.lastAnnounce = announce
+		p.lastAnnounceSent = true
 	}
 }
 
@@ -1062,6 +1111,10 @@ func (p *clientPeer) getInvalid() uint64 {
 	p.invalidLock.RLock()
 	defer p.invalidLock.RUnlock()
 	return p.invalidCount.Value(mclock.Now())
+}
+
+func (p *clientPeer) Disconnect() {
+	p.Peer.Disconnect(p2p.DiscRequested)
 }
 
 // serverPeerSubscriber is an interface to notify services about added or
@@ -1218,6 +1271,128 @@ func (ps *serverPeerSet) close() {
 
 	for _, p := range ps.peers {
 		p.Disconnect(p2p.DiscQuitting)
+	}
+	ps.closed = true
+}
+
+// clientPeerSet represents the set of active client peers currently
+// participating in the Light Ethereum sub-protocol.
+type clientPeerSet struct {
+	peers  map[enode.ID]*clientPeer
+	lock   sync.RWMutex
+	closed bool
+
+	privateKey                   *ecdsa.PrivateKey
+	lastAnnounce, signedAnnounce announceData
+}
+
+// newClientPeerSet creates a new peer set to track the client peers.
+func newClientPeerSet() *clientPeerSet {
+	return &clientPeerSet{peers: make(map[enode.ID]*clientPeer)}
+}
+
+// register adds a new peer into the peer set, or returns an error if the
+// peer is already known.
+func (ps *clientPeerSet) register(peer *clientPeer) error {
+	ps.lock.Lock()
+	defer ps.lock.Unlock()
+
+	if ps.closed {
+		return errClosed
+	}
+	if _, exist := ps.peers[peer.ID()]; exist {
+		return errAlreadyRegistered
+	}
+	ps.peers[peer.ID()] = peer
+	ps.announceOrStore(peer)
+	return nil
+}
+
+// unregister removes a remote peer from the peer set, disabling any further
+// actions to/from that particular entity. It also initiates disconnection
+// at the networking layer.
+func (ps *clientPeerSet) unregister(id enode.ID) error {
+	ps.lock.Lock()
+	defer ps.lock.Unlock()
+
+	p, ok := ps.peers[id]
+	if !ok {
+		return errNotRegistered
+	}
+	delete(ps.peers, id)
+	p.Peer.Disconnect(p2p.DiscRequested)
+	return nil
+}
+
+// ids returns a list of all registered peer IDs
+func (ps *clientPeerSet) ids() []enode.ID {
+	ps.lock.RLock()
+	defer ps.lock.RUnlock()
+
+	var ids []enode.ID
+	for id := range ps.peers {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// peer retrieves the registered peer with the given id.
+func (ps *clientPeerSet) peer(id enode.ID) *clientPeer {
+	ps.lock.RLock()
+	defer ps.lock.RUnlock()
+
+	return ps.peers[id]
+}
+
+// len returns if the current number of peers in the set.
+func (ps *clientPeerSet) len() int {
+	ps.lock.RLock()
+	defer ps.lock.RUnlock()
+
+	return len(ps.peers)
+}
+
+// setSignerKey sets the signer key for signed announcements. Should be called before
+// starting the protocol handler.
+func (ps *clientPeerSet) setSignerKey(privateKey *ecdsa.PrivateKey) {
+	ps.privateKey = privateKey
+}
+
+// broadcast sends the given announcements to all active peers
+func (ps *clientPeerSet) broadcast(announce announceData) {
+	ps.lock.Lock()
+	defer ps.lock.Unlock()
+
+	ps.lastAnnounce = announce
+	for _, peer := range ps.peers {
+		ps.announceOrStore(peer)
+	}
+}
+
+func (ps *clientPeerSet) announceOrStore(p *clientPeer) {
+	if ps.lastAnnounce.Td == nil {
+		return
+	}
+	switch p.announceType {
+	case announceTypeSimple:
+		p.announceOrStore(ps.lastAnnounce)
+	case announceTypeSigned:
+		if ps.signedAnnounce.Hash != ps.lastAnnounce.Hash {
+			ps.signedAnnounce = ps.lastAnnounce
+			ps.signedAnnounce.sign(ps.privateKey)
+		}
+		p.announceOrStore(ps.signedAnnounce)
+	}
+}
+
+// close disconnects all peers. No new peers can be registered
+// after close has returned.
+func (ps *clientPeerSet) close() {
+	ps.lock.Lock()
+	defer ps.lock.Unlock()
+
+	for _, p := range ps.peers {
+		p.Peer.Disconnect(p2p.DiscQuitting)
 	}
 	ps.closed = true
 }

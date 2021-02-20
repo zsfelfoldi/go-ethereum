@@ -268,6 +268,13 @@ func (pp *PriorityPool) Active() (uint64, uint64) {
 	return pp.activeCount, pp.activeCap
 }
 
+func (pp *PriorityPool) Limits() (uint64, uint64) {
+	pp.lock.Lock()
+	defer pp.lock.Unlock()
+
+	return pp.maxCount, pp.maxCap
+}
+
 // inactiveSetIndex callback updates ppNodeInfo item index in inactiveQueue
 func inactiveSetIndex(a interface{}, index int) {
 	a.(*ppNodeInfo).inactiveIndex = index
