@@ -1099,7 +1099,6 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 				// set default announceType on server side
 				p.announceType = announceTypeSimple
 			}
-			p.fcClient = flowcontrol.NewClientNode(server.fcManager, p.fcParams)
 		}
 		return nil
 	})
@@ -1310,6 +1309,7 @@ func (ps *clientPeerSet) register(peer *clientPeer) error {
 	}
 	ps.peers[peer.ID()] = peer
 	ps.announceOrStore(peer)
+	peer.connectedAt = mclock.Now()
 	return nil
 }
 
@@ -1326,6 +1326,8 @@ func (ps *clientPeerSet) unregister(id enode.ID) error {
 	}
 	delete(ps.peers, id)
 	p.Peer.Disconnect(p2p.DiscRequested)
+	p.balance = nil
+	connectionTimer.Update(time.Duration(mclock.Now() - p.connectedAt))
 	return nil
 }
 
