@@ -170,7 +170,7 @@ func (api *PrivateLightServerAPI) setParams(params map[string]interface{}, clien
 			setFactor(&negFactors.RequestFactor)
 		case !defParams && name == "capacity":
 			if capacity, ok := value.(float64); ok && uint64(capacity) >= api.server.minCapacity {
-				_, err = api.server.clientPool.SetCapacity(client.Node(), uint64(capacity), 0, false)
+				_, err = api.server.clientPool.RequestCapacity(client.Node(), uint64(capacity), 0)
 				// time factor recalculation is performed automatically by the balance tracker
 			} else {
 				err = errValue()

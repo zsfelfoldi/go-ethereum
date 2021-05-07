@@ -77,21 +77,23 @@ type ClientPool struct {
 	tokenLock                       sync.Mutex
 	capacityLimit, priorityCapacity uint64
 	capacityFactor                  float64
+	minCap                          uint64 // the minimal capacity value allowed for any client
 
 	biasLock      sync.RWMutex
 	connectedBias time.Duration
 
-	minCap     uint64      // the minimal capacity value allowed for any client
-	capReqNode *enode.Node // node that is requesting capacity change; only used inside NSM operation
+	// these fields are only used inside ns.Operation during RequestCapacity
+	capReqNode    *enode.Node // node that is requesting capacity change
+	capReqReduced uint64      // capacity reduction of other nodes caused by the requested increase
 }
 
 // clientPeer represents a peer in the client pool. None of the callbacks should block.
 type clientPeer interface {
 	Node() *enode.Node
-	FreeClientId() string                         // unique id for non-priority clients (typically a prefix of the network address)
-	InactiveAllowance() time.Duration             // disconnection timeout for inactive non-priority peers
-	UpdateCapacity(newCap uint64, requested bool) // signals a capacity update (requested is true if it is a result of a SetCapacity call on the given peer
-	Disconnect()                                  // initiates disconnection (Unregister should always be called)
+	FreeClientId() string                                         // unique id for non-priority clients (typically a prefix of the network address)
+	InactiveAllowance() time.Duration                             // disconnection timeout for inactive non-priority peers
+	UpdateCapacity(newCap uint64, requested bool, reduced uint64) // signals a capacity update (requested is true if it is a result of a SetCapacity call on the given peer
+	Disconnect()                                                  // initiates disconnection (Unregister should always be called)
 }
 
 // NewClientPool creates a new client pool
@@ -158,8 +160,14 @@ func NewClientPool(balanceDb ethdb.KeyValueStore, minCap uint64, connectedBias t
 
 	ns.SubscribeField(setup.capacityField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
 		if c, ok := ns.GetField(node, setup.clientField).(*clientInfo); ok {
+			oldCap, _ := oldValue.(uint64)
 			newCap, _ := newValue.(uint64)
-			c.UpdateCapacity(newCap, node == cp.capReqNode)
+			if node != cp.capReqNode {
+				c.UpdateCapacity(newCap, false, 0)
+				if cp.capReqNode != nil && newCap < oldCap {
+					cp.capReqReduced += oldCap - newCap
+				}
+			}
 			if state.HasAll(setup.priorityFlag) {
 				// update priorityCapacity and token limit
 				cp.tokenLock.Lock()
@@ -290,8 +298,8 @@ func (cp *ClientPool) updateTokenLimit() {
 	cp.tokenSale.setLimitAdjustRate(int64(maxTokenLimit), (freeRatio-targetFreeRatio)*maxTokenLimit/float64(tokenLimitTC))
 }
 
-// SetCapacity sets the assigned capacity of a connected client
-func (cp *ClientPool) SetCapacity(node *enode.Node, reqCap uint64, bias time.Duration, requested bool) (capacity uint64, err error) {
+// RequestCapacity sets the assigned capacity of a connected client
+func (cp *ClientPool) RequestCapacity(node *enode.Node, reqCap uint64, bias time.Duration) (capacity uint64, err error) {
 	cp.biasLock.RLock()
 	if cp.connectedBias > bias {
 		bias = cp.connectedBias
@@ -300,7 +308,8 @@ func (cp *ClientPool) SetCapacity(node *enode.Node, reqCap uint64, bias time.Dur
 
 	cp.ns.Operation(func() {
 		balance, _ := cp.ns.GetField(node, cp.setup.balanceField).(*nodeBalance)
-		if balance == nil {
+		c, _ := cp.ns.GetField(node, cp.setup.clientField).(*clientInfo)
+		if balance == nil || c == nil {
 			err = ErrNotConnected
 			return
 		}
@@ -321,14 +330,6 @@ func (cp *ClientPool) SetCapacity(node *enode.Node, reqCap uint64, bias time.Dur
 		}
 		if reqCap == capacity {
 			return
-		}
-		if requested {
-			// mark the requested node so that the UpdateCapacity callback can signal
-			// whether the update is the direct result of a SetCapacity call on the given node
-			cp.capReqNode = node
-			defer func() {
-				cp.capReqNode = nil
-			}()
 		}
 
 		var minTarget, maxTarget uint64
@@ -359,7 +360,14 @@ func (cp *ClientPool) SetCapacity(node *enode.Node, reqCap uint64, bias time.Dur
 		} else {
 			minTarget, maxTarget = reqCap, reqCap
 		}
-		if newCap := cp.requestCapacity(node, minTarget, maxTarget, bias); newCap >= minTarget && newCap <= maxTarget {
+		// mark the requested node so that the UpdateCapacity callback can signal
+		// whether the update is the direct result of a RequestCapacity call on the given node
+		cp.capReqNode = node
+		cp.capReqReduced = 0
+		newCap := cp.requestCapacity(node, minTarget, maxTarget, bias)
+		cp.capReqNode = nil
+		c.UpdateCapacity(newCap, true, cp.capReqReduced)
+		if newCap >= minTarget && newCap <= maxTarget {
 			capacity = newCap
 			return
 		}

@@ -36,17 +36,17 @@ const (
 	lpv2 = 2
 	lpv3 = 3
 	lpv4 = 4
+	lpv5 = 5
 )
 
 // Supported versions of the les protocol (first is primary)
 var (
-	ClientProtocolVersions    = []uint{lpv2, lpv3, lpv4}
-	ServerProtocolVersions    = []uint{lpv2, lpv3, lpv4}
-	AdvertiseProtocolVersions = []uint{lpv2} // clients are searching for the first advertised protocol in the list
+	ClientProtocolVersions = []uint{lpv2, lpv3, lpv4, lpv5}
+	ServerProtocolVersions = []uint{lpv2, lpv3, lpv4, lpv5}
 )
 
 // Number of implemented message corresponding to different protocol versions.
-var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24}
+var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24, lpv5: 28}
 
 const (
 	NetworkId          = 1
@@ -82,6 +82,11 @@ const (
 	// Protocol messages introduced in LPV3
 	StopMsg   = 0x16
 	ResumeMsg = 0x17
+	// Protocol messages introduced in LPV5
+	CapacityRequestMsg = 0x18
+	CapacityUpdateMsg  = 0x19
+	TestDelayMsg       = 0x1a
+	TestReplyMsg       = 0x1b
 )
 
 // GetBlockHeadersData represents a block header query (the request ID is not included)
@@ -138,6 +143,16 @@ type SendTxPacket struct {
 type GetTxStatusPacket struct {
 	ReqID  uint64
 	Hashes []common.Hash
+}
+
+// CapacityRequestPacket represents a capacity request
+type CapacityRequestPacket struct {
+	MinRecharge, BufLimit, Bias uint64
+}
+
+// TestDelayPacket represents a test delay request
+type TestDelayPacket struct {
+	ReqID, Amount, Delay uint64
 }
 
 type requestInfo struct {

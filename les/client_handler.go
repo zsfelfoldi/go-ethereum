@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
+	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -350,6 +351,35 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 		p.fcServer.ResumeFreeze(bv)
 		p.unfreeze()
 		p.Log().Debug("Service resumed")
+	case msg.Code == CapacityUpdateMsg && p.version >= lpv5:
+		p.Log().Trace("Received capacity update")
+		var resp struct {
+			BV                    uint64
+			Requested             bool
+			MinRecharge, BufLimit uint64
+		}
+		if err := msg.Decode(&resp); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		if p.rejectUpdate(uint64(msg.Size)) {
+			return errResp(ErrRequestRejected, "")
+		}
+		p.updateCapacity(flowcontrol.ServerParams{MinRecharge: resp.MinRecharge, BufLimit: resp.BufLimit})
+		//p.capControl.UpdateCapacity(p.fcParams.MinRecharge, resp.ReqID != 0)
+		/*if resp.Requested {
+			p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		}*/
+		//TODO update buffer
+	case msg.Code == TestReplyMsg && p.version >= lpv5:
+		p.Log().Trace("Received test delay response")
+		var resp struct {
+			ReqID, BV uint64
+		}
+		if err := msg.Decode(&resp); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		p.answeredRequest(resp.ReqID)
 	default:
 		p.Log().Trace("Received invalid message", "code", msg.Code)
 		return errResp(ErrInvalidMsgCode, "%v", msg.Code)

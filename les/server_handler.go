@@ -42,15 +42,6 @@ import (
 const (
 	softResponseLimit = 2 * 1024 * 1024 // Target maximum size of returned blocks, headers or node data.
 	estHeaderRlpSize  = 500             // Approximate size of an RLP encoded block header
-
-	MaxHeaderFetch           = 192 // Amount of block headers to be fetched per retrieval request
-	MaxBodyFetch             = 32  // Amount of block bodies to be fetched per retrieval request
-	MaxReceiptFetch          = 128 // Amount of transaction receipts to allow fetching per request
-	MaxCodeFetch             = 64  // Amount of contract codes to allow fetching per request
-	MaxProofsFetch           = 64  // Amount of merkle proofs to be fetched per retrieval request
-	MaxHelperTrieProofsFetch = 64  // Amount of helper tries to be fetched per retrieval request
-	MaxTxSend                = 64  // Amount of transactions to be send per request
-	MaxTxStatus              = 256 // Amount of transactions to queried per request
 )
 
 var (
@@ -111,6 +102,9 @@ func (h *serverHandler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter)
 func (h *serverHandler) handle(p *clientPeer) error {
 	p.Log().Debug("Light Ethereum peer connected", "name", p.Name())
 
+	if p.handlers == nil {
+		return p2p.DiscProtocolError
+	}
 	// Execute the LES handshake
 	var (
 		head   = h.blockchain.CurrentHeader()
@@ -283,9 +277,13 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 	}
 	defer msg.Discard()
 
+	if msg.Code == CapacityRequestMsg {
+		return h.handleCapacityRequest(p, msg)
+	}
+
 	// Lookup the request handler table, ensure it's supported
 	// message type by the protocol.
-	req, ok := Les3[msg.Code]
+	req, ok := p.handlers[msg.Code]
 	if !ok {
 		p.Log().Trace("Received invalid message", "code", msg.Code)
 		clientErrorMeter.Mark(1)
@@ -335,6 +333,19 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 		clientErrorMeter.Mark(1)
 		return errTooManyInvalidRequest
 	}
+	return nil
+}
+
+func (h *serverHandler) handleCapacityRequest(peer *clientPeer, msg Decoder) error {
+	var r CapacityRequestPacket
+	if err := msg.Decode(&r); err != nil {
+		return err
+	}
+	reqCap := (r.BufLimit + bufLimitRatio - 1) / bufLimitRatio
+	if r.MinRecharge > reqCap {
+		reqCap = r.MinRecharge
+	}
+	h.server.clientPool.RequestCapacity(peer.Node(), reqCap, time.Duration(r.Bias)*time.Second)
 	return nil
 }
 

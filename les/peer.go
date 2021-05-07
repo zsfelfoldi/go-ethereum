@@ -491,6 +491,12 @@ func (p *serverPeer) sendTxs(reqID uint64, amount int, txs rlp.RawValue) error {
 	return p.sendRequest(SendTxV2Msg, reqID, txs, amount)
 }
 
+// sendCapacityRequest sends a capacity request
+func (p *serverPeer) sendCapacityRequest(minRecharge, bufLimit, bias uint64) error {
+	p.Log().Debug("Sending capacity request")
+	return p2p.Send(p.rw, CapacityRequestMsg, CapacityRequestPacket{minRecharge, bufLimit, bias})
+}
+
 // waitBefore implements distPeer interface
 func (p *serverPeer) waitBefore(maxCost uint64) (time.Duration, float64) {
 	return p.fcServer.CanSend(maxCost)
@@ -574,6 +580,16 @@ func (p *serverPeer) updateFlowControl(update keyValueMap) {
 			p.fcCosts[code] = cost
 		}
 	}
+}
+
+// updateCapacity updates the capacity provided by the server in the local peer models
+func (p *serverPeer) updateCapacity(params flowcontrol.ServerParams) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	p.fcParams = params
+	p.fcServer.UpdateParams(params)
+	p.updateVtParams()
 }
 
 // updateHead updates the head information based on the announcement from
@@ -780,6 +796,7 @@ type clientPeer struct {
 	server      bool
 	errCh       chan error
 	fcClient    *flowcontrol.ClientNode // Server side mirror token bucket.
+	handlers    map[uint64]RequestType
 }
 
 func newClientPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *clientPeer {
@@ -795,6 +812,7 @@ func newClientPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWrite
 		},
 		invalidCount: utils.LinearExpiredValue{Rate: mclock.AbsTime(time.Hour)},
 		errCh:        make(chan error, 1),
+		handlers:     ServerProtocols[version],
 	}
 }
 
@@ -924,6 +942,20 @@ func (p *clientPeer) replyTxStatus(reqID uint64, stats []light.TxStatus) *reply 
 	return &reply{p.rw, TxStatusMsg, reqID, data}
 }
 
+// sendCapacityUpdate sends a capacity update
+func (p *clientPeer) sendCapacityUpdate(bv uint64, requested bool, minRecharge, bufLimit uint64) error {
+	type capUpdate struct {
+		BV                    uint64
+		Requested             bool
+		MinRecharge, BufLimit uint64
+	}
+	return p2p.Send(p.rw, CapacityUpdateMsg, capUpdate{bv, requested, minRecharge, bufLimit})
+}
+
+func (p *clientPeer) replyTestDelay(reqID uint64) *reply {
+	return &reply{p.rw, TxStatusMsg, reqID, nil}
+}
+
 // sendAnnounce announces the availability of a number of blocks through
 // a hash notification.
 func (p *clientPeer) sendAnnounce(request announceData) error {
@@ -947,17 +979,35 @@ func (p *clientPeer) getCapacity() uint64 {
 // and also sends an announcement about the updated flow control parameters.
 // Note: UpdateCapacity implements vfs.clientPeer and should not block. The requested
 // parameter is true if the callback was initiated by ClientPool.SetCapacity on the given peer.
-func (p *clientPeer) UpdateCapacity(newCap uint64, requested bool) {
+func (p *clientPeer) UpdateCapacity(newCap uint64, requested bool, othersReduced uint64) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
-	if newCap != p.fcParams.MinRecharge {
+	if newCap != p.fcParams.MinRecharge || requested {
+		var addBuffer uint64
+		if newCap > p.fcParams.MinRecharge+othersReduced {
+			addBuffer = newCap - p.fcParams.MinRecharge - othersReduced
+		}
 		p.fcParams = flowcontrol.ServerParams{MinRecharge: newCap, BufLimit: newCap * bufLimitRatio}
-		p.fcClient.UpdateParams(p.fcParams)
-		var kvList keyValueList
-		kvList = kvList.add("flowControl/MRR", newCap)
-		kvList = kvList.add("flowControl/BL", newCap*bufLimitRatio)
-		p.queueSend(func() { p.sendAnnounce(announceData{Update: kvList}) })
+		p.fcClient.UpdateParams(p.fcParams, addBuffer)
+		bv, _ := p.fcClient.BufferStatus()
+		p.queueSend(func() {
+			var err error
+			if p.version >= lpv5 {
+				err = p.sendCapacityUpdate(bv, requested, newCap, newCap*bufLimitRatio)
+			} else {
+				var kvList keyValueList
+				kvList = kvList.add("flowControl/MRR", newCap)
+				kvList = kvList.add("flowControl/BL", newCap*bufLimitRatio)
+				err = p.sendAnnounce(announceData{Update: kvList})
+			}
+			if err != nil {
+				select {
+				case p.errCh <- err:
+				default:
+				}
+			}
+		})
 	}
 
 	if p.capacity == 0 && newCap != 0 {

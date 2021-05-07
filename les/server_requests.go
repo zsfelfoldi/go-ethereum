@@ -19,6 +19,7 @@ package les
 import (
 	"encoding/binary"
 	"encoding/json"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -29,6 +30,18 @@ import (
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
+)
+
+const (
+	MaxHeaderFetch           = 192  // Amount of block headers to be fetched per retrieval request
+	MaxBodyFetch             = 32   // Amount of block bodies to be fetched per retrieval request
+	MaxReceiptFetch          = 128  // Amount of transaction receipts to allow fetching per request
+	MaxCodeFetch             = 64   // Amount of contract codes to allow fetching per request
+	MaxProofsFetch           = 64   // Amount of merkle proofs to be fetched per retrieval request
+	MaxHelperTrieProofsFetch = 64   // Amount of helper tries to be fetched per retrieval request
+	MaxTxSend                = 64   // Amount of transactions to be send per request
+	MaxTxStatus              = 256  // Amount of transactions to queried per request
+	MaxTestDelay             = 4096 // Amount of test delay per request
 )
 
 // serverBackend defines the backend functions needed for serving LES requests
@@ -63,9 +76,8 @@ type RequestType struct {
 // by the protocol handler when calling the send function of the returned reply struct.
 type serveRequestFn func(backend serverBackend, peer *clientPeer, waitOrStop func() bool) *reply
 
-// Les3 contains the request types supported by les/2 and les/3
-var Les3 = map[uint64]RequestType{
-	GetBlockHeadersMsg: {
+var (
+	rtGetBlockHeaders = RequestType{
 		Name:             "block header request",
 		MaxCount:         MaxHeaderFetch,
 		InPacketsMeter:   miscInHeaderPacketsMeter,
@@ -74,8 +86,8 @@ var Les3 = map[uint64]RequestType{
 		OutTrafficMeter:  miscOutHeaderTrafficMeter,
 		ServingTimeMeter: miscServingTimeHeaderTimer,
 		Handle:           handleGetBlockHeaders,
-	},
-	GetBlockBodiesMsg: {
+	}
+	rtGetBlockBodies = RequestType{
 		Name:             "block bodies request",
 		MaxCount:         MaxBodyFetch,
 		InPacketsMeter:   miscInBodyPacketsMeter,
@@ -84,8 +96,8 @@ var Les3 = map[uint64]RequestType{
 		OutTrafficMeter:  miscOutBodyTrafficMeter,
 		ServingTimeMeter: miscServingTimeBodyTimer,
 		Handle:           handleGetBlockBodies,
-	},
-	GetCodeMsg: {
+	}
+	rtGetCode = RequestType{
 		Name:             "code request",
 		MaxCount:         MaxCodeFetch,
 		InPacketsMeter:   miscInCodePacketsMeter,
@@ -94,8 +106,8 @@ var Les3 = map[uint64]RequestType{
 		OutTrafficMeter:  miscOutCodeTrafficMeter,
 		ServingTimeMeter: miscServingTimeCodeTimer,
 		Handle:           handleGetCode,
-	},
-	GetReceiptsMsg: {
+	}
+	rtGetReceipts = RequestType{
 		Name:             "receipts request",
 		MaxCount:         MaxReceiptFetch,
 		InPacketsMeter:   miscInReceiptPacketsMeter,
@@ -104,8 +116,8 @@ var Les3 = map[uint64]RequestType{
 		OutTrafficMeter:  miscOutReceiptTrafficMeter,
 		ServingTimeMeter: miscServingTimeReceiptTimer,
 		Handle:           handleGetReceipts,
-	},
-	GetProofsV2Msg: {
+	}
+	rtGetProofsV2 = RequestType{
 		Name:             "les/2 proofs request",
 		MaxCount:         MaxProofsFetch,
 		InPacketsMeter:   miscInTrieProofPacketsMeter,
@@ -114,8 +126,8 @@ var Les3 = map[uint64]RequestType{
 		OutTrafficMeter:  miscOutTrieProofTrafficMeter,
 		ServingTimeMeter: miscServingTimeTrieProofTimer,
 		Handle:           handleGetProofs,
-	},
-	GetHelperTrieProofsMsg: {
+	}
+	rtGetHelperTrieProofs = RequestType{
 		Name:             "helper trie proof request",
 		MaxCount:         MaxHelperTrieProofsFetch,
 		InPacketsMeter:   miscInHelperTriePacketsMeter,
@@ -124,8 +136,8 @@ var Les3 = map[uint64]RequestType{
 		OutTrafficMeter:  miscOutHelperTrieTrafficMeter,
 		ServingTimeMeter: miscServingTimeHelperTrieTimer,
 		Handle:           handleGetHelperTrieProofs,
-	},
-	SendTxV2Msg: {
+	}
+	rtSendTxV2 = RequestType{
 		Name:             "new transactions",
 		MaxCount:         MaxTxSend,
 		InPacketsMeter:   miscInTxsPacketsMeter,
@@ -134,8 +146,8 @@ var Les3 = map[uint64]RequestType{
 		OutTrafficMeter:  miscOutTxsTrafficMeter,
 		ServingTimeMeter: miscServingTimeTxTimer,
 		Handle:           handleSendTx,
-	},
-	GetTxStatusMsg: {
+	}
+	rtGetTxStatus = RequestType{
 		Name:             "transaction status query request",
 		MaxCount:         MaxTxStatus,
 		InPacketsMeter:   miscInTxStatusPacketsMeter,
@@ -144,7 +156,49 @@ var Les3 = map[uint64]RequestType{
 		OutTrafficMeter:  miscOutTxStatusTrafficMeter,
 		ServingTimeMeter: miscServingTimeTxStatusTimer,
 		Handle:           handleGetTxStatus,
-	},
+	}
+	rtTestDelay = RequestType{
+		Name:             "test delay request",
+		MaxCount:         MaxTestDelay,
+		InPacketsMeter:   nil,
+		InTrafficMeter:   nil,
+		OutPacketsMeter:  nil,
+		OutTrafficMeter:  nil,
+		ServingTimeMeter: miscServingTimeTestDelayTimer,
+		Handle:           handleTestDelay,
+	}
+)
+
+// les2server contains the request types supported by les/2 to les/4
+var les2server = map[uint64]RequestType{
+	GetBlockHeadersMsg:     rtGetBlockHeaders,
+	GetBlockBodiesMsg:      rtGetBlockBodies,
+	GetCodeMsg:             rtGetCode,
+	GetReceiptsMsg:         rtGetReceipts,
+	GetProofsV2Msg:         rtGetProofsV2,
+	GetHelperTrieProofsMsg: rtGetHelperTrieProofs,
+	SendTxV2Msg:            rtSendTxV2,
+	GetTxStatusMsg:         rtGetTxStatus,
+}
+
+// les5server contains the request types supported by les/5
+var les5server = map[uint64]RequestType{
+	GetBlockHeadersMsg:     rtGetBlockHeaders,
+	GetBlockBodiesMsg:      rtGetBlockBodies,
+	GetCodeMsg:             rtGetCode,
+	GetReceiptsMsg:         rtGetReceipts,
+	GetProofsV2Msg:         rtGetProofsV2,
+	GetHelperTrieProofsMsg: rtGetHelperTrieProofs,
+	SendTxV2Msg:            rtSendTxV2,
+	GetTxStatusMsg:         rtGetTxStatus,
+	TestDelayMsg:           rtTestDelay,
+}
+
+var ServerProtocols = map[int]map[uint64]RequestType{
+	lpv2: les2server,
+	lpv3: les2server,
+	lpv4: les2server,
+	lpv5: les5server,
 }
 
 // handleGetBlockHeaders handles a block header request
@@ -566,4 +620,20 @@ func txStatus(b serverBackend, hash common.Hash) light.TxStatus {
 		}
 	}
 	return stat
+}
+
+// handleTestDelay handles a test delay request
+func handleTestDelay(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+	var r TestDelayPacket
+	if err := msg.Decode(&r); err != nil {
+		return nil, 0, 0, err
+	}
+	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+		d := r.Delay
+		if r.Amount < d {
+			d = r.Amount
+		}
+		time.Sleep(time.Duration(r.Delay) * time.Microsecond)
+		return p.replyTestDelay(r.ReqID)
+	}, r.ReqID, r.Amount, nil
 }
