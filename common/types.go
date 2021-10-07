@@ -26,6 +26,7 @@ import (
 	"math/big"
 	"math/rand"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -425,4 +426,18 @@ func (ma *MixedcaseAddress) ValidChecksum() bool {
 // Original returns the mixed-case input string
 func (ma *MixedcaseAddress) Original() string {
 	return ma.original
+}
+
+type Decimal uint64
+
+// UnmarshalJSON parses Decimal
+func (d *Decimal) UnmarshalText(input []byte) error {
+	u, err := strconv.ParseUint(string(input), 10, 64)
+	*d = Decimal(u)
+	return err
+}
+
+// MarshalJSON marshals the original value
+func (d *Decimal) MarshalText() ([]byte, error) {
+	return []byte(strconv.FormatUint(uint64(*d), 10)), nil
 }
