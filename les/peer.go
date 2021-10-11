@@ -73,6 +73,7 @@ const (
 	announceTypeNone = iota
 	announceTypeSimple
 	announceTypeSigned
+	announceTypePoS
 )
 
 type keyValueEntry struct {

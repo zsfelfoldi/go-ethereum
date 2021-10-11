@@ -36,47 +36,51 @@ const makeCostStats = false // make request cost statistics during operation
 var (
 	// average request cost estimates based on serving time
 	reqAvgTimeCost = requestCostTable{
-		GetBlockHeadersMsg:     {150000, 30000},
-		GetBlockBodiesMsg:      {0, 700000},
-		GetReceiptsMsg:         {0, 1000000},
-		GetCodeMsg:             {0, 450000},
-		GetProofsV2Msg:         {0, 600000},
-		GetHelperTrieProofsMsg: {0, 1000000},
-		SendTxV2Msg:            {0, 450000},
-		GetTxStatusMsg:         {0, 250000},
+		GetBlockHeadersMsg:       {150000, 30000},
+		GetBlockBodiesMsg:        {0, 700000},
+		GetReceiptsMsg:           {0, 1000000},
+		GetCodeMsg:               {0, 450000},
+		GetProofsV2Msg:           {0, 600000},
+		GetHelperTrieProofsMsg:   {0, 1000000},
+		SendTxV2Msg:              {0, 450000},
+		GetTxStatusMsg:           {0, 250000},
+		GetSyncCommitteeProofMsg: {0, 1000000},
 	}
 	// maximum incoming message size estimates
 	reqMaxInSize = requestCostTable{
-		GetBlockHeadersMsg:     {40, 0},
-		GetBlockBodiesMsg:      {0, 40},
-		GetReceiptsMsg:         {0, 40},
-		GetCodeMsg:             {0, 80},
-		GetProofsV2Msg:         {0, 80},
-		GetHelperTrieProofsMsg: {0, 20},
-		SendTxV2Msg:            {0, 16500},
-		GetTxStatusMsg:         {0, 50},
+		GetBlockHeadersMsg:       {40, 0},
+		GetBlockBodiesMsg:        {0, 40},
+		GetReceiptsMsg:           {0, 40},
+		GetCodeMsg:               {0, 80},
+		GetProofsV2Msg:           {0, 80},
+		GetHelperTrieProofsMsg:   {0, 20},
+		SendTxV2Msg:              {0, 16500},
+		GetTxStatusMsg:           {0, 50},
+		GetSyncCommitteeProofMsg: {0, 100},
 	}
 	// maximum outgoing message size estimates
 	reqMaxOutSize = requestCostTable{
-		GetBlockHeadersMsg:     {0, 556},
-		GetBlockBodiesMsg:      {0, 100000},
-		GetReceiptsMsg:         {0, 200000},
-		GetCodeMsg:             {0, 50000},
-		GetProofsV2Msg:         {0, 4000},
-		GetHelperTrieProofsMsg: {0, 4000},
-		SendTxV2Msg:            {0, 100},
-		GetTxStatusMsg:         {0, 100},
+		GetBlockHeadersMsg:       {0, 556},
+		GetBlockBodiesMsg:        {0, 100000},
+		GetReceiptsMsg:           {0, 200000},
+		GetCodeMsg:               {0, 50000},
+		GetProofsV2Msg:           {0, 4000},
+		GetHelperTrieProofsMsg:   {0, 4000},
+		SendTxV2Msg:              {0, 100},
+		GetTxStatusMsg:           {0, 100},
+		GetSyncCommitteeProofMsg: {0, 100000},
 	}
 	// request amounts that have to fit into the minimum buffer size minBufferMultiplier times
 	minBufferReqAmount = map[uint64]uint64{
-		GetBlockHeadersMsg:     192,
-		GetBlockBodiesMsg:      1,
-		GetReceiptsMsg:         1,
-		GetCodeMsg:             1,
-		GetProofsV2Msg:         1,
-		GetHelperTrieProofsMsg: 16,
-		SendTxV2Msg:            8,
-		GetTxStatusMsg:         64,
+		GetBlockHeadersMsg:       192,
+		GetBlockBodiesMsg:        1,
+		GetReceiptsMsg:           1,
+		GetCodeMsg:               1,
+		GetProofsV2Msg:           1,
+		GetHelperTrieProofsMsg:   16,
+		SendTxV2Msg:              8,
+		GetTxStatusMsg:           64,
+		GetSyncCommitteeProofMsg: 4,
 	}
 	minBufferMultiplier = 3
 )

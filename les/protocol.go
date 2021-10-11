@@ -36,17 +36,18 @@ const (
 	lpv2 = 2
 	lpv3 = 3
 	lpv4 = 4
+	lpv5 = 5
 )
 
 // Supported versions of the les protocol (first is primary)
 var (
-	ClientProtocolVersions    = []uint{lpv2, lpv3, lpv4}
-	ServerProtocolVersions    = []uint{lpv2, lpv3, lpv4}
+	ClientProtocolVersions    = []uint{lpv2, lpv3, lpv4, lpv5}
+	ServerProtocolVersions    = []uint{lpv2, lpv3, lpv4, lpv5}
 	AdvertiseProtocolVersions = []uint{lpv2} // clients are searching for the first advertised protocol in the list
 )
 
 // Number of implemented message corresponding to different protocol versions.
-var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24}
+var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24, lpv5: 26}
 
 const (
 	NetworkId          = 1
@@ -82,6 +83,13 @@ const (
 	// Protocol messages introduced in LPV3
 	StopMsg   = 0x16
 	ResumeMsg = 0x17
+	// Protocol messages introduced in LPV5
+	GetSyncCommitteeInitMsg   = 0x18
+	SyncCommitteeInitMsg      = 0x19
+	GetSyncCommitteeUpdateMsg = 0x1a
+	SyncCommitteeUpdateMsg    = 0x1b
+	GetHeaderBeaconProofMsg   = 0x1c
+	HeaderBeaconProofMsg      = 0x1d
 )
 
 // GetBlockHeadersData represents a block header query (the request ID is not included)
@@ -140,6 +148,12 @@ type GetTxStatusPacket struct {
 	Hashes []common.Hash
 }
 
+type GetSyncCommitteeProofPacket struct {
+	ReqID  uint64
+	Origin hashOrNumber // Checkpoint hash or period number
+	Amount uint64       // Number of consecutive periods to prove
+}
+
 type requestInfo struct {
 	name                          string
 	maxCount                      uint64
@@ -158,14 +172,17 @@ var (
 	// in the vfc.ValueTracker reference basket. Initial values are estimates
 	// based on the same values as the server's default cost estimates (reqAvgTimeCost).
 	requests = map[uint64]requestInfo{
-		GetBlockHeadersMsg:     {"GetBlockHeaders", MaxHeaderFetch, 10, 1000},
-		GetBlockBodiesMsg:      {"GetBlockBodies", MaxBodyFetch, 1, 0},
-		GetReceiptsMsg:         {"GetReceipts", MaxReceiptFetch, 1, 0},
-		GetCodeMsg:             {"GetCode", MaxCodeFetch, 1, 0},
-		GetProofsV2Msg:         {"GetProofsV2", MaxProofsFetch, 10, 0},
-		GetHelperTrieProofsMsg: {"GetHelperTrieProofs", MaxHelperTrieProofsFetch, 10, 100},
-		SendTxV2Msg:            {"SendTxV2", MaxTxSend, 1, 0},
-		GetTxStatusMsg:         {"GetTxStatus", MaxTxStatus, 10, 0},
+		GetBlockHeadersMsg:        {"GetBlockHeaders", MaxHeaderFetch, 10, 1000},
+		GetBlockBodiesMsg:         {"GetBlockBodies", MaxBodyFetch, 1, 0},
+		GetReceiptsMsg:            {"GetReceipts", MaxReceiptFetch, 1, 0},
+		GetCodeMsg:                {"GetCode", MaxCodeFetch, 1, 0},
+		GetProofsV2Msg:            {"GetProofsV2", MaxProofsFetch, 10, 0},
+		GetHelperTrieProofsMsg:    {"GetHelperTrieProofs", MaxHelperTrieProofsFetch, 10, 100},
+		SendTxV2Msg:               {"SendTxV2", MaxTxSend, 1, 0},
+		GetTxStatusMsg:            {"GetTxStatus", MaxTxStatus, 10, 0},
+		GetSyncCommitteeInitMsg:   {"GetSyncCommitteeInit", 1, 10, 0},
+		GetSyncCommitteeUpdateMsg: {"GetSyncCommitteeUpdate", MaxSyncCommitteeUpdate, 10, 0},
+		GetHeaderBeaconProofMsg:   {"GetHeaderBeaconProof", 1, 10, 0},
 	}
 	requestList    []vfc.RequestInfo
 	requestMapping map[uint32]reqMapping
@@ -325,4 +342,7 @@ func (hn *hashOrNumber) DecodeRLP(s *rlp.Stream) error {
 // CodeData is the network response packet for a node data retrieval.
 type CodeData []struct {
 	Value []byte
+}
+
+type SyncCommitteeProof struct {
 }
