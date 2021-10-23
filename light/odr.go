@@ -191,3 +191,24 @@ type TxStatusRequest struct {
 
 // StoreResult stores the retrieved data in local database
 func (req *TxStatusRequest) StoreResult(db ethdb.Database) {}
+
+const (
+	BeaconProof         = iota // request proof for latest exec block
+	BeaconFinalityProof        // request proof for latest and final exec block
+	HistoricBeaconProof        // request proof for HistoricBlockNumber
+	NoBeaconProof              // cont'd reverse download; NewHead is an exec head
+)
+
+type HeaderRequest struct {
+	Type                uint
+	NewHead             common.Hash // beacon or exec head depending on request type
+	OldHead             common.Hash // exec head (optional)
+	HistoricBlockNumber uint64      // exec block number
+	MaxAmount           uint
+	// Filled by ODR
+	Headers          []*types.Header
+	FinalBlockHash   common.Hash // exec block hash
+	FinalBlockNumber uint64      // exec block number
+}
+
+func (req *HeaderRequest) StoreResult(db ethdb.Database) {}
