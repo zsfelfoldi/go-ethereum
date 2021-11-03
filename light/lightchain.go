@@ -454,9 +454,57 @@ func (lc *LightChain) InsertHeaderChain(chain []*types.Header, checkFreq int) (i
 	return 0, err
 }
 
+func (lc *LightChain) NewHeadOnDemand(ch chan HeadRequest) {
+	lc.headRequestCh = ch
+	if lc.headerSyncing {
+		lc.requestHead()
+	}
+}
+
+func (lc *LightChain) requestHead(enableHeaderSyncing bool) chan struct{} {
+	if lc.headRetrievedCh == nil {
+		lc.headerCh = make(chan []*types.Header, 1)
+		var lastHead common.Hash
+		if lc.headerSyncing {
+			lastHead = lc.CurrentHeader().Hash()
+		}
+		lc.headRequestCh <- headRequest{LastHead: lastHead, HeaderCh: lc.headerCh}
+		go func() {
+			headers := <-lc.headerCh
+			if len(headers) > 0 {
+				if lc.writeTailHash {
+					rawdb.WriteHeadHeaderHash(lc.chainDb, headers[0].ParentHash())
+				}
+				if _, err := lc.InsertHeaderChain(headers, 0); err != nil {
+					// should not fail, the headers are already validated against the canon chain
+					log.Error("Failed to insert validated header chain")
+				}
+			}
+			close(lc.headRetrievedCh)
+			lc.headRequestCh = nil
+			lc.headerCh = nil
+			lc.headRetrievedCh = nil
+		}()
+	}
+	lc.writeTailHash = !lc.headerSyncing
+	lc.headerSyncing |= enableHeaderSyncing
+	return lc.headRetrievedCh
+}
+
 // CurrentHeader retrieves the current head header of the canonical chain. The
 // header is retrieved from the HeaderChain's internal cache.
 func (lc *LightChain) CurrentHeader() *types.Header {
+	return lc.hc.CurrentHeader()
+}
+
+func (lc *LightChain) CurrentHeaderOdr(ctx context.Context) (*types.Header, error) {
+	if lc.headRetrievedCh != nil {
+		select {
+		case <-lc.headRetrievedCh:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return lc.hc.CurrentHeader()
 }
 
