@@ -454,41 +454,72 @@ func (lc *LightChain) InsertHeaderChain(chain []*types.Header, checkFreq int) (i
 	return 0, err
 }
 
-func (lc *LightChain) NewHeadOnDemand(ch chan HeadRequest) {
+func (lc *LightChain) NewHeadOnDemand(ch chan uint64) {
+	lc.headReqLock.Lock()
+	lc.checkDisableHeaderSyncing()
 	lc.headRequestCh = ch
 	if lc.headerSyncing {
 		lc.requestHead()
 	}
+	lc.headReqLock.Unlock()
 }
 
-func (lc *LightChain) requestHead(enableHeaderSyncing bool) chan struct{} {
-	if lc.headRetrievedCh == nil {
-		lc.headerCh = make(chan []*types.Header, 1)
-		var lastHead common.Hash
-		if lc.headerSyncing {
-			lastHead = lc.CurrentHeader().Hash()
-		}
-		lc.headRequestCh <- headRequest{LastHead: lastHead, HeaderCh: lc.headerCh}
-		go func() {
-			headers := <-lc.headerCh
-			if len(headers) > 0 {
-				if lc.writeTailHash {
-					rawdb.WriteHeadHeaderHash(lc.chainDb, headers[0].ParentHash())
-				}
-				if _, err := lc.InsertHeaderChain(headers, 0); err != nil {
-					// should not fail, the headers are already validated against the canon chain
-					log.Error("Failed to insert validated header chain")
-				}
-			}
-			close(lc.headRetrievedCh)
-			lc.headRequestCh = nil
-			lc.headerCh = nil
-			lc.headRetrievedCh = nil
-		}()
+func (lc *LightChain) HeadUpdated(ch chan uint64) {
+	lc.headReqLock.Lock()
+	lc.checkDisableHeaderSyncing()
+	close(lc.headUpdatedCh)
+	lc.headRequestCh = ch
+	lc.headUpdatedCh = nil
+	if lc.headerSyncing && ch != nil {
+		lc.requestHead()
 	}
-	lc.writeTailHash = !lc.headerSyncing
+	lc.headReqLock.Unlock()
+}
+
+func (lc *LightChain) SetTailHeader(header *types.Header) {
+	rawdb.WriteHeadHeaderHash(header.ParentHash)
+	lc.headReqLock.Lock()
+	lc.updateFrom = header.Number.Uint64()
+	lc.headReqLock.Unlock()
+}
+
+func (lc *LightChain) requestHead() chan struct{} {
+	lc.headReqLock.Lock()
+	defer lc.headReqLock.Unlock()
+
+	lc.checkDisableHeaderSyncing()
+	if lc.headUpdatedCh == nil {
+		lc.headUpdatedCh = make(chan struct{})
+		if lc.headerSyncing {
+			lc.headRequestCh <- lc.updateFrom
+		} else {
+			lc.headRequestCh <- ^uint64(0)
+		}
+	}
 	lc.headerSyncing |= enableHeaderSyncing
-	return lc.headRetrievedCh
+	return lc.headUpdatedCh
+}
+
+func (lc *LightChain) enableHeaderSyncing() {
+	lc.headReqLock.Lock()
+	defer lc.headReqLock.Unlock()
+
+	if lc.headerSyncing {
+		return
+	}
+	if lc.headUpdatedCh == nil {
+		lc.headUpdatedCh = make(chan struct{})
+		lc.headRequestCh <- ^uint64(0)
+	}
+	lc.headerSyncing = true
+}
+
+func (lc *LightChain) checkDisableHeaderSyncing() {
+	if lc.chainFeed.Empty() || lc.chainHeadFeed.Empty() || lc.chainSideFeed.Empty() {
+		lc.headReqLock.Lock()
+		lc.headerSyncing = false
+		lc.headReqLock.Unlock()
+	}
 }
 
 // CurrentHeader retrieves the current head header of the canonical chain. The
@@ -632,16 +663,19 @@ func (lc *LightChain) UnlockChain() {
 
 // SubscribeChainEvent registers a subscription of ChainEvent.
 func (lc *LightChain) SubscribeChainEvent(ch chan<- core.ChainEvent) event.Subscription {
+	defer lc.setHeaderSyncing(true)
 	return lc.scope.Track(lc.chainFeed.Subscribe(ch))
 }
 
 // SubscribeChainHeadEvent registers a subscription of ChainHeadEvent.
 func (lc *LightChain) SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) event.Subscription {
+	defer lc.setHeaderSyncing(true)
 	return lc.scope.Track(lc.chainHeadFeed.Subscribe(ch))
 }
 
 // SubscribeChainSideEvent registers a subscription of ChainSideEvent.
 func (lc *LightChain) SubscribeChainSideEvent(ch chan<- core.ChainSideEvent) event.Subscription {
+	defer lc.setHeaderSyncing(true)
 	return lc.scope.Track(lc.chainSideFeed.Subscribe(ch))
 }
 

@@ -196,7 +196,7 @@ const (
 	BeaconProof         = iota // request proof for latest exec block
 	BeaconFinalityProof        // request proof for latest and final exec block
 	HistoricBeaconProof        // request proof for HistoricBlockNumber
-	NoBeaconProof              // cont'd reverse download; NewHead is an exec head
+	NoBeaconProof              //TODO is this needed???    cont'd reverse download; NewHead is an exec head
 )
 
 type HeaderRequest struct {

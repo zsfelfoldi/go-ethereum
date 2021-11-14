@@ -123,6 +123,13 @@ func (f *Feed) remove(sub *feedSub) {
 	}
 }
 
+func (f *Feed) Empty() bool {
+	f.mu.Lock()
+	empty := len(f.inbox) == 0
+	f.mu.Unlock()
+	return empty
+}
+
 // Send delivers to all subscribed channels simultaneously.
 // It returns the number of subscribers that the value was sent to.
 func (f *Feed) Send(value interface{}) (nsent int) {
