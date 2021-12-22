@@ -1190,7 +1190,11 @@ func (r *Resolver) Blocks(ctx context.Context, args struct {
 	if args.To != nil {
 		to = rpc.BlockNumber(*args.To)
 	} else {
-		to = rpc.BlockNumber(r.backend.CurrentBlock().Number().Int64())
+		header, err := r.backend.CurrentHeader(ctx)
+		if err != nil {
+			return nil, err
+		}
+		to = rpc.BlockNumber(header.Number.Int64())
 	}
 	if to < from {
 		return []*Block{}, nil
@@ -1293,8 +1297,12 @@ func (r *Resolver) GasPrice(ctx context.Context) (hexutil.Big, error) {
 	if err != nil {
 		return hexutil.Big{}, err
 	}
-	if head := r.backend.CurrentHeader(); head.BaseFee != nil {
-		tipcap.Add(tipcap, head.BaseFee)
+	if head, err := r.backend.CurrentHeader(ctx); err == nil {
+		if head.BaseFee != nil {
+			tipcap.Add(tipcap, head.BaseFee)
+		}
+	} else {
+		return hexutil.Big{}, err
 	}
 	return (hexutil.Big)(*tipcap), nil
 }

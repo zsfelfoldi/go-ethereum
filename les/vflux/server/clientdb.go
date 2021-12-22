@@ -241,6 +241,7 @@ func (db *nodeDB) expireNodes() {
 				db.db.Delete(iter.Key())
 			}
 		}
+		iter.Release()
 	}
 	// Invoke testing hook if it's not nil.
 	if db.cleanupHook != nil {

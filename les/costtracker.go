@@ -44,6 +44,10 @@ var (
 		GetHelperTrieProofsMsg: {0, 1000000},
 		SendTxV2Msg:            {0, 450000},
 		GetTxStatusMsg:         {0, 250000},
+		GetCommitteeProofsMsg:  {0, 100000}, //TODO check these values
+		GetBeaconInitMsg:       {0, 100000},
+		GetBeaconDataMsg:       {200000, 50000},
+		GetExecHeadersMsg:      {150000, 30000},
 	}
 	// maximum incoming message size estimates
 	reqMaxInSize = requestCostTable{
@@ -55,6 +59,10 @@ var (
 		GetHelperTrieProofsMsg: {0, 20},
 		SendTxV2Msg:            {0, 16500},
 		GetTxStatusMsg:         {0, 50},
+		GetCommitteeProofsMsg:  {0, 300},
+		GetBeaconInitMsg:       {0, 20},
+		GetBeaconDataMsg:       {80, 0},
+		GetExecHeadersMsg:      {80, 0},
 	}
 	// maximum outgoing message size estimates
 	reqMaxOutSize = requestCostTable{
@@ -66,6 +74,10 @@ var (
 		GetHelperTrieProofsMsg: {0, 4000},
 		SendTxV2Msg:            {0, 100},
 		GetTxStatusMsg:         {0, 100},
+		GetCommitteeProofsMsg:  {0, 200000},
+		GetBeaconInitMsg:       {0, 1000},
+		GetBeaconDataMsg:       {0, 1000},
+		GetExecHeadersMsg:      {0, 1000},
 	}
 	// request amounts that have to fit into the minimum buffer size minBufferMultiplier times
 	minBufferReqAmount = map[uint64]uint64{
@@ -77,6 +89,10 @@ var (
 		GetHelperTrieProofsMsg: 16,
 		SendTxV2Msg:            8,
 		GetTxStatusMsg:         64,
+		GetCommitteeProofsMsg:  128,
+		GetBeaconInitMsg:       1,
+		GetBeaconDataMsg:       192,
+		GetExecHeadersMsg:      192,
 	}
 	minBufferMultiplier = 3
 )
