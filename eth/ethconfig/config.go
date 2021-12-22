@@ -157,6 +157,11 @@ type Config struct {
 	UltraLightFraction     int      `toml:",omitempty"` // Percentage of trusted servers to accept an announcement
 	UltraLightOnlyAnnounce bool     `toml:",omitempty"` // Whether to only announce headers, or also serve them
 
+	// Beacon chain light client options
+	BeaconConfig     string `toml:",omitempty"`
+	BeaconCheckpoint string `toml:",omitempty"`
+	BeaconApi        string `toml:",omitempty"`
+
 	// Database options
 	SkipBcVersionCheck bool `toml:"-"`
 	DatabaseHandles    int  `toml:"-"`

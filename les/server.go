@@ -18,6 +18,7 @@ package les
 
 import (
 	"crypto/ecdsa"
+	"fmt"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -27,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	vfs "github.com/ethereum/go-ethereum/les/vflux/server"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -69,6 +71,10 @@ type LesServer struct {
 	servingQueue *servingQueue
 	clientPool   *vfs.ClientPool
 
+	beaconNodeApi        *beaconNodeApiSource
+	beaconChain          *beacon.BeaconChain
+	syncCommitteeTracker *beacon.SyncCommitteeTracker
+
 	minCapacity, maxCapacity uint64
 	threadsIdle              int // Request serving threads count when system is idle.
 	threadsBusy              int // Request serving threads count when system is busy(block insertion).
@@ -87,15 +93,16 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 	if threads < 4 {
 		threads = 4
 	}
+
 	srv := &LesServer{
 		lesCommons: lesCommons{
-			genesis:          e.BlockChain().Genesis().Hash(),
-			config:           config,
-			chainConfig:      e.BlockChain().Config(),
-			iConfig:          light.DefaultServerIndexerConfig,
-			chainDb:          e.ChainDb(),
-			lesDb:            lesDb,
-			chainReader:      e.BlockChain(),
+			genesis:     e.BlockChain().Genesis().Hash(),
+			config:      config,
+			chainConfig: e.BlockChain().Config(),
+			iConfig:     light.DefaultServerIndexerConfig,
+			chainDb:     e.ChainDb(),
+			lesDb:       lesDb,
+			//chainReader:      e.BlockChain(),
 			chtIndexer:       light.NewChtIndexer(e.ChainDb(), nil, params.CHTFrequency, params.HelperTrieProcessConfirmations, true),
 			bloomTrieIndexer: light.NewBloomTrieIndexer(e.ChainDb(), nil, params.BloomBitsBlocks, params.BloomTrieFrequency, true),
 			closeCh:          make(chan struct{}),
@@ -110,6 +117,24 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		threadsIdle:  threads,
 		p2pSrv:       node.Server(),
 	}
+
+	if config.BeaconConfig != "" {
+		if forks, err := beacon.LoadForks(config.BeaconConfig); err == nil {
+			fmt.Println("Forks", forks)
+			bdata := &beaconNodeApiSource{url: config.BeaconApi}
+			sct := beacon.NewSyncCommitteeTracker(e.ChainDb(), bdata, forks, &mclock.System{})
+			srv.beaconChain = beacon.NewBeaconChain(bdata, e.BlockChain(), e.ChainDb())
+			bdata.chain = srv.beaconChain
+			bdata.sct = sct
+			bdata.start()
+			srv.beaconNodeApi = bdata
+			srv.syncCommitteeTracker = sct
+		} else {
+			log.Error("Could not load beacon chain config file", "error", err)
+			return nil, fmt.Errorf("Could not load beacon chain config file: %v", err)
+		}
+	}
+
 	issync := e.Synced
 	if config.LightNoSyncServe {
 		issync = func() bool { return true }
@@ -211,6 +236,7 @@ func (s *LesServer) Start() error {
 func (s *LesServer) Stop() error {
 	close(s.closeCh)
 
+	s.beaconNodeApi.stop()
 	s.clientPool.Stop()
 	if s.serverset != nil {
 		s.serverset.close()

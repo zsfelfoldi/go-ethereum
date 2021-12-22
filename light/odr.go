@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/light/beacon"
 )
 
 // NoOdr is the default context passed to an ODR capable function when the ODR
@@ -44,6 +45,7 @@ type OdrBackend interface {
 	Retrieve(ctx context.Context, req OdrRequest) error
 	RetrieveTxStatus(ctx context.Context, req *TxStatusRequest) error
 	IndexerConfig() *IndexerConfig
+	//GetBeaconHead() beacon.Header
 }
 
 // OdrRequest is an interface for retrieval requests
@@ -191,3 +193,56 @@ type TxStatusRequest struct {
 
 // StoreResult stores the retrieved data in local database
 func (req *TxStatusRequest) StoreResult(db ethdb.Database) {}
+
+type BeaconInitRequest struct {
+	OdrRequest
+	Checkpoint common.Hash
+
+	Block *beacon.BlockData // filled by Validate
+}
+
+func (req *BeaconInitRequest) StoreResult(db ethdb.Database) {}
+
+type BeaconDataRequest struct {
+	OdrRequest
+	Header   beacon.Header // recent beacon head header used as a reference to the canonical chain state
+	LastSlot uint64        // last slot of requested range (reference block is used if LastSlot is higher than its slot number)
+	Length   uint64        // number of requested slots
+
+	TailShortTerm uint64 // HspShortTerm state data is expected to be available and returned in Blocks starting from this slot
+
+	// Note that for the first block ParentSlotDiff and StateRootDiffs are not proven; retrieving the
+	// range ending with the previous slot will update it if necessary, therefore they are guaranteed valid
+	// for each but the first block of any continuous range.
+	Blocks []*beacon.BlockData // filled by Validate
+}
+
+func (req *BeaconDataRequest) StoreResult(db ethdb.Database) {}
+
+const (
+	HeadMode = iota
+	HistoricMode
+	FinalizedMode
+)
+
+type ExecHeadersRequest struct {
+	OdrRequest
+	ReqMode        uint          // 0: head  1: historic  2: finalized
+	Header         beacon.Header // recent beacon head header used as a reference to the canonical chain state
+	HistoricNumber uint64        // highest requested exec header number (for historic mode only)
+	Amount         uint64        // number of requested exec headers
+
+	ExecHeaders []*types.Header
+}
+
+func (req *ExecHeadersRequest) StoreResult(db ethdb.Database) {}
+
+type HeadersByHashRequest struct {
+	OdrRequest
+	BlockHash common.Hash // block hash of last requested header
+	Amount    int         // number of requested headers
+
+	Headers []*types.Header
+}
+
+func (req *HeadersByHashRequest) StoreResult(db ethdb.Database) {}

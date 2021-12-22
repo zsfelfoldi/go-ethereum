@@ -66,10 +66,14 @@ func (s *PublicEthereumAPI) GasPrice(ctx context.Context) (*hexutil.Big, error) 
 	if err != nil {
 		return nil, err
 	}
-	if head := s.b.CurrentHeader(); head.BaseFee != nil {
-		tipcap.Add(tipcap, head.BaseFee)
+	if head, err := s.b.CurrentHeader(ctx); err == nil {
+		if head.BaseFee != nil {
+			tipcap.Add(tipcap, head.BaseFee)
+		}
+	} else {
+		return nil, err
 	}
-	return (*hexutil.Big)(tipcap), err
+	return (*hexutil.Big)(tipcap), nil
 }
 
 // MaxPriorityFeePerGas returns a suggestion for a gas tip cap for dynamic fee transactions.
@@ -160,13 +164,16 @@ func NewPublicTxPoolAPI(b Backend) *PublicTxPoolAPI {
 }
 
 // Content returns the transactions contained within the transaction pool.
-func (s *PublicTxPoolAPI) Content() map[string]map[string]map[string]*RPCTransaction {
+func (s *PublicTxPoolAPI) Content(ctx context.Context) (map[string]map[string]map[string]*RPCTransaction, error) {
 	content := map[string]map[string]map[string]*RPCTransaction{
 		"pending": make(map[string]map[string]*RPCTransaction),
 		"queued":  make(map[string]map[string]*RPCTransaction),
 	}
 	pending, queue := s.b.TxPoolContent()
-	curHeader := s.b.CurrentHeader()
+	curHeader, err := s.b.CurrentHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// Flatten the pending transactions
 	for account, txs := range pending {
 		dump := make(map[string]*RPCTransaction)
@@ -183,14 +190,17 @@ func (s *PublicTxPoolAPI) Content() map[string]map[string]map[string]*RPCTransac
 		}
 		content["queued"][account.Hex()] = dump
 	}
-	return content
+	return content, nil
 }
 
 // ContentFrom returns the transactions contained within the transaction pool.
-func (s *PublicTxPoolAPI) ContentFrom(addr common.Address) map[string]map[string]*RPCTransaction {
+func (s *PublicTxPoolAPI) ContentFrom(ctx context.Context, addr common.Address) (map[string]map[string]*RPCTransaction, error) {
 	content := make(map[string]map[string]*RPCTransaction, 2)
 	pending, queue := s.b.TxPoolContentFrom(addr)
-	curHeader := s.b.CurrentHeader()
+	curHeader, err := s.b.CurrentHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build the pending transactions
 	dump := make(map[string]*RPCTransaction, len(pending))
@@ -206,7 +216,7 @@ func (s *PublicTxPoolAPI) ContentFrom(addr common.Address) map[string]map[string
 	}
 	content["queued"] = dump
 
-	return content
+	return content, nil
 }
 
 // Status returns the number of pending and queued transaction in the pool.
@@ -618,18 +628,25 @@ func NewPublicBlockChainAPI(b Backend) *PublicBlockChainAPI {
 }
 
 // ChainId is the EIP-155 replay-protection chain id for the current ethereum chain config.
-func (api *PublicBlockChainAPI) ChainId() (*hexutil.Big, error) {
+func (api *PublicBlockChainAPI) ChainId(ctx context.Context) (*hexutil.Big, error) {
 	// if current block is at or past the EIP-155 replay-protection fork block, return chainID from config
-	if config := api.b.ChainConfig(); config.IsEIP155(api.b.CurrentBlock().Number()) {
+	block, err := api.b.CurrentBlock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if config := api.b.ChainConfig(); config.IsEIP155(block.Number()) {
 		return (*hexutil.Big)(config.ChainID), nil
 	}
 	return nil, fmt.Errorf("chain not synced beyond EIP-155 replay-protection fork block")
 }
 
 // BlockNumber returns the block number of the chain head.
-func (s *PublicBlockChainAPI) BlockNumber() hexutil.Uint64 {
-	header, _ := s.b.HeaderByNumber(context.Background(), rpc.LatestBlockNumber) // latest header should always be available
-	return hexutil.Uint64(header.Number.Uint64())
+func (s *PublicBlockChainAPI) BlockNumber(ctx context.Context) (hexutil.Uint64, error) {
+	if header, err := s.b.HeaderByNumber(ctx, rpc.LatestBlockNumber); err == nil {
+		return hexutil.Uint64(header.Number.Uint64()), nil
+	} else {
+		return 0, err
+	}
 }
 
 // GetBalance returns the amount of wei for the given address in the state of the
@@ -1518,8 +1535,12 @@ func (s *PublicTransactionPoolAPI) GetTransactionByHash(ctx context.Context, has
 		return newRPCTransaction(tx, blockHash, blockNumber, index, header.BaseFee, s.b.ChainConfig()), nil
 	}
 	// No finalized transaction, try to retrieve it from the pool
+	header, err := s.b.CurrentHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if tx := s.b.GetPoolTransaction(hash); tx != nil {
-		return newRPCPendingTransaction(tx, s.b.CurrentHeader(), s.b.ChainConfig()), nil
+		return newRPCPendingTransaction(tx, header, s.b.ChainConfig()), nil
 	}
 
 	// Transaction unknown, return as such
@@ -1632,7 +1653,11 @@ func SubmitTransaction(ctx context.Context, b Backend, tx *types.Transaction) (c
 		return common.Hash{}, err
 	}
 	// Print a log with full tx details for manual investigations and interventions
-	signer := types.MakeSigner(b.ChainConfig(), b.CurrentBlock().Number())
+	header, err := b.CurrentHeader(ctx)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	signer := types.MakeSigner(b.ChainConfig(), header.Number)
 	from, err := types.Sender(signer, tx)
 	if err != nil {
 		return common.Hash{}, err
@@ -1771,7 +1796,7 @@ func (s *PublicTransactionPoolAPI) SignTransaction(ctx context.Context, args Tra
 
 // PendingTransactions returns the transactions that are in the transaction pool
 // and have a from address that is one of the accounts this node manages.
-func (s *PublicTransactionPoolAPI) PendingTransactions() ([]*RPCTransaction, error) {
+func (s *PublicTransactionPoolAPI) PendingTransactions(ctx context.Context) ([]*RPCTransaction, error) {
 	pending, err := s.b.GetPoolTransactions()
 	if err != nil {
 		return nil, err
@@ -1782,7 +1807,10 @@ func (s *PublicTransactionPoolAPI) PendingTransactions() ([]*RPCTransaction, err
 			accounts[account.Address] = struct{}{}
 		}
 	}
-	curHeader := s.b.CurrentHeader()
+	curHeader, err := s.b.CurrentHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
 	transactions := make([]*RPCTransaction, 0, len(pending))
 	for _, tx := range pending {
 		from, _ := types.Sender(s.signer, tx)

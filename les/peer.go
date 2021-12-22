@@ -37,6 +37,7 @@ import (
 	vfc "github.com/ethereum/go-ethereum/les/vflux/client"
 	vfs "github.com/ethereum/go-ethereum/les/vflux/server"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/params"
@@ -361,6 +362,10 @@ type serverPeer struct {
 
 	// Test callback hooks
 	hasBlockHook func(common.Hash, uint64, bool) bool // Used to determine whether the server has the specified block.
+
+	updateInfo              *beacon.UpdateInfo
+	announcedBeaconBlocks   [4]common.Hash
+	announcedBeaconBlockPtr int
 }
 
 func newServerPeer(version int, network uint64, trusted bool, p *p2p.Peer, rw p2p.MsgReadWriter) *serverPeer {
@@ -429,6 +434,12 @@ func (p *serverPeer) sendRequest(msgcode, reqID uint64, data interface{}, amount
 	return sendRequest(p.rw, msgcode, reqID, data)
 }
 
+// packet includes reqID; rest is not encapsulated in an unnecessary extra struct
+func (p *serverPeer) sendRequestPacket(msgcode, reqID uint64, packet interface{}, amount int) error {
+	p.sentRequest(reqID, uint32(msgcode), uint32(amount))
+	return p2p.Send(p.rw, msgcode, packet)
+}
+
 // requestHeadersByHash fetches a batch of blocks' headers corresponding to the
 // specified header query, based on the hash of an origin block.
 func (p *serverPeer) requestHeadersByHash(reqID uint64, origin common.Hash, amount int, skip int, reverse bool) error {
@@ -491,6 +502,32 @@ func (p *serverPeer) sendTxs(reqID uint64, amount int, txs rlp.RawValue) error {
 	return p.sendRequest(SendTxV2Msg, reqID, txs, amount)
 }
 
+func (p *serverPeer) requestBeaconInit(reqID uint64, checkpoint common.Hash) error {
+	p.Log().Debug("Requesting beacon init data")
+	return p.sendRequest(GetBeaconInitMsg, reqID, checkpoint, 1)
+}
+
+func (p *serverPeer) requestBeaconData(packet GetBeaconDataPacket) error {
+	p.Log().Debug("Requesting beacon block data", "length", packet.Length)
+	return p.sendRequestPacket(GetBeaconDataMsg, packet.ReqID, packet, int(packet.Length))
+}
+
+func (p *serverPeer) requestExecHeaders(packet GetExecHeadersPacket) error {
+	p.Log().Debug("Requesting exec headers", "amount", packet.Amount)
+	return p.sendRequestPacket(GetExecHeadersMsg, packet.ReqID, packet, int(packet.Amount))
+}
+
+func (p *serverPeer) requestCommitteeProofs(id uint64, req beacon.CommitteeRequest) error {
+	p.Log().Debug("Requesting committee proofs", "updates", len(req.UpdatePeriods), "committees", len(req.CommitteePeriods))
+	return p.sendRequestPacket(GetCommitteeProofsMsg, id, GetCommitteeProofsPacket{
+		ReqID: id,
+		CommitteeRequest: beacon.CommitteeRequest{
+			UpdatePeriods:    req.UpdatePeriods,
+			CommitteePeriods: req.CommitteePeriods,
+		},
+	}, len(req.UpdatePeriods)+len(req.CommitteePeriods)*CommitteeCostFactor)
+}
+
 // waitBefore implements distPeer interface
 func (p *serverPeer) waitBefore(maxCost uint64) (time.Duration, float64) {
 	return p.fcServer.CanSend(maxCost)
@@ -551,7 +588,49 @@ func (p *serverPeer) HasBlock(hash common.Hash, number uint64, hasState bool) bo
 		since = p.chainSince
 		recent = p.chainRecent
 	}
+	//fmt.Println("HasBlock  number", number, "head", head, "since", since, "recent", recent, "result", head >= number && number >= since && (recent == 0 || number+recent+4 > head))
 	return head >= number && number >= since && (recent == 0 || number+recent+4 > head)
+}
+
+func (p *serverPeer) HasBeaconBlock(hash common.Hash) bool {
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+
+	for _, h := range p.announcedBeaconBlocks {
+		if h == hash {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *serverPeer) updateHeadInfo(execNumber uint64, execHash common.Hash) {
+	if execNumber > p.headInfo.Number {
+		p.headInfo = blockInfo{
+			Number: execNumber,
+			Hash:   execHash,
+			Td:     common.Big0,
+		}
+	}
+}
+
+func (p *serverPeer) AnnouncedBeaconHead(beaconHead common.Hash, execHeader *types.Header) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	for _, h := range p.announcedBeaconBlocks {
+		if h == beaconHead {
+			return
+		}
+	}
+	p.announcedBeaconBlocks[p.announcedBeaconBlockPtr] = beaconHead
+	p.announcedBeaconBlockPtr++
+	if p.announcedBeaconBlockPtr == len(p.announcedBeaconBlocks) {
+		p.announcedBeaconBlockPtr = 0
+	}
+	if execHeader != nil {
+		p.updateHeadInfo(execHeader.Number.Uint64(), execHeader.Hash())
+	}
 }
 
 // updateFlowControl updates the flow control parameters belonging to the server
@@ -670,6 +749,13 @@ func (p *serverPeer) Handshake(genesis common.Hash, forkid forkid.ID, forkFilter
 					return errResp(ErrUselessPeer, "peer does not support message %d", msgCode)
 				}
 			}
+		}
+
+		//fmt.Println("Handshake with peer", p.id, "version", p.version)
+		updateInfo := new(beacon.UpdateInfo)
+		if err := recv.get("beacon/updateInfo", updateInfo); err == nil {
+			//fmt.Println("Received update info", *updateInfo)
+			p.updateInfo = updateInfo
 		}
 		return nil
 	})
@@ -924,6 +1010,30 @@ func (p *clientPeer) replyTxStatus(reqID uint64, stats []light.TxStatus) *reply 
 	return &reply{p.rw, TxStatusMsg, reqID, data}
 }
 
+//TODO
+func (p *clientPeer) replyBeaconInit(reqID uint64, resp BeaconInitResponse) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, BeaconInitMsg, reqID, data}
+}
+
+//TODO
+func (p *clientPeer) replyBeaconData(reqID uint64, resp BeaconDataResponse) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, BeaconDataMsg, reqID, data}
+}
+
+//TODO
+func (p *clientPeer) replyExecHeaders(reqID uint64, resp ExecHeadersResponse) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, ExecHeadersMsg, reqID, data}
+}
+
+//TODO
+func (p *clientPeer) replyCommitteeProofs(reqID uint64, resp beacon.CommitteeReply) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, CommitteeProofsMsg, reqID, data}
+}
+
 // sendAnnounce announces the availability of a number of blocks through
 // a hash notification.
 func (p *clientPeer) sendAnnounce(request announceData) error {
@@ -1090,6 +1200,13 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 				*lists = (*lists).add("checkpoint/registerHeight", height)
 			}
 		}
+
+		//fmt.Println("Handshake with peer", p.id, "version", p.version)
+		if p.version >= lpv5 {
+			updateInfo := server.syncCommitteeTracker.GetUpdateInfo()
+			//fmt.Println("Adding update info", updateInfo)
+			*lists = (*lists).add("beacon/updateInfo", updateInfo)
+		}
 	}, func(recv keyValueMap) error {
 		p.server = recv.get("flowControl/MRR", nil) == nil
 		if p.server {
@@ -1119,6 +1236,18 @@ func (p *clientPeer) getInvalid() uint64 {
 // Disconnect implements vfs.clientPeer
 func (p *clientPeer) Disconnect() {
 	p.Peer.Disconnect(p2p.DiscRequested)
+}
+
+func (p *clientPeer) SendSignedHeads(heads []beacon.SignedHead) {
+	//	fmt.Println("Sending signed heads", len(heads))
+	//	fmt.Println(" err", p2p.Send(p.rw, SignedBeaconHeadsMsg, heads)) //TODO ?exec queue
+	p2p.Send(p.rw, SignedBeaconHeadsMsg, heads) //TODO ?exec queue
+}
+
+func (p *clientPeer) SendUpdateInfo(updateInfo *beacon.UpdateInfo) {
+	//	fmt.Println("Sending update info")
+	//	fmt.Println(" err", p2p.Send(p.rw, AdvertiseCommitteeProofsMsg, updateInfo)) //TODO ?exec queue
+	p2p.Send(p.rw, AdvertiseCommitteeProofsMsg, updateInfo) //TODO ?exec queue
 }
 
 // serverPeerSubscriber is an interface to notify services about added or

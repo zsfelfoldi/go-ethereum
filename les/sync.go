@@ -21,12 +21,12 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/les/downloader"
+	//	"github.com/ethereum/go-ethereum/common"
+	//	"github.com/ethereum/go-ethereum/core/rawdb"
+	//	"github.com/ethereum/go-ethereum/les/downloader"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/params"
+	//	"github.com/ethereum/go-ethereum/params"
 )
 
 var errInvalidCheckpoint = errors.New("invalid advertised checkpoint")
@@ -88,7 +88,7 @@ func (h *clientHandler) validateCheckpoint(peer *serverPeer) error {
 }
 
 // synchronise tries to sync up our local chain with a remote peer.
-func (h *clientHandler) synchronise(peer *serverPeer) {
+/*func (h *clientHandler) synchronise(peer *serverPeer) {
 	// Short circuit if the peer is nil.
 	if peer == nil {
 		return
@@ -201,4 +201,4 @@ func (h *clientHandler) synchronise(peer *serverPeer) {
 		return
 	}
 	log.Debug("Synchronise finished", "elapsed", common.PrettyDuration(time.Since(start)))
-}
+}*/

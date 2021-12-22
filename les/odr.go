@@ -20,12 +20,18 @@ import (
 	"context"
 	"math/rand"
 	"sort"
+
+	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/light"
+	//"github.com/ethereum/go-ethereum/light/beacon"
+	//"github.com/ethereum/go-ethereum/log"
 )
 
 // LesOdr implements light.OdrBackend
@@ -36,6 +42,9 @@ type LesOdr struct {
 	peers                                      *serverPeerSet
 	retriever                                  *retrieveManager
 	stop                                       chan struct{}
+
+	beaconHeadLock sync.RWMutex
+	beaconHeadMap  map[common.Hash]*types.Header
 }
 
 func NewLesOdr(db ethdb.Database, config *light.IndexerConfig, peers *serverPeerSet, retriever *retrieveManager) *LesOdr {
@@ -45,6 +54,7 @@ func NewLesOdr(db ethdb.Database, config *light.IndexerConfig, peers *serverPeer
 		peers:         peers,
 		retriever:     retriever,
 		stop:          make(chan struct{}),
+		beaconHeadMap: make(map[common.Hash]*types.Header),
 	}
 }
 
@@ -85,6 +95,20 @@ func (odr *LesOdr) IndexerConfig() *light.IndexerConfig {
 	return odr.indexerConfig
 }
 
+/*func (odr *LesOdr) SetBeaconHead(head beacon.Header) {
+	odr.beaconHeadLock.Lock()
+	odr.beaconHead = head
+	odr.beaconHeadLock.Unlock()
+	log.Info("Received new beacon head", "slot", head.Slot, "blockRoot", head.Hash())
+}
+
+func (odr *LesOdr) GetBeaconHead() beacon.Header {
+	odr.beaconHeadLock.RLock()
+	head := odr.beaconHead
+	odr.beaconHeadLock.RUnlock()
+	return head
+}*/
+
 const (
 	MsgBlockHeaders = iota
 	MsgBlockBodies
@@ -93,6 +117,10 @@ const (
 	MsgProofsV2
 	MsgHelperTrieProofs
 	MsgTxStatus
+	MsgBeaconInit
+	MsgBeaconData
+	MsgExecHeaders
+	MsgCommitteeProofs
 )
 
 // Msg encodes a LES message that delivers reply data for a request
@@ -231,6 +259,48 @@ func (odr *LesOdr) Retrieve(ctx context.Context, req light.OdrRequest) (err erro
 	if err := odr.retriever.retrieve(ctx, reqID, rq, func(p distPeer, msg *Msg) error { return lreq.Validate(odr.db, msg) }, odr.stop); err != nil {
 		return err
 	}
+	if r, ok := req.(*light.ExecHeadersRequest); ok {
+		if r.ReqMode == light.HeadMode && len(r.ExecHeaders) >= 1 {
+			odr.beaconHeadRetrieved(r.Header.Hash(), r.ExecHeaders[len(r.ExecHeaders)-1])
+		}
+	}
 	req.StoreResult(odr.db)
 	return nil
+}
+
+func (odr *LesOdr) beaconHeadRetrieved(beaconHead common.Hash, header *types.Header) {
+	execNumber, execHash := header.Number.Uint64(), header.Hash()
+	odr.beaconHeadLock.Lock()
+	var bestNumber uint64
+	for _, header := range odr.beaconHeadMap {
+		number := header.Number.Uint64()
+		if number > bestNumber {
+			bestNumber = number
+		}
+	}
+	if execNumber+16 >= bestNumber {
+		for beaconHash, header := range odr.beaconHeadMap {
+			number := header.Number.Uint64()
+			if number+16 < bestNumber {
+				delete(odr.beaconHeadMap, beaconHash)
+			}
+		}
+		odr.beaconHeadMap[execHash] = header
+	}
+	odr.beaconHeadLock.Unlock()
+
+	for _, peer := range odr.peers.allPeers() {
+		if peer.HasBeaconBlock(beaconHead) {
+			peer.lock.Lock()
+			peer.updateHeadInfo(execNumber, execHash)
+			peer.lock.Unlock()
+		}
+	}
+}
+
+func (odr *LesOdr) getExecHeader(beaconHead common.Hash) *types.Header {
+	odr.beaconHeadLock.RLock()
+	header := odr.beaconHeadMap[beaconHead]
+	odr.beaconHeadLock.RUnlock()
+	return header
 }
