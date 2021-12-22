@@ -50,12 +50,13 @@ import (
 	"github.com/ethereum/go-ethereum/eth/gasprice"
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/ethstats"
+	//"github.com/ethereum/go-ethereum/ethstats"
 	"github.com/ethereum/go-ethereum/graphql"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/internal/flags"
 	"github.com/ethereum/go-ethereum/les"
-	lescatalyst "github.com/ethereum/go-ethereum/les/catalyst"
+
+	//	lescatalyst "github.com/ethereum/go-ethereum/les/catalyst"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/metrics/exp"
@@ -303,6 +304,18 @@ var (
 	LightNoSyncServeFlag = cli.BoolFlag{
 		Name:  "light.nosyncserve",
 		Usage: "Enables serving light clients before syncing",
+	}
+	BeaconConfigFlag = cli.StringFlag{
+		Name:  "beacon.config",
+		Usage: "Beacon chain config YAML file",
+	}
+	BeaconCheckpointFlag = cli.StringFlag{
+		Name:  "beacon.checkpoint",
+		Usage: "Beacon chain weak subjectivity checkpoint block hash",
+	}
+	BeaconApiFlag = cli.StringFlag{
+		Name:  "beacon.api",
+		Usage: "Beacon node light client API URL (currently only supports LodeStar)",
 	}
 	// Ethash settings
 	EthashCacheDirFlag = DirectoryFlag{
@@ -1131,6 +1144,15 @@ func setLes(ctx *cli.Context, cfg *ethconfig.Config) {
 	if ctx.GlobalIsSet(LightNoSyncServeFlag.Name) {
 		cfg.LightNoSyncServe = ctx.GlobalBool(LightNoSyncServeFlag.Name)
 	}
+	if ctx.GlobalIsSet(BeaconConfigFlag.Name) {
+		cfg.BeaconConfig = ctx.GlobalString(BeaconConfigFlag.Name)
+	}
+	if ctx.GlobalIsSet(BeaconCheckpointFlag.Name) {
+		cfg.BeaconCheckpoint = ctx.GlobalString(BeaconCheckpointFlag.Name)
+	}
+	if ctx.GlobalIsSet(BeaconApiFlag.Name) {
+		cfg.BeaconApi = ctx.GlobalString(BeaconApiFlag.Name)
+	}
 }
 
 // MakeDatabaseHandles raises out the number of allowed file handles per process
@@ -1827,11 +1849,11 @@ func RegisterEthService(stack *node.Node, cfg *ethconfig.Config) (ethapi.Backend
 			Fatalf("Failed to register the Ethereum service: %v", err)
 		}
 		stack.RegisterAPIs(tracers.APIs(backend.ApiBackend))
-		if backend.BlockChain().Config().TerminalTotalDifficulty != nil {
+		/*if backend.BlockChain().Config().TerminalTotalDifficulty != nil {
 			if err := lescatalyst.Register(stack, backend); err != nil {
 				Fatalf("Failed to register the catalyst service: %v", err)
 			}
-		}
+		}*/
 		return backend.ApiBackend, nil
 	}
 	backend, err := eth.New(stack, cfg)
@@ -1856,9 +1878,9 @@ func RegisterEthService(stack *node.Node, cfg *ethconfig.Config) (ethapi.Backend
 // RegisterEthStatsService configures the Ethereum Stats daemon and adds it to
 // the given node.
 func RegisterEthStatsService(stack *node.Node, backend ethapi.Backend, url string) {
-	if err := ethstats.New(stack, backend, backend.Engine(), url); err != nil {
+	/*if err := ethstats.New(stack, backend, backend.Engine(), url); err != nil {
 		Fatalf("Failed to register the Ethereum Stats service: %v", err)
-	}
+	}*/
 }
 
 // RegisterGraphQLService is a utility function to construct a new service and register it against a node.

@@ -37,6 +37,9 @@ func (c Config) MarshalTOML() (interface{}, error) {
 		UltraLightServers               []string               `toml:",omitempty"`
 		UltraLightFraction              int                    `toml:",omitempty"`
 		UltraLightOnlyAnnounce          bool                   `toml:",omitempty"`
+		BeaconConfig                    string                 `toml:",omitempty"`
+		BeaconCheckpoint                string                 `toml:",omitempty"`
+		BeaconApi                       string                 `toml:",omitempty"`
 		SkipBcVersionCheck              bool                   `toml:"-"`
 		DatabaseHandles                 int                    `toml:"-"`
 		DatabaseCache                   int
@@ -82,6 +85,9 @@ func (c Config) MarshalTOML() (interface{}, error) {
 	enc.UltraLightServers = c.UltraLightServers
 	enc.UltraLightFraction = c.UltraLightFraction
 	enc.UltraLightOnlyAnnounce = c.UltraLightOnlyAnnounce
+	enc.BeaconConfig = c.BeaconConfig
+	enc.BeaconCheckpoint = c.BeaconCheckpoint
+	enc.BeaconApi = c.BeaconApi
 	enc.SkipBcVersionCheck = c.SkipBcVersionCheck
 	enc.DatabaseHandles = c.DatabaseHandles
 	enc.DatabaseCache = c.DatabaseCache
@@ -131,6 +137,9 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 		UltraLightServers               []string               `toml:",omitempty"`
 		UltraLightFraction              *int                   `toml:",omitempty"`
 		UltraLightOnlyAnnounce          *bool                  `toml:",omitempty"`
+		BeaconConfig                    *string                `toml:",omitempty"`
+		BeaconCheckpoint                *string                `toml:",omitempty"`
+		BeaconApi                       *string                `toml:",omitempty"`
 		SkipBcVersionCheck              *bool                  `toml:"-"`
 		DatabaseHandles                 *int                   `toml:"-"`
 		DatabaseCache                   *int
@@ -216,6 +225,15 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 	}
 	if dec.UltraLightOnlyAnnounce != nil {
 		c.UltraLightOnlyAnnounce = *dec.UltraLightOnlyAnnounce
+	}
+	if dec.BeaconConfig != nil {
+		c.BeaconConfig = *dec.BeaconConfig
+	}
+	if dec.BeaconCheckpoint != nil {
+		c.BeaconCheckpoint = *dec.BeaconCheckpoint
+	}
+	if dec.BeaconApi != nil {
+		c.BeaconApi = *dec.BeaconApi
 	}
 	if dec.SkipBcVersionCheck != nil {
 		c.SkipBcVersionCheck = *dec.SkipBcVersionCheck

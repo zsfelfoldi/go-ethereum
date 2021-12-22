@@ -61,7 +61,7 @@ type jsonWriter interface {
 type BlockNumber int64
 
 const (
-	PendingBlockNumber  = BlockNumber(-2)
+	PendingBlockNumber  = BlockNumber(-2) //TODO add FinalizedBlockNumber (currently light client returns finalized block/header when using PendingBlockNumber)
 	LatestBlockNumber   = BlockNumber(-1)
 	EarliestBlockNumber = BlockNumber(0)
 )

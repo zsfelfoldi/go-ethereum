@@ -2089,6 +2089,7 @@ func (bc *BlockChain) InsertBlockWithoutSetHead(block *types.Block) error {
 
 // SetCanonical rewinds the chain to set the new head block as the specified
 // block. It's possible that the state of the new head is missing, and it will
+// block. It's possible that the state of the new head is missing, and it will
 // be recovered in this function as well.
 func (bc *BlockChain) SetCanonical(head *types.Block) error {
 	if !bc.chainmu.TryLock() {

@@ -18,6 +18,7 @@ package les
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +32,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -50,6 +52,8 @@ const (
 	MaxHelperTrieProofsFetch = 64  // Amount of helper tries to be fetched per retrieval request
 	MaxTxSend                = 64  // Amount of transactions to be send per request
 	MaxTxStatus              = 256 // Amount of transactions to queried per request
+	MaxCommitteeUpdateFetch  = beacon.MaxCommitteeUpdateFetch
+	CommitteeCostFactor      = beacon.CommitteeCostFactor
 )
 
 var (
@@ -137,10 +141,10 @@ func (h *serverHandler) handle(p *clientPeer) error {
 
 	// Reject light clients if server is not synced. Put this checking here, so
 	// that "non-synced" les-server peers are still allowed to keep the connection.
-	if !h.synced() {
+	/*if !h.synced() {		//TODO synced status after merge
 		p.Log().Debug("Light server not synced, rejecting peer")
 		return p2p.DiscRequested
-	}
+	}*/
 
 	// Register the peer into the peerset and clientpool
 	if err := h.server.peers.register(p); err != nil {
@@ -151,11 +155,17 @@ func (h *serverHandler) handle(p *clientPeer) error {
 		p.Log().Debug("Client pool already closed")
 		return p2p.DiscRequested
 	}
+	if h.server.syncCommitteeTracker != nil {
+		h.server.syncCommitteeTracker.Activate(p)
+	}
 	p.connectedAt = mclock.Now()
 
 	var wg sync.WaitGroup // Wait group used to track all in-flight task routines.
 	defer func() {
 		wg.Wait() // Ensure all background task routines have exited.
+		if h.server.syncCommitteeTracker != nil {
+			h.server.syncCommitteeTracker.Deactivate(p, true)
+		}
 		h.server.clientPool.Unregister(p)
 		h.server.peers.unregister(p.ID())
 		p.balance = nil
@@ -222,9 +232,9 @@ func (h *serverHandler) beforeHandle(p *clientPeer, reqID, responseCount uint64,
 // Afterhandle will perform a series of operations after message handling,
 // such as updating flow control data, sending reply, etc.
 func (h *serverHandler) afterHandle(p *clientPeer, reqID, responseCount uint64, msg p2p.Msg, maxCost uint64, reqCnt uint64, task *servingTask, reply *reply) {
-	if reply != nil {
-		task.done()
-	}
+	//if reply != nil {
+	task.done()
+	//}
 	p.responseLock.Lock()
 	defer p.responseLock.Unlock()
 
@@ -285,6 +295,10 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 	// Lookup the request handler table, ensure it's supported
 	// message type by the protocol.
 	req, ok := Les3[msg.Code]
+	if !ok && p.version >= lpv5 {
+		req, ok = Les5[msg.Code] //TODO do this in a nicer way
+	}
+	fmt.Println("*** received msg", msg.Code, ok)
 	if !ok {
 		p.Log().Trace("Received invalid message", "code", msg.Code)
 		clientErrorMeter.Mark(1)
@@ -295,6 +309,7 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 	// Decode the p2p message, resolve the concrete handler for it.
 	serve, reqID, reqCnt, err := req.Handle(msg)
 	if err != nil {
+		fmt.Println("*** decode error", err)
 		clientErrorMeter.Mark(1)
 		return errResp(ErrDecode, "%v: %v", msg, err)
 	}
@@ -309,6 +324,7 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 	// handling it and return a processor if all checks are passed.
 	task, maxCost := h.beforeHandle(p, reqID, responseCount, msg, reqCnt, req.MaxCount)
 	if task == nil {
+		fmt.Println("*** no task")
 		return nil
 	}
 	wg.Add(1)
@@ -340,6 +356,16 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 // BlockChain implements serverBackend
 func (h *serverHandler) BlockChain() *core.BlockChain {
 	return h.blockchain
+}
+
+// BeaconChain implements serverBackend
+func (h *serverHandler) BeaconChain() *beacon.BeaconChain {
+	return h.server.beaconChain
+}
+
+// SyncCommitteeTracker implements serverBackend
+func (h *serverHandler) SyncCommitteeTracker() *beacon.SyncCommitteeTracker {
+	return h.server.syncCommitteeTracker
 }
 
 // TxPool implements serverBackend
@@ -415,6 +441,12 @@ func (h *serverHandler) broadcastLoop() {
 		case ev := <-headCh:
 			header := ev.Block.Header()
 			hash, number := header.Hash(), header.Number.Uint64()
+			if h.server.beaconChain != nil {
+				h.server.beaconChain.ProcessedExecHead(hash)
+			}
+			if h.server.beaconNodeApi != nil {
+				h.server.beaconNodeApi.newHead()
+			}
 			td := h.blockchain.GetTd(hash, number)
 			if td == nil || td.Cmp(lastTd) <= 0 {
 				continue

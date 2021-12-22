@@ -61,6 +61,9 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.UltraLightOnlyAnnounceFlag,
 			utils.LightNoPruneFlag,
 			utils.LightNoSyncServeFlag,
+			utils.BeaconConfigFlag,
+			utils.BeaconCheckpointFlag,
+			utils.BeaconApiFlag,
 		},
 	},
 	{
