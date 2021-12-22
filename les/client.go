@@ -18,7 +18,9 @@
 package les
 
 import (
+	"context"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/bloombits"
+	"github.com/ethereum/go-ethereum/core/forkid"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
@@ -40,6 +43,7 @@ import (
 	"github.com/ethereum/go-ethereum/les/vflux"
 	vfc "github.com/ethereum/go-ethereum/les/vflux/client"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -53,19 +57,28 @@ import (
 type LightEthereum struct {
 	lesCommons
 
-	peers              *serverPeerSet
+	peers              *peerSet
 	reqDist            *requestDistributor
 	retriever          *retrieveManager
 	odr                *LesOdr
 	relay              *lesTxRelay
-	handler            *clientHandler
+	handler            *handler
 	txPool             *light.TxPool
-	blockchain         *light.LightChain
+	blockchain         lightChain
 	serverPool         *vfc.ServerPool
 	serverPoolIterator enode.Iterator
 	pruner             *pruner
 	merger             *consensus.Merger
 
+	v5 bool
+
+	fetcher    *lightFetcher
+	downloader *downloader.Downloader
+	// Hooks used in the testing
+	syncStart func(header *types.Header) // Hook called when the syncing is started
+	syncEnd   func(header *types.Header) // Hook called when the syncing is done
+
+	checkpoint    *params.TrustedCheckpoint
 	bloomRequests chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bloomIndexer  *core.ChainIndexer             // Bloom indexer operating during block imports
 
@@ -75,11 +88,42 @@ type LightEthereum struct {
 	accountManager *accounts.Manager
 	netRPCService  *ethapi.NetAPI
 
+	syncCommitteeTracker    *beacon.SyncCommitteeTracker //TODO vegignezni, mi milyen esetben lehet nil es a handler nem okozhat-e panic-ot
+	syncCommitteeCheckpoint *beacon.WeakSubjectivityCheckpoint
+
 	p2pServer  *p2p.Server
 	p2pConfig  *p2p.Config
 	udpEnabled bool
 
 	shutdownTracker *shutdowncheck.ShutdownTracker // Tracks if and when the node has shutdown ungracefully
+}
+
+type lightChain interface {
+	Odr() light.OdrBackend
+	Config() *params.ChainConfig
+	Engine() consensus.Engine
+	Genesis() *types.Block
+	Stop()
+	CurrentHeader() *types.Header // returns last known header in ultralight mode
+	CurrentHeaderOdr(ctx context.Context) (*types.Header, error)
+	FinalizedHeaderOdr(ctx context.Context) (*types.Header, error)
+	SetHead(head uint64) error // returns error in ultralight mode
+	GetCanonicalHashOdr(ctx context.Context, number uint64) (common.Hash, error)
+	GetHeader(hash common.Hash, number uint64) *types.Header // returns cached headers only in ultralight mode
+	GetHeaderByNumber(number uint64) *types.Header
+	GetHeaderByNumberOdr(ctx context.Context, number uint64) (*types.Header, error)
+	GetHeaderByHash(hash common.Hash) *types.Header //returns cached headers only in ultralight mode
+	GetHeaderByHashOdr(ctx context.Context, hash common.Hash) (*types.Header, error)
+	GetBlock(ctx context.Context, hash common.Hash, number uint64) (*types.Block, error)
+	GetBlockByNumber(ctx context.Context, number uint64) (*types.Block, error) //returns cached headers only in ultralight mode
+	GetBlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error)
+	GetTd(hash common.Hash, number uint64) *big.Int                         // returns zero in ultralight (PoS) mode
+	GetTdOdr(ctx context.Context, hash common.Hash, number uint64) *big.Int // returns zero in ultralight (PoS) mode
+	SubscribeChainEvent(ch chan<- core.ChainEvent) event.Subscription
+	SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) event.Subscription
+	SubscribeChainSideEvent(ch chan<- core.ChainSideEvent) event.Subscription
+	SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscription
+	SubscribeRemovedLogsEvent(ch chan<- core.RemovedLogsEvent) event.Subscription
 }
 
 // New creates an instance of the light client.
@@ -111,7 +155,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	log.Info(strings.Repeat("-", 153))
 	log.Info("")
 
-	peers := newServerPeerSet()
+	peers := newPeerSet()
 	merger := consensus.NewMerger(chainDb)
 	leth := &LightEthereum{
 		lesCommons: lesCommons{
@@ -135,52 +179,83 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		p2pConfig:       &stack.Config().P2P,
 		udpEnabled:      stack.Config().P2P.DiscoveryV5,
 		shutdownTracker: shutdowncheck.NewShutdownTracker(chainDb),
+		v5:              config.BeaconConfig != "",
 	}
 
 	var prenegQuery vfc.QueryFunc
 	if leth.udpEnabled {
 		prenegQuery = leth.prenegQuery
 	}
-	leth.serverPool, leth.serverPoolIterator = vfc.NewServerPool(lesDb, []byte("serverpool:"), time.Second, prenegQuery, &mclock.System{}, config.UltraLightServers, requestList)
+	leth.serverPool, leth.serverPoolIterator = vfc.NewServerPool(lesDb, []byte("serverpool:"), time.Second, prenegQuery, &mclock.System{}, []string{}, requestList) //TODO ul server list
 	leth.serverPool.AddMetrics(suggestedTimeoutGauge, totalValueGauge, serverSelectableGauge, serverConnectedGauge, sessionValueMeter, serverDialedMeter)
 
 	leth.retriever = newRetrieveManager(peers, leth.reqDist, leth.serverPool.GetTimeout)
 	leth.relay = newLesTxRelay(peers, leth.retriever)
-
 	leth.odr = NewLesOdr(chainDb, light.DefaultClientIndexerConfig, leth.peers, leth.retriever)
-	leth.chtIndexer = light.NewChtIndexer(chainDb, leth.odr, params.CHTFrequency, params.HelperTrieConfirmations, config.LightNoPrune)
-	leth.bloomTrieIndexer = light.NewBloomTrieIndexer(chainDb, leth.odr, params.BloomBitsBlocksClient, params.BloomTrieFrequency, config.LightNoPrune)
-	leth.odr.SetIndexers(leth.chtIndexer, leth.bloomTrieIndexer, leth.bloomIndexer)
 
-	checkpoint := config.Checkpoint
-	if checkpoint == nil {
-		checkpoint = params.TrustedCheckpoints[genesisHash]
+	if leth.v5 {
+		if forks, err := beacon.LoadForks(config.BeaconConfig); err == nil {
+			//fmt.Println("Forks", forks)
+
+			chain, err := light.NewUltraLightChain(leth.odr, leth.chainConfig, leth.engine)
+			if err != nil {
+				return nil, err
+			}
+			leth.blockchain = chain
+			var beaconCheckpoint common.Hash
+			if config.BeaconCheckpoint != "" {
+				if c, err := hexutil.Decode(config.BeaconCheckpoint); err == nil && len(c) <= 32 {
+					copy(beaconCheckpoint[:len(c)], c)
+				}
+			}
+			leth.syncCommitteeCheckpoint = beacon.NewWeakSubjectivityCheckpoint(chainDb, (*odrDataSource)(leth.odr), beaconCheckpoint, nil)
+			if leth.syncCommitteeCheckpoint == nil {
+				log.Error("No beacon chain checkpoint")
+				return nil, fmt.Errorf("No beacon chain checkpoint")
+			}
+			leth.syncCommitteeTracker = beacon.NewSyncCommitteeTracker(chainDb, forks, leth.syncCommitteeCheckpoint, &mclock.System{})
+			leth.syncCommitteeTracker.SubscribeToNewHeads(chain.SetBeaconHead)
+			leth.syncCommitteeTracker.SubscribeToNewHeads(leth.odr.SetBeaconHead)
+		} else {
+			log.Error("Could not load beacon chain config file", "error", err)
+			return nil, fmt.Errorf("Could not load beacon chain config file: %v", err)
+		}
+	} else {
+		leth.chtIndexer = light.NewChtIndexer(chainDb, leth.odr, params.CHTFrequency, params.HelperTrieConfirmations, config.LightNoPrune)
+		leth.bloomTrieIndexer = light.NewBloomTrieIndexer(chainDb, leth.odr, params.BloomBitsBlocksClient, params.BloomTrieFrequency, config.LightNoPrune)
+		leth.odr.SetIndexers(leth.chtIndexer, leth.bloomTrieIndexer, leth.bloomIndexer)
+
+		leth.checkpoint = config.Checkpoint
+		if leth.checkpoint == nil {
+			leth.checkpoint = params.TrustedCheckpoints[genesisHash]
+		}
+		// Note: NewLightChain adds the trusted checkpoint so it needs an ODR with
+		// indexers already set but not started yet
+		if chain, err := light.NewLightChain(leth.odr, leth.chainConfig, leth.engine, leth.checkpoint); err == nil {
+			leth.blockchain = chain
+			leth.chainReader = chain
+		} else {
+			return nil, err
+		}
+		// Set up checkpoint oracle.
+		leth.oracle = leth.setupOracle(stack, genesisHash, config)
+
+		// Note: AddChildIndexer starts the update process for the child
+		leth.bloomIndexer.AddChildIndexer(leth.bloomTrieIndexer)
+		leth.chtIndexer.Start(leth.blockchain)
+		leth.bloomIndexer.Start(leth.blockchain)
+
+		// Start a light chain pruner to delete useless historical data.
+		leth.pruner = newPruner(chainDb, leth.chtIndexer, leth.bloomTrieIndexer)
+
+		// Rewind the chain in case of an incompatible config upgrade.
+		if compat, ok := genesisErr.(*params.ConfigCompatError); ok {
+			log.Warn("Rewinding chain to upgrade configuration", "err", compat)
+			leth.blockchain.SetHead(compat.RewindTo)
+			rawdb.WriteChainConfig(chainDb, genesisHash, chainConfig)
+		}
 	}
-	// Note: NewLightChain adds the trusted checkpoint so it needs an ODR with
-	// indexers already set but not started yet
-	if leth.blockchain, err = light.NewLightChain(leth.odr, leth.chainConfig, leth.engine, checkpoint); err != nil {
-		return nil, err
-	}
-	leth.chainReader = leth.blockchain
 	leth.txPool = light.NewTxPool(leth.chainConfig, leth.blockchain, leth.relay)
-
-	// Set up checkpoint oracle.
-	leth.oracle = leth.setupOracle(stack, genesisHash, config)
-
-	// Note: AddChildIndexer starts the update process for the child
-	leth.bloomIndexer.AddChildIndexer(leth.bloomTrieIndexer)
-	leth.chtIndexer.Start(leth.blockchain)
-	leth.bloomIndexer.Start(leth.blockchain)
-
-	// Start a light chain pruner to delete useless historical data.
-	leth.pruner = newPruner(chainDb, leth.chtIndexer, leth.bloomTrieIndexer)
-
-	// Rewind the chain in case of an incompatible config upgrade.
-	if compat, ok := genesisErr.(*params.ConfigCompatError); ok {
-		log.Warn("Rewinding chain to upgrade configuration", "err", compat)
-		leth.blockchain.SetHead(compat.RewindTo)
-		rawdb.WriteChainConfig(chainDb, genesisHash, chainConfig)
-	}
 
 	leth.ApiBackend = &LesApiBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, leth, nil}
 	gpoParams := config.GPO
@@ -189,11 +264,47 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	}
 	leth.ApiBackend.gpo = gasprice.NewOracle(leth.ApiBackend, gpoParams)
 
-	leth.handler = newClientHandler(config.UltraLightServers, config.UltraLightFraction, checkpoint, leth)
-	if leth.handler.ulc != nil {
-		log.Warn("Ultra light client is enabled", "trustedNodes", len(leth.handler.ulc.keys), "minTrustedFraction", leth.handler.ulc.fraction)
-		leth.blockchain.DisableCheckFreq()
+	//leth.handler = newClientHandler(checkpoint, leth)
+	leth.handler = newHandler(leth.peers, leth.config.NetworkId)
+	clientHandler := &clientHandler{
+		forkFilter: forkid.NewFilter(leth.blockchain),
+		blockchain: leth.blockchain,
+		peers:      leth.peers,
+		retriever:  leth.retriever,
 	}
+	if !leth.v5 {
+		var height uint64
+		if leth.checkpoint != nil {
+			height = (leth.checkpoint.SectionIndex+1)*params.CHTFrequency - 1
+		}
+		leth.fetcher = newLightFetcher(leth.blockchain.(*light.LightChain), leth.engine, leth.peers, chainDb, leth.reqDist, leth.synchronise)
+		leth.downloader = downloader.New(height, chainDb, leth.eventMux, nil, leth.blockchain.(*light.LightChain), leth.peers.unregisterStringId)
+		leth.peers.subscribe(&downloaderPeerNotify{
+			downloader: leth.downloader,
+			retriever:  leth.retriever,
+		})
+		clientHandler.fetcher, clientHandler.downloader = leth.fetcher, leth.downloader
+	}
+	leth.handler.registerModule(clientHandler)
+
+	if leth.v5 {
+		beaconClientHandler := &beaconClientHandler{
+			syncCommitteeTracker:    leth.syncCommitteeTracker,
+			syncCommitteeCheckpoint: leth.syncCommitteeCheckpoint,
+			retriever:               leth.retriever,
+		}
+		leth.handler.registerModule(beaconClientHandler)
+	}
+
+	fcClientHandler := &fcClientHandler{
+		retriever: leth.retriever,
+	}
+	leth.handler.registerModule(fcClientHandler)
+
+	vfxClientHandler := &vfxClientHandler{
+		serverPool: leth.serverPool,
+	}
+	leth.handler.registerModule(vfxClientHandler)
 
 	leth.netRPCService = ethapi.NewNetAPI(leth.p2pServer, leth.config.NetworkId)
 
@@ -296,14 +407,14 @@ func (s *LightDummyAPI) Mining() bool {
 // NOTE, some of these services probably need to be moved to somewhere else.
 func (s *LightEthereum) APIs() []rpc.API {
 	apis := ethapi.GetAPIs(s.ApiBackend)
-	apis = append(apis, s.engine.APIs(s.BlockChain().HeaderChain())...)
+	apis = append(apis, s.engine.APIs(s.blockchain)...)
 	return append(apis, []rpc.API{
 		{
 			Namespace: "eth",
 			Service:   &LightDummyAPI{},
 		}, {
 			Namespace: "eth",
-			Service:   downloader.NewDownloaderAPI(s.handler.downloader, s.eventMux),
+			Service:   downloader.NewDownloaderAPI(s.downloader, s.eventMux),
 		}, {
 			Namespace: "net",
 			Service:   s.netRPCService,
@@ -317,22 +428,22 @@ func (s *LightEthereum) APIs() []rpc.API {
 	}...)
 }
 
-func (s *LightEthereum) ResetWithGenesisBlock(gb *types.Block) {
+/*func (s *LightEthereum) ResetWithGenesisBlock(gb *types.Block) {
 	s.blockchain.ResetWithGenesisBlock(gb)
-}
+}*/
 
-func (s *LightEthereum) BlockChain() *light.LightChain      { return s.blockchain }
+//func (s *LightEthereum) BlockChain() *light.LightChain      { return s.blockchain }
 func (s *LightEthereum) TxPool() *light.TxPool              { return s.txPool }
 func (s *LightEthereum) Engine() consensus.Engine           { return s.engine }
 func (s *LightEthereum) LesVersion() int                    { return int(ClientProtocolVersions[0]) }
-func (s *LightEthereum) Downloader() *downloader.Downloader { return s.handler.downloader }
+func (s *LightEthereum) Downloader() *downloader.Downloader { return s.downloader }
 func (s *LightEthereum) EventMux() *event.TypeMux           { return s.eventMux }
 func (s *LightEthereum) Merger() *consensus.Merger          { return s.merger }
 
 // Protocols returns all the currently configured network protocols to start.
 func (s *LightEthereum) Protocols() []p2p.Protocol {
 	return s.makeProtocols(ClientProtocolVersions, s.handler.runPeer, func(id enode.ID) interface{} {
-		if p := s.peers.peer(id.String()); p != nil {
+		if p := s.peers.peer(id); p != nil {
 			return p.Info()
 		}
 		return nil
@@ -355,13 +466,15 @@ func (s *LightEthereum) Start() error {
 	if err != nil {
 		return err
 	}
+	s.handler.start()
 	s.serverPool.AddSource(discovery)
 	s.serverPool.Start()
 	// Start bloom request workers.
 	s.wg.Add(bloomServiceThreads)
 	s.startBloomHandlers(params.BloomBitsBlocksClient)
-	s.handler.start()
-
+	if s.fetcher != nil {
+		s.fetcher.start()
+	}
 	return nil
 }
 
@@ -370,23 +483,41 @@ func (s *LightEthereum) Start() error {
 func (s *LightEthereum) Stop() error {
 	close(s.closeCh)
 	s.serverPool.Stop()
-	s.peers.close()
+	s.handler.stop()
 	s.reqDist.close()
 	s.odr.Stop()
 	s.relay.Stop()
-	s.bloomIndexer.Close()
-	s.chtIndexer.Close()
+	if s.bloomIndexer != nil {
+		s.bloomIndexer.Close()
+	}
+	if s.chtIndexer != nil {
+		s.chtIndexer.Close()
+	}
 	s.blockchain.Stop()
-	s.handler.stop()
+	if s.fetcher != nil {
+		s.fetcher.stop()
+	}
+	if s.downloader != nil {
+		s.downloader.Terminate()
+	}
+	//s.handler.stop()
 	s.txPool.Stop()
 	s.engine.Close()
-	s.pruner.close()
+	if s.pruner != nil {
+		s.pruner.close()
+	}
 	s.eventMux.Stop()
 	// Clean shutdown marker as the last thing before closing db
 	s.shutdownTracker.Stop()
 
 	s.chainDb.Close()
 	s.lesDb.Close()
+	if s.syncCommitteeTracker != nil {
+		s.syncCommitteeTracker.Stop()
+	}
+	if s.syncCommitteeCheckpoint != nil {
+		s.syncCommitteeCheckpoint.Stop()
+	}
 	s.wg.Wait()
 	log.Info("Light ethereum stopped")
 	return nil

@@ -35,22 +35,22 @@ import (
 )
 
 type testServerPeerSub struct {
-	regCh   chan *serverPeer
-	unregCh chan *serverPeer
+	regCh   chan *peer
+	unregCh chan *peer
 }
 
 func newTestServerPeerSub() *testServerPeerSub {
 	return &testServerPeerSub{
-		regCh:   make(chan *serverPeer, 1),
-		unregCh: make(chan *serverPeer, 1),
+		regCh:   make(chan *peer, 1),
+		unregCh: make(chan *peer, 1),
 	}
 }
 
-func (t *testServerPeerSub) registerPeer(p *serverPeer)   { t.regCh <- p }
-func (t *testServerPeerSub) unregisterPeer(p *serverPeer) { t.unregCh <- p }
+func (t *testServerPeerSub) registerPeer(p *peer)   { t.regCh <- p }
+func (t *testServerPeerSub) unregisterPeer(p *peer) { t.unregCh <- p }
 
 func TestPeerSubscription(t *testing.T) {
-	peers := newServerPeerSet()
+	peers := newPeerSet()
 	defer peers.close()
 
 	checkIds := func(expect []string) {
@@ -64,7 +64,7 @@ func TestPeerSubscription(t *testing.T) {
 			t.Fatalf("all peer ids mismatch, want %v, given %v", expect, given)
 		}
 	}
-	checkPeers := func(peerCh chan *serverPeer) {
+	checkPeers := func(peerCh chan *peer) {
 		select {
 		case <-peerCh:
 		case <-time.NewTimer(100 * time.Millisecond).C:

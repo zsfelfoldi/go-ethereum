@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
-	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/log"
@@ -44,6 +43,10 @@ var (
 		GetHelperTrieProofsMsg: {0, 1000000},
 		SendTxV2Msg:            {0, 450000},
 		GetTxStatusMsg:         {0, 250000},
+		GetCommitteeProofsMsg:  {0, 100000}, //TODO check these values
+		GetBeaconInitMsg:       {0, 100000},
+		GetBeaconDataMsg:       {200000, 50000},
+		GetExecHeadersMsg:      {150000, 30000},
 	}
 	// maximum incoming message size estimates
 	reqMaxInSize = requestCostTable{
@@ -55,6 +58,10 @@ var (
 		GetHelperTrieProofsMsg: {0, 20},
 		SendTxV2Msg:            {0, 16500},
 		GetTxStatusMsg:         {0, 50},
+		GetCommitteeProofsMsg:  {0, 300},
+		GetBeaconInitMsg:       {0, 20},
+		GetBeaconDataMsg:       {80, 0},
+		GetExecHeadersMsg:      {80, 0},
 	}
 	// maximum outgoing message size estimates
 	reqMaxOutSize = requestCostTable{
@@ -66,6 +73,10 @@ var (
 		GetHelperTrieProofsMsg: {0, 4000},
 		SendTxV2Msg:            {0, 100},
 		GetTxStatusMsg:         {0, 100},
+		GetCommitteeProofsMsg:  {0, 200000},
+		GetBeaconInitMsg:       {0, 1000},
+		GetBeaconDataMsg:       {0, 1000},
+		GetExecHeadersMsg:      {0, 1000},
 	}
 	// request amounts that have to fit into the minimum buffer size minBufferMultiplier times
 	minBufferReqAmount = map[uint64]uint64{
@@ -77,6 +88,10 @@ var (
 		GetHelperTrieProofsMsg: 16,
 		SendTxV2Msg:            8,
 		GetTxStatusMsg:         64,
+		GetCommitteeProofsMsg:  128,
+		GetBeaconInitMsg:       1,
+		GetBeaconDataMsg:       192,
+		GetExecHeadersMsg:      192,
 	}
 	minBufferMultiplier = 3
 )
@@ -137,19 +152,19 @@ type costTracker struct {
 
 // newCostTracker creates a cost tracker and loads the cost factor statistics from the database.
 // It also returns the minimum capacity that can be assigned to any peer.
-func newCostTracker(db ethdb.Database, config *ethconfig.Config) (*costTracker, uint64) {
-	utilTarget := float64(config.LightServ) * flowcontrol.FixedPointMultiplier / 100
+func newCostTracker(db ethdb.Database, lightServ, lightIngress, lightEgress int) (*costTracker, uint64) {
+	utilTarget := float64(lightServ) * flowcontrol.FixedPointMultiplier / 100
 	ct := &costTracker{
 		db:         db,
 		stopCh:     make(chan chan struct{}),
 		reqInfoCh:  make(chan reqInfo, 100),
 		utilTarget: utilTarget,
 	}
-	if config.LightIngress > 0 {
-		ct.inSizeFactor = utilTarget / float64(config.LightIngress)
+	if lightIngress > 0 {
+		ct.inSizeFactor = utilTarget / float64(lightIngress)
 	}
-	if config.LightEgress > 0 {
-		ct.outSizeFactor = utilTarget / float64(config.LightEgress)
+	if lightEgress > 0 {
+		ct.outSizeFactor = utilTarget / float64(lightEgress)
 	}
 	if makeCostStats {
 		ct.stats = make(map[uint64][]uint64)
