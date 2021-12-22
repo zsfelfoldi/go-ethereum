@@ -27,26 +27,29 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	vfc "github.com/ethereum/go-ethereum/les/vflux/client"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // Constants to match up protocol versions and messages
 const (
-	lpv2 = 2
-	lpv3 = 3
-	lpv4 = 4
+	lpv2      = 2
+	lpv3      = 3
+	lpv4      = 4
+	lpv5      = 5
+	lpvLatest = lpv5
 )
 
 // Supported versions of the les protocol (first is primary)
 var (
-	ClientProtocolVersions    = []uint{lpv2, lpv3, lpv4}
-	ServerProtocolVersions    = []uint{lpv2, lpv3, lpv4}
+	ClientProtocolVersions    = []uint{lpv2, lpv3, lpv4, lpv5}
+	ServerProtocolVersions    = []uint{lpv2, lpv3, lpv4, lpv5}
 	AdvertiseProtocolVersions = []uint{lpv2} // clients are searching for the first advertised protocol in the list
 )
 
 // Number of implemented message corresponding to different protocol versions.
-var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24}
+var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24, lpv5: 34}
 
 const (
 	NetworkId          = 1
@@ -82,6 +85,17 @@ const (
 	// Protocol messages introduced in LPV3
 	StopMsg   = 0x16
 	ResumeMsg = 0x17
+	// Protocol messages introduced in LPV5
+	AdvertiseCommitteeProofsMsg = 0x18
+	GetCommitteeProofsMsg       = 0x19
+	CommitteeProofsMsg          = 0x1a
+	SignedBeaconHeadsMsg        = 0x1b
+	GetBeaconInitMsg            = 0x1c
+	BeaconInitMsg               = 0x1d
+	GetBeaconDataMsg            = 0x1e
+	BeaconDataMsg               = 0x1f
+	GetExecHeadersMsg           = 0x20
+	ExecHeadersMsg              = 0x21
 )
 
 // GetBlockHeadersData represents a block header query (the request ID is not included)
@@ -140,6 +154,87 @@ type GetTxStatusPacket struct {
 	Hashes []common.Hash
 }
 
+/*type AdvertiseCommitteeProofsPacket struct {
+	LastPeriod uint64
+	Scores     beacon.UpdateScores
+}*/
+
+type GetCommitteeProofsPacket struct {
+	ReqID uint64
+	beacon.CommitteeRequest
+}
+
+type GetBeaconInitPacket struct {
+	ReqID      uint64
+	Checkpoint common.Hash
+}
+
+type BeaconInitResponse struct {
+	Header      beacon.HeaderWithoutState
+	ProofValues beacon.MerkleValues // multiproof for beacon state (HspInitData format)
+}
+
+type GetBeaconDataPacket struct {
+	ReqID uint64
+	// Note: for historical requests (where LastSlot is less than the reference block's slot) the reference block
+	// has to be a recent beacon chain head and the client needs to already have the beacon header in order to validate
+	// For init block requests the reference block (weak subjectivity checkpoint) can be the first non-empty slot of
+	// any epoch and LastSlot can be set to MaxUint64.
+	BlockRoot common.Hash // beacon block to be retrieved last or used as a reference to the canonical chain state
+	LastSlot  uint64      // last slot of requested range (reference block is the last retrieved one if LastSlot is higher than its slot number)
+	Length    uint64      // length of requested range in slots
+}
+
+// missing values are reconstructed when processing the reply:
+//  Slot = FirstSlot + StateProofFormats slice index
+//  StateRoot = StateProof.rootHash() where StateProof is extracted from the multi-proof
+//  ParentRoot = FirstParentRoot or hash of last reconstructed header
+type beaconHeaderForTransmission struct {
+	ProposerIndex uint
+	BodyRoot      common.Hash
+}
+
+type BeaconDataResponse struct { //TODO update comments
+	// ...used for reconstructing all header parent roots
+	// ...first slot of proven range is ParentHeader.Slot + 1
+	ParentHeader beacon.Header // parent of first returned block; empty if first returned block is the genesis
+	// Note: the length of StateProofFormats equals the length of the slot range where beacon states are proven; empty slots
+	// are signaled with zeroes (only state root is proven). Range might be longer than requested in case of a historical
+	// request where LastSlot points to an empty slot (last returned slot is never empty).
+	StateProofFormats []byte // slot index equals FirstSlot plus slice index
+	// MultiProof contains state proofs for the requested blocks; included state fields for each block are defined in ProofFormat
+	// - state of reference block is proven directly from block.state_root
+	// - states not older than 8192 slots are proven from block.state_roots[slot % 8192]
+	// - states older than 8192 slots are proven from block.historic_roots[slot / 8192].state_roots[slot % 8192]
+	ProofValues beacon.MerkleValues           // multiproof for requested beacon states and historical state roots (format is determined by BeaconHash.Slot, LastSlot and length of ProofFormat)
+	Headers     []beaconHeaderForTransmission // one for each slot where state proof format includes beacon.HspLongTerm
+}
+
+type GetExecHeadersPacket struct {
+	ReqID          uint64
+	ReqMode        uint        // 0: head  1: historic  2: finalized
+	BlockRoot      common.Hash // recent beacon block root used as a reference to the canonical chain state (client should already have the beacon header)
+	HistoricNumber uint64      // highest requested exec header number (for historic mode only)
+	Amount         uint64      // number of requested exec headers
+	FullBlocks     bool
+}
+
+type ExecHeadersResponse struct {
+	// Proof format (depends on ReqMode):
+	//   head mode:
+	//      beacon_block.state_root -> exec_head
+	//   historic mode (historic_slot >= beacon_head - 8192):
+	//      beacon_block.state_root -> historic_roots -> state_roots[historic_slot % 8192] -> exec_head
+	//   historic mode (historic_slot < beacon_head - 8192):
+	//      beacon_block.state_root -> historic_roots -> historic_roots[historic_slot / 8192].state_roots -> state_roots[historic_slot % 8192] -> exec_head
+	//   finalized mode:
+	//      beacon_block.state_root -> finalized_checkpoint.root -> finalized_header.state_root -> exec_head
+	HistoricSlot uint64              // the requested HistoricNumber should be checked against the last returned header number during validation
+	ProofValues  beacon.MerkleValues // (format depends on ReqMode and HistoricSlot)
+	ExecHeaders  []*types.Header
+	ExecBodies   [][]byte
+}
+
 type requestInfo struct {
 	name                          string
 	maxCount                      uint64
@@ -165,7 +260,12 @@ var (
 		GetProofsV2Msg:         {"GetProofsV2", MaxProofsFetch, 10, 0},
 		GetHelperTrieProofsMsg: {"GetHelperTrieProofs", MaxHelperTrieProofsFetch, 10, 100},
 		SendTxV2Msg:            {"SendTxV2", MaxTxSend, 1, 0},
-		GetTxStatusMsg:         {"GetTxStatus", MaxTxStatus, 10, 0},
+		GetTxStatusMsg:         {"GetTxStatus", MaxTxStatus, 1, 0},
+		GetCommitteeProofsMsg:  {"GetCommitteeProofs", MaxCommitteeUpdateFetch, 1, 1}, //TODO check these values
+		GetBeaconInitMsg:       {"GetBeaconInit", 1, 1, 0},
+		GetBeaconDataMsg:       {"GetBeaconDataMsg", MaxHeaderFetch, 1, 1},
+		GetExecHeadersMsg:      {"GetExecHeaders", MaxHeaderFetch, 1, 1},
+		//TODO les5 reqs
 	}
 	requestList    []vfc.RequestInfo
 	requestMapping map[uint32]reqMapping
@@ -260,7 +360,7 @@ func (a *announceData) sanityCheck() error {
 func (a *announceData) sign(privKey *ecdsa.PrivateKey) {
 	rlp, _ := rlp.EncodeToBytes(blockInfo{a.Hash, a.Number, a.Td})
 	sig, _ := crypto.Sign(crypto.Keccak256(rlp), privKey)
-	a.Update = a.Update.add("sign", sig)
+	a.Update.add("sign", sig)
 }
 
 // checkSignature verifies if the block announcement has a valid signature by the given pubKey

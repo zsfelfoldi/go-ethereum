@@ -276,14 +276,14 @@ func testSyncFromConfiguredCheckpoint(t *testing.T, protocol int) {
 		expectStart = config.ChtSize - 1
 		expectEnd   = 2*config.ChtSize + config.ChtConfirms
 	)
-	client.handler.syncStart = func(header *types.Header) {
+	client.syncStart = func(header *types.Header) {
 		if header.Number.Uint64() == expectStart {
 			start <- nil
 		} else {
 			start <- fmt.Errorf("blockchain length mismatch, want %d, got %d", expectStart, header.Number)
 		}
 	}
-	client.handler.syncEnd = func(header *types.Header) {
+	client.syncEnd = func(header *types.Header) {
 		if header.Number.Uint64() == expectEnd {
 			end <- nil
 		} else {
@@ -349,14 +349,14 @@ func testSyncAll(t *testing.T, protocol int) {
 		expectStart = uint64(0)
 		expectEnd   = 2*config.ChtSize + config.ChtConfirms
 	)
-	client.handler.syncStart = func(header *types.Header) {
+	client.syncStart = func(header *types.Header) {
 		if header.Number.Uint64() == expectStart {
 			start <- nil
 		} else {
 			start <- fmt.Errorf("blockchain length mismatch, want %d, got %d", expectStart, header.Number)
 		}
 	}
-	client.handler.syncEnd = func(header *types.Header) {
+	client.syncEnd = func(header *types.Header) {
 		if header.Number.Uint64() == expectEnd {
 			end <- nil
 		} else {

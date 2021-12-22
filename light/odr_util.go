@@ -20,12 +20,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -36,7 +38,18 @@ var errNonCanonicalHash = errors.New("hash is not currently canonical")
 
 // GetHeaderByNumber retrieves the canonical block header corresponding to the
 // given number. The returned header is proven by local CHT.
-func GetHeaderByNumber(ctx context.Context, odr OdrBackend, number uint64) (*types.Header, error) {
+func GetHeaderByNumberV5(ctx context.Context, odr OdrBackend, beaconHead beacon.Header, number uint64) (*types.Header, error) {
+	if headers, err := GetExecHeaders(ctx, odr, beaconHead, HistoricMode, number, 1); err == nil && len(headers) == 1 {
+		return headers[0], nil
+	} else {
+		if err == nil {
+			return nil, errors.New("Invalid number of headers retrieved") //TODO can this ever happen?
+		}
+		return nil, err
+	}
+}
+
+func GetHeaderByNumberV4(ctx context.Context, odr OdrBackend, number uint64) (*types.Header, error) {
 	// Try to find it in the local database first.
 	db := odr.Database()
 	hash := rawdb.ReadCanonicalHash(db, number)
@@ -66,13 +79,37 @@ func GetHeaderByNumber(ctx context.Context, odr OdrBackend, number uint64) (*typ
 	return r.Header, nil
 }
 
+func GetHeaderByHash(ctx context.Context, odr OdrBackend, hash common.Hash) (*types.Header, error) {
+	//fmt.Println("GetHeaderByHash", hash)
+	//TODO db cache?
+	r := &HeadersByHashRequest{BlockHash: hash, Amount: 1}
+	if err := odr.Retrieve(ctx, r); err != nil {
+		fmt.Println(" err", err)
+		return nil, err
+	}
+	if len(r.Headers) != 1 {
+		return nil, errors.New("Incorrect number of headers returned")
+	}
+	//fmt.Println(" header", r.Headers[0])
+	return r.Headers[0], nil
+}
+
 // GetCanonicalHash retrieves the canonical block hash corresponding to the number.
-func GetCanonicalHash(ctx context.Context, odr OdrBackend, number uint64) (common.Hash, error) {
+func GetCanonicalHashV5(ctx context.Context, odr OdrBackend, beaconHead beacon.Header, number uint64) (common.Hash, error) {
+	header, err := GetHeaderByNumberV5(ctx, odr, beaconHead, number) //TODO do it with zero length header request?
+	if err != nil {
+		return common.Hash{}, err
+	}
+	// number -> canonical mapping already be stored in db, get it.
+	return header.Hash(), nil
+}
+
+func GetCanonicalHashV4(ctx context.Context, odr OdrBackend, number uint64) (common.Hash, error) {
 	hash := rawdb.ReadCanonicalHash(odr.Database(), number)
 	if hash != (common.Hash{}) {
 		return hash, nil
 	}
-	header, err := GetHeaderByNumber(ctx, odr, number)
+	header, err := GetHeaderByNumberV4(ctx, odr, number) //TODO do it with zero length header request?
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -86,7 +123,7 @@ func GetTd(ctx context.Context, odr OdrBackend, hash common.Hash, number uint64)
 	if td != nil {
 		return td, nil
 	}
-	header, err := GetHeaderByNumber(ctx, odr, number)
+	header, err := GetHeaderByNumberV4(ctx, odr, number)
 	if err != nil {
 		return nil, err
 	}
@@ -98,29 +135,25 @@ func GetTd(ctx context.Context, odr OdrBackend, hash common.Hash, number uint64)
 }
 
 // GetBodyRLP retrieves the block body (transactions and uncles) in RLP encoding.
-func GetBodyRLP(ctx context.Context, odr OdrBackend, hash common.Hash, number uint64) (rlp.RawValue, error) {
+func GetBodyRLP(ctx context.Context, odr OdrBackend, header *types.Header) (rlp.RawValue, error) {
+	hash, number := header.Hash(), header.Number.Uint64()
 	if data := rawdb.ReadBodyRLP(odr.Database(), hash, number); data != nil {
 		return data, nil
 	}
-	// Retrieve the block header first and pass it for verification.
-	header, err := GetHeaderByNumber(ctx, odr, number)
-	if err != nil {
-		return nil, errNoHeader
-	}
-	if header.Hash() != hash {
-		return nil, errNonCanonicalHash
-	}
 	r := &BlockRequest{Hash: hash, Number: number, Header: header}
+	//fmt.Println(" sending BlockRequest")
 	if err := odr.Retrieve(ctx, r); err != nil {
+		fmt.Println(" err", err)
 		return nil, err
 	}
+	//fmt.Println(" success")
 	return r.Rlp, nil
 }
 
 // GetBody retrieves the block body (transactions, uncles) corresponding to the
 // hash.
-func GetBody(ctx context.Context, odr OdrBackend, hash common.Hash, number uint64) (*types.Body, error) {
-	data, err := GetBodyRLP(ctx, odr, hash, number)
+func GetBody(ctx context.Context, odr OdrBackend, header *types.Header) (*types.Body, error) {
+	data, err := GetBodyRLP(ctx, odr, header)
 	if err != nil {
 		return nil, err
 	}
@@ -133,13 +166,8 @@ func GetBody(ctx context.Context, odr OdrBackend, hash common.Hash, number uint6
 
 // GetBlock retrieves an entire block corresponding to the hash, assembling it
 // back from the stored header and body.
-func GetBlock(ctx context.Context, odr OdrBackend, hash common.Hash, number uint64) (*types.Block, error) {
-	// Retrieve the block header and body contents
-	header, err := GetHeaderByNumber(ctx, odr, number)
-	if err != nil {
-		return nil, errNoHeader
-	}
-	body, err := GetBody(ctx, odr, hash, number)
+func GetBlock(ctx context.Context, odr OdrBackend, header *types.Header) (*types.Block, error) {
+	body, err := GetBody(ctx, odr, header)
 	if err != nil {
 		return nil, err
 	}
@@ -149,17 +177,11 @@ func GetBlock(ctx context.Context, odr OdrBackend, hash common.Hash, number uint
 
 // GetBlockReceipts retrieves the receipts generated by the transactions included
 // in a block given by its hash.
-func GetBlockReceipts(ctx context.Context, odr OdrBackend, hash common.Hash, number uint64) (types.Receipts, error) {
+func GetBlockReceipts(ctx context.Context, odr OdrBackend, header *types.Header) (types.Receipts, error) {
+	hash, number := header.Hash(), header.Number.Uint64()
 	// Assume receipts are already stored locally and attempt to retrieve.
 	receipts := rawdb.ReadRawReceipts(odr.Database(), hash, number)
 	if receipts == nil {
-		header, err := GetHeaderByNumber(ctx, odr, number)
-		if err != nil {
-			return nil, errNoHeader
-		}
-		if header.Hash() != hash {
-			return nil, errNonCanonicalHash
-		}
 		r := &ReceiptsRequest{Hash: hash, Number: number, Header: header}
 		if err := odr.Retrieve(ctx, r); err != nil {
 			return nil, err
@@ -168,14 +190,14 @@ func GetBlockReceipts(ctx context.Context, odr OdrBackend, hash common.Hash, num
 	}
 	// If the receipts are incomplete, fill the derived fields
 	if len(receipts) > 0 && receipts[0].TxHash == (common.Hash{}) {
-		block, err := GetBlock(ctx, odr, hash, number)
+		block, err := GetBlock(ctx, odr, header)
 		if err != nil {
 			return nil, err
 		}
 		genesis := rawdb.ReadCanonicalHash(odr.Database(), 0)
 		config := rawdb.ReadChainConfig(odr.Database(), genesis)
 
-		if err := receipts.DeriveFields(config, block.Hash(), block.NumberU64(), block.Transactions()); err != nil {
+		if err := receipts.DeriveFields(config, hash, number, block.Transactions()); err != nil {
 			return nil, err
 		}
 		rawdb.WriteReceipts(odr.Database(), hash, number, receipts)
@@ -185,9 +207,9 @@ func GetBlockReceipts(ctx context.Context, odr OdrBackend, hash common.Hash, num
 
 // GetBlockLogs retrieves the logs generated by the transactions included in a
 // block given by its hash.
-func GetBlockLogs(ctx context.Context, odr OdrBackend, hash common.Hash, number uint64) ([][]*types.Log, error) {
+func GetBlockLogs(ctx context.Context, odr OdrBackend, header *types.Header) ([][]*types.Log, error) {
 	// Retrieve the potentially incomplete receipts from disk or network
-	receipts, err := GetBlockReceipts(ctx, odr, hash, number)
+	receipts, err := GetBlockReceipts(ctx, odr, header)
 	if err != nil {
 		return nil, err
 	}
@@ -283,12 +305,27 @@ func GetTransaction(ctx context.Context, odr OdrBackend, txHash common.Hash) (*t
 	pos := r.Status[0].Lookup
 	// first ensure that we have the header, otherwise block body retrieval will fail
 	// also verify if this is a canonical block by getting the header by number and checking its hash
-	if header, err := GetHeaderByNumber(ctx, odr, pos.BlockIndex); err != nil || header.Hash() != pos.BlockHash {
+	header, err := GetHeaderByHash(ctx, odr, pos.BlockHash)
+	if err != nil {
 		return nil, common.Hash{}, 0, 0, err
 	}
-	body, err := GetBody(ctx, odr, pos.BlockHash, pos.BlockIndex)
+	body, err := GetBody(ctx, odr, header)
 	if err != nil || uint64(len(body.Transactions)) <= pos.Index || body.Transactions[pos.Index].Hash() != txHash {
 		return nil, common.Hash{}, 0, 0, err
 	}
 	return body.Transactions[pos.Index], pos.BlockHash, pos.BlockIndex, pos.Index, nil
+}
+
+func GetExecHeaders(ctx context.Context, odr OdrBackend, beaconHead beacon.Header, mode uint, historicNumber, amount uint64) ([]*types.Header, error) {
+	r := &ExecHeadersRequest{
+		ReqMode:        mode,
+		HistoricNumber: historicNumber,
+		Amount:         amount,
+	}
+	//fmt.Println("GetExecHeaders", r)
+	if err := odr.RetrieveWithBeaconHeader(ctx, beaconHead, r); err == nil {
+		return r.ExecHeaders, nil
+	} else {
+		return nil, err
+	}
 }
