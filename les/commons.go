@@ -23,7 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
+	//	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -47,12 +47,12 @@ type chainReader interface {
 
 // lesCommons contains fields needed by both server and client.
 type lesCommons struct {
-	genesis                      common.Hash
-	config                       *ethconfig.Config
-	chainConfig                  *params.ChainConfig
-	iConfig                      *light.IndexerConfig
-	chainDb, lesDb               ethdb.Database
-	chainReader                  chainReader
+	genesis        common.Hash
+	config         *ethconfig.Config
+	chainConfig    *params.ChainConfig
+	iConfig        *light.IndexerConfig
+	chainDb, lesDb ethdb.Database
+	//chainReader                  chainReader
 	chtIndexer, bloomTrieIndexer *core.ChainIndexer
 	oracle                       *checkpointoracle.CheckpointOracle
 
@@ -93,14 +93,14 @@ func (c *lesCommons) makeProtocols(versions []uint, runPeer func(version uint, p
 
 // nodeInfo retrieves some protocol metadata about the running host node.
 func (c *lesCommons) nodeInfo() interface{} {
-	head := c.chainReader.CurrentHeader()
-	hash := head.Hash()
+	/*head := c.chainReader.CurrentHeader()
+	hash := head.Hash()*/
 	return &NodeInfo{
 		Network:    c.config.NetworkId,
-		Difficulty: rawdb.ReadTd(c.chainDb, hash, head.Number.Uint64()),
+		Difficulty: common.Big0, // rawdb.ReadTd(c.chainDb, hash, head.Number.Uint64()),
 		Genesis:    c.genesis,
 		Config:     c.chainConfig,
-		Head:       hash,
+		Head:       common.Hash{}, //hash,
 		CHT:        c.latestLocalCheckpoint(),
 	}
 }

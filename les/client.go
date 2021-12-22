@@ -41,6 +41,7 @@ import (
 	"github.com/ethereum/go-ethereum/les/vflux"
 	vfc "github.com/ethereum/go-ethereum/les/vflux/client"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -75,6 +76,9 @@ type LightEthereum struct {
 	engine         consensus.Engine
 	accountManager *accounts.Manager
 	netRPCService  *ethapi.NetAPI
+
+	syncCommitteeTracker    *beacon.SyncCommitteeTracker //TODO vegignezni, mi milyen esetben lehet nil es a handler nem okozhat-e panic-ot
+	syncCommitteeCheckpoint *beacon.WeakSubjectivityCheckpoint
 
 	p2pServer  *p2p.Server
 	p2pConfig  *p2p.Config
@@ -155,16 +159,40 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	if leth.blockchain, err = light.NewLightChain(leth.odr, leth.chainConfig, leth.engine, checkpoint); err != nil {
 		return nil, err
 	}
-	leth.chainReader = leth.blockchain
+	//leth.chainReader = leth.blockchain
 	leth.txPool = light.NewTxPool(leth.chainConfig, leth.blockchain, leth.relay)
+
+	if config.BeaconConfig != "" {
+		if forks, err := beacon.LoadForks(config.BeaconConfig); err == nil {
+			fmt.Println("Forks", forks)
+
+			var beaconCheckpoint common.Hash
+			if config.BeaconCheckpoint != "" {
+				if c, err := hexutil.Decode(config.BeaconCheckpoint); err == nil && len(c) <= 32 {
+					copy(beaconCheckpoint[:len(c)], c)
+				}
+			}
+			leth.syncCommitteeCheckpoint = beacon.NewWeakSubjectivityCheckpoint(chainDb, (*odrDataSource)(leth), beaconCheckpoint, nil)
+			if leth.syncCommitteeCheckpoint == nil {
+				log.Error("No beacon chain checkpoint")
+				return nil, fmt.Errorf("No beacon chain checkpoint")
+			}
+			leth.syncCommitteeTracker = beacon.NewSyncCommitteeTracker(chainDb, forks, leth.syncCommitteeCheckpoint, &mclock.System{})
+			leth.syncCommitteeTracker.SubscribeToNewHeads(leth.blockchain.SetBeaconHead)
+			leth.syncCommitteeTracker.SubscribeToNewHeads(leth.odr.SetBeaconHead)
+		} else {
+			log.Error("Could not load beacon chain config file", "error", err)
+			return nil, fmt.Errorf("Could not load beacon chain config file: %v", err)
+		}
+	}
 
 	// Set up checkpoint oracle.
 	leth.oracle = leth.setupOracle(stack, genesisHash, config)
 
 	// Note: AddChildIndexer starts the update process for the child
-	leth.bloomIndexer.AddChildIndexer(leth.bloomTrieIndexer)
+	/*leth.bloomIndexer.AddChildIndexer(leth.bloomTrieIndexer)
 	leth.chtIndexer.Start(leth.blockchain)
-	leth.bloomIndexer.Start(leth.blockchain)
+	leth.bloomIndexer.Start(leth.blockchain)*/
 
 	// Start a light chain pruner to delete useless historical data.
 	leth.pruner = newPruner(chainDb, leth.chtIndexer, leth.bloomTrieIndexer)
@@ -295,9 +323,9 @@ func (s *LightEthereum) APIs() []rpc.API {
 		{
 			Namespace: "eth",
 			Service:   &LightDummyAPI{},
-		}, {
-			Namespace: "eth",
-			Service:   downloader.NewDownloaderAPI(s.handler.downloader, s.eventMux),
+			/*		}, {
+					Namespace: "eth",
+					Service:   downloader.NewDownloaderAPI(s.handler.downloader, s.eventMux),*/
 		}, {
 			Namespace: "eth",
 			Service:   filters.NewFilterAPI(s.ApiBackend, true, 5*time.Minute),
@@ -384,6 +412,10 @@ func (s *LightEthereum) Stop() error {
 
 	s.chainDb.Close()
 	s.lesDb.Close()
+	if s.syncCommitteeTracker != nil {
+		s.syncCommitteeTracker.Stop()
+		s.syncCommitteeCheckpoint.Stop()
+	}
 	s.wg.Wait()
 	log.Info("Light ethereum stopped")
 	return nil

@@ -19,12 +19,14 @@ package les
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -38,6 +40,8 @@ type serverBackend interface {
 	BlockChain() *core.BlockChain
 	TxPool() *core.TxPool
 	GetHelperTrie(typ uint, index uint64) *trie.Trie
+	BeaconChain() *beacon.BeaconChain
+	SyncCommitteeTracker() *beacon.SyncCommitteeTracker
 }
 
 // Decoder is implemented by the messages passed to the handler functions
@@ -144,6 +148,50 @@ var Les3 = map[uint64]RequestType{
 		OutTrafficMeter:  miscOutTxStatusTrafficMeter,
 		ServingTimeMeter: miscServingTimeTxStatusTimer,
 		Handle:           handleGetTxStatus,
+	},
+}
+
+// Les5 contains the request types supported by les/5     //TODO
+var Les5 = map[uint64]RequestType{
+	GetCommitteeProofsMsg: {
+		Name:             "sync committee proof request",
+		MaxCount:         MaxCommitteeUpdateFetch,
+		InPacketsMeter:   miscInCommitteeProofPacketsMeter,
+		InTrafficMeter:   miscInCommitteeProofTrafficMeter,
+		OutPacketsMeter:  miscOutCommitteeProofPacketsMeter,
+		OutTrafficMeter:  miscOutCommitteeProofTrafficMeter,
+		ServingTimeMeter: miscServingTimeCommitteeProofTimer,
+		Handle:           handleGetCommitteeProofs,
+	},
+	GetBeaconInitMsg: {
+		Name:             "beacon init request",
+		MaxCount:         1,
+		InPacketsMeter:   miscInBeaconInitPacketsMeter,
+		InTrafficMeter:   miscInBeaconInitTrafficMeter,
+		OutPacketsMeter:  miscOutBeaconInitPacketsMeter,
+		OutTrafficMeter:  miscOutBeaconInitTrafficMeter,
+		ServingTimeMeter: miscServingTimeBeaconInitTimer,
+		Handle:           handleGetBeaconInit,
+	},
+	GetBeaconDataMsg: {
+		Name:             "beacon slots request",
+		MaxCount:         MaxHeaderFetch,
+		InPacketsMeter:   miscInBeaconHeaderPacketsMeter,
+		InTrafficMeter:   miscInBeaconHeaderTrafficMeter,
+		OutPacketsMeter:  miscOutBeaconHeaderPacketsMeter,
+		OutTrafficMeter:  miscOutBeaconHeaderTrafficMeter,
+		ServingTimeMeter: miscServingTimeBeaconHeaderTimer,
+		Handle:           handleGetBeaconData,
+	},
+	GetExecHeadersMsg: {
+		Name:             "exec header request",
+		MaxCount:         MaxHeaderFetch,
+		InPacketsMeter:   miscInExecHeaderPacketsMeter,
+		InTrafficMeter:   miscInExecHeaderTrafficMeter,
+		OutPacketsMeter:  miscOutExecHeaderPacketsMeter,
+		OutTrafficMeter:  miscOutExecHeaderTrafficMeter,
+		ServingTimeMeter: miscServingTimeExecHeaderTimer,
+		Handle:           handleGetExecHeaders,
 	},
 }
 
@@ -566,4 +614,254 @@ func txStatus(b serverBackend, hash common.Hash) light.TxStatus {
 		}
 	}
 	return stat
+}
+
+func handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+	fmt.Println("*** Handling GetCommitteeProofsMsg")
+	var r GetCommitteeProofsPacket
+	if err := msg.Decode(&r); err != nil {
+		fmt.Println(" decode err", err)
+		return nil, 0, 0, err
+	}
+	fmt.Println("*** decode ok", r)
+	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+		sct := backend.SyncCommitteeTracker()
+		updates := make([]beacon.LightClientUpdate, len(r.UpdatePeriods))
+		for i, period := range r.UpdatePeriods {
+			if u := sct.GetBestUpdate(period); u != nil {
+				updates[i] = *u
+			}
+		}
+		committees := make([][]byte, len(r.CommitteePeriods))
+		for i, period := range r.CommitteePeriods {
+			committees[i] = sct.GetSerializedSyncCommittee(period, sct.GetSyncCommitteeRoot(period))
+		}
+		fmt.Println("*** sending reply", len(updates), len(committees))
+		return p.replyCommitteeProofs(r.ReqID, beacon.CommitteeReply{
+			Updates:    updates,
+			Committees: committees,
+		})
+	}, r.ReqID, uint64(len(r.UpdatePeriods) + len(r.CommitteePeriods)*CommitteeCostFactor), nil
+}
+
+func handleGetBeaconInit(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+	var r GetBeaconInitPacket
+	if err := msg.Decode(&r); err != nil {
+		return nil, 0, 0, err
+	}
+	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+		bc := backend.BeaconChain()
+		block := bc.GetBlockDataByBlockRoot(r.Checkpoint)
+		if block == nil || block.ProofFormat&beacon.HspInitData == 0 {
+			return nil
+		}
+		// create multiproof
+		var proofValues beacon.MerkleValues
+		if _, ok := beacon.TraverseProof(block.Proof().Reader(nil), beacon.NewMultiProofWriter(beacon.StateProofFormats[beacon.HspInitData], &proofValues, nil)); !ok {
+			log.Error("Multiproof format mismatch while serving GetBeaconInit")
+			return nil
+		}
+
+		/*  //TODO ???
+			if bytes += len(code); bytes >= softResponseLimit {
+			break
+		}*/
+		return p.replyBeaconInit(r.ReqID, BeaconInitResponse{
+			Header:      block.Header,
+			ProofValues: proofValues,
+		})
+	}, r.ReqID, 1, nil
+}
+
+func handleGetBeaconData(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+	var r GetBeaconDataPacket
+	if err := msg.Decode(&r); err != nil {
+		return nil, 0, 0, err
+	}
+	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+		bc := backend.BeaconChain()
+		ht := bc.GetHistoricTree(r.BlockRoot) // specified reference block needs to be close to the current head
+		if ht == nil {
+			return nil
+		}
+		refSlot := ht.HeadBlock.Header.Slot
+		lastSlot := r.LastSlot
+		if lastSlot > refSlot {
+			lastSlot = refSlot
+		}
+
+		var firstSlot uint64
+		tailSlot, _ := bc.GetTailSlots()
+		if lastSlot > r.Length+tailSlot {
+			firstSlot = lastSlot - r.Length + 1
+		} else {
+			firstSlot = tailSlot + 1
+		}
+
+		var lastBlock *beacon.BlockData
+		for {
+			if lastSlot == refSlot {
+				lastBlock = ht.HeadBlock
+				break
+			}
+			if lastBlock = bc.GetBlockData(lastSlot, ht.GetStateRoot(lastSlot), false); lastBlock != nil {
+				break
+			}
+			lastSlot++
+		}
+		blocks := make([]*beacon.BlockData, lastSlot+1-firstSlot)
+		block := lastBlock
+		for block.Header.Slot >= firstSlot {
+			blocks[int(block.Header.Slot-firstSlot)] = block
+			if block = bc.GetParent(block); block == nil {
+				log.Error("Beacon block data not found")
+				return nil
+			}
+		}
+		parentHeader := block.Header.FullHeader(block.StateRoot)
+		offset := int(firstSlot - block.Header.Slot - 1)
+		proofFormats := make([]byte, len(blocks)+offset)
+		headers := make([]beaconHeaderForTransmission, 0, len(blocks))
+		for i, blockData := range blocks {
+			if blockData != nil {
+				proofFormats[i+offset] = blockData.ProofFormat
+				headers = append(headers, beaconHeaderForTransmission{
+					ProposerIndex: blockData.Header.ProposerIndex,
+					BodyRoot:      blockData.Header.BodyRoot,
+				})
+			}
+		}
+
+		// create multiproof
+		var proofValues beacon.MerkleValues
+		if _, ok := beacon.TraverseProof(ht.HistoricStateReader(), beacon.NewMultiProofWriter(beacon.SlotRangeFormat(refSlot, firstSlot, proofFormats), &proofValues, nil)); !ok {
+			log.Error("Multiproof format mismatch while serving GetBeaconData")
+			return nil
+		}
+
+		/*  //TODO ???
+			if bytes += len(code); bytes >= softResponseLimit {
+			break
+		}*/
+		return p.replyBeaconData(r.ReqID, BeaconDataResponse{
+			ParentHeader:      parentHeader,
+			StateProofFormats: proofFormats,
+			ProofValues:       proofValues,
+			Headers:           headers,
+		})
+	}, r.ReqID, r.Length, nil
+}
+
+func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+	var r GetExecHeadersPacket
+	if err := msg.Decode(&r); err != nil {
+		return nil, 0, 0, err
+	}
+	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+		fmt.Println("*** Handling GetExecHeaders", r.ReqMode)
+		bc := backend.BeaconChain()
+		ec := backend.BlockChain()
+		var (
+			execHash     common.Hash
+			reader       beacon.ProofReader
+			leafIndex    uint64
+			historicSlot uint64
+			proofValues  beacon.MerkleValues
+		)
+
+		ht := bc.GetHistoricTree(r.BlockRoot) // specified reference block needs to be close to the current head
+		if ht == nil {
+			fmt.Println(" historic tree for ref block not found", r.BlockRoot)
+			return nil
+		}
+		refBlock := ht.HeadBlock
+
+		switch r.ReqMode {
+		case light.HeadMode:
+			fmt.Println(" head request  refBlock slot:", refBlock.Header.Slot, "  root:", refBlock.BlockRoot, "  proofFormat:", refBlock.ProofFormat)
+			reader = refBlock.Proof().Reader(nil)
+			if e, ok := refBlock.GetStateValue(beacon.BsiExecHead); ok {
+				execHash = common.Hash(e)
+			} else {
+				fmt.Println(" exec head field not found")
+				return nil
+			}
+			leafIndex = beacon.BsiExecHead
+		case light.HistoricMode:
+			block := bc.GetBlockDataByExecNumber(ht, r.HistoricNumber) //TODO is tail check needed?
+			if block == nil {
+				fmt.Println(" block not found by number")
+				return nil
+			}
+			reader = ht.HistoricStateReader()
+			if e, ok := block.GetStateValue(beacon.BsiExecHead); ok {
+				execHash = common.Hash(e)
+			} else {
+				fmt.Println(" exec head field not found")
+				return nil
+			}
+			historicSlot = block.Header.Slot
+			leafIndex = beacon.ChildIndex(beacon.SlotProofIndex(ht.HeadBlock.Header.Slot, historicSlot), beacon.BsiExecHead)
+		case light.FinalizedMode:
+			var finalBlock *beacon.BlockData
+			if finalBlockRoot, ok := refBlock.GetStateValue(beacon.BsiFinalBlock); ok {
+				finalBlock = bc.GetBlockDataByBlockRoot(common.Hash(finalBlockRoot))
+			}
+			if finalBlock == nil {
+				fmt.Println(" final block not found")
+				return nil
+			}
+			if e, ok := finalBlock.GetStateValue(beacon.BsiExecHead); ok {
+				execHash = common.Hash(e)
+			} else {
+				fmt.Println(" exec head field not found")
+				return nil
+			}
+			reader = refBlock.Proof().Reader(func(index uint64) beacon.ProofReader {
+				if index == beacon.BsiFinalBlock {
+					return finalBlock.Header.Proof(finalBlock.StateRoot).Reader(func(index uint64) beacon.ProofReader {
+						if index == beacon.BhiStateRoot {
+							return finalBlock.Proof().Reader(nil)
+						}
+						return nil
+					})
+				}
+				return nil
+			})
+			leafIndex = beacon.BsiFinalExecHash
+		default:
+			fmt.Println(" unknown request mode")
+			return nil
+		}
+		if _, ok := beacon.TraverseProof(reader, beacon.NewMultiProofWriter(beacon.NewIndexMapFormat().AddLeaf(leafIndex, nil), &proofValues, nil)); !ok {
+			log.Error("Multiproof format mismatch while serving GetExecHeaders", "mode", r.ReqMode)
+			fmt.Println(" proof format error")
+			return nil
+		}
+		headers := make([]*types.Header, int(r.Amount))
+		headerPtr := int(r.Amount)
+		if headerPtr > 0 {
+			lastRetrieved := ec.GetHeaderByHash(execHash)
+			for lastRetrieved != nil {
+				headerPtr--
+				headers[headerPtr] = lastRetrieved
+				if headerPtr == 0 {
+					break
+				}
+				lastRetrieved = ec.GetHeader(lastRetrieved.ParentHash, lastRetrieved.Number.Uint64()-1)
+			}
+			headers = headers[headerPtr:]
+		}
+
+		/*  //TODO ???
+			if bytes += len(code); bytes >= softResponseLimit {
+			break
+		}*/
+		fmt.Println(" sending reply")
+		return p.replyExecHeaders(r.ReqID, ExecHeadersResponse{
+			HistoricSlot: historicSlot,
+			ProofValues:  proofValues,
+			ExecHeaders:  headers,
+		})
+	}, r.ReqID, r.Amount, nil //TODO ???amount calculation, check
 }

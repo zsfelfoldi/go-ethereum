@@ -54,8 +54,8 @@ func (b *EthAPIBackend) ChainConfig() *params.ChainConfig {
 	return b.eth.blockchain.Config()
 }
 
-func (b *EthAPIBackend) CurrentBlock() *types.Block {
-	return b.eth.blockchain.CurrentBlock()
+func (b *EthAPIBackend) CurrentBlock(ctx context.Context) (*types.Block, error) {
+	return b.eth.blockchain.CurrentBlock(), nil
 }
 
 func (b *EthAPIBackend) SetHead(number uint64) {
@@ -361,8 +361,8 @@ func (b *EthAPIBackend) Engine() consensus.Engine {
 	return b.eth.engine
 }
 
-func (b *EthAPIBackend) CurrentHeader() *types.Header {
-	return b.eth.blockchain.CurrentHeader()
+func (b *EthAPIBackend) CurrentHeader(ctx context.Context) (*types.Header, error) {
+	return b.eth.blockchain.CurrentHeader(), nil
 }
 
 func (b *EthAPIBackend) Miner() *miner.Miner {

@@ -51,8 +51,12 @@ func (b *LesApiBackend) ChainConfig() *params.ChainConfig {
 	return b.eth.chainConfig
 }
 
-func (b *LesApiBackend) CurrentBlock() *types.Block {
-	return types.NewBlockWithHeader(b.eth.BlockChain().CurrentHeader())
+func (b *LesApiBackend) CurrentBlock(ctx context.Context) (*types.Block, error) {
+	header, err := b.eth.BlockChain().CurrentHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return types.NewBlockWithHeader(header), nil
 }
 
 func (b *LesApiBackend) SetHead(number uint64) {
@@ -64,13 +68,17 @@ func (b *LesApiBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumb
 	// Return the latest current as the pending one since there
 	// is no pending notion in the light client. TODO(rjl493456442)
 	// unify the behavior of `HeaderByNumber` and `PendingBlockAndReceipts`.
-	if number == rpc.PendingBlockNumber {
-		return b.eth.blockchain.CurrentHeader(), nil
-	}
+	//if number == rpc.LatestBlockNumber {
+	//	if number == rpc.PendingBlockNumber || number == rpc.LatestBlockNumber {
 	if number == rpc.LatestBlockNumber {
-		return b.eth.blockchain.CurrentHeader(), nil
+		return b.eth.blockchain.CurrentHeader(ctx)
 	}
-	return b.eth.blockchain.GetHeaderByNumberOdr(ctx, uint64(number))
+	//if number == rpc.FinalizedBlockNumber || number == rpc.PendingBlockNumber {
+	//	if number == rpc.FinalizedBlockNumber {
+	if number == rpc.PendingBlockNumber {
+		return b.eth.blockchain.FinalizedHeader(ctx)
+	}
+	return b.eth.blockchain.GetHeaderByNumber(ctx, uint64(number))
 }
 
 func (b *LesApiBackend) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*types.Header, error) {
@@ -85,8 +93,14 @@ func (b *LesApiBackend) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash 
 		if header == nil {
 			return nil, errors.New("header for hash not found")
 		}
-		if blockNrOrHash.RequireCanonical && b.eth.blockchain.GetCanonicalHash(header.Number.Uint64()) != hash {
-			return nil, errors.New("hash is not currently canonical")
+		if blockNrOrHash.RequireCanonical {
+			canonical, err := b.eth.blockchain.GetCanonicalHash(ctx, header.Number.Uint64())
+			if err != nil {
+				return nil, err
+			}
+			if canonical != hash {
+				return nil, errors.New("hash is not currently canonical")
+			}
 		}
 		return header, nil
 	}
@@ -94,15 +108,27 @@ func (b *LesApiBackend) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash 
 }
 
 func (b *LesApiBackend) HeaderByHash(ctx context.Context, hash common.Hash) (*types.Header, error) {
-	return b.eth.blockchain.GetHeaderByHash(hash), nil
+	return b.eth.blockchain.GetHeaderByHash(ctx, hash)
 }
 
 func (b *LesApiBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Block, error) {
-	header, err := b.HeaderByNumber(ctx, number)
-	if header == nil || err != nil {
-		return nil, err
+	//	if number == rpc.PendingBlockNumber || number == rpc.LatestBlockNumber {
+	if number == rpc.LatestBlockNumber {
+		header, err := b.eth.blockchain.CurrentHeader(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return b.eth.blockchain.GetBlockByHash(ctx, header.Hash())
 	}
-	return b.BlockByHash(ctx, header.Hash())
+	//	if number == rpc.FinalizedBlockNumber {
+	if number == rpc.PendingBlockNumber {
+		header, err := b.eth.blockchain.FinalizedHeader(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return b.eth.blockchain.GetBlockByHash(ctx, header.Hash())
+	}
+	return b.eth.blockchain.GetBlockByNumber(ctx, uint64(number))
 }
 
 func (b *LesApiBackend) BlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error) {
@@ -121,8 +147,14 @@ func (b *LesApiBackend) BlockByNumberOrHash(ctx context.Context, blockNrOrHash r
 		if block == nil {
 			return nil, errors.New("header found, but block body is missing")
 		}
-		if blockNrOrHash.RequireCanonical && b.eth.blockchain.GetCanonicalHash(block.NumberU64()) != hash {
-			return nil, errors.New("hash is not currently canonical")
+		if blockNrOrHash.RequireCanonical {
+			canonical, err := b.eth.blockchain.GetCanonicalHash(ctx, block.NumberU64())
+			if err != nil {
+				return nil, err
+			}
+			if canonical != hash {
+				return nil, errors.New("hash is not currently canonical")
+			}
 		}
 		return block, nil
 	}
@@ -149,12 +181,18 @@ func (b *LesApiBackend) StateAndHeaderByNumberOrHash(ctx context.Context, blockN
 		return b.StateAndHeaderByNumber(ctx, blockNr)
 	}
 	if hash, ok := blockNrOrHash.Hash(); ok {
-		header := b.eth.blockchain.GetHeaderByHash(hash)
-		if header == nil {
-			return nil, nil, errors.New("header for hash not found")
+		header, err := b.eth.blockchain.GetHeaderByHash(ctx, hash)
+		if err != nil {
+			return nil, nil, err
 		}
-		if blockNrOrHash.RequireCanonical && b.eth.blockchain.GetCanonicalHash(header.Number.Uint64()) != hash {
-			return nil, nil, errors.New("hash is not currently canonical")
+		if blockNrOrHash.RequireCanonical {
+			canonical, err := b.eth.blockchain.GetCanonicalHash(ctx, header.Number.Uint64())
+			if err != nil {
+				return nil, nil, err
+			}
+			if canonical != hash {
+				return nil, nil, errors.New("hash is not currently canonical")
+			}
 		}
 		return light.NewState(ctx, header, b.eth.odr), header, nil
 	}
@@ -183,12 +221,13 @@ func (b *LesApiBackend) GetTd(ctx context.Context, hash common.Hash) *big.Int {
 }
 
 func (b *LesApiBackend) GetEVM(ctx context.Context, msg core.Message, state *state.StateDB, header *types.Header, vmConfig *vm.Config) (*vm.EVM, func() error, error) {
-	if vmConfig == nil {
+	/*if vmConfig == nil {
 		vmConfig = new(vm.Config)
 	}
 	txContext := core.NewEVMTxContext(msg)
 	context := core.NewEVMBlockContext(header, b.eth.blockchain, nil)
-	return vm.NewEVM(context, txContext, state, b.eth.chainConfig, *vmConfig), state.Error, nil
+	return vm.NewEVM(context, txContext, state, b.eth.chainConfig, *vmConfig), state.Error, nil*/
+	return nil, nil, errors.New("Temporarily not supported")
 }
 
 func (b *LesApiBackend) SendTx(ctx context.Context, signedTx *types.Transaction) error {
@@ -259,7 +298,7 @@ func (b *LesApiBackend) SubscribeRemovedLogsEvent(ch chan<- core.RemovedLogsEven
 }
 
 func (b *LesApiBackend) SyncProgress() ethereum.SyncProgress {
-	return b.eth.Downloader().Progress()
+	return ethereum.SyncProgress{} //b.eth.Downloader().Progress()
 }
 
 func (b *LesApiBackend) ProtocolVersion() int {
@@ -320,8 +359,8 @@ func (b *LesApiBackend) Engine() consensus.Engine {
 	return b.eth.engine
 }
 
-func (b *LesApiBackend) CurrentHeader() *types.Header {
-	return b.eth.blockchain.CurrentHeader()
+func (b *LesApiBackend) CurrentHeader(ctx context.Context) (*types.Header, error) {
+	return b.eth.blockchain.CurrentHeader(ctx)
 }
 
 func (b *LesApiBackend) StateAtBlock(ctx context.Context, block *types.Block, reexec uint64, base *state.StateDB, checkLive bool, preferDisk bool) (*state.StateDB, error) {
