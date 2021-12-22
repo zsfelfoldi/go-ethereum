@@ -69,6 +69,9 @@ type LesServer struct {
 	servingQueue *servingQueue
 	clientPool   *vfs.ClientPool
 
+	beaconChain    *beaconChain
+	headPropagator *headPropagator
+
 	minCapacity, maxCapacity uint64
 	threadsIdle              int // Request serving threads count when system is idle.
 	threadsBusy              int // Request serving threads count when system is busy(block insertion).
@@ -87,6 +90,10 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 	if threads < 4 {
 		threads = 4
 	}
+
+	sct := newSyncCommitteeTracker(e.ChainDb(), beaconForks{{epoch: 0, version: []byte{98, 0, 0, 113}}}) //TODO beacon chain config
+	bdata := &beaconNodeApiSource{url: "http://127.0.0.1:9596"}                                          //TODO beaconData
+
 	srv := &LesServer{
 		lesCommons: lesCommons{
 			genesis:          e.BlockChain().Genesis().Hash(),
@@ -100,16 +107,20 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 			bloomTrieIndexer: light.NewBloomTrieIndexer(e.ChainDb(), nil, params.BloomBitsBlocks, params.BloomTrieFrequency, true),
 			closeCh:          make(chan struct{}),
 		},
-		archiveMode:  e.ArchiveMode(),
-		peers:        newClientPeerSet(),
-		serverset:    newServerSet(),
-		vfluxServer:  vfs.NewServer(time.Millisecond * 10),
-		fcManager:    flowcontrol.NewClientManager(nil, &mclock.System{}),
-		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
-		threadsBusy:  config.LightServ/100 + 1,
-		threadsIdle:  threads,
-		p2pSrv:       node.Server(),
+		archiveMode:    e.ArchiveMode(),
+		peers:          newClientPeerSet(),
+		serverset:      newServerSet(),
+		vfluxServer:    vfs.NewServer(time.Millisecond * 10),
+		fcManager:      flowcontrol.NewClientManager(nil, &mclock.System{}),
+		servingQueue:   newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
+		threadsBusy:    config.LightServ/100 + 1,
+		threadsIdle:    threads,
+		p2pSrv:         node.Server(),
+		beaconChain:    newBeaconChain(bdata, e.BlockChain(), sct, e.ChainDb()),
+		headPropagator: newHeadPropagator(sct, &mclock.System{}, 3),
 	}
+
+	bdata.chain = srv.beaconChain
 	issync := e.Synced
 	if config.LightNoSyncServe {
 		issync = func() bool { return true }

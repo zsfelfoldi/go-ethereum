@@ -924,6 +924,11 @@ func (p *clientPeer) replyTxStatus(reqID uint64, stats []light.TxStatus) *reply 
 	return &reply{p.rw, TxStatusMsg, reqID, data}
 }
 
+//TODO
+func (p *clientPeer) replyBeaconSlots(reqID, firstSlot uint64, proofFormats []byte, proofValues merkleValues, firstParentRoot common.Hash, headers []beaconHeaderForTransmission) *reply {
+	return nil
+}
+
 // sendAnnounce announces the availability of a number of blocks through
 // a hash notification.
 func (p *clientPeer) sendAnnounce(request announceData) error {

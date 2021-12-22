@@ -50,6 +50,8 @@ const (
 	MaxHelperTrieProofsFetch = 64  // Amount of helper tries to be fetched per retrieval request
 	MaxTxSend                = 64  // Amount of transactions to be send per request
 	MaxTxStatus              = 256 // Amount of transactions to queried per request
+	MaxUpdateFetch           = 128
+	MaxCommitteeFetch        = 8
 )
 
 var (
@@ -342,6 +344,11 @@ func (h *serverHandler) BlockChain() *core.BlockChain {
 	return h.blockchain
 }
 
+// BeaconChain implements serverBackend
+func (h *serverHandler) BeaconChain() *beaconChain {
+	return h.server.beaconChain
+}
+
 // TxPool implements serverBackend
 func (h *serverHandler) TxPool() *core.TxPool {
 	return h.txpool
@@ -413,6 +420,9 @@ func (h *serverHandler) broadcastLoop() {
 	for {
 		select {
 		case ev := <-headCh:
+			if h.server.beaconChain != nil {
+				h.server.beaconChain.setHead(common.Hash{})
+			}
 			header := ev.Block.Header()
 			hash, number := header.Hash(), header.Number.Uint64()
 			td := h.blockchain.GetTd(hash, number)

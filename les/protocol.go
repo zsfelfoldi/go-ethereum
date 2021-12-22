@@ -36,17 +36,18 @@ const (
 	lpv2 = 2
 	lpv3 = 3
 	lpv4 = 4
+	lpv5 = 5
 )
 
 // Supported versions of the les protocol (first is primary)
 var (
-	ClientProtocolVersions    = []uint{lpv2, lpv3, lpv4}
-	ServerProtocolVersions    = []uint{lpv2, lpv3, lpv4}
+	ClientProtocolVersions    = []uint{lpv2, lpv3, lpv4, lpv5}
+	ServerProtocolVersions    = []uint{lpv2, lpv3, lpv4, lpv5}
 	AdvertiseProtocolVersions = []uint{lpv2} // clients are searching for the first advertised protocol in the list
 )
 
 // Number of implemented message corresponding to different protocol versions.
-var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24}
+var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24, lpv5: 33}
 
 const (
 	NetworkId          = 1
@@ -82,6 +83,16 @@ const (
 	// Protocol messages introduced in LPV3
 	StopMsg   = 0x16
 	ResumeMsg = 0x17
+	// Protocol messages introduced in LPV5
+	AdvertiseCommitteeProofsMsg = 0x18
+	GetCommitteeProofsMsg       = 0x19
+	CommitteeProofsMsg          = 0x1a
+	GetSignedHeadersMsg         = 0x1b
+	SignedHeadersMsg            = 0x1c
+	GetBeaconSlotsMsg           = 0x1e
+	BeaconSlotsMsg              = 0x1f
+	GetExecHeadersMsg           = 0x20
+	ExecHeadersMsg              = 0x21
 )
 
 // GetBlockHeadersData represents a block header query (the request ID is not included)
@@ -138,6 +149,97 @@ type SendTxPacket struct {
 type GetTxStatusPacket struct {
 	ReqID  uint64
 	Hashes []common.Hash
+}
+
+type AdvertiseCommitteeProofsPacket struct {
+	LastPeriod uint64
+	Scores     updateScores
+}
+
+type GetCommitteeProofsPacket struct {
+	ReqID                           uint64
+	UpdatePeriods, CommitteePeriods []uint64
+}
+
+type CommitteeProofsPacket struct {
+	ReqID, BV  uint64
+	Updates    []lightClientUpdate
+	Committees [][]byte
+}
+
+type GetHeadAnnouncementsPacket struct {
+	ReqID          uint64
+	BestHeads      uint
+	MinSignerCount uint
+	Level          uint // 0: signature + beacon header  1: + exec_head proof + exec header  2: + exec_block
+	Subscribe      bool
+}
+
+type headAnnouncement struct {
+	signedBeaconHead
+	ExecProof     merkleValues
+	HeaderOrBlock []byte
+}
+
+type HeadAnnouncementsPacket struct {
+	ReqID uint64 // zero for subscription messages
+	Heads []headAnnouncement
+}
+
+type GetBeaconSlotsPacket struct {
+	ReqID           uint64
+	BeaconHead      common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
+	LastSlot        uint64      // last slot of requested range (<= beacon_head.slot)
+	MaxSlots        uint64      // maximum number of retrieved slots
+	ProofFormatMask byte        // requested state fields (where available); bits correspond to hsp* constants
+	LastBeaconHead  common.Hash `rlp:"optional"` // optional beacon block hash; retrieval stops before the common ancestor
+}
+
+// missing values are reconstructed when processing the reply:
+//  Slot = FirstSlot + StateProofFormats slice index
+//  StateRoot = StateProof.rootHash() where StateProof is extracted from the multi-proof
+//  ParentRoot = FirstParentRoot or hash of last reconstructed header
+type beaconHeaderForTransmission struct {
+	ProposerIndex uint
+	BodyRoot      common.Hash
+}
+
+type BeaconSlotsPacket struct {
+	ReqID, BV uint64
+	// MultiProof contains state proofs for the requested blocks; included state fields for each block are defined in ProofFormat
+	// - head block state is proven directly from beacon_head.state_root
+	// - states not older than 8192 slots are proven from beacon_head.state_roots[slot % 8192]
+	// - states older than 8192 slots are proven from beacon_head.historic_roots[slot / 8192].state_roots[slot % 8192]
+	FirstSlot         uint64
+	StateProofFormats []byte                        // slot index equals FirstSlot plus slice index
+	ProofValues       merkleValues                  // external value multiproof for block and state roots (format is determined by BeaconHead.Slot, LastSlot and length of ProofFormat)
+	FirstParentRoot   common.Hash                   // used for reconstructing all header parent roots
+	Headers           []beaconHeaderForTransmission // one for each slot where state proof format includes hspLongTerm
+}
+
+type GetExecHeadersPacket struct {
+	ReqID            uint64
+	ReqMode          uint        // 0: exec head  1: beacon head  1: historic  2: finalized
+	BeaconOrExecHead common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
+	HistoricNumber   uint64      // highest retrieved exec header number (for historic mode only)
+	MaxAmount        uint64      // maximum number of retrieved exec headers
+	LastExecHead     []byte      // optional exec block hash; retrieval stops before the common ancestor
+}
+
+type ExecHeadersPacket struct {
+	ReqID, BV uint64
+	// Proof path:
+	//   head mode:
+	//      beacon_head.state_root -> exec_head
+	//   historic mode (historic_slot >= beacon_head - 8192):
+	//      beacon_head.state_root -> historic_roots -> state_roots[historic_slot % 8192] -> exec_head
+	//   historic mode (historic_slot < beacon_head - 8192):
+	//      beacon_head.state_root -> historic_roots -> historic_roots[historic_slot / 8192].state_roots -> state_roots[historic_slot % 8192] -> exec_head
+	//   finalized mode:
+	//      beacon_head.state_root -> finalized_checkpoint.root -> finalized_header.state_root -> exec_head
+	HistoricSlot uint64 // the requested HistoricNumber should be checked against the last returned header number during validation
+	Proof        []byte // single proof values (path depends on ReqMode)
+	Headers      []types.Header
 }
 
 type requestInfo struct {

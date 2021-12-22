@@ -36,6 +36,7 @@ type serverBackend interface {
 	ArchiveMode() bool
 	AddTxsSync() bool
 	BlockChain() *core.BlockChain
+	BeaconChain() *beaconChain
 	TxPool() *core.TxPool
 	GetHelperTrie(typ uint, index uint64) *trie.Trie
 }
@@ -144,6 +145,40 @@ var Les3 = map[uint64]RequestType{
 		OutTrafficMeter:  miscOutTxStatusTrafficMeter,
 		ServingTimeMeter: miscServingTimeTxStatusTimer,
 		Handle:           handleGetTxStatus,
+	},
+}
+
+// Les5 contains the request types supported by les/5     //TODO
+var Les5 = map[uint64]RequestType{
+	GetCommitteeProofsMsg: {
+		Name:             "sync committee proof request",
+		MaxCount:         MaxCommitteeFetch,
+		InPacketsMeter:   miscInCommitteeProofPacketsMeter,
+		InTrafficMeter:   miscInCommitteeProofTrafficMeter,
+		OutPacketsMeter:  miscOutCommitteeProofPacketsMeter,
+		OutTrafficMeter:  miscOutCommitteeProofTrafficMeter,
+		ServingTimeMeter: miscServingTimeCommitteeProofTimer,
+		Handle:           handleGetCommitteeProofs,
+	},
+	GetBeaconSlotsMsg: {
+		Name:             "les/5 beacon header request",
+		MaxCount:         MaxHeaderFetch,
+		InPacketsMeter:   miscInBeaconHeaderPacketsMeter,
+		InTrafficMeter:   miscInBeaconHeaderTrafficMeter,
+		OutPacketsMeter:  miscOutBeaconHeaderPacketsMeter,
+		OutTrafficMeter:  miscOutBeaconHeaderTrafficMeter,
+		ServingTimeMeter: miscServingTimeBeaconHeaderTimer,
+		Handle:           handleGetBeaconSlots,
+	},
+	GetExecHeadersMsg: {
+		Name:             "les/5 exec header request",
+		MaxCount:         MaxHeaderFetch,
+		InPacketsMeter:   miscInExecHeaderPacketsMeter,
+		InTrafficMeter:   miscInExecHeaderTrafficMeter,
+		OutPacketsMeter:  miscOutExecHeaderPacketsMeter,
+		OutTrafficMeter:  miscOutExecHeaderTrafficMeter,
+		ServingTimeMeter: miscServingTimeExecHeaderTimer,
+		Handle:           handleGetExecHeaders,
 	},
 }
 
@@ -566,4 +601,146 @@ func txStatus(b serverBackend, hash common.Hash) light.TxStatus {
 		}
 	}
 	return stat
+}
+
+func handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) { //TODO
+	return nil, 0, 0, nil
+}
+
+func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) { //TODO
+	var r GetBeaconSlotsPacket
+	if err := msg.Decode(&r); err != nil {
+		return nil, 0, 0, err
+	}
+	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+		bc := backend.BeaconChain()
+		headBlock := bc.getBlockDataByBlockRoot(r.BeaconHead)
+		if headBlock == nil {
+			return nil
+		}
+		headSlot := headBlock.Header.Slot
+		lastSlot := r.LastSlot
+		if lastSlot > headSlot {
+			lastSlot = headSlot
+		}
+		var lastHead *beaconBlockData
+		if r.LastBeaconHead != (common.Hash{}) {
+			lastHead = bc.getBlockDataByBlockRoot(r.LastBeaconHead)
+		}
+
+		var (
+			firstSlot       uint64
+			firstParentRoot common.Hash
+			blocks          []*beaconBlockData
+			proofFormats    []byte
+			headers         []beaconHeaderForTransmission
+			proofValues     merkleValues
+			ht              *historicTree
+		)
+
+		if lastSlot >= r.MaxSlots+bc.tailLongTerm {
+			firstSlot = lastSlot - r.MaxSlots + 1
+		} else {
+			firstSlot = bc.tailLongTerm
+		}
+
+		if lastSlot != headSlot || r.MaxSlots > 1 || lastHead != nil {
+			// use historic tree (BeaconHead needs to be close to the current local head)
+			if ht = bc.getHistoricTree(r.BeaconHead); ht == nil {
+				return nil
+			}
+		}
+
+		extendFirst := true // apply range extension at the beginning in case of empty slots
+		// find lastHead ancestor in canonical chain, adjust firstSlot if necessary
+		for lastHead != nil && lastHead.Header.Slot+1 >= firstSlot {
+			// historic tree should exist because lastHead != nil
+			if ht.getStateRoot(lastHead.Header.Slot) == lastHead.stateRoot {
+				firstSlot = lastHead.Header.Slot + 1
+				extendFirst = false
+				break
+			}
+			lastHead = bc.getParent(lastHead)
+		}
+
+		if firstSlot <= lastSlot {
+			if r.ProofFormatMask != 0 {
+				if ht != nil {
+					// collect beacon blocks for specified range in blocks
+					// apply range extensions if necessary
+					firstBlock := bc.getBlockData(firstSlot, ht.getStateRoot(firstSlot), false)
+					for firstBlock == nil && extendFirst && firstSlot > bc.tailLongTerm {
+						firstSlot-- // extend range so that first returned slot is not empty
+						firstBlock = bc.getBlockData(firstSlot, ht.getStateRoot(firstSlot), false)
+					}
+					var lastBlock *beaconBlockData
+					for {
+						if lastSlot == headSlot {
+							lastBlock = headBlock
+							break
+						}
+						// historic tree should exist because lastSlot != headSlot
+						if lastBlock = bc.getBlockData(lastSlot, ht.getStateRoot(lastSlot), false); lastBlock != nil {
+							break
+						}
+						lastSlot++ // extend range so that last returned slot is not empty
+					}
+					blocks = make([]*beaconBlockData, lastSlot+1-firstSlot)
+					blocks[0] = firstBlock
+					for slot := firstSlot + 1; slot < lastSlot; slot++ {
+						blocks[int(slot-firstSlot)] = bc.getBlockData(slot, ht.getStateRoot(slot), false)
+					}
+					blocks[int(lastSlot-firstSlot)] = lastBlock
+				} else {
+					blocks = []*beaconBlockData{headBlock}
+				}
+				// fill proofFormats and headers
+				proofFormats = make([]byte, len(blocks))
+				headers = make([]beaconHeaderForTransmission, 0, len(blocks))
+				for i, blockData := range blocks {
+					if blockData != nil {
+						proofFormats[i] = blockData.ProofFormat & r.ProofFormatMask
+						if blockData.ProofFormat != 0 {
+							headers = append(headers, beaconHeaderForTransmission{
+								ProposerIndex: blockData.Header.ProposerIndex,
+								BodyRoot:      blockData.Header.BodyRoot,
+							})
+						}
+						if firstParentRoot == (common.Hash{}) {
+							firstParentRoot = blockData.Header.ParentRoot
+						}
+					}
+				}
+			} else {
+				// just return the state root proofs for the requested range, no range extension or LastBeaconHead check
+				proofFormats = make([]byte, int(lastSlot+1-firstSlot))
+			}
+
+			// create multiproof
+			if ht != nil && firstSlot < headSlot {
+				if _, ok := traverseProof(ht.historicStateReader(), newMultiProofWriter(slotRangeFormat(headSlot, firstSlot, proofFormats), &proofValues, nil)); !ok {
+					//TODO error log
+					return nil
+				}
+			} else {
+				if _, ok := traverseProof(headBlock.proof().reader(nil), newMultiProofWriter(stateProofFormats[proofFormats[0]], &proofValues, nil)); !ok {
+					//TODO error log
+					return nil
+				}
+			}
+		}
+
+		if ht != nil {
+			// ht.release()  //TODO
+		}
+		/*  //TODO ???
+			if bytes += len(code); bytes >= softResponseLimit {
+			break
+		}*/
+		return p.replyBeaconSlots(r.ReqID, firstSlot, proofFormats, proofValues, firstParentRoot, headers)
+	}, r.ReqID, r.MaxSlots, nil //TODO ???amount calculation
+}
+
+func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) { //TODO
+	return nil, 0, 0, nil
 }
