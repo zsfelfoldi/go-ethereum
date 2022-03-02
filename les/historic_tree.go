@@ -317,6 +317,20 @@ func slotRangeFormat(headSlot, begin uint64, stateProofFormatTypes []byte) proof
 	return headStateFormat
 }
 
+// blocks[headSlot].stateRoot -> blocks[slot].stateRoot proof index
+func slotProofIndex(headSlot, slot uint64) uint64 {
+	if slot > headSlot {
+		panic(nil)
+	}
+	if slot == headSlot {
+		return 1
+	}
+	if slot+0x2000 >= headSlot {
+		return childIndex(bsiStateRoots, 0x2000+(slot&0x1fff))
+	}
+	return childIndex(childIndex(bsiHistoricRoots, 0x4000000+(slot>>13)*2+1), 0x2000+(slot&0x1fff))
+}
+
 func stateProofsRangeFormat(begin, end uint64, stateProofFormatTypes []byte) proofFormat {
 	return stateRootsRangeFormat(begin, end, func(index uint64) proofFormat {
 		if format := stateProofFormatTypes[(index-begin)&0x1fff]; format > 0 {

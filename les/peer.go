@@ -929,6 +929,11 @@ func (p *clientPeer) replyBeaconSlots(reqID, firstSlot uint64, proofFormats []by
 	return nil
 }
 
+//TODO
+func (p *clientPeer) replyExecHeaders(reqID, historicSlot uint64, proofValues merkleValues, headers []*types.Header) *reply {
+	return nil
+}
+
 // sendAnnounce announces the availability of a number of blocks through
 // a hash notification.
 func (p *clientPeer) sendAnnounce(request announceData) error {

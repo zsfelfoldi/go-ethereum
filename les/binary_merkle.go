@@ -361,6 +361,10 @@ func printIndices(f proofFormat, index uint64) { //TODO
 	}
 }
 
+func childIndex(a, b uint64) uint64 {
+	return (a-1)<<(63-bits.LeadingZeros64(b)) + b
+}
+
 // Reader subtrees are traversed if required by the writer of if the hash of the internal
 // tree node is not available.
 func traverseProof(reader proofReader, writer proofWriter) (common.Hash, bool) {

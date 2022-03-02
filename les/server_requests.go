@@ -614,7 +614,7 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	}
 	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
 		bc := backend.BeaconChain()
-		headBlock := bc.getBlockDataByBlockRoot(r.BeaconHead)
+		headBlock := bc.getBlockDataByBlockRoot(r.BeaconHash)
 		if headBlock == nil {
 			return nil
 		}
@@ -645,8 +645,8 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 		}
 
 		if lastSlot != headSlot || r.MaxSlots > 1 || lastHead != nil {
-			// use historic tree (BeaconHead needs to be close to the current local head)
-			if ht = bc.getHistoricTree(r.BeaconHead); ht == nil {
+			// use historic tree (BeaconHash needs to be close to the current local head)
+			if ht = bc.getHistoricTree(r.BeaconHash); ht == nil {
 				return nil
 			}
 		}
@@ -741,6 +741,122 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	}, r.ReqID, r.MaxSlots, nil //TODO ???amount calculation
 }
 
-func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) { //TODO
-	return nil, 0, 0, nil
+func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+	var r GetExecHeadersPacket
+	if err := msg.Decode(&r); err != nil {
+		return nil, 0, 0, err
+	}
+	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+		bc := backend.BeaconChain()
+		ec := backend.BlockChain()
+		var (
+			refBlock     *beaconBlockData
+			execHash     common.Hash
+			reader       proofReader
+			leafIndex    uint64
+			ht           *historicTree
+			historicSlot uint64
+			proofValues  merkleValues
+		)
+		if r.ReqMode != ExecHashMode {
+			if refBlock = bc.getBlockDataByBlockRoot(r.BeaconOrExecHash); refBlock == nil {
+				return nil
+			}
+		}
+		switch r.ReqMode {
+		case ExecHashMode:
+			execHash = r.BeaconOrExecHash
+		case BeaconHashMode:
+			reader = refBlock.proof().reader(nil)
+			if e, ok := refBlock.getStateValue(bsiExecHead); ok {
+				execHash = common.Hash(e)
+			} else {
+				return nil
+			}
+			leafIndex = bsiExecHead
+		case HistoricMode:
+			// use historic tree (BeaconHash needs to be close to the current local head)
+			if ht = bc.getHistoricTree(r.BeaconOrExecHash); ht == nil {
+				//TODO ??ht.release
+				return nil
+			}
+			reader = ht.historicStateReader()
+			block := bc.getBlockDataByExecNumber(ht, r.HistoricNumber)
+			if block == nil {
+				return nil
+			}
+			if e, ok := block.getStateValue(bsiExecHead); ok {
+				execHash = common.Hash(e)
+			} else {
+				return nil
+			}
+			historicSlot = block.Header.Slot
+			leafIndex = childIndex(slotProofIndex(ht.headBlock.Header.Slot, historicSlot), bsiExecHead)
+		case FinalizedMode:
+			var finalBlock *beaconBlockData
+			if finalBlockRoot, ok := refBlock.getStateValue(bsiFinalBlock); ok {
+				finalBlock = bc.getBlockDataByBlockRoot(common.Hash(finalBlockRoot))
+			}
+			if finalBlock == nil {
+				return nil
+			}
+			if e, ok := finalBlock.getStateValue(bsiExecHead); ok {
+				execHash = common.Hash(e)
+			} else {
+				return nil
+			}
+			reader = refBlock.proof().reader(func(index uint64) proofReader {
+				if index == bsiFinalBlock {
+					return finalBlock.Header.proof(finalBlock.stateRoot).reader(func(index uint64) proofReader {
+						if index == bhiStateRoot {
+							return finalBlock.proof().reader(nil)
+						}
+						return nil
+					})
+				}
+				return nil
+			})
+			leafIndex = bsiFinalExecHash
+		default:
+			return nil
+		}
+		if reader != nil {
+			if _, ok := traverseProof(reader, newMultiProofWriter(newIndexMapFormat().addLeaf(leafIndex, nil), &proofValues, nil)); !ok {
+				//TODO error log
+				return nil
+			}
+		}
+		if ht != nil {
+			// ht.release()  //TODO
+		}
+		headers := make([]*types.Header, int(r.MaxAmount))
+		headerPtr := int(r.MaxAmount)
+		if r.MaxAmount > 0 {
+			lastRetrieved := ec.GetHeaderByHash(execHash)
+			if lastRetrieved != nil {
+				var lastHead *types.Header
+				if r.LastExecHead != (common.Hash{}) {
+					lastHead = ec.GetHeaderByHash(r.LastExecHead)
+				}
+				for lastRetrieved != nil && headerPtr > 0 {
+					for lastHead != nil && lastHead.Number.Uint64() > lastRetrieved.Number.Uint64() {
+						lastHead = ec.GetHeader(lastHead.ParentHash, lastHead.Number.Uint64()-1)
+					}
+					if lastHead != nil && lastHead.Hash() == lastRetrieved.Hash() {
+						break
+					}
+					headerPtr--
+					headers[headerPtr] = lastRetrieved
+					lastRetrieved = ec.GetHeader(lastRetrieved.ParentHash, lastRetrieved.Number.Uint64()-1)
+				}
+			}
+			headers = headers[headerPtr:]
+		}
+
+		/*  //TODO ???
+			if bytes += len(code); bytes >= softResponseLimit {
+			break
+		}*/
+		return p.replyExecHeaders(r.ReqID, historicSlot, proofValues, headers)
+	}, r.ReqID, r.MaxAmount, nil //TODO ???amount calculation, check
 }

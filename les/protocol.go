@@ -188,8 +188,8 @@ type HeadAnnouncementsPacket struct {
 
 type GetBeaconSlotsPacket struct {
 	ReqID           uint64
-	BeaconHead      common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
-	LastSlot        uint64      // last slot of requested range (<= beacon_head.slot)
+	BeaconHash      common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
+	LastSlot        uint64      // last slot of requested range (reference block is used if LastSlot is higher than its slot number)
 	MaxSlots        uint64      // maximum number of retrieved slots
 	ProofFormatMask byte        // requested state fields (where available); bits correspond to hsp* constants
 	LastBeaconHead  common.Hash `rlp:"optional"` // optional beacon block hash; retrieval stops before the common ancestor
@@ -212,34 +212,43 @@ type BeaconSlotsPacket struct {
 	// - states older than 8192 slots are proven from beacon_head.historic_roots[slot / 8192].state_roots[slot % 8192]
 	FirstSlot         uint64
 	StateProofFormats []byte                        // slot index equals FirstSlot plus slice index
-	ProofValues       merkleValues                  // external value multiproof for block and state roots (format is determined by BeaconHead.Slot, LastSlot and length of ProofFormat)
+	ProofValues       merkleValues                  // external value multiproof for block and state roots (format is determined by BeaconHash.Slot, LastSlot and length of ProofFormat)
 	FirstParentRoot   common.Hash                   // used for reconstructing all header parent roots
 	Headers           []beaconHeaderForTransmission // one for each slot where state proof format includes hspLongTerm
 }
 
+const (
+	ExecHashMode = iota
+	BeaconHashMode
+	HistoricMode
+	FinalizedMode
+)
+
 type GetExecHeadersPacket struct {
 	ReqID            uint64
-	ReqMode          uint        // 0: exec head  1: beacon head  1: historic  2: finalized
-	BeaconOrExecHead common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
+	ReqMode          uint        // 0: exec hash  1: beacon hash  1: historic  2: finalized
+	BeaconOrExecHash common.Hash // beacon or exec block hash (depending on ReqMode) used as a reference to the canonical chain state (client already has the header)
 	HistoricNumber   uint64      // highest retrieved exec header number (for historic mode only)
 	MaxAmount        uint64      // maximum number of retrieved exec headers
-	LastExecHead     []byte      // optional exec block hash; retrieval stops before the common ancestor
+	LastExecHead     common.Hash `rlp:"optional"` // optional exec block hash; retrieval stops before the common ancestor
 }
 
 type ExecHeadersPacket struct {
 	ReqID, BV uint64
-	// Proof path:
-	//   head mode:
-	//      beacon_head.state_root -> exec_head
+	// Proof format (depends on ReqMode):
+	//   exec hash mode:
+	//      no proof
+	//   beacon hash mode:
+	//      beacon_block.state_root -> exec_head
 	//   historic mode (historic_slot >= beacon_head - 8192):
-	//      beacon_head.state_root -> historic_roots -> state_roots[historic_slot % 8192] -> exec_head
+	//      beacon_block.state_root -> historic_roots -> state_roots[historic_slot % 8192] -> exec_head
 	//   historic mode (historic_slot < beacon_head - 8192):
-	//      beacon_head.state_root -> historic_roots -> historic_roots[historic_slot / 8192].state_roots -> state_roots[historic_slot % 8192] -> exec_head
+	//      beacon_block.state_root -> historic_roots -> historic_roots[historic_slot / 8192].state_roots -> state_roots[historic_slot % 8192] -> exec_head
 	//   finalized mode:
-	//      beacon_head.state_root -> finalized_checkpoint.root -> finalized_header.state_root -> exec_head
-	HistoricSlot uint64 // the requested HistoricNumber should be checked against the last returned header number during validation
-	Proof        []byte // single proof values (path depends on ReqMode)
-	Headers      []types.Header
+	//      beacon_block.state_root -> finalized_checkpoint.root -> finalized_header.state_root -> exec_head
+	HistoricSlot uint64       // the requested HistoricNumber should be checked against the last returned header number during validation
+	ProofValues  merkleValues // (format depends on ReqMode and HistoricSlot)
+	Headers      []*types.Header
 }
 
 type requestInfo struct {
@@ -268,6 +277,7 @@ var (
 		GetHelperTrieProofsMsg: {"GetHelperTrieProofs", MaxHelperTrieProofsFetch, 10, 100},
 		SendTxV2Msg:            {"SendTxV2", MaxTxSend, 1, 0},
 		GetTxStatusMsg:         {"GetTxStatus", MaxTxStatus, 10, 0},
+		//TODO les5 reqs
 	}
 	requestList    []vfc.RequestInfo
 	requestMapping map[uint32]reqMapping

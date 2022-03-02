@@ -54,11 +54,11 @@ const (
 	hspFormatCount             // number of possible format configurations
 
 	// beacon header fields
-	/*	bhiHeaderSlot          = 8
-		bhiHeaderProposerIndex = 9
-		bhiHeaderParentRoot    = 10
-		bhiHeaderStateRoot     = 11
-		bhiHeaderBodyRoot      = 12*/
+	bhiSlot          = 8
+	bhiProposerIndex = 9
+	bhiParentRoot    = 10
+	bhiStateRoot     = 11
+	bhiBodyRoot      = 12
 
 	// beacon state fields		//TODO ??? fork-ot nem kene state-bol ellenorizni?
 	bsiGenesisTime       = 32
@@ -75,6 +75,8 @@ const (
 
 	reverseSyncLimit = 128
 )
+
+var bsiFinalExecHash = childIndex(childIndex(bsiFinalBlock, bhiStateRoot), bsiExecHead)
 
 func init() {
 	// initialize header proof format
@@ -183,13 +185,17 @@ type beaconHeaderWithoutState struct {
 }
 
 func (bh *beaconHeaderWithoutState) hash(stateRoot common.Hash) common.Hash {
+	return bh.proof(stateRoot).rootHash()
+}
+
+func (bh *beaconHeaderWithoutState) proof(stateRoot common.Hash) multiProof {
 	var values [8]merkleValue //TODO ezt lehetne szebben is
 	binary.LittleEndian.PutUint64(values[0][:8], bh.Slot)
 	binary.LittleEndian.PutUint64(values[1][:8], uint64(bh.ProposerIndex))
 	values[2] = merkleValue(bh.ParentRoot)
 	values[3] = merkleValue(stateRoot)
 	values[4] = merkleValue(bh.BodyRoot)
-	return multiProof{format: newRangeFormat(8, 15, nil), values: values[:]}.rootHash()
+	return multiProof{format: newRangeFormat(8, 15, nil), values: values[:]}
 }
 
 type beaconBlockData struct {
@@ -205,12 +211,20 @@ func (block *beaconBlockData) proof() multiProof {
 	return multiProof{format: stateProofFormats[block.ProofFormat], values: block.StateProof}
 }
 
-func (block *beaconBlockData) mustGetStateValue(index uint64) merkleValue {
+func (block *beaconBlockData) getStateValue(index uint64) (merkleValue, bool) {
 	proofIndex, ok := stateProofIndexMaps[block.ProofFormat][index]
+	if !ok {
+		return merkleValue{}, false
+	}
+	return block.StateProof[proofIndex], true
+}
+
+func (block *beaconBlockData) mustGetStateValue(index uint64) merkleValue {
+	v, ok := block.getStateValue(index)
 	if !ok {
 		panic(nil)
 	}
-	return block.StateProof[proofIndex]
+	return v
 }
 
 func (block *beaconBlockData) calculateRoots() {
@@ -765,7 +779,7 @@ func (bf beaconForks) computeDomains(genesisValidatorsRoot common.Hash) {
 
 /*type GetBeaconSlotsPacket struct {
 	ReqID           uint64
-	BeaconHead      common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
+	BeaconHash      common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
 	LastSlot        uint64      // last slot of requested range (<= beacon_head.slot)
 	MaxSlots        uint64      // maximum number of retrieved slots
 	ProofFormatMask byte        // requested state fields (where available); bits correspond to hsp* constants
@@ -780,7 +794,7 @@ type BeaconSlotsPacket struct {
 	// - states older than 8192 slots are proven from beacon_head.historic_roots[slot / 8192].state_roots[slot % 8192]
 	FirstSlot         uint64
 	StateProofFormats []byte                        // slot index equals FirstSlot plus slice index
-	ProofValues       merkleValues                  // external value multiproof for block and state roots (format is determined by BeaconHead.Slot, LastSlot and length of ProofFormat)
+	ProofValues       merkleValues                  // external value multiproof for block and state roots (format is determined by BeaconHash.Slot, LastSlot and length of ProofFormat)
 	FirstParentRoot   common.Hash                   // used for reconstructing all header parent roots
 	Headers           []beaconHeaderForTransmission // one for each slot where state proof format includes hspLongTerm
 }
