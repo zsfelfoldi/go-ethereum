@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -50,8 +51,8 @@ const (
 	MaxHelperTrieProofsFetch = 64  // Amount of helper tries to be fetched per retrieval request
 	MaxTxSend                = 64  // Amount of transactions to be send per request
 	MaxTxStatus              = 256 // Amount of transactions to queried per request
-	MaxUpdateFetch           = 128
-	MaxCommitteeFetch        = 8
+	MaxUpdateFetch           = beacon.MaxUpdateFetch
+	MaxCommitteeFetch        = beacon.MaxCommitteeFetch
 )
 
 var (
@@ -345,7 +346,7 @@ func (h *serverHandler) BlockChain() *core.BlockChain {
 }
 
 // BeaconChain implements serverBackend
-func (h *serverHandler) BeaconChain() *beaconChain {
+func (h *serverHandler) BeaconChain() *beacon.BeaconChain {
 	return h.server.beaconChain
 }
 

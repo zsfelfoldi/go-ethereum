@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	vfs "github.com/ethereum/go-ethereum/les/vflux/server"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -69,8 +70,8 @@ type LesServer struct {
 	servingQueue *servingQueue
 	clientPool   *vfs.ClientPool
 
-	beaconChain    *beaconChain
-	headPropagator *headPropagator
+	beaconChain    *beacon.BeaconChain
+	headPropagator *beacon.HeadPropagator
 
 	minCapacity, maxCapacity uint64
 	threadsIdle              int // Request serving threads count when system is idle.
@@ -91,8 +92,8 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		threads = 4
 	}
 
-	sct := newSyncCommitteeTracker(e.ChainDb(), beaconForks{{epoch: 0, version: []byte{98, 0, 0, 113}}}) //TODO beacon chain config
-	bdata := &beaconNodeApiSource{url: "http://127.0.0.1:9596"}                                          //TODO beaconData
+	sct := beacon.NewSyncCommitteeTracker(e.ChainDb(), beacon.Forks{{Epoch: 0, Version: []byte{98, 0, 0, 113}}}) //TODO beacon chain config
+	bdata := &beaconNodeApiSource{url: "http://127.0.0.1:9596"}                                                  //TODO beaconData
 
 	srv := &LesServer{
 		lesCommons: lesCommons{
@@ -116,8 +117,8 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		threadsBusy:    config.LightServ/100 + 1,
 		threadsIdle:    threads,
 		p2pSrv:         node.Server(),
-		beaconChain:    newBeaconChain(bdata, e.BlockChain(), sct, e.ChainDb()),
-		headPropagator: newHeadPropagator(sct, &mclock.System{}, 3),
+		beaconChain:    beacon.NewBeaconChain(bdata, e.BlockChain(), sct, e.ChainDb()),
+		headPropagator: beacon.NewHeadPropagator(sct, &mclock.System{}, 3),
 	}
 
 	bdata.chain = srv.beaconChain

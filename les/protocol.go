@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	vfc "github.com/ethereum/go-ethereum/les/vflux/client"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/rlp"
 )
@@ -153,7 +154,7 @@ type GetTxStatusPacket struct {
 
 type AdvertiseCommitteeProofsPacket struct {
 	LastPeriod uint64
-	Scores     updateScores
+	Scores     beacon.UpdateScores
 }
 
 type GetCommitteeProofsPacket struct {
@@ -163,7 +164,7 @@ type GetCommitteeProofsPacket struct {
 
 type CommitteeProofsPacket struct {
 	ReqID, BV  uint64
-	Updates    []lightClientUpdate
+	Updates    []beacon.LightClientUpdate
 	Committees [][]byte
 }
 
@@ -176,8 +177,8 @@ type GetHeadAnnouncementsPacket struct {
 }
 
 type headAnnouncement struct {
-	signedBeaconHead
-	ExecProof     merkleValues
+	beacon.SignedHead
+	ExecProof     beacon.MerkleValues
 	HeaderOrBlock []byte
 }
 
@@ -191,7 +192,7 @@ type GetBeaconSlotsPacket struct {
 	BeaconHash      common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
 	LastSlot        uint64      // last slot of requested range (reference block is used if LastSlot is higher than its slot number)
 	MaxSlots        uint64      // maximum number of retrieved slots
-	ProofFormatMask byte        // requested state fields (where available); bits correspond to hsp* constants
+	ProofFormatMask byte        // requested state fields (where available); bits correspond to beacon.Hsp* constants
 	LastBeaconHead  common.Hash `rlp:"optional"` // optional beacon block hash; retrieval stops before the common ancestor
 }
 
@@ -211,9 +212,9 @@ type BeaconSlotsResponse struct {
 	// - states older than 8192 slots are proven from beacon_head.historic_roots[slot / 8192].state_roots[slot % 8192]
 	FirstSlot         uint64
 	StateProofFormats []byte                        // slot index equals FirstSlot plus slice index
-	ProofValues       merkleValues                  // external value multiproof for block and state roots (format is determined by BeaconHash.Slot, LastSlot and length of ProofFormat)
+	ProofValues       beacon.MerkleValues           // external value multiproof for block and state roots (format is determined by BeaconHash.Slot, LastSlot and length of ProofFormat)
 	FirstParentRoot   common.Hash                   // used for reconstructing all header parent roots
-	Headers           []beaconHeaderForTransmission // one for each slot where state proof format includes hspLongTerm
+	Headers           []beaconHeaderForTransmission // one for each slot where state proof format includes beacon.HspLongTerm
 }
 
 const (
@@ -244,8 +245,8 @@ type ExecHeadersResponse struct {
 	//      beacon_block.state_root -> historic_roots -> historic_roots[historic_slot / 8192].state_roots -> state_roots[historic_slot % 8192] -> exec_head
 	//   finalized mode:
 	//      beacon_block.state_root -> finalized_checkpoint.root -> finalized_header.state_root -> exec_head
-	HistoricSlot uint64       // the requested HistoricNumber should be checked against the last returned header number during validation
-	ProofValues  merkleValues // (format depends on ReqMode and HistoricSlot)
+	HistoricSlot uint64              // the requested HistoricNumber should be checked against the last returned header number during validation
+	ProofValues  beacon.MerkleValues // (format depends on ReqMode and HistoricSlot)
 	Headers      []*types.Header
 }
 

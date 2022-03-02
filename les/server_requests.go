@@ -25,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -36,7 +37,7 @@ type serverBackend interface {
 	ArchiveMode() bool
 	AddTxsSync() bool
 	BlockChain() *core.BlockChain
-	BeaconChain() *beaconChain
+	BeaconChain() *beacon.BeaconChain
 	TxPool() *core.TxPool
 	GetHelperTrie(typ uint, index uint64) *trie.Trie
 }
@@ -623,7 +624,7 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 		if lastSlot > headSlot {
 			lastSlot = headSlot
 		}
-		var lastHead *beaconBlockData
+		var lastHead *beacon.BlockData
 		if r.LastBeaconHead != (common.Hash{}) {
 			lastHead = bc.getBlockDataByBlockRoot(r.LastBeaconHead)
 		}
@@ -631,10 +632,10 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 		var (
 			firstSlot       uint64
 			firstParentRoot common.Hash
-			blocks          []*beaconBlockData
+			blocks          []*beacon.BlockData
 			proofFormats    []byte
 			headers         []beaconHeaderForTransmission
-			proofValues     merkleValues
+			proofValues     beacon.MerkleValues
 			ht              *historicTree
 		)
 
@@ -655,7 +656,7 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 		// find lastHead ancestor in canonical chain, adjust firstSlot if necessary
 		for lastHead != nil && lastHead.Header.Slot+1 >= firstSlot {
 			// historic tree should exist because lastHead != nil
-			if ht.getStateRoot(lastHead.Header.Slot) == lastHead.stateRoot {
+			if ht.getStateRoot(lastHead.Header.Slot) == lastHead.StateRoot {
 				firstSlot = lastHead.Header.Slot + 1
 				extendFirst = false
 				break
@@ -673,7 +674,7 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 						firstSlot-- // extend range so that first returned slot is not empty
 						firstBlock = bc.getBlockData(firstSlot, ht.getStateRoot(firstSlot), false)
 					}
-					var lastBlock *beaconBlockData
+					var lastBlock *beacon.BlockData
 					for {
 						if lastSlot == headSlot {
 							lastBlock = headBlock
@@ -685,14 +686,14 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 						}
 						lastSlot++ // extend range so that last returned slot is not empty
 					}
-					blocks = make([]*beaconBlockData, lastSlot+1-firstSlot)
+					blocks = make([]*beacon.BlockData, lastSlot+1-firstSlot)
 					blocks[0] = firstBlock
 					for slot := firstSlot + 1; slot < lastSlot; slot++ {
 						blocks[int(slot-firstSlot)] = bc.getBlockData(slot, ht.getStateRoot(slot), false)
 					}
 					blocks[int(lastSlot-firstSlot)] = lastBlock
 				} else {
-					blocks = []*beaconBlockData{headBlock}
+					blocks = []*beacon.BlockData{headBlock}
 				}
 				// fill proofFormats and headers
 				proofFormats = make([]byte, len(blocks))
@@ -718,12 +719,12 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 
 			// create multiproof
 			if ht != nil && firstSlot < headSlot {
-				if _, ok := traverseProof(ht.historicStateReader(), newMultiProofWriter(slotRangeFormat(headSlot, firstSlot, proofFormats), &proofValues, nil)); !ok {
+				if _, ok := beacon.TraverseProof(ht.historicStateReader(), beacon.NewMultiProofWriter(slotRangeFormat(headSlot, firstSlot, proofFormats), &proofValues, nil)); !ok {
 					//TODO error log
 					return nil
 				}
 			} else {
-				if _, ok := traverseProof(headBlock.proof().reader(nil), newMultiProofWriter(stateProofFormats[proofFormats[0]], &proofValues, nil)); !ok {
+				if _, ok := beacon.TraverseProof(headBlock.proof().Reader(nil), beacon.NewMultiProofWriter(beacon.StateProofFormats[proofFormats[0]], &proofValues, nil)); !ok {
 					//TODO error log
 					return nil
 				}
@@ -756,13 +757,13 @@ func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 		bc := backend.BeaconChain()
 		ec := backend.BlockChain()
 		var (
-			refBlock     *beaconBlockData
+			refBlock     *beacon.BlockData
 			execHash     common.Hash
-			reader       proofReader
+			reader       beacon.ProofReader
 			leafIndex    uint64
 			ht           *historicTree
 			historicSlot uint64
-			proofValues  merkleValues
+			proofValues  beacon.MerkleValues
 		)
 		if r.ReqMode != ExecHashMode {
 			if refBlock = bc.getBlockDataByBlockRoot(r.BeaconOrExecHash); refBlock == nil {
@@ -773,13 +774,13 @@ func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 		case ExecHashMode:
 			execHash = r.BeaconOrExecHash
 		case BeaconHashMode:
-			reader = refBlock.proof().reader(nil)
-			if e, ok := refBlock.getStateValue(bsiExecHead); ok {
+			reader = refBlock.proof().Reader(nil)
+			if e, ok := refBlock.getStateValue(beacon.BsiExecHead); ok {
 				execHash = common.Hash(e)
 			} else {
 				return nil
 			}
-			leafIndex = bsiExecHead
+			leafIndex = beacon.BsiExecHead
 		case HistoricMode:
 			// use historic tree (BeaconHash needs to be close to the current local head)
 			if ht = bc.getHistoricTree(r.BeaconOrExecHash); ht == nil {
@@ -791,43 +792,43 @@ func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 			if block == nil {
 				return nil
 			}
-			if e, ok := block.getStateValue(bsiExecHead); ok {
+			if e, ok := block.getStateValue(beacon.BsiExecHead); ok {
 				execHash = common.Hash(e)
 			} else {
 				return nil
 			}
 			historicSlot = block.Header.Slot
-			leafIndex = childIndex(slotProofIndex(ht.headBlock.Header.Slot, historicSlot), bsiExecHead)
+			leafIndex = childIndex(slotProofIndex(ht.headBlock.Header.Slot, historicSlot), beacon.BsiExecHead)
 		case FinalizedMode:
-			var finalBlock *beaconBlockData
-			if finalBlockRoot, ok := refBlock.getStateValue(bsiFinalBlock); ok {
+			var finalBlock *beacon.BlockData
+			if finalBlockRoot, ok := refBlock.getStateValue(beacon.BsiFinalBlock); ok {
 				finalBlock = bc.getBlockDataByBlockRoot(common.Hash(finalBlockRoot))
 			}
 			if finalBlock == nil {
 				return nil
 			}
-			if e, ok := finalBlock.getStateValue(bsiExecHead); ok {
+			if e, ok := finalBlock.getStateValue(beacon.BsiExecHead); ok {
 				execHash = common.Hash(e)
 			} else {
 				return nil
 			}
-			reader = refBlock.proof().reader(func(index uint64) proofReader {
-				if index == bsiFinalBlock {
-					return finalBlock.Header.proof(finalBlock.stateRoot).reader(func(index uint64) proofReader {
+			reader = refBlock.proof().Reader(func(index uint64) beacon.ProofReader {
+				if index == beacon.BsiFinalBlock {
+					return finalBlock.Header.proof(finalBlock.StateRoot).Reader(func(index uint64) beacon.ProofReader {
 						if index == bhiStateRoot {
-							return finalBlock.proof().reader(nil)
+							return finalBlock.proof().Reader(nil)
 						}
 						return nil
 					})
 				}
 				return nil
 			})
-			leafIndex = bsiFinalExecHash
+			leafIndex = beacon.BsiFinalExecHash
 		default:
 			return nil
 		}
 		if reader != nil {
-			if _, ok := traverseProof(reader, newMultiProofWriter(newIndexMapFormat().addLeaf(leafIndex, nil), &proofValues, nil)); !ok {
+			if _, ok := beacon.TraverseProof(reader, beacon.NewMultiProofWriter(beacon.NewIndexMapFormat().AddLeaf(leafIndex, nil), &proofValues, nil)); !ok {
 				//TODO error log
 				return nil
 			}

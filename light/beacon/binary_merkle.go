@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package les
+package beacon
 
 import (
 	"encoding/binary"
@@ -31,11 +31,11 @@ import (
 	"github.com/minio/sha256-simd"
 )
 
-type merkleValue [32]byte
+type MerkleValue [32]byte
 
 var (
-	merkleValueT = reflect.TypeOf(merkleValue{})
-	merkleZero   [64]merkleValue //TODO merkleValues encode
+	MerkleValueT = reflect.TypeOf(MerkleValue{})
+	merkleZero   [64]MerkleValue //TODO MerkleValues encode
 )
 
 func init() {
@@ -49,11 +49,11 @@ func init() {
 }
 
 // UnmarshalJSON parses a merkle value in hex syntax.
-func (m *merkleValue) UnmarshalJSON(input []byte) error {
-	return hexutil.UnmarshalFixedJSON(merkleValueT, input, m[:])
+func (m *MerkleValue) UnmarshalJSON(input []byte) error {
+	return hexutil.UnmarshalFixedJSON(MerkleValueT, input, m[:])
 }
 
-type merkleValues []merkleValue //TODO merkleValues RLP enc
+type MerkleValues []MerkleValue //TODO MerkleValues RLP enc
 
 // represents the database version
 type merkleList struct {
@@ -63,28 +63,28 @@ type merkleList struct {
 	zeroLevel int
 }
 
-func (m *merkleList) zeroValue(index uint64) merkleValue {
-	//	return merkleValue{}
+func (m *merkleList) zeroValue(index uint64) MerkleValue {
+	//	return MerkleValue{}
 	if i := bits.LeadingZeros64(index) + m.zeroLevel - 63; i > 0 {
 		return merkleZero[i]
 	}
-	return merkleValue{}
+	return MerkleValue{}
 }
 
-func (m *merkleList) get(period, index uint64) merkleValue {
+func (m *merkleList) get(period, index uint64) MerkleValue {
 	l := len(m.dbKey)
 	key := make([]byte, l+16)
 	copy(key[:l], m.dbKey)
 	binary.BigEndian.PutUint64(key[l:l+8], period)
 	binary.BigEndian.PutUint64(key[l+8:l+16], index)
 	if v, ok := m.cache.Get(string(key)); ok {
-		if vv, ok := v.(merkleValue); ok {
+		if vv, ok := v.(MerkleValue); ok {
 			return vv
 		} else {
 			return m.zeroValue(index)
 		}
 	}
-	var mv merkleValue
+	var mv MerkleValue
 	if v, err := m.db.Get(key); err == nil && len(v) == 32 {
 		copy(mv[:], v)
 		m.cache.Add(string(key), mv)
@@ -94,7 +94,7 @@ func (m *merkleList) get(period, index uint64) merkleValue {
 	return m.zeroValue(index)
 }
 
-func (m *merkleList) put(batch ethdb.Batch, period, index uint64, value merkleValue) {
+func (m *merkleList) put(batch ethdb.Batch, period, index uint64, value MerkleValue) {
 	l := len(m.dbKey)
 	key := make([]byte, l+16)
 	copy(key[:l], m.dbKey)
@@ -116,7 +116,7 @@ type merkleListVersion struct {
 	list     *merkleList
 	useDiffs uint32 // atomic flag, zero for the root version
 	parent   *merkleListVersion
-	diffs    map[diffIndex]merkleValue
+	diffs    map[diffIndex]MerkleValue
 }
 
 type diffIndex struct {
@@ -128,11 +128,11 @@ func (m *merkleListVersion) newChild() *merkleListVersion {
 		list:     m.list,
 		useDiffs: 1,
 		parent:   m,
-		diffs:    make(map[diffIndex]merkleValue),
+		diffs:    make(map[diffIndex]MerkleValue),
 	}
 }
 
-func (m *merkleListVersion) get(period, index uint64) merkleValue {
+func (m *merkleListVersion) get(period, index uint64) MerkleValue {
 	if atomic.LoadUint32(&m.useDiffs) == 0 {
 		value := m.list.get(period, index)
 		if atomic.LoadUint32(&m.useDiffs) == 0 {
@@ -146,7 +146,7 @@ func (m *merkleListVersion) get(period, index uint64) merkleValue {
 }
 
 // should not be called on the root version
-func (m *merkleListVersion) put(period, index uint64, value merkleValue) {
+func (m *merkleListVersion) put(period, index uint64, value MerkleValue) {
 	m.diffs[diffIndex{period, index}] = value
 }
 
@@ -163,7 +163,7 @@ func (root *merkleListVersion) commit(batch ethdb.Batch, child *merkleListVersio
 	child.parent = nil
 	child.diffs = nil
 	root.parent = child
-	root.diffs = make(map[diffIndex]merkleValue)
+	root.diffs = make(map[diffIndex]MerkleValue)
 	for i := range commitDiffs {
 		root.diffs[i] = root.list.get(i.period, i.index)
 	}
@@ -180,7 +180,7 @@ type merkleListPeriodRepeat struct {
 	depth int
 }
 
-func (m *merkleListPeriodRepeat) get(period, index uint64) merkleValue {
+func (m *merkleListPeriodRepeat) get(period, index uint64) MerkleValue {
 	depth := m.depth
 	for {
 		v := m.list.get(period, index)
@@ -192,13 +192,13 @@ func (m *merkleListPeriodRepeat) get(period, index uint64) merkleValue {
 	}
 }
 
-func (m *merkleListPeriodRepeat) put(period, index uint64, value merkleValue) {
+func (m *merkleListPeriodRepeat) put(period, index uint64, value MerkleValue) {
 	m.list.put(period, index, value)
 }
 
 type merkleListHasher merkleListPeriodRepeat
 
-var recalculateValue = merkleValue{1}
+var recalculateValue = MerkleValue{1}
 
 func newMerkleListHasher(root *merkleListVersion, depth int) *merkleListHasher {
 	return &merkleListHasher{
@@ -207,16 +207,16 @@ func newMerkleListHasher(root *merkleListVersion, depth int) *merkleListHasher {
 	}
 }
 
-func (m *merkleListHasher) get(period, index uint64) merkleValue {
+func (m *merkleListHasher) get(period, index uint64) MerkleValue {
 	mr := (*merkleListPeriodRepeat)(m)
 	v := mr.get(period, index)
 	if v != recalculateValue {
 		return v
 	}
-	var hash merkleValue
+	var hash MerkleValue
 	left := m.get(period, index*2)
 	right := m.get(period, index*2+1)
-	//if (left != merkleValue{} || right != merkleValue{}) {
+	//if (left != MerkleValue{} || right != MerkleValue{}) {
 	hasher := sha256.New()
 	hasher.Write(left[:])
 	hasher.Write(right[:])
@@ -226,7 +226,7 @@ func (m *merkleListHasher) get(period, index uint64) merkleValue {
 	return hash
 }
 
-func (m *merkleListHasher) put(period, index uint64, value merkleValue) {
+func (m *merkleListHasher) put(period, index uint64, value MerkleValue) {
 	mr := (*merkleListPeriodRepeat)(m)
 	mr.put(period, index, value)
 	index /= 2
@@ -236,8 +236,8 @@ func (m *merkleListHasher) put(period, index uint64, value merkleValue) {
 	}
 }
 
-/*func (m *merkleListHasher) getSingleProof(period, index uint64) merkleValues {
-	var proof merkleValues
+/*func (m *merkleListHasher) getSingleProof(period, index uint64) MerkleValues {
+	var proof MerkleValues
 	for index > 1 {
 		proof = append(proof, m.get(period, index^1))
 		index /= 2
@@ -247,11 +247,11 @@ func (m *merkleListHasher) put(period, index uint64, value merkleValue) {
 
 type merkleListWriter struct {
 	list          *merkleListPeriodRepeat
-	format        proofFormat
+	format        ProofFormat
 	period, index uint64
 }
 
-func (m merkleListWriter) children() (left, right proofWriter) {
+func (m merkleListWriter) children() (left, right ProofWriter) {
 	lf, rf := m.format.children()
 	if lf == nil {
 		return nil, nil
@@ -260,18 +260,18 @@ func (m merkleListWriter) children() (left, right proofWriter) {
 		merkleListWriter{list: m.list, format: rf, period: m.period, index: m.index*2 + 1}
 }
 
-func (m merkleListWriter) writeNode(node merkleValue) {
+func (m merkleListWriter) writeNode(node MerkleValue) {
 	m.list.put(m.period, m.index, node)
 }
 
-func (m *merkleListHasher) addMultiProof(period uint64, proof multiProof) {
+func (m *merkleListHasher) addMultiProof(period uint64, proof MultiProof) {
 	writer := merkleListWriter{
 		list:   (*merkleListPeriodRepeat)(m),
-		format: proof.format,
+		format: proof.Format,
 		period: period,
 		index:  1,
 	}
-	traverseProof(proof.reader(nil), writer)
+	TraverseProof(proof.Reader(nil), writer)
 }
 
 // invalidates all other diff instances based on the same merkleList
@@ -284,11 +284,11 @@ func (m *merkleListHasher) commit(batch ethdb.Batch, child *merkleListHasher) {
 	m.list.commit(batch, child.list)
 }
 
-func verifySingleProof(proof merkleValues, index uint64, value merkleValue, bottomLevel int) (common.Hash, bool) {
+func verifySingleProof(proof MerkleValues, index uint64, value MerkleValue, bottomLevel int) (common.Hash, bool) {
 	hasher := sha256.New()
 	var proofIndex int
 	for index > 1 {
-		var proofHash merkleValue
+		var proofHash MerkleValue
 		if proofIndex < len(proof) {
 			proofHash = proof[proofIndex]
 		} else {
@@ -316,30 +316,30 @@ func verifySingleProof(proof merkleValues, index uint64, value merkleValue, bott
 	return common.Hash(value), true
 }
 
-type proofFormat interface {
-	children() (left, right proofFormat) // either both or neither should be nil
+type ProofFormat interface {
+	children() (left, right ProofFormat) // either both or neither should be nil
 }
 
 // Note: the hash of each traversed node is always requested. If the hash is not available then subtrees are always
 // traversed (first left, then right). If it is available then subtrees are only traversed if needed by the writer.
-type proofReader interface {
-	children() (left, right proofReader) // subtrees accessible if not nil
-	readNode() (merkleValue, bool)       // hash should be available if children are nil, optional otherwise
+type ProofReader interface {
+	children() (left, right ProofReader) // subtrees accessible if not nil
+	readNode() (MerkleValue, bool)       // hash should be available if children are nil, optional otherwise
 }
 
-type proofWriter interface {
-	children() (left, right proofWriter) // all non-nil subtrees are traversed
-	writeNode(merkleValue)               // called for every traversed tree node (both leaf and internal)
+type ProofWriter interface {
+	children() (left, right ProofWriter) // all non-nil subtrees are traversed
+	writeNode(MerkleValue)               // called for every traversed tree node (both leaf and internal)
 }
 
-func proofIndexMap(f proofFormat) map[uint64]int { // multiproof position index -> merkleValues slice index
+func proofIndexMap(f ProofFormat) map[uint64]int { // multiproof position index -> MerkleValues slice index
 	m := make(map[uint64]int)
 	var pos int
 	addToIndexMap(m, f, &pos, 1)
 	return m
 }
 
-func addToIndexMap(m map[uint64]int, f proofFormat, pos *int, index uint64) {
+func addToIndexMap(m map[uint64]int, f ProofFormat, pos *int, index uint64) {
 	l, r := f.children()
 	if l == nil {
 		m[index] = *pos
@@ -350,7 +350,7 @@ func addToIndexMap(m map[uint64]int, f proofFormat, pos *int, index uint64) {
 	}
 }
 
-func printIndices(f proofFormat, index uint64) { //TODO
+func printIndices(f ProofFormat, index uint64) { //TODO
 	fmt.Print(" ", index)
 	if l, r := f.children(); l != nil {
 		printIndices(l, index*2)
@@ -367,8 +367,8 @@ func childIndex(a, b uint64) uint64 {
 
 // Reader subtrees are traversed if required by the writer of if the hash of the internal
 // tree node is not available.
-func traverseProof(reader proofReader, writer proofWriter) (common.Hash, bool) {
-	var wl, wr proofWriter
+func TraverseProof(reader ProofReader, writer ProofWriter) (common.Hash, bool) {
+	var wl, wr ProofWriter
 	if writer != nil {
 		wl, wr = writer.children()
 	}
@@ -388,13 +388,13 @@ func traverseProof(reader proofReader, writer proofWriter) (common.Hash, bool) {
 		return common.Hash{}, false
 	}
 	//	fmt.Print("l")
-	lhash, ok := traverseProof(rl, wl)
+	lhash, ok := TraverseProof(rl, wl)
 	//	fmt.Print("\\")
 	if !ok {
 		return common.Hash{}, false
 	}
 	//	fmt.Print("r")
-	rhash, ok := traverseProof(rr, wr)
+	rhash, ok := TraverseProof(rr, wr)
 	//	fmt.Print("\\")
 	if !ok {
 		return common.Hash{}, false
@@ -417,15 +417,15 @@ func traverseProof(reader proofReader, writer proofWriter) (common.Hash, bool) {
 }
 
 type indexMapFormat struct {
-	leaves map[uint64]proofFormat
+	leaves map[uint64]ProofFormat
 	index  uint64
 }
 
-func newIndexMapFormat() indexMapFormat {
-	return indexMapFormat{leaves: make(map[uint64]proofFormat), index: 1}
+func NewIndexMapFormat() indexMapFormat {
+	return indexMapFormat{leaves: make(map[uint64]ProofFormat), index: 1}
 }
 
-func (f indexMapFormat) addLeaf(index uint64, subtree proofFormat) indexMapFormat {
+func (f indexMapFormat) AddLeaf(index uint64, subtree ProofFormat) indexMapFormat {
 	if subtree != nil {
 		f.leaves[index] = subtree
 	}
@@ -436,7 +436,7 @@ func (f indexMapFormat) addLeaf(index uint64, subtree proofFormat) indexMapForma
 	return f
 }
 
-func (f indexMapFormat) children() (left, right proofFormat) {
+func (f indexMapFormat) children() (left, right ProofFormat) {
 	if st, ok := f.leaves[f.index]; ok {
 		if st != nil {
 			return st.children()
@@ -446,27 +446,27 @@ func (f indexMapFormat) children() (left, right proofFormat) {
 	return nil, nil
 }
 
-func parseMultiProof(proof []byte) (multiProof, error) {
+func ParseMultiProof(proof []byte) (MultiProof, error) {
 	if len(proof) < 3 || proof[0] != 1 { // ????
-		return multiProof{}, errors.New("invalid proof length")
+		return MultiProof{}, errors.New("invalid proof length")
 	}
 	leafCount := int(binary.LittleEndian.Uint16(proof[1:3]))
 	if len(proof) != leafCount*34+1 {
-		return multiProof{}, errors.New("invalid proof length")
+		return MultiProof{}, errors.New("invalid proof length")
 	}
 	valuesStart := leafCount*2 + 1
-	format := newIndexMapFormat()
+	format := NewIndexMapFormat()
 	if err := parseFormat(format.leaves, 1, proof[3:valuesStart]); err != nil {
-		return multiProof{}, err
+		return MultiProof{}, err
 	}
-	values := make(merkleValues, leafCount)
+	values := make(MerkleValues, leafCount)
 	for i := range values {
 		copy(values[i][:], proof[valuesStart+i*32:valuesStart+(i+1)*32])
 	}
-	return multiProof{format: format, values: values}, nil
+	return MultiProof{Format: format, Values: values}, nil
 }
 
-func parseFormat(leaves map[uint64]proofFormat, index uint64, format []byte) error {
+func parseFormat(leaves map[uint64]ProofFormat, index uint64, format []byte) error {
 	if len(format) == 0 {
 		return nil
 	}
@@ -484,11 +484,11 @@ func parseFormat(leaves map[uint64]proofFormat, index uint64, format []byte) err
 	return nil
 }
 
-type mergedFormat []proofFormat // earlier one has priority
+type MergedFormat []ProofFormat // earlier one has priority
 
-func (m mergedFormat) children() (left, right proofFormat) {
-	l := make(mergedFormat, 0, len(m))
-	r := make(mergedFormat, 0, len(m))
+func (m MergedFormat) children() (left, right ProofFormat) {
+	l := make(MergedFormat, 0, len(m))
+	r := make(MergedFormat, 0, len(m))
 	for _, f := range m {
 		if left, right := f.children(); left != nil {
 			l = append(l, left)
@@ -503,10 +503,10 @@ func (m mergedFormat) children() (left, right proofFormat) {
 
 type rangeFormat struct {
 	begin, end, index uint64 // begin and end should be on the same level
-	subtree           func(uint64) proofFormat
+	subtree           func(uint64) ProofFormat
 }
 
-func newRangeFormat(begin, end uint64, subtree func(uint64) proofFormat) rangeFormat {
+func NewRangeFormat(begin, end uint64, subtree func(uint64) ProofFormat) rangeFormat {
 	return rangeFormat{
 		begin:   begin,
 		end:     end,
@@ -515,7 +515,7 @@ func newRangeFormat(begin, end uint64, subtree func(uint64) proofFormat) rangeFo
 	}
 }
 
-func (rf rangeFormat) children() (left, right proofFormat) {
+func (rf rangeFormat) children() (left, right ProofFormat) {
 	lzr := bits.LeadingZeros64(rf.begin)
 	lzi := bits.LeadingZeros64(rf.index)
 	if lzi < lzr {
@@ -537,29 +537,29 @@ func (rf rangeFormat) children() (left, right proofFormat) {
 	return nil, nil
 }
 
-type multiProof struct {
-	format proofFormat
-	values merkleValues
+type MultiProof struct {
+	Format ProofFormat
+	Values MerkleValues
 }
 
-func (mp multiProof) reader(subtrees func(uint64) proofReader) *multiProofReader {
-	values := mp.values
-	return &multiProofReader{format: mp.format, values: &values, index: 1, subtrees: subtrees}
+func (mp MultiProof) Reader(subtrees func(uint64) ProofReader) *multiProofReader {
+	values := mp.Values
+	return &multiProofReader{format: mp.Format, values: &values, index: 1, subtrees: subtrees}
 }
 
-func (mp multiProof) rootHash() common.Hash {
-	hash, _ := traverseProof(mp.reader(nil), nil)
+func (mp MultiProof) rootHash() common.Hash {
+	hash, _ := TraverseProof(mp.Reader(nil), nil)
 	return hash
 }
 
 type multiProofReader struct {
-	format   proofFormat
-	values   *merkleValues
+	format   ProofFormat
+	values   *MerkleValues
 	index    uint64
-	subtrees func(uint64) proofReader
+	subtrees func(uint64) ProofReader
 }
 
-func (mpr multiProofReader) children() (left, right proofReader) {
+func (mpr multiProofReader) children() (left, right ProofReader) {
 	lf, rf := mpr.format.children()
 	if lf == nil {
 		if mpr.subtrees != nil {
@@ -573,25 +573,25 @@ func (mpr multiProofReader) children() (left, right proofReader) {
 		multiProofReader{format: rf, values: mpr.values, index: mpr.index*2 + 1, subtrees: mpr.subtrees}
 }
 
-func (mpr multiProofReader) readNode() (merkleValue, bool) {
+func (mpr multiProofReader) readNode() (MerkleValue, bool) {
 	if l, _ := mpr.format.children(); l == nil && len(*mpr.values) > 0 {
 		hash := (*mpr.values)[0]
 		*mpr.values = (*mpr.values)[1:]
 		return hash, true
 	}
-	return merkleValue{}, false
+	return MerkleValue{}, false
 }
 
-// should be checked after traverseProof if received from an untrusted source
+// should be checked after TraverseProof if received from an untrusted source
 func (mp *multiProofReader) finished() bool {
 	return len(*mp.values) == 0
 }
 
-type mergedReader []proofReader
+type MergedReader []ProofReader
 
-func (m mergedReader) children() (left, right proofReader) {
-	l := make(mergedReader, 0, len(m))
-	r := make(mergedReader, 0, len(m))
+func (m MergedReader) children() (left, right ProofReader) {
+	l := make(MergedReader, 0, len(m))
+	r := make(MergedReader, 0, len(m))
 	for _, reader := range m {
 		if left, right := reader.children(); left != nil {
 			l = append(l, left)
@@ -604,7 +604,7 @@ func (m mergedReader) children() (left, right proofReader) {
 	return nil, nil
 }
 
-func (m mergedReader) readNode() (value merkleValue, ok bool) {
+func (m MergedReader) readNode() (value MerkleValue, ok bool) {
 	var hasChildren bool
 	for _, reader := range m {
 		if left, _ := reader.children(); left != nil {
@@ -616,24 +616,24 @@ func (m mergedReader) readNode() (value merkleValue, ok bool) {
 		}
 	}
 	if hasChildren {
-		return merkleValue{}, false
+		return MerkleValue{}, false
 	}
 	return
 }
 
 type multiProofWriter struct {
-	format   proofFormat
-	values   *merkleValues
+	format   ProofFormat
+	values   *MerkleValues
 	index    uint64
-	subtrees func(uint64) proofWriter
+	subtrees func(uint64) ProofWriter
 }
 
 // subtrees are not included in format
-func newMultiProofWriter(format proofFormat, target *merkleValues, subtrees func(uint64) proofWriter) multiProofWriter {
+func NewMultiProofWriter(format ProofFormat, target *MerkleValues, subtrees func(uint64) ProofWriter) multiProofWriter {
 	return multiProofWriter{format: format, values: target, index: 1, subtrees: subtrees}
 }
 
-func (mpw multiProofWriter) children() (left, right proofWriter) {
+func (mpw multiProofWriter) children() (left, right ProofWriter) {
 	lf, rf := mpw.format.children()
 	if lf == nil {
 		if mpw.subtrees != nil {
@@ -647,7 +647,7 @@ func (mpw multiProofWriter) children() (left, right proofWriter) {
 		multiProofWriter{format: rf, values: mpw.values, index: mpw.index*2 + 1, subtrees: mpw.subtrees}
 }
 
-func (mpw multiProofWriter) writeNode(node merkleValue) {
+func (mpw multiProofWriter) writeNode(node MerkleValue) {
 	if lf, _ := mpw.format.children(); lf == nil {
 		*mpw.values = append(*mpw.values, node)
 	}
@@ -659,17 +659,17 @@ func (mpw multiProofWriter) writeNode(node merkleValue) {
 }
 
 type valueWriter struct {
-	format     proofFormat
-	values     merkleValues
+	format     ProofFormat
+	values     MerkleValues
 	index      uint64
 	storeIndex func(uint64) int // if i := storeIndex(index); i >= 0 then value at given tree index is stored in values[i]
 }
 
-func newValueWriter(format proofFormat, target merkleValues, storeIndex func(uint64) int) valueWriter {
+func NewValueWriter(format ProofFormat, target MerkleValues, storeIndex func(uint64) int) valueWriter {
 	return valueWriter{format: format, values: target, index: 1, storeIndex: storeIndex}
 }
 
-func (vw valueWriter) children() (left, right proofWriter) {
+func (vw valueWriter) children() (left, right ProofWriter) {
 	lf, rf := vw.format.children()
 	if lf == nil {
 		return nil, nil
@@ -678,15 +678,15 @@ func (vw valueWriter) children() (left, right proofWriter) {
 		valueWriter{format: rf, values: vw.values, index: vw.index*2 + 1, storeIndex: vw.storeIndex}
 }
 
-func (vw valueWriter) writeNode(node merkleValue) {
+func (vw valueWriter) writeNode(node MerkleValue) {
 	if i := vw.storeIndex(vw.index); i >= 0 {
 		vw.values[i] = node
 	}
 }
 
-type mergedWriter []proofWriter
+type mergedWriter []ProofWriter
 
-func (m mergedWriter) children() (left, right proofWriter) {
+func (m mergedWriter) children() (left, right ProofWriter) {
 	l := make(mergedWriter, 0, len(m))
 	r := make(mergedWriter, 0, len(m))
 	for _, w := range m {
@@ -701,7 +701,7 @@ func (m mergedWriter) children() (left, right proofWriter) {
 	return nil, nil
 }
 
-func (m mergedWriter) writeNode(value merkleValue) {
+func (m mergedWriter) writeNode(value MerkleValue) {
 	for _, w := range m {
 		w.writeNode(value)
 	}

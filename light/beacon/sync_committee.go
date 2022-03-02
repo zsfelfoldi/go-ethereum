@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package les
+package beacon
 
 import (
 	"bytes"
@@ -38,13 +38,17 @@ import (
 
 var (
 	initDataKey      = []byte("init") // RLP(lightClientInitData)
-	bestUpdateKey    = []byte("bu-")  // bigEndian64(syncPeriod) -> RLP(lightClientUpdate)  (nextCommittee only referenced by root hash)
+	bestUpdateKey    = []byte("bu-")  // bigEndian64(syncPeriod) -> RLP(LightClientUpdate)  (nextCommittee only referenced by root hash)
 	syncCommitteeKey = []byte("sc-")  // bigEndian64(syncPeriod) + committee root hash -> serialized committee
 )
 
-const maxUpdateInfoLength = 128
+const (
+	maxUpdateInfoLength = 128 //TODO ??same
+	MaxUpdateFetch      = 128
+	MaxCommitteeFetch   = 8
+)
 
-func (s *signedBeaconHead) calculateScore() uint64 {
+func (s *SignedHead) calculateScore() uint64 {
 	if len(s.BitMask) != 64 {
 		return 0 // signature check will filter it out later but we calculate score before sig check
 	}
@@ -65,10 +69,10 @@ func (s *signedBeaconHead) calculateScore() uint64 {
 	return baseScore + signerCount*3 + 0x800 // 0..0xC00..0xE00; 3..3.5 slots offset
 }
 
-type signedBeaconHead struct {
+type SignedHead struct {
 	BitMask   []byte
 	Signature []byte
-	Header    beaconHeader
+	Header    Header
 }
 
 type syncCommittee struct {
@@ -76,7 +80,7 @@ type syncCommittee struct {
 	aggregate *bls.Pubkey
 }
 
-type syncCommitteeTracker struct {
+type SyncCommitteeTracker struct {
 	lock                                                          sync.Mutex
 	db                                                            ethdb.Database
 	bestUpdateCache, serializedCommitteeCache, syncCommitteeCache *lru.Cache
@@ -84,15 +88,15 @@ type syncCommitteeTracker struct {
 	initData              lightClientInitData
 	nextPeriod            uint64 // first bestUpdate not stored in db
 	genesisValidatorsRoot common.Hash
-	forks                 beaconForks
+	forks                 Forks
 	updateInfo            *updateInfo
 	sentCommitteeReqs     map[uint64]chan committeeReply
 	requestTokenCh        chan struct{}
 }
 
-func newSyncCommitteeTracker(db ethdb.Database, forks beaconForks) *syncCommitteeTracker {
+func NewSyncCommitteeTracker(db ethdb.Database, forks Forks) *SyncCommitteeTracker {
 	db = rawdb.NewTable(db, "sct-")
-	s := &syncCommitteeTracker{
+	s := &SyncCommitteeTracker{
 		db:                db,
 		forks:             forks,
 		sentCommitteeReqs: make(map[uint64]chan committeeReply),
@@ -137,14 +141,14 @@ func newSyncCommitteeTracker(db ethdb.Database, forks beaconForks) *syncCommitte
 	return s
 }
 
-func (s *syncCommitteeTracker) getInitData() lightClientInitData {
+func (s *SyncCommitteeTracker) getInitData() lightClientInitData {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	return s.initData
 }
 
-func (s *syncCommitteeTracker) init(initData *lightClientInitData, committee, nextCommittee []byte) {
+func (s *SyncCommitteeTracker) init(initData *lightClientInitData, committee, nextCommittee []byte) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -165,7 +169,7 @@ func (s *syncCommitteeTracker) init(initData *lightClientInitData, committee, ne
 	s.forks.computeDomains(initData.GenesisValidatorsRoot)
 }
 
-func (s *syncCommitteeTracker) clearDb() {
+func (s *SyncCommitteeTracker) clearDb() {
 	iter := s.db.NewIterator(nil, nil)
 	for iter.Next() {
 		s.db.Delete(iter.Key())
@@ -184,20 +188,20 @@ func getBestUpdateKey(period uint64) []byte {
 	return key
 }
 
-func (s *syncCommitteeTracker) getNextPeriod() uint64 {
+func (s *SyncCommitteeTracker) getNextPeriod() uint64 {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	return s.nextPeriod
 }
 
-func (s *syncCommitteeTracker) getBestUpdate(period uint64) *lightClientUpdate {
+func (s *SyncCommitteeTracker) getBestUpdate(period uint64) *LightClientUpdate {
 	if v, ok := s.bestUpdateCache.Get(period); ok {
-		update, _ := v.(*lightClientUpdate)
+		update, _ := v.(*LightClientUpdate)
 		return update
 	}
 	if updateEnc, err := s.db.Get(getBestUpdateKey(period)); err == nil {
-		update := new(lightClientUpdate)
+		update := new(LightClientUpdate)
 		if err := rlp.DecodeBytes(updateEnc, update); err == nil {
 			update.calculateScore()
 			s.bestUpdateCache.Add(period, update)
@@ -210,11 +214,11 @@ func (s *syncCommitteeTracker) getBestUpdate(period uint64) *lightClientUpdate {
 	return nil
 }
 
-func (s *syncCommitteeTracker) storeBestUpdate(update *lightClientUpdate) {
+func (s *SyncCommitteeTracker) storeBestUpdate(update *LightClientUpdate) {
 	period := uint64(update.Header.Slot) >> 13
 	updateEnc, err := rlp.EncodeToBytes(update)
 	if err != nil {
-		log.Error("Error encoding lightClientUpdate", "error", err)
+		log.Error("Error encoding LightClientUpdate", "error", err)
 		return
 	}
 	s.bestUpdateCache.Add(period, update)
@@ -222,7 +226,7 @@ func (s *syncCommitteeTracker) storeBestUpdate(update *lightClientUpdate) {
 	s.updateInfo = nil
 }
 
-func (s *syncCommitteeTracker) deleteBestUpdate(period uint64) {
+func (s *SyncCommitteeTracker) deleteBestUpdate(period uint64) {
 	s.db.Delete(getBestUpdateKey(period))
 	s.bestUpdateCache.Remove(period)
 	s.syncCommitteeCache.Remove(period)
@@ -236,10 +240,10 @@ const (
 	sciUnexpectedError
 )
 
-func (s *syncCommitteeTracker) verifyUpdate(update *lightClientUpdate, committee *syncCommittee) bool {
+func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate, committee *syncCommittee) bool {
 	var checkRoot common.Hash
 	if update.hasFinality() {
-		if root, ok := verifySingleProof(update.FinalityBranch, bsiFinalBlock, merkleValue(update.FinalizedHeader.hash()), 0); !ok || root != update.Header.StateRoot {
+		if root, ok := verifySingleProof(update.FinalityBranch, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()), 0); !ok || root != update.Header.StateRoot {
 			fmt.Println("wrong finality proof", ok, root, update.FinalizedHeader.StateRoot)
 			return false
 		}
@@ -247,16 +251,16 @@ func (s *syncCommitteeTracker) verifyUpdate(update *lightClientUpdate, committee
 	} else {
 		checkRoot = update.Header.StateRoot
 	}
-	if root, ok := verifySingleProof(update.NextSyncCommitteeBranch, bsiNextSyncCommittee, merkleValue(update.NextSyncCommitteeRoot), 0); !ok || root != checkRoot {
+	if root, ok := verifySingleProof(update.NextSyncCommitteeBranch, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot), 0); !ok || root != checkRoot {
 		fmt.Println("wrong nsc proof", ok, root, checkRoot)
 		return false
 	}
-	return s.verifySignature(signedBeaconHead{Header: *(update.signedHeader()), Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits}, committee)
+	return s.verifySignature(SignedHead{Header: *(update.signedHeader()), Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits}, committee)
 }
 
 // returns true if nextCommittee is needed; call again
 // verifies update before inserting
-func (s *syncCommitteeTracker) insertUpdate(update *lightClientUpdate, committee *syncCommittee, nextCommittee []byte) int {
+func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, committee *syncCommittee, nextCommittee []byte) int {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -294,7 +298,7 @@ func (s *syncCommitteeTracker) insertUpdate(update *lightClientUpdate, committee
 			fmt.Println("need committee")
 			return sciNeedCommittee
 		}
-		if serializedCommitteeRoot(nextCommittee) != update.NextSyncCommitteeRoot {
+		if SerializedCommitteeRoot(nextCommittee) != update.NextSyncCommitteeRoot {
 			fmt.Println("wrong committee root")
 			return sciWrongUpdate
 		}
@@ -323,7 +327,7 @@ func getSyncCommitteeKey(period uint64, committeeRoot common.Hash) []byte {
 	return key
 }
 
-func (s *syncCommitteeTracker) getSerializedSyncCommittee(period uint64, committeeRoot common.Hash) []byte {
+func (s *SyncCommitteeTracker) getSerializedSyncCommittee(period uint64, committeeRoot common.Hash) []byte {
 	key := getSyncCommitteeKey(period, committeeRoot)
 	var committee []byte
 	if v, ok := s.serializedCommitteeCache.Get(string(key)); ok {
@@ -339,13 +343,13 @@ func (s *syncCommitteeTracker) getSerializedSyncCommittee(period uint64, committ
 	}
 }
 
-func (s *syncCommitteeTracker) storeSerializedSyncCommittee(period uint64, committeeRoot common.Hash, committee []byte) {
+func (s *SyncCommitteeTracker) storeSerializedSyncCommittee(period uint64, committeeRoot common.Hash, committee []byte) {
 	key := getSyncCommitteeKey(period, committeeRoot)
 	s.serializedCommitteeCache.Add(string(key), committee)
 	s.db.Put(key, committee)
 }
 
-func (s *syncCommitteeTracker) verifySignature(head signedBeaconHead, committee *syncCommittee) bool {
+func (s *SyncCommitteeTracker) verifySignature(head SignedHead, committee *syncCommittee) bool {
 	if len(head.Signature) != 96 || len(head.BitMask) != 64 {
 		fmt.Println("wrong sig size")
 		return false
@@ -374,7 +378,7 @@ func (s *syncCommitteeTracker) verifySignature(head signedBeaconHead, committee 
 
 	var signingRoot common.Hash
 	hasher := sha256.New()
-	headerHash := head.Header.hash()
+	headerHash := head.Header.Hash()
 	hasher.Write(headerHash[:])
 	domain := s.forks.domain(uint64(head.Header.Slot) >> 5)
 	fmt.Println("sig check domain", domain)
@@ -387,8 +391,8 @@ func (s *syncCommitteeTracker) verifySignature(head signedBeaconHead, committee 
 	return vvv
 }
 
-func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) merkleValue {
-	var forkVersion32, forkDataRoot, domain merkleValue
+func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) MerkleValue {
+	var forkVersion32, forkDataRoot, domain MerkleValue
 	hasher := sha256.New()
 	copy(forkVersion32[:len(forkVersion)], forkVersion)
 	hasher.Write(forkVersion32[:])
@@ -400,7 +404,7 @@ func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) merkle
 	return domain
 }
 
-func serializedCommitteeRoot(enc []byte) common.Hash {
+func SerializedCommitteeRoot(enc []byte) common.Hash {
 	if len(enc) != 513*48 {
 		return common.Hash{}
 	}
@@ -459,7 +463,7 @@ func deserializeSyncCommittee(enc []byte) *syncCommittee {
 	return sc
 }
 
-func (s *syncCommitteeTracker) getSyncCommitteeRoot(period uint64) common.Hash {
+func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) common.Hash {
 	if s.nextPeriod == 0 {
 		return common.Hash{}
 	}
@@ -478,7 +482,7 @@ func (s *syncCommitteeTracker) getSyncCommitteeRoot(period uint64) common.Hash {
 	return common.Hash{}
 }
 
-func (s *syncCommitteeTracker) getSyncCommittee(period uint64) *syncCommittee {
+func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) *syncCommittee {
 	//fmt.Println("sct.getSyncCommittee", period)
 	if v, ok := s.syncCommitteeCache.Get(period); ok {
 		//fmt.Println(" cached")
@@ -501,14 +505,14 @@ func (s *syncCommitteeTracker) getSyncCommittee(period uint64) *syncCommittee {
 	return nil
 }
 
-type updateScore struct {
+type UpdateScore struct {
 	signerCount, subPeriodIndex uint32
 	finalized                   bool
 }
 
-type updateScores []updateScore //TODO RLP encode to single []byte
+type UpdateScores []UpdateScore //TODO RLP encode to single []byte
 
-func (u *updateScore) encode(data []byte) {
+func (u *UpdateScore) encode(data []byte) {
 	v := u.signerCount + u.subPeriodIndex<<10
 	if u.finalized {
 		v += 0x800000
@@ -518,7 +522,7 @@ func (u *updateScore) encode(data []byte) {
 	copy(data, enc[:3])
 }
 
-func (u *updateScore) decode(data []byte) {
+func (u *UpdateScore) decode(data []byte) {
 	var enc [4]byte
 	copy(enc[:3], data)
 	v := binary.LittleEndian.Uint32(enc[:])
@@ -533,7 +537,7 @@ type updateInfo struct {
 	//NextCommitteeRoot common.Hash	//TODO not needed?
 }
 
-func (s *syncCommitteeTracker) getUpdateInfo() *updateInfo {
+func (s *SyncCommitteeTracker) getUpdateInfo() *updateInfo {
 	if s.updateInfo != nil {
 		return s.updateInfo
 	}
@@ -561,7 +565,7 @@ type committeeRequest struct {
 }
 
 type committeeReply struct {
-	Updates    []lightClientUpdate
+	Updates    []LightClientUpdate
 	Committees [][]byte
 }
 
@@ -576,7 +580,7 @@ type sctPeer interface {
 	closeChannel() chan struct{}
 }
 
-func (s *syncCommitteeTracker) synchronize(peer sctPeer, remoteInfo *updateInfo) chan bool {
+func (s *SyncCommitteeTracker) synchronize(peer sctPeer, remoteInfo *updateInfo) chan bool {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -635,7 +639,7 @@ func (s *syncCommitteeTracker) synchronize(peer sctPeer, remoteInfo *updateInfo)
 	return doneCh
 }
 
-func (s *syncCommitteeTracker) nextRequest(sp *committeeSyncProcess) committeeRequest {
+func (s *SyncCommitteeTracker) nextRequest(sp *committeeSyncProcess) committeeRequest {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -656,7 +660,7 @@ func (s *syncCommitteeTracker) nextRequest(sp *committeeSyncProcess) committeeRe
 	}
 	for period <= sp.remoteInfo.LastPeriod && len(request.UpdatePeriods) < MaxUpdateFetch && len(request.CommitteePeriods) < MaxCommitteeFetch {
 		if period <= localInfo.LastPeriod && period < sp.forkPeriod {
-			var localScore, remoteScore updateScore
+			var localScore, remoteScore UpdateScore
 			localScore.decode(localInfo.Scores[localIndex : localIndex+3])
 			remoteScore.decode(sp.remoteInfo.Scores[remoteIndex : remoteIndex+3])
 			if remoteScore.betterThan(localScore) {
@@ -674,7 +678,7 @@ func (s *syncCommitteeTracker) nextRequest(sp *committeeSyncProcess) committeeRe
 	return request
 }
 
-func (s *syncCommitteeTracker) deliverReply(reqID uint64, reply committeeReply) {
+func (s *SyncCommitteeTracker) deliverReply(reqID uint64, reply committeeReply) {
 	s.lock.Lock()
 	if deliverCh := s.sentCommitteeReqs[reqID]; deliverCh != nil {
 		deliverCh <- reply
@@ -683,7 +687,7 @@ func (s *syncCommitteeTracker) deliverReply(reqID uint64, reply committeeReply) 
 	s.lock.Unlock()
 }
 
-func (s *syncCommitteeTracker) processReply(sp *committeeSyncProcess, reply committeeReply) bool {
+func (s *SyncCommitteeTracker) processReply(sp *committeeSyncProcess, reply committeeReply) bool {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -707,7 +711,7 @@ func (s *syncCommitteeTracker) processReply(sp *committeeSyncProcess, reply comm
 
 		firstPeriod := sp.remoteInfo.LastPeriod + 1 - uint64(len(sp.remoteInfo.Scores)/3)
 		remoteInfoIndex := int(period-firstPeriod) * 3
-		var remoteInfoScore updateScore
+		var remoteInfoScore UpdateScore
 		remoteInfoScore.decode(sp.remoteInfo.Scores[remoteInfoIndex : remoteInfoIndex+3])
 		update.calculateScore()
 		if remoteInfoScore.betterThan(update.score) {
@@ -725,16 +729,16 @@ func (s *syncCommitteeTracker) processReply(sp *committeeSyncProcess, reply comm
 	return true
 }
 
-type lightClientUpdate struct {
-	Header                  beaconHeader
+type LightClientUpdate struct {
+	Header                  Header
 	NextSyncCommitteeRoot   common.Hash
-	NextSyncCommitteeBranch merkleValues
-	FinalizedHeader         beaconHeader
-	FinalityBranch          merkleValues
+	NextSyncCommitteeBranch MerkleValues
+	FinalizedHeader         Header
+	FinalityBranch          MerkleValues
 	SyncCommitteeBits       []byte
 	SyncCommitteeSignature  []byte
 	ForkVersion             []byte
-	score                   updateScore
+	score                   UpdateScore
 }
 
 type lightClientInitData struct {
@@ -743,18 +747,18 @@ type lightClientInitData struct {
 	CommitteeRoot, NextCommitteeRoot, GenesisValidatorsRoot common.Hash
 }
 
-func (l *lightClientUpdate) hasFinality() bool {
+func (l *LightClientUpdate) hasFinality() bool {
 	return l.FinalizedHeader.BodyRoot != (common.Hash{})
 }
 
-func (l *lightClientUpdate) signedHeader() *beaconHeader {
+func (l *LightClientUpdate) signedHeader() *Header {
 	/*if l.hasFinality() {
 		return &l.FinalizedHeader
 	}*/
 	return &l.Header
 }
 
-func (l *lightClientUpdate) calculateScore() {
+func (l *LightClientUpdate) calculateScore() {
 	l.score.signerCount = 0
 	for _, v := range l.SyncCommitteeBits {
 		l.score.signerCount += uint32(bits.OnesCount8(v))
@@ -763,7 +767,7 @@ func (l *lightClientUpdate) calculateScore() {
 	l.score.finalized = l.hasFinality()
 }
 
-func (u *updateScore) penalty() uint64 {
+func (u *UpdateScore) penalty() uint64 {
 	if u.signerCount == 0 {
 		return math.MaxUint64
 	}
@@ -777,7 +781,7 @@ func (u *updateScore) penalty() uint64 {
 	return p
 }
 
-func (u updateScore) betterThan(w updateScore) bool {
+func (u UpdateScore) betterThan(w UpdateScore) bool {
 	return u.penalty() < w.penalty()
 }
 
@@ -789,35 +793,35 @@ func trimZeroes(data []byte) []byte {
 	return data[:l]
 }
 
-func (l *lightClientUpdate) checkForkVersion(forks beaconForks) bool {
+func (l *LightClientUpdate) checkForkVersion(forks Forks) bool {
 	return bytes.Equal(trimZeroes(l.ForkVersion), trimZeroes(forks.version(uint64(l.signedHeader().Slot>>5))))
 }
 
 type hpPeer interface {
-	sendBeaconHead(signedBeaconHead)
+	sendBeaconHead(SignedHead)
 }
 
 type peerMap map[hpPeer]struct{}
 
 type headInfo struct {
-	head       signedBeaconHead
+	head       SignedHead
 	hash       common.Hash
 	score      uint64
 	sentTo     peerMap
 	lastUpdate mclock.AbsTime
 }
 
-type headPropagator struct {
+type HeadPropagator struct {
 	lock      sync.Mutex
-	sct       *syncCommitteeTracker
+	sct       *SyncCommitteeTracker
 	clock     mclock.Clock
 	maxCount  int         // max length of bestHead
 	bestHeads []*headInfo // short list, using linear search/sort
 	subs      []peerMap
 }
 
-func newHeadPropagator(sct *syncCommitteeTracker, clock mclock.Clock, maxCount int) *headPropagator {
-	hp := &headPropagator{
+func NewHeadPropagator(sct *SyncCommitteeTracker, clock mclock.Clock, maxCount int) *HeadPropagator {
+	hp := &HeadPropagator{
 		sct:      sct,
 		clock:    clock,
 		maxCount: maxCount,
@@ -829,7 +833,7 @@ func newHeadPropagator(sct *syncCommitteeTracker, clock mclock.Clock, maxCount i
 	return hp
 }
 
-func (hp *headPropagator) add(head signedBeaconHead) {
+func (hp *HeadPropagator) add(head SignedHead) {
 	hp.lock.Lock()
 	defer hp.lock.Unlock()
 
@@ -844,7 +848,7 @@ func (hp *headPropagator) add(head signedBeaconHead) {
 
 	h := &headInfo{
 		head:       head,
-		hash:       head.Header.hash(),
+		hash:       head.Header.Hash(),
 		score:      score,
 		sentTo:     make(peerMap),
 		lastUpdate: hp.clock.Now(),
@@ -887,11 +891,11 @@ func (hp *headPropagator) add(head signedBeaconHead) {
 	}
 }
 
-func (hp *headPropagator) getHeadsForPeer(peer hpPeer, level int, sub bool) []signedBeaconHead {
+func (hp *HeadPropagator) getHeadsForPeer(peer hpPeer, level int, sub bool) []SignedHead {
 	hp.lock.Lock()
 	defer hp.lock.Unlock()
 
-	var heads []signedBeaconHead
+	var heads []SignedHead
 	for i, head := range hp.bestHeads {
 		if i >= level {
 			break

@@ -27,6 +27,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/light/beacon"
 )
 
 type beaconNodeApiSource struct {
@@ -34,8 +35,13 @@ type beaconNodeApiSource struct {
 	url   string
 }
 
+type chainIterator interface { // no locking needed
+	GetParent(*beacon.BlockData) *beacon.BlockData
+	ProofFormatForBlock(*beacon.BlockData) byte //TODO tail-tol fuggetlen legyen? mindenesetre lockolni ne kelljen
+}
+
 // null hash -> current head
-func (bn *beaconNodeApiSource) getHeader(blockRoot common.Hash) (beaconHeader, error) {
+func (bn *beaconNodeApiSource) getHeader(blockRoot common.Hash) (beacon.Header, error) {
 	url := bn.url + "/eth/v1/beacon/headers/"
 	if blockRoot == (common.Hash{}) {
 		url += "head"
@@ -44,12 +50,12 @@ func (bn *beaconNodeApiSource) getHeader(blockRoot common.Hash) (beaconHeader, e
 	}
 	resp, err := http.Get(url)
 	if err != nil {
-		return beaconHeader{}, err
+		return beacon.Header{}, err
 	}
 	body, err := ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		return beaconHeader{}, err
+		return beacon.Header{}, err
 	}
 
 	var data struct {
@@ -57,7 +63,7 @@ func (bn *beaconNodeApiSource) getHeader(blockRoot common.Hash) (beaconHeader, e
 			Root      common.Hash `json:"root"`
 			Canonical bool        `json:"canonical"`
 			Header    struct {
-				Message   beaconHeader  `json:"message"`
+				Message   beacon.Header `json:"message"`
 				Signature hexutil.Bytes `json:"signature"`
 			} `json:"header"`
 		} `json:"data"`
@@ -65,14 +71,14 @@ func (bn *beaconNodeApiSource) getHeader(blockRoot common.Hash) (beaconHeader, e
 	//fmt.Println("header json", string(body), "url", url)
 	if err := json.Unmarshal(body, &data); err != nil {
 		fmt.Println("header unmarshal err", err)
-		return beaconHeader{}, err
+		return beacon.Header{}, err
 	}
 	header := data.Data.Header.Message
 	if blockRoot == (common.Hash{}) {
 		blockRoot = data.Data.Root
 	}
-	if header.hash() != blockRoot {
-		return beaconHeader{}, errors.New("retrieved beacon header root does not match")
+	if header.Hash() != blockRoot {
+		return beacon.Header{}, errors.New("retrieved beacon header root does not match")
 	}
 	return header, nil
 }
@@ -104,7 +110,7 @@ var statePathsInit = []string{
 }
 
 func blockStatePaths(proofFormat byte, slot, parentSlotDiff uint64) []string {
-	init := proofFormat&hspInitData != 0
+	init := proofFormat&beacon.HspInitData != 0
 	period := int((slot - parentSlotDiff) >> 13)
 	rootCount := 1
 	if parentSlotDiff > 2 {
@@ -134,28 +140,28 @@ func blockStatePaths(proofFormat byte, slot, parentSlotDiff uint64) []string {
 	return paths
 }
 
-func (bn *beaconNodeApiSource) getStateProof(stateRoot common.Hash, paths []string) (multiProof, error) {
+func (bn *beaconNodeApiSource) getStateProof(stateRoot common.Hash, paths []string) (beacon.MultiProof, error) {
 	url := bn.url + "/eth/v1/lightclient/proof/" + stateRoot.Hex() + "?paths=" + paths[0]
 	for i := 1; i < len(paths); i++ {
 		url += "&paths=" + paths[i]
 	}
 	resp, err := http.Get(url)
 	if err != nil {
-		return multiProof{}, err
+		return beacon.MultiProof{}, err
 	}
 	body, err := ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		return multiProof{}, err
+		return beacon.MultiProof{}, err
 	}
 	//fmt.Println("paths", paths, "proof length", len(body))
-	return parseMultiProof(body)
+	return beacon.ParseMultiProof(body)
 }
 
 const multiProofGroupSize = 64
 
-func (bn *beaconNodeApiSource) getMultiStateProof(stateRoot common.Hash, pathCount int, pathFn func(int) string) (proofReader, error) {
-	var reader mergedReader
+func (bn *beaconNodeApiSource) getMultiStateProof(stateRoot common.Hash, pathCount int, pathFn func(int) string) (beacon.ProofReader, error) {
+	var reader beacon.MergedReader
 	for i := 0; i < pathCount; {
 		paths := make([]string, 0, multiProofGroupSize)
 		for {
@@ -166,7 +172,7 @@ func (bn *beaconNodeApiSource) getMultiStateProof(stateRoot common.Hash, pathCou
 			}
 		}
 		if proof, err := bn.getStateProof(stateRoot, paths); err == nil {
-			reader = append(reader, proof.reader(nil))
+			reader = append(reader, proof.Reader(nil))
 		} else {
 			return nil, err
 		}
@@ -179,33 +185,33 @@ type syncAggregate struct {
 	Signature hexutil.Bytes `json:"sync_committee_signature"`
 }
 
-func (bn *beaconNodeApiSource) getHeadUpdate() (signedBeaconHead, error) {
+func (bn *beaconNodeApiSource) getHeadUpdate() (beacon.SignedHead, error) {
 	resp, err := http.Get(bn.url + "/eth/v1/beacon/head_update/")
 	if err != nil {
-		return signedBeaconHead{}, err
+		return beacon.SignedHead{}, err
 	}
 	body, err := ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		return signedBeaconHead{}, err
+		return beacon.SignedHead{}, err
 	}
 
 	var data struct {
 		Data struct {
 			Aggregate syncAggregate `json:"sync_aggregate"`
-			Header    beaconHeader  `json:"attested_header"`
+			Header    beacon.Header `json:"attested_header"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
-		return signedBeaconHead{}, err
+		return beacon.SignedHead{}, err
 	}
 	if len(data.Data.Aggregate.BitMask) != 64 {
-		return signedBeaconHead{}, errors.New("invalid sync_committee_bits length")
+		return beacon.SignedHead{}, errors.New("invalid sync_committee_bits length")
 	}
 	if len(data.Data.Aggregate.Signature) != 96 {
-		return signedBeaconHead{}, errors.New("invalid sync_committee_signature length")
+		return beacon.SignedHead{}, errors.New("invalid sync_committee_signature length")
 	}
-	return signedBeaconHead{
+	return beacon.SignedHead{
 		Header:    data.Data.Header,
 		BitMask:   data.Data.Aggregate.BitMask,
 		Signature: data.Data.Aggregate.Signature,
@@ -236,13 +242,13 @@ func (s *syncCommitteeJson) serialize() ([]byte, bool) {
 }
 
 type committeeUpdate struct {
-	Header                  beaconHeader      `json:"attested_header"`
-	NextSyncCommittee       syncCommitteeJson `json:"next_sync_committee"`
-	NextSyncCommitteeBranch merkleValues      `json:"next_sync_committee_branch"`
-	FinalizedHeader         beaconHeader      `json:"finalized_header"`
-	FinalityBranch          merkleValues      `json:"finality_branch"`
-	Aggregate               syncAggregate     `json:"sync_committee_aggregate"`
-	ForkVersion             hexutil.Bytes     `json:"fork_version"`
+	Header                  beacon.Header       `json:"attested_header"`
+	NextSyncCommittee       syncCommitteeJson   `json:"next_sync_committee"`
+	NextSyncCommitteeBranch beacon.MerkleValues `json:"next_sync_committee_branch"`
+	FinalizedHeader         beacon.Header       `json:"finalized_header"`
+	FinalityBranch          beacon.MerkleValues `json:"finality_branch"`
+	Aggregate               syncAggregate       `json:"sync_committee_aggregate"`
+	ForkVersion             hexutil.Bytes       `json:"fork_version"`
 }
 
 func (bn *beaconNodeApiSource) getCommitteeUpdate(period uint64) (committeeUpdate, error) {
@@ -274,18 +280,18 @@ func (bn *beaconNodeApiSource) getCommitteeUpdate(period uint64) (committeeUpdat
 }
 
 // assumes that ParentSlotDiff is already initialized
-func (bn *beaconNodeApiSource) getBlockState(block *beaconBlockData) error {
-	block.ProofFormat = bn.chain.proofFormatForBlock(block)
-	proof, err := bn.getStateProof(block.stateRoot, blockStatePaths(block.ProofFormat, block.Header.Slot, block.ParentSlotDiff))
+func (bn *beaconNodeApiSource) getBlockState(block *beacon.BlockData) error {
+	block.ProofFormat = bn.chain.ProofFormatForBlock(block)
+	proof, err := bn.getStateProof(block.StateRoot, blockStatePaths(block.ProofFormat, block.Header.Slot, block.ParentSlotDiff))
 	if err != nil {
 		return err
 	}
-	var stateDiffWriter, historicDiffWriter proofWriter
+	var stateDiffWriter, historicDiffWriter beacon.ProofWriter
 	if block.ParentSlotDiff >= 2 {
 		fmt.Println("StateRootsDiff", block.Header.Slot, block.ParentSlotDiff)
 		firstDiffSlot := block.Header.Slot - block.ParentSlotDiff + 1
-		block.StateRootDiffs = make(merkleValues, block.ParentSlotDiff-1)
-		stateDiffWriter = newValueWriter(stateRootsRangeFormat(firstDiffSlot, block.Header.Slot-1, nil), block.StateRootDiffs, func(index uint64) int {
+		block.StateRootDiffs = make(beacon.MerkleValues, block.ParentSlotDiff-1)
+		stateDiffWriter = beacon.NewValueWriter(beacon.StateRootsRangeFormat(firstDiffSlot, block.Header.Slot-1, nil), block.StateRootDiffs, func(index uint64) int {
 			if index < 0x2000 {
 				return -1
 			}
@@ -296,11 +302,11 @@ func (bn *beaconNodeApiSource) getBlockState(block *beaconBlockData) error {
 			return -1
 		})
 	}
-	writer := proofWriter(newMultiProofWriter(stateProofFormats[block.ProofFormat], &block.StateProof, func(index uint64) proofWriter {
-		if index == bsiStateRoots {
+	writer := beacon.ProofWriter(beacon.NewMultiProofWriter(beacon.StateProofFormats[block.ProofFormat], &block.StateProof, func(index uint64) beacon.ProofWriter {
+		if index == beacon.BsiStateRoots {
 			return stateDiffWriter
 		}
-		if index == bsiHistoricRoots {
+		if index == beacon.BsiHistoricRoots {
 			return historicDiffWriter
 		}
 		return nil
@@ -308,46 +314,46 @@ func (bn *beaconNodeApiSource) getBlockState(block *beaconBlockData) error {
 	//fmt.Print("received format:")
 	//printIndices(proof.format, 1)
 	//fmt.Print("expected format ", block.ProofFormat, ":")
-	//printIndices(stateProofFormats[block.ProofFormat], 1)
-	if root, ok := traverseProof(proof.reader(nil), writer); !ok || root != block.stateRoot {
-		fmt.Println("invalid block state proof", ok, root, block.stateRoot, block.ProofFormat)
+	//printIndices(beacon.StateProofFormats[block.ProofFormat], 1)
+	if root, ok := beacon.TraverseProof(proof.Reader(nil), writer); !ok || root != block.StateRoot {
+		fmt.Println("invalid block state proof", ok, root, block.StateRoot, block.ProofFormat)
 		return errors.New("invalid state proof")
 	}
 	fmt.Println("DIFFS", block.StateRootDiffs)
 	return nil
 }
 
-func (bn *beaconNodeApiSource) getBlocksFromHead(ctx context.Context, head common.Hash, lastHead *beaconBlockData) (blocks []*beaconBlockData, connected bool, err error) {
-	blocks = make([]*beaconBlockData, reverseSyncLimit)
-	blockPtr := reverseSyncLimit
+func (bn *beaconNodeApiSource) getBlocksFromHead(ctx context.Context, head common.Hash, lastHead *beacon.BlockData) (blocks []*beacon.BlockData, connected bool, err error) {
+	blocks = make([]*beacon.BlockData, beacon.ReverseSyncLimit)
+	blockPtr := beacon.ReverseSyncLimit
 	header, err := bn.getHeader(head)
 	if err != nil {
 		return nil, false, err
 	}
 	//fmt.Println("header", header)
-	blockRoot := header.hash()
+	blockRoot := header.Hash()
 	var firstSlot uint64
-	if header.Slot >= reverseSyncLimit {
-		firstSlot = uint64(header.Slot) + 1 - reverseSyncLimit
+	if header.Slot >= beacon.ReverseSyncLimit {
+		firstSlot = uint64(header.Slot) + 1 - beacon.ReverseSyncLimit
 	}
 	for {
 		for lastHead != nil && lastHead.Header.Slot > uint64(header.Slot) {
-			lastHead = bn.chain.getParent(lastHead)
+			lastHead = bn.chain.GetParent(lastHead)
 		}
-		if lastHead != nil && lastHead.blockRoot == blockRoot {
+		if lastHead != nil && lastHead.BlockRoot == blockRoot {
 			connected = true
 			break
 		}
 		blockPtr--
-		block := &beaconBlockData{
-			Header: beaconHeaderWithoutState{
+		block := &beacon.BlockData{
+			Header: beacon.HeaderWithoutState{
 				Slot:          uint64(header.Slot),
 				ProposerIndex: uint(header.ProposerIndex),
 				BodyRoot:      header.BodyRoot,
 				ParentRoot:    header.ParentRoot,
 			},
-			stateRoot: header.StateRoot,
-			blockRoot: blockRoot,
+			StateRoot: header.StateRoot,
+			BlockRoot: blockRoot,
 		}
 		blocks[blockPtr] = block
 		if lastHead == nil {
@@ -374,65 +380,65 @@ func (bn *beaconNodeApiSource) getBlocksFromHead(ctx context.Context, head commo
 	return
 }
 
-func (bn *beaconNodeApiSource) getRootsProof(ctx context.Context, block *beaconBlockData) (multiProof, multiProof, error) {
-	blockRootsProof, err := bn.getSingleRootsProof(block, bsiBlockRoots, "blockRoots")
+func (bn *beaconNodeApiSource) getRootsProof(ctx context.Context, block *beacon.BlockData) (beacon.MultiProof, beacon.MultiProof, error) {
+	blockRootsProof, err := bn.getSingleRootsProof(block, beacon.BsiBlockRoots, "blockRoots")
 	if err != nil {
-		return multiProof{}, multiProof{}, err
+		return beacon.MultiProof{}, beacon.MultiProof{}, err
 	}
-	stateRootsProof, err := bn.getSingleRootsProof(block, bsiStateRoots, "stateRoots")
+	stateRootsProof, err := bn.getSingleRootsProof(block, beacon.BsiStateRoots, "stateRoots")
 	if err != nil {
-		return multiProof{}, multiProof{}, err
+		return beacon.MultiProof{}, beacon.MultiProof{}, err
 	}
 	return blockRootsProof, stateRootsProof, nil
 }
 
-func (bn *beaconNodeApiSource) getSingleRootsProof(block *beaconBlockData, leafIndex uint64, id string) (multiProof, error) {
-	reader, err := bn.getMultiStateProof(block.stateRoot, 0x2000, func(i int) string {
+func (bn *beaconNodeApiSource) getSingleRootsProof(block *beacon.BlockData, leafIndex uint64, id string) (beacon.MultiProof, error) {
+	reader, err := bn.getMultiStateProof(block.StateRoot, 0x2000, func(i int) string {
 		return statePaths(id, "", i)
 	})
 	if err != nil {
-		return multiProof{}, err
+		return beacon.MultiProof{}, err
 	}
-	var values, mv merkleValues
-	format := newRangeFormat(0x2000, 0x3fff, nil)
-	pw := newMultiProofWriter(format, &values, nil)
-	writer := newMultiProofWriter(newIndexMapFormat().addLeaf(leafIndex, nil), &mv, func(index uint64) proofWriter {
+	var values, mv beacon.MerkleValues
+	format := beacon.NewRangeFormat(0x2000, 0x3fff, nil)
+	pw := beacon.NewMultiProofWriter(format, &values, nil)
+	writer := beacon.NewMultiProofWriter(beacon.NewIndexMapFormat().AddLeaf(leafIndex, nil), &mv, func(index uint64) beacon.ProofWriter {
 		if index == leafIndex {
 			return pw
 		}
 		return nil
 	})
-	if root, ok := traverseProof(reader, writer); !ok || root != block.stateRoot {
-		//fmt.Println("invalid state roots state proof", ok, root, block.stateRoot)
-		return multiProof{}, errors.New("invalid state proof")
+	if root, ok := beacon.TraverseProof(reader, writer); !ok || root != block.StateRoot {
+		//fmt.Println("invalid state roots state proof", ok, root, block.StateRoot)
+		return beacon.MultiProof{}, errors.New("invalid state proof")
 	}
-	return multiProof{format: format, values: values}, nil
+	return beacon.MultiProof{Format: format, Values: values}, nil
 }
 
-func (bn *beaconNodeApiSource) getHistoricRootsProof(ctx context.Context, block *beaconBlockData, period uint64) (multiProof, error) {
-	//proof, err := bn.getStateProof(block.stateRoot, []string{statePaths("historicalRoots", "", int(period*2)), statePaths("historicalRoots", "", int(period*2+1))})
-	proof, err := bn.getStateProof(block.stateRoot, []string{statePaths("historicalRoots", "", int(period))})
+func (bn *beaconNodeApiSource) getHistoricRootsProof(ctx context.Context, block *beacon.BlockData, period uint64) (beacon.MultiProof, error) {
+	//proof, err := bn.getStateProof(block.StateRoot, []string{statePaths("historicalRoots", "", int(period*2)), statePaths("historicalRoots", "", int(period*2+1))})
+	proof, err := bn.getStateProof(block.StateRoot, []string{statePaths("historicalRoots", "", int(period))})
 	if err != nil {
-		return multiProof{}, err
+		return beacon.MultiProof{}, err
 	}
-	var values, mv merkleValues
-	format := newRangeFormat(0x2000000+period, 0x2000000+period, nil)
-	pw := newMultiProofWriter(format, &values, nil)
-	writer := newMultiProofWriter(newIndexMapFormat().addLeaf(bsiHistoricRoots, nil), &mv, func(index uint64) proofWriter {
-		if index == bsiHistoricRoots {
+	var values, mv beacon.MerkleValues
+	format := beacon.NewRangeFormat(0x2000000+period, 0x2000000+period, nil)
+	pw := beacon.NewMultiProofWriter(format, &values, nil)
+	writer := beacon.NewMultiProofWriter(beacon.NewIndexMapFormat().AddLeaf(beacon.BsiHistoricRoots, nil), &mv, func(index uint64) beacon.ProofWriter {
+		if index == beacon.BsiHistoricRoots {
 			return pw
 		}
 		return nil
 	})
-	if root, ok := traverseProof(proof.reader(nil), writer); !ok || root != block.stateRoot {
-		//fmt.Println("invalid historic roots state proof", ok, root, block.stateRoot)
-		return multiProof{}, errors.New("invalid state proof")
+	if root, ok := beacon.TraverseProof(proof.Reader(nil), writer); !ok || root != block.StateRoot {
+		//fmt.Println("invalid historic roots state proof", ok, root, block.StateRoot)
+		return beacon.MultiProof{}, errors.New("invalid state proof")
 	}
-	return multiProof{format: format, values: values}, nil
+	return beacon.MultiProof{Format: format, Values: values}, nil
 }
 
-func (bn *beaconNodeApiSource) getSyncCommittee(block *beaconBlockData, leafIndex uint64, id string) ([]byte, error) {
-	reader, err := bn.getMultiStateProof(block.stateRoot, 513, func(i int) string {
+func (bn *beaconNodeApiSource) getSyncCommittee(block *beacon.BlockData, leafIndex uint64, id string) ([]byte, error) {
+	reader, err := bn.getMultiStateProof(block.StateRoot, 513, func(i int) string {
 		if i == 512 {
 			return statePaths(id, "aggregatePubkey", -1)
 		}
@@ -441,9 +447,9 @@ func (bn *beaconNodeApiSource) getSyncCommittee(block *beaconBlockData, leafInde
 	if err != nil {
 		return nil, err
 	}
-	values := make(merkleValues, 1026)
-	format := mergedFormat{newRangeFormat(0x800, 0xbff, nil), newRangeFormat(6, 7, nil)}
-	vw := newValueWriter(format, values, func(index uint64) int {
+	values := make(beacon.MerkleValues, 1026)
+	format := beacon.MergedFormat{beacon.NewRangeFormat(0x800, 0xbff, nil), beacon.NewRangeFormat(6, 7, nil)}
+	vw := beacon.NewValueWriter(format, values, func(index uint64) int {
 		if index >= 6 && index <= 7 {
 			return int(index + 1024 - 6)
 		}
@@ -452,15 +458,15 @@ func (bn *beaconNodeApiSource) getSyncCommittee(block *beaconBlockData, leafInde
 		}
 		return int(index - 0x800)
 	})
-	mv := new(merkleValues)
-	writer := proofWriter(newMultiProofWriter(newIndexMapFormat().addLeaf(leafIndex, nil), mv, func(index uint64) proofWriter {
+	mv := new(beacon.MerkleValues)
+	writer := beacon.ProofWriter(beacon.NewMultiProofWriter(beacon.NewIndexMapFormat().AddLeaf(leafIndex, nil), mv, func(index uint64) beacon.ProofWriter {
 		if index == leafIndex {
 			return vw
 		}
 		return nil
 	}))
-	if root, ok := traverseProof(reader, writer); !ok || root != block.stateRoot {
-		fmt.Println("invalid sync committee state proof", ok, root, block.stateRoot)
+	if root, ok := beacon.TraverseProof(reader, writer); !ok || root != block.StateRoot {
+		fmt.Println("invalid sync committee state proof", ok, root, block.StateRoot)
 		return nil, errors.New("invalid state proof")
 	}
 	committee := make([]byte, 513*48)
@@ -476,19 +482,19 @@ func (bn *beaconNodeApiSource) getSyncCommittee(block *beaconBlockData, leafInde
 	return committee, nil
 }
 
-func (bn *beaconNodeApiSource) getSyncCommittees(ctx context.Context, block *beaconBlockData) ([]byte, []byte, error) {
-	committee, err := bn.getSyncCommittee(block, bsiSyncCommittee, "currentSyncCommittee")
+func (bn *beaconNodeApiSource) getSyncCommittees(ctx context.Context, block *beacon.BlockData) ([]byte, []byte, error) {
+	committee, err := bn.getSyncCommittee(block, beacon.BsiSyncCommittee, "currentSyncCommittee")
 	if err != nil {
 		return nil, nil, err
 	}
-	nextCommittee, err := bn.getSyncCommittee(block, bsiNextSyncCommittee, "nextSyncCommittee")
+	nextCommittee, err := bn.getSyncCommittee(block, beacon.BsiNextSyncCommittee, "nextSyncCommittee")
 	if err != nil {
 		return nil, nil, err
 	}
 	return committee, nextCommittee, nil
 }
 
-func (bn *beaconNodeApiSource) getBestUpdate(ctx context.Context, period uint64) (*lightClientUpdate, []byte, error) {
+func (bn *beaconNodeApiSource) getBestUpdate(ctx context.Context, period uint64) (*beacon.LightClientUpdate, []byte, error) {
 	c, err := bn.getCommitteeUpdate(period)
 	if err != nil {
 		return nil, nil, err
@@ -497,9 +503,9 @@ func (bn *beaconNodeApiSource) getBestUpdate(ctx context.Context, period uint64)
 	if !ok {
 		return nil, nil, errors.New("invalid sync committee")
 	}
-	return &lightClientUpdate{
+	return &beacon.LightClientUpdate{
 		Header:                  c.Header,
-		NextSyncCommitteeRoot:   serializedCommitteeRoot(committee),
+		NextSyncCommitteeRoot:   beacon.SerializedCommitteeRoot(committee),
 		NextSyncCommitteeBranch: c.NextSyncCommitteeBranch,
 		FinalizedHeader:         c.FinalizedHeader,
 		FinalityBranch:          c.FinalityBranch,
