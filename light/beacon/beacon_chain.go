@@ -76,7 +76,7 @@ const (
 	ReverseSyncLimit = 128
 )
 
-var BsiFinalExecHash = childIndex(childIndex(BsiFinalBlock, BhiStateRoot), BsiExecHead)
+var BsiFinalExecHash = ChildIndex(ChildIndex(BsiFinalBlock, BhiStateRoot), BsiExecHead)
 
 func init() {
 	// initialize header proof format
@@ -110,11 +110,11 @@ func init() {
 
 type beaconData interface {
 	// if connected is false then first block is not expected to have ParentSlotDiff and StateRootDiffs set but is expected to have HspInitData
-	getBlocksFromHead(ctx context.Context, head common.Hash, lastHead *BlockData) (blocks []*BlockData, connected bool, err error)
-	getRootsProof(ctx context.Context, block *BlockData) (MultiProof, MultiProof, error)
-	getHistoricRootsProof(ctx context.Context, block *BlockData, period uint64) (MultiProof, error)
-	getSyncCommittees(ctx context.Context, block *BlockData) ([]byte, []byte, error)
-	getBestUpdate(ctx context.Context, period uint64) (*LightClientUpdate, []byte, error)
+	GetBlocksFromHead(ctx context.Context, head common.Hash, lastHead *BlockData) (blocks []*BlockData, connected bool, err error)
+	GetRootsProof(ctx context.Context, block *BlockData) (MultiProof, MultiProof, error)
+	GetHistoricRootsProof(ctx context.Context, block *BlockData, period uint64) (MultiProof, error)
+	GetSyncCommittees(ctx context.Context, block *BlockData) ([]byte, []byte, error)
+	GetBestUpdate(ctx context.Context, period uint64) (*LightClientUpdate, []byte, error)
 }
 
 /*type beaconBackfillData interface {
@@ -144,14 +144,14 @@ type BeaconChain struct {
 	execNumberCacheMu sync.RWMutex //TODO ???
 	execNumberCache   *lru.Cache   // uint64(execNumber) -> []struct{slot, stateRoot}
 
-	chainMu                                   sync.Mutex
-	headSlot                                  uint64
-	headHash                                  common.Hash
-	tailShortTerm, tailLongTerm, tailInitData uint64 // shortTerm >= initData >= longTerm
-	blockRoots, stateRoots, historicRoots     *merkleListVersion
+	chainMu                               sync.RWMutex
+	headSlot                              uint64
+	headHash                              common.Hash
+	tailShortTerm, tailLongTerm           uint64 // shortTerm >= longTerm
+	blockRoots, stateRoots, historicRoots *merkleListVersion
 
 	historicMu    sync.RWMutex
-	historicTrees map[common.Hash]*historicTree
+	historicTrees map[common.Hash]*HistoricTree
 }
 
 type Header struct {
@@ -180,10 +180,10 @@ type HeaderWithoutState struct {
 }
 
 func (bh *HeaderWithoutState) hash(stateRoot common.Hash) common.Hash {
-	return bh.proof(stateRoot).rootHash()
+	return bh.Proof(stateRoot).rootHash()
 }
 
-func (bh *HeaderWithoutState) proof(stateRoot common.Hash) MultiProof {
+func (bh *HeaderWithoutState) Proof(stateRoot common.Hash) MultiProof {
 	var values [8]MerkleValue //TODO ezt lehetne szebben is
 	binary.LittleEndian.PutUint64(values[0][:8], bh.Slot)
 	binary.LittleEndian.PutUint64(values[1][:8], uint64(bh.ProposerIndex))
@@ -203,11 +203,11 @@ type BlockData struct {
 	StateRootDiffs MerkleValues // only valid if ParentSlotDiff is initialized
 }
 
-func (block *BlockData) proof() MultiProof {
+func (block *BlockData) Proof() MultiProof {
 	return MultiProof{Format: StateProofFormats[block.ProofFormat], Values: block.StateProof}
 }
 
-func (block *BlockData) getStateValue(index uint64) (MerkleValue, bool) {
+func (block *BlockData) GetStateValue(index uint64) (MerkleValue, bool) {
 	proofIndex, ok := stateProofIndexMaps[block.ProofFormat][index]
 	if !ok {
 		return MerkleValue{}, false
@@ -216,7 +216,7 @@ func (block *BlockData) getStateValue(index uint64) (MerkleValue, bool) {
 }
 
 func (block *BlockData) mustGetStateValue(index uint64) MerkleValue {
-	v, ok := block.getStateValue(index)
+	v, ok := block.GetStateValue(index)
 	if !ok {
 		panic(nil)
 	}
@@ -224,7 +224,7 @@ func (block *BlockData) mustGetStateValue(index uint64) MerkleValue {
 }
 
 func (block *BlockData) calculateRoots() {
-	block.StateRoot = block.proof().rootHash()
+	block.StateRoot = block.Proof().rootHash()
 	block.BlockRoot = block.Header.hash(block.StateRoot)
 }
 
@@ -247,7 +247,7 @@ func NewBeaconChain(dataSource beaconData, execChain execChain, sct *SyncCommitt
 		var ht beaconHeadTailInfo
 		if rlp.DecodeBytes(enc, &ht) == nil {
 			bc.headSlot, bc.headHash = ht.HeadSlot, ht.HeadHash
-			bc.tailShortTerm, bc.tailLongTerm, bc.tailInitData = ht.TailShortTerm, ht.TailLongTerm, ht.TailInitData
+			bc.tailShortTerm, bc.tailLongTerm = ht.TailShortTerm, ht.TailLongTerm
 		}
 	}
 	if bc.headHash == (common.Hash{}) {
@@ -257,9 +257,9 @@ func NewBeaconChain(dataSource beaconData, execChain execChain, sct *SyncCommitt
 }
 
 type beaconHeadTailInfo struct {
-	HeadSlot                                  uint64
-	HeadHash                                  common.Hash
-	TailShortTerm, TailLongTerm, TailInitData uint64
+	HeadSlot                    uint64
+	HeadHash                    common.Hash
+	TailShortTerm, TailLongTerm uint64
 }
 
 func (bc *BeaconChain) storeHeadTail(batch ethdb.Batch) {
@@ -268,7 +268,6 @@ func (bc *BeaconChain) storeHeadTail(batch ethdb.Batch) {
 		HeadHash:      bc.headHash,
 		TailShortTerm: bc.tailShortTerm,
 		TailLongTerm:  bc.tailLongTerm,
-		TailInitData:  bc.tailInitData,
 	})
 	batch.Put(beaconHeadTailKey, enc)
 }
@@ -294,7 +293,7 @@ func getBlockDataKey(slot uint64, root common.Hash, byBlockRoot, addRoot bool) [
 	return dbKey
 }
 
-func (bc *BeaconChain) getBlockData(slot uint64, hash common.Hash, byBlockRoot bool) *BlockData {
+func (bc *BeaconChain) GetBlockData(slot uint64, hash common.Hash, byBlockRoot bool) *BlockData {
 	key := getBlockDataKey(slot, hash, byBlockRoot, true)
 	if bd, ok := bc.blockDataCache.Get(string(key)); ok {
 		return bd.(*BlockData)
@@ -317,6 +316,7 @@ func (bc *BeaconChain) getBlockData(slot uint64, hash common.Hash, byBlockRoot b
 				log.Error("Error decoding stored beacon slot data", "slot", slot, "blockRoot", hash, "error", err)
 			}
 		}
+		iter.Release()
 	} else {
 		if blockDataEnc, err := bc.db.Get(key); err != nil {
 			blockData = new(BlockData)
@@ -354,7 +354,7 @@ func (bc *BeaconChain) GetParent(block *BlockData) *BlockData {
 	if block.ParentSlotDiff == 0 {
 		return nil
 	}
-	return bc.getBlockData(block.Header.Slot-block.ParentSlotDiff, block.Header.ParentRoot, true)
+	return bc.GetBlockData(block.Header.Slot-block.ParentSlotDiff, block.Header.ParentRoot, true)
 }
 
 func getExecNumberKey(execNumber uint64, stateRoot common.Hash, addRoot bool) []byte {
@@ -402,15 +402,16 @@ func (bc *BeaconChain) getSlotsAndStateRoots(execNumber uint64) slotsAndStateRoo
 		}
 		list = append(list, entry)
 	}
+	iter.Release()
 	bc.execNumberCache.Add(execNumber, list)
 	return list
 }
 
-func (bc *BeaconChain) getBlockDataByExecNumber(ht *historicTree, execNumber uint64) *BlockData {
+func (bc *BeaconChain) GetBlockDataByExecNumber(ht *HistoricTree, execNumber uint64) *BlockData {
 	list := bc.getSlotsAndStateRoots(execNumber)
 	for _, entry := range list {
-		if ht.getStateRoot(entry.slot) == entry.stateRoot {
-			return bc.getBlockData(entry.slot, entry.stateRoot, false)
+		if ht.GetStateRoot(entry.slot) == entry.stateRoot {
+			return bc.GetBlockData(entry.slot, entry.stateRoot, false)
 		}
 	}
 	return nil
@@ -430,7 +431,7 @@ func getSlotByBlockRootKey(blockRoot common.Hash) []byte {
 	return dbKey
 }
 
-func (bc *BeaconChain) getBlockDataByBlockRoot(blockRoot common.Hash) *BlockData {
+func (bc *BeaconChain) GetBlockDataByBlockRoot(blockRoot common.Hash) *BlockData {
 	dbKey := getSlotByBlockRootKey(blockRoot)
 	var slot uint64
 	if enc, err := bc.db.Get(dbKey); err == nil {
@@ -441,7 +442,7 @@ func (bc *BeaconChain) getBlockDataByBlockRoot(blockRoot common.Hash) *BlockData
 		bc.blockDataCache.Add(string(dbKey), nil)
 		return nil
 	}
-	blockData := bc.getBlockData(slot, blockRoot, true)
+	blockData := bc.GetBlockData(slot, blockRoot, true)
 	bc.blockDataCache.Add(string(dbKey), blockData)
 	return blockData
 }
@@ -453,38 +454,64 @@ func (bc *BeaconChain) storeSlotByBlockRoot(blockData *BlockData) {
 	bc.blockDataCache.Add(string(dbKey), blockData)
 }
 
-// ProofFormatForBlock returns the minimal required set of state proof fields for a
-// given slot according to the current chain tail values. Stored format equals to or
-// is a superset of this.
-func (bc *BeaconChain) ProofFormatForBlock(block *BlockData) byte {
-	if block.ParentSlotDiff == 0 {
-		return HspLongTerm + HspShortTerm + HspInitData
+func (block *BlockData) firstInPeriod() bool {
+	newPeriod, oldPeriod := block.Header.Slot>>13, (block.Header.Slot-block.ParentSlotDiff)>>13
+	if newPeriod > oldPeriod+1 {
+		log.Crit("More than an entire period skipped", "oldSlot", block.Header.Slot-block.ParentSlotDiff, "newSlot", block.Header.Slot)
 	}
-	slot := block.Header.Slot
-	var format byte
-	if slot >= bc.tailShortTerm {
-		format += HspShortTerm
-	}
-	if slot >= bc.tailLongTerm {
-		format += HspLongTerm
-	}
-	if slot >= bc.tailInitData && (slot>>5 > (slot-block.ParentSlotDiff)>>5) {
+	return newPeriod > oldPeriod
+}
+
+func (block *BlockData) firstInEpoch() bool {
+	return block.Header.Slot>>5 > (block.Header.Slot-block.ParentSlotDiff)>>5
+}
+
+func ProofFormatForBlock(block *BlockData) byte {
+	format := byte(HspLongTerm + HspShortTerm)
+	if block.firstInEpoch() {
 		format += HspInitData
 	}
 	return format
+}
+
+// proofFormatForBlock returns the minimal required set of state proof fields for a
+// given slot according to the current chain tail values. Stored format equals to or
+// is a superset of this.
+func (bc *BeaconChain) proofFormatForBlock(block *BlockData) byte {
+	if block.ParentSlotDiff == 0 {
+		return HspLongTerm + HspShortTerm + HspInitData
+	}
+	var format byte
+	if block.Header.Slot >= bc.tailShortTerm {
+		format = HspShortTerm
+	}
+	if block.Header.Slot >= bc.tailLongTerm {
+		format += HspLongTerm
+		if block.firstInEpoch() {
+			format += HspInitData
+		}
+	}
+	return format
+}
+
+func (bc *BeaconChain) GetTailSlots() (longTerm, shortTerm uint64) {
+	bc.chainMu.RLock()
+	longTerm, shortTerm = bc.tailLongTerm, bc.tailShortTerm
+	bc.chainMu.RUnlock()
+	return
 }
 
 func (bc *BeaconChain) pruneBlockFormat(block *BlockData) bool {
 	if block.ParentSlotDiff == 0 && block.Header.Slot > bc.tailLongTerm {
 		return false
 	}
-	format := bc.ProofFormatForBlock(block)
+	format := bc.proofFormatForBlock(block)
 	if format == block.ProofFormat {
 		return true
 	}
 
 	var values MerkleValues
-	if _, ok := TraverseProof(block.proof().Reader(nil), NewMultiProofWriter(StateProofFormats[format], &values, nil)); ok {
+	if _, ok := TraverseProof(block.Proof().Reader(nil), NewMultiProofWriter(StateProofFormats[format], &values, nil)); ok {
 		block.ProofFormat, block.StateProof = format, values
 		if format&HspShortTerm == 0 {
 			block.StateRootDiffs = nil
@@ -499,6 +526,7 @@ func (bc *BeaconChain) clearDb() {
 	for iter.Next() {
 		bc.db.Delete(iter.Key())
 	}
+	iter.Release()
 	bc.blockDataCache.Purge()
 	bc.historicCache.Purge()
 	bc.execNumberCache.Purge()
@@ -507,15 +535,15 @@ func (bc *BeaconChain) clearDb() {
 
 func (bc *BeaconChain) reset() {
 	bc.headSlot, bc.headHash = 0, common.Hash{}
-	bc.tailShortTerm, bc.tailLongTerm, bc.tailInitData = 0, 0, 0
+	bc.tailShortTerm, bc.tailLongTerm = 0, 0
 	bc.failCounter = 0
 	bc.blockRoots = &merkleListVersion{list: &merkleList{db: bc.db, cache: bc.historicCache, dbKey: blockRootsKey, zeroLevel: 13}}
 	bc.stateRoots = &merkleListVersion{list: &merkleList{db: bc.db, cache: bc.historicCache, dbKey: stateRootsKey, zeroLevel: 13}}
 	bc.historicRoots = &merkleListVersion{list: &merkleList{db: bc.db, cache: bc.historicCache, dbKey: historicRootsKey, zeroLevel: 25}}
-	bc.historicTrees = make(map[common.Hash]*historicTree)
+	bc.historicTrees = make(map[common.Hash]*HistoricTree)
 }
 
-func (bc *BeaconChain) setHead(hash common.Hash) {
+func (bc *BeaconChain) SetHead(hash common.Hash) {
 	if err := bc.trySetHead(hash); err == nil {
 		log.Info("BeaconChain.setHead successful")
 		bc.failCounter = 0
@@ -534,17 +562,17 @@ func (bc *BeaconChain) trySetHead(headHash common.Hash) error {
 	ctx := context.Background() //TODO
 
 	var lastHead *BlockData
-	bc.chainMu.Lock()
+	bc.chainMu.RLock()
 	if bc.headHash != (common.Hash{}) {
-		lastHead = bc.getBlockData(bc.headSlot, bc.headHash, true)
+		lastHead = bc.GetBlockData(bc.headSlot, bc.headHash, true)
 		if lastHead == nil {
 			log.Error("Head beacon block not found in database")
 		}
 	}
 	log.Info("BeaconChain.trySetHead", "old head slot", bc.headSlot, "old head hash", bc.headHash, "found in db", lastHead != nil)
-	bc.chainMu.Unlock()
+	bc.chainMu.RUnlock()
 
-	blocks, connected, err := bc.dataSource.getBlocksFromHead(ctx, headHash, lastHead)
+	blocks, connected, err := bc.dataSource.GetBlocksFromHead(ctx, headHash, lastHead)
 	if err != nil {
 		return err
 	}
@@ -558,7 +586,7 @@ func (bc *BeaconChain) trySetHead(headHash common.Hash) error {
 		}
 		return errors.New("no blocks fetched and not connected to the existing chain")
 	}
-	var headTree *historicTree
+	var headTree *HistoricTree
 	if lastHead == nil {
 		if err := bc.initChain(ctx, blocks[0]); err != nil {
 			bc.clearDb()
@@ -582,7 +610,7 @@ func (bc *BeaconChain) trySetHead(headHash common.Hash) error {
 	execNumber := execHeader.Number.Uint64()
 	if lastHead == nil {
 		tail := blocks[0].Header.Slot
-		bc.tailInitData, bc.tailLongTerm, bc.tailShortTerm = tail, tail, tail
+		bc.tailLongTerm, bc.tailShortTerm = tail, tail
 		log.Info("Tail slot set", "tail", tail)
 	}
 	for _, block := range blocks {
@@ -618,7 +646,7 @@ func (bc *BeaconChain) trySetHead(headHash common.Hash) error {
 	if err := headTree.moveToHead(headBlock); err != nil {
 		return err
 	}
-	newTreeMap := make(map[common.Hash]*historicTree)
+	newTreeMap := make(map[common.Hash]*HistoricTree)
 	newTreeMap[headBlock.BlockRoot] = headTree
 	for _, block := range bc.findCloseBlocks(headBlock, maxHistoricTreeDistance) {
 		//fmt.Println("close block.root", block.BlockRoot)
@@ -641,7 +669,7 @@ func (bc *BeaconChain) trySetHead(headHash common.Hash) error {
 	//if headTree.historic.get(0, 1) != headBlock.mustGetStateValue(BsiHistoricRoots) {
 	fmt.Println("*** historicRoots", headBlock.mustGetStateValue(BsiHistoricRoots), "headTree.historic root", headTree.historic.get(0, 1))
 	//}
-	log.Info("Successful historicTree check, setting head")
+	log.Info("Successful HistoricTree check, setting head")
 	if headBlock.ProofFormat&HspInitData != 0 {
 		fmt.Println("forkVersion", headBlock.mustGetStateValue(BsiForkVersion))
 		fmt.Println("genesisValidatorsRoot", headBlock.mustGetStateValue(BsiGenesisValidators))
@@ -661,7 +689,7 @@ func (bc *BeaconChain) fetchBestUpdate(ctx context.Context, period uint64) error
 	if committee == nil {
 		return errors.New("missing sync committee for requested period")
 	}
-	if update, nextCommittee, err := bc.dataSource.getBestUpdate(ctx, period); err == nil {
+	if update, nextCommittee, err := bc.dataSource.GetBestUpdate(ctx, period); err == nil {
 		fmt.Println(" getBestUpdate", period, "update header period", update.Header.Slot>>13)
 		if period != uint64(update.Header.Slot)>>13 {
 			return errors.New("received best update for wrong period")
@@ -707,6 +735,7 @@ func (bc *BeaconChain) findCloseBlocks(block *BlockData, maxDistance int) (res [
 			//TODO error log
 		}
 	}
+	iter.Release()
 	return res
 }
 
@@ -733,7 +762,7 @@ func (bc *BeaconChain) fetchInitData(ctx context.Context, block *BlockData) (ini
 		CommitteeRoot:         common.Hash(block.mustGetStateValue(BsiSyncCommittee)),
 		NextCommitteeRoot:     common.Hash(block.mustGetStateValue(BsiNextSyncCommittee)),
 	}
-	if committee, nextCommittee, err = bc.dataSource.getSyncCommittees(ctx, block); err != nil {
+	if committee, nextCommittee, err = bc.dataSource.GetSyncCommittees(ctx, block); err != nil {
 		return nil, nil, nil, err
 	}
 	return
@@ -832,7 +861,7 @@ func validateBeaconSlots(header *Header, request *GetBeaconSlotsPacket, reply *B
 		}
 	}
 
-	reader := MultiProof{format: slotRangeFormat(header.Slot, reply.FirstSlot, reply.StateProofFormats), values: reply.ProofValues}.Reader(nil)
+	reader := MultiProof{format: SlotRangeFormat(header.Slot, reply.FirstSlot, reply.StateProofFormats), values: reply.ProofValues}.Reader(nil)
 	target := make([]*MerkleValues, len(reply.StateProofFormats))
 	for i := range target {
 		target[i] = new(MerkleValues)

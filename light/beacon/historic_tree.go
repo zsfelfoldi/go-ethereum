@@ -24,46 +24,37 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/log"
 )
 
 const maxHistoricTreeDistance = 3
 
-type historicTree struct {
+type HistoricTree struct {
 	bc                     *BeaconChain
-	headBlock              *BlockData
+	HeadBlock              *BlockData
 	block, state, historic *merkleListHasher
 }
 
-func (bc *BeaconChain) newHistoricTree(headBlock *BlockData) *historicTree { //TODO inkabb headBlock legyen mindig bc-ben? szebb lenne, mint parameterben itt atadni, hiszen bc allapotahoz kotodik
-	return &historicTree{
+func (bc *BeaconChain) newHistoricTree(headBlock *BlockData) *HistoricTree { //TODO inkabb headBlock legyen mindig bc-ben? szebb lenne, mint parameterben itt atadni, hiszen bc allapotahoz kotodik
+	return &HistoricTree{
 		bc:        bc,
-		headBlock: headBlock,
+		HeadBlock: headBlock,
 		block:     newMerkleListHasher(bc.blockRoots, 1),
 		state:     newMerkleListHasher(bc.stateRoots, 1),
 		historic:  newMerkleListHasher(bc.historicRoots, 0),
 	}
 }
 
-func (bc *BeaconChain) getHistoricTree(blockHash common.Hash) *historicTree {
+func (bc *BeaconChain) GetHistoricTree(blockHash common.Hash) *HistoricTree {
 	bc.historicMu.RLock()
 	ht := bc.historicTrees[blockHash]
 	bc.historicMu.RUnlock()
 	return ht
 }
 
-func (block *BlockData) firstInPeriod() bool {
-	newPeriod, oldPeriod := block.Header.Slot>>13, (block.Header.Slot-block.ParentSlotDiff)>>13
-	if newPeriod > oldPeriod+1 {
-		log.Crit("More than an entire period skipped", "oldSlot", block.Header.Slot-block.ParentSlotDiff, "newSlot", block.Header.Slot)
-	}
-	return newPeriod > oldPeriod
-}
-
-func (ht *historicTree) makeChildTree(newHead *BlockData) (*historicTree, error) {
-	child := &historicTree{
+func (ht *HistoricTree) makeChildTree(newHead *BlockData) (*HistoricTree, error) {
+	child := &HistoricTree{
 		bc:        ht.bc,
-		headBlock: ht.headBlock,
+		HeadBlock: ht.HeadBlock,
 		block:     newMerkleListHasher(ht.block.list, 1),
 		state:     newMerkleListHasher(ht.state.list, 1),
 		historic:  newMerkleListHasher(ht.historic.list, 0),
@@ -75,13 +66,13 @@ func (ht *historicTree) makeChildTree(newHead *BlockData) (*historicTree, error)
 	}
 }
 
-func (ht *historicTree) moveToHead(newHead *BlockData) error {
+func (ht *HistoricTree) moveToHead(newHead *BlockData) error {
 	var (
 		rollbackHistoric, rollbackRoots int          // number of entries to roll back from old head to common ancestor
 		blockRoots, stateRoots          MerkleValues // new entries to add from common ancestor to new head
 		addHistoric                     int
 	)
-	block1 := ht.headBlock
+	block1 := ht.HeadBlock
 	block2 := newHead
 
 	//fmt.Println("mth1", block1.Header.Slot, block1.BlockRoot, block2.Header.Slot, block2.BlockRoot)
@@ -150,11 +141,11 @@ func (ht *historicTree) moveToHead(newHead *BlockData) error {
 	binary.LittleEndian.PutUint64(listLength[:8], newPeriod)
 	ht.historic.put(0, 3, listLength)
 	ht.historic.get(0, 1) // force re-hashing
-	ht.headBlock = newHead
+	ht.HeadBlock = newHead
 	return nil
 }
 
-func (bc *BeaconChain) commitHistoricTree(batch ethdb.Batch, ht *historicTree) {
+func (bc *BeaconChain) commitHistoricTree(batch ethdb.Batch, ht *HistoricTree) {
 	bc.blockRoots.commit(batch, ht.block.list)
 	bc.stateRoots.commit(batch, ht.state.list)
 	bc.historicRoots.commit(batch, ht.historic.list)
@@ -164,11 +155,11 @@ func (bc *BeaconChain) commitHistoricTree(batch ethdb.Batch, ht *historicTree) {
 	ht.historic = newMerkleListHasher(bc.historicRoots, 0)
 }
 
-func (bc *BeaconChain) initHistoricTrees(ctx context.Context, block *BlockData) (*historicTree, error) {
+func (bc *BeaconChain) initHistoricTrees(ctx context.Context, block *BlockData) (*HistoricTree, error) {
 	period, index := block.Header.Slot>>13, block.Header.Slot&0x1fff
 	ht := bc.newHistoricTree(block)
 
-	blockRootsProof, stateRootsProof, err := bc.dataSource.getRootsProof(ctx, block)
+	blockRootsProof, stateRootsProof, err := bc.dataSource.GetRootsProof(ctx, block)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +168,7 @@ func (bc *BeaconChain) initHistoricTrees(ctx context.Context, block *BlockData) 
 
 	if period > 0 {
 		//period--
-		historicRootsProof, err := bc.dataSource.getHistoricRootsProof(ctx, block, period)
+		historicRootsProof, err := bc.dataSource.GetHistoricRootsProof(ctx, block, period)
 		period--
 		if err != nil {
 			return nil, err
@@ -212,25 +203,25 @@ func (bc *BeaconChain) initHistoricTrees(ctx context.Context, block *BlockData) 
 	return ht, nil
 }
 
-func (ht *historicTree) getStateRoot(slot uint64) common.Hash {
-	headSlot := ht.headBlock.Header.Slot
+func (ht *HistoricTree) GetStateRoot(slot uint64) common.Hash {
+	headSlot := ht.HeadBlock.Header.Slot
 	if slot > headSlot {
 		return common.Hash{}
 	}
 	if slot == headSlot {
-		return ht.headBlock.StateRoot
+		return ht.HeadBlock.StateRoot
 	}
 	return common.Hash(ht.state.get(slot>>13, (slot&0x1fff)+0x2000))
 }
 
-func (ht *historicTree) historicStateReader() ProofReader {
-	return ht.headBlock.proof().Reader(ht.rootSubtrees)
+func (ht *HistoricTree) HistoricStateReader() ProofReader {
+	return ht.HeadBlock.Proof().Reader(ht.rootSubtrees)
 }
 
-func (ht *historicTree) rootSubtrees(index uint64) ProofReader {
+func (ht *HistoricTree) rootSubtrees(index uint64) ProofReader {
 	switch index {
 	case BsiStateRoots:
-		return stateRootsReader{ht: ht, period: ht.headBlock.Header.Slot >> 13, index: 1}
+		return stateRootsReader{ht: ht, period: ht.HeadBlock.Header.Slot >> 13, index: 1}
 	case BsiHistoricRoots:
 		return historicRootsReader{ht: ht, index: 1}
 	default:
@@ -239,7 +230,7 @@ func (ht *historicTree) rootSubtrees(index uint64) ProofReader {
 }
 
 type stateRootsReader struct { // implements ProofReader
-	ht            *historicTree
+	ht            *HistoricTree
 	period, index uint64
 }
 
@@ -247,18 +238,18 @@ func (sr stateRootsReader) children() (left, right ProofReader) {
 	if sr.index < 0x2000 {
 		return stateRootsReader{ht: sr.ht, period: sr.period, index: sr.index * 2}, stateRootsReader{ht: sr.ht, period: sr.period, index: sr.index*2 + 1}
 	}
-	headSlot := sr.ht.headBlock.Header.Slot
+	headSlot := sr.ht.HeadBlock.Header.Slot
 	var slot uint64
 	if sr.period == headSlot>>13 {
 		slot = headSlot - 1 - (headSlot-1-sr.index)&0x1fff
 	} else {
 		slot = sr.period<<13 + sr.index - 0x2000
 	}
-	blockData := sr.ht.bc.getBlockData(slot, common.Hash(sr.ht.state.get(sr.period, sr.index)), false)
+	blockData := sr.ht.bc.GetBlockData(slot, common.Hash(sr.ht.state.get(sr.period, sr.index)), false)
 	if blockData == nil {
 		return nil, nil //empty slot
 	}
-	return blockData.proof().Reader(nil).children()
+	return blockData.Proof().Reader(nil).children()
 }
 
 func (sr stateRootsReader) readNode() (MerkleValue, bool) {
@@ -266,7 +257,7 @@ func (sr stateRootsReader) readNode() (MerkleValue, bool) {
 }
 
 type historicRootsReader struct { // implements ProofReader
-	ht    *historicTree
+	ht    *HistoricTree
 	index uint64
 }
 
@@ -285,7 +276,7 @@ func (hr historicRootsReader) readNode() (MerkleValue, bool) {
 	return hr.ht.historic.get(0, hr.index), true
 }
 
-func slotRangeFormat(headSlot, begin uint64, stateProofFormatTypes []byte) ProofFormat {
+func SlotRangeFormat(headSlot, begin uint64, stateProofFormatTypes []byte) ProofFormat {
 	end := begin + uint64(len(stateProofFormatTypes)) - 1
 	if end > headSlot {
 		panic(nil)
@@ -318,7 +309,7 @@ func slotRangeFormat(headSlot, begin uint64, stateProofFormatTypes []byte) Proof
 }
 
 // blocks[headSlot].StateRoot -> blocks[slot].StateRoot proof index
-func slotProofIndex(headSlot, slot uint64) uint64 {
+func SlotProofIndex(headSlot, slot uint64) uint64 {
 	if slot > headSlot {
 		panic(nil)
 	}
@@ -326,9 +317,9 @@ func slotProofIndex(headSlot, slot uint64) uint64 {
 		return 1
 	}
 	if slot+0x2000 >= headSlot {
-		return childIndex(BsiStateRoots, 0x2000+(slot&0x1fff))
+		return ChildIndex(BsiStateRoots, 0x2000+(slot&0x1fff))
 	}
-	return childIndex(childIndex(BsiHistoricRoots, 0x4000000+(slot>>13)*2+1), 0x2000+(slot&0x1fff))
+	return ChildIndex(ChildIndex(BsiHistoricRoots, 0x4000000+(slot>>13)*2+1), 0x2000+(slot&0x1fff))
 }
 
 func stateProofsRangeFormat(begin, end uint64, stateProofFormatTypes []byte) ProofFormat {

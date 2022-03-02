@@ -37,7 +37,6 @@ type beaconNodeApiSource struct {
 
 type chainIterator interface { // no locking needed
 	GetParent(*beacon.BlockData) *beacon.BlockData
-	ProofFormatForBlock(*beacon.BlockData) byte //TODO tail-tol fuggetlen legyen? mindenesetre lockolni ne kelljen
 }
 
 // null hash -> current head
@@ -281,7 +280,7 @@ func (bn *beaconNodeApiSource) getCommitteeUpdate(period uint64) (committeeUpdat
 
 // assumes that ParentSlotDiff is already initialized
 func (bn *beaconNodeApiSource) getBlockState(block *beacon.BlockData) error {
-	block.ProofFormat = bn.chain.ProofFormatForBlock(block)
+	block.ProofFormat = beacon.ProofFormatForBlock(block)
 	proof, err := bn.getStateProof(block.StateRoot, blockStatePaths(block.ProofFormat, block.Header.Slot, block.ParentSlotDiff))
 	if err != nil {
 		return err
@@ -323,7 +322,7 @@ func (bn *beaconNodeApiSource) getBlockState(block *beacon.BlockData) error {
 	return nil
 }
 
-func (bn *beaconNodeApiSource) getBlocksFromHead(ctx context.Context, head common.Hash, lastHead *beacon.BlockData) (blocks []*beacon.BlockData, connected bool, err error) {
+func (bn *beaconNodeApiSource) GetBlocksFromHead(ctx context.Context, head common.Hash, lastHead *beacon.BlockData) (blocks []*beacon.BlockData, connected bool, err error) {
 	blocks = make([]*beacon.BlockData, beacon.ReverseSyncLimit)
 	blockPtr := beacon.ReverseSyncLimit
 	header, err := bn.getHeader(head)
@@ -380,7 +379,7 @@ func (bn *beaconNodeApiSource) getBlocksFromHead(ctx context.Context, head commo
 	return
 }
 
-func (bn *beaconNodeApiSource) getRootsProof(ctx context.Context, block *beacon.BlockData) (beacon.MultiProof, beacon.MultiProof, error) {
+func (bn *beaconNodeApiSource) GetRootsProof(ctx context.Context, block *beacon.BlockData) (beacon.MultiProof, beacon.MultiProof, error) {
 	blockRootsProof, err := bn.getSingleRootsProof(block, beacon.BsiBlockRoots, "blockRoots")
 	if err != nil {
 		return beacon.MultiProof{}, beacon.MultiProof{}, err
@@ -415,7 +414,7 @@ func (bn *beaconNodeApiSource) getSingleRootsProof(block *beacon.BlockData, leaf
 	return beacon.MultiProof{Format: format, Values: values}, nil
 }
 
-func (bn *beaconNodeApiSource) getHistoricRootsProof(ctx context.Context, block *beacon.BlockData, period uint64) (beacon.MultiProof, error) {
+func (bn *beaconNodeApiSource) GetHistoricRootsProof(ctx context.Context, block *beacon.BlockData, period uint64) (beacon.MultiProof, error) {
 	//proof, err := bn.getStateProof(block.StateRoot, []string{statePaths("historicalRoots", "", int(period*2)), statePaths("historicalRoots", "", int(period*2+1))})
 	proof, err := bn.getStateProof(block.StateRoot, []string{statePaths("historicalRoots", "", int(period))})
 	if err != nil {
@@ -482,7 +481,7 @@ func (bn *beaconNodeApiSource) getSyncCommittee(block *beacon.BlockData, leafInd
 	return committee, nil
 }
 
-func (bn *beaconNodeApiSource) getSyncCommittees(ctx context.Context, block *beacon.BlockData) ([]byte, []byte, error) {
+func (bn *beaconNodeApiSource) GetSyncCommittees(ctx context.Context, block *beacon.BlockData) ([]byte, []byte, error) {
 	committee, err := bn.getSyncCommittee(block, beacon.BsiSyncCommittee, "currentSyncCommittee")
 	if err != nil {
 		return nil, nil, err
@@ -494,7 +493,7 @@ func (bn *beaconNodeApiSource) getSyncCommittees(ctx context.Context, block *bea
 	return committee, nextCommittee, nil
 }
 
-func (bn *beaconNodeApiSource) getBestUpdate(ctx context.Context, period uint64) (*beacon.LightClientUpdate, []byte, error) {
+func (bn *beaconNodeApiSource) GetBestUpdate(ctx context.Context, period uint64) (*beacon.LightClientUpdate, []byte, error) {
 	c, err := bn.getCommitteeUpdate(period)
 	if err != nil {
 		return nil, nil, err

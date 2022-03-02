@@ -615,7 +615,7 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	}
 	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
 		bc := backend.BeaconChain()
-		headBlock := bc.getBlockDataByBlockRoot(r.BeaconHash)
+		headBlock := bc.GetBlockDataByBlockRoot(r.BeaconHash)
 		if headBlock == nil {
 			return nil
 		}
@@ -626,7 +626,7 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 		}
 		var lastHead *beacon.BlockData
 		if r.LastBeaconHead != (common.Hash{}) {
-			lastHead = bc.getBlockDataByBlockRoot(r.LastBeaconHead)
+			lastHead = bc.GetBlockDataByBlockRoot(r.LastBeaconHead)
 		}
 
 		var (
@@ -636,18 +636,19 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 			proofFormats    []byte
 			headers         []beaconHeaderForTransmission
 			proofValues     beacon.MerkleValues
-			ht              *historicTree
+			ht              *beacon.HistoricTree
 		)
 
-		if lastSlot >= r.MaxSlots+bc.tailLongTerm {
+		tailSlot, _ := bc.GetTailSlots()
+		if lastSlot >= r.MaxSlots+tailSlot {
 			firstSlot = lastSlot - r.MaxSlots + 1
 		} else {
-			firstSlot = bc.tailLongTerm
+			firstSlot = tailSlot
 		}
 
 		if lastSlot != headSlot || r.MaxSlots > 1 || lastHead != nil {
 			// use historic tree (BeaconHash needs to be close to the current local head)
-			if ht = bc.getHistoricTree(r.BeaconHash); ht == nil {
+			if ht = bc.GetHistoricTree(r.BeaconHash); ht == nil {
 				return nil
 			}
 		}
@@ -656,12 +657,12 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 		// find lastHead ancestor in canonical chain, adjust firstSlot if necessary
 		for lastHead != nil && lastHead.Header.Slot+1 >= firstSlot {
 			// historic tree should exist because lastHead != nil
-			if ht.getStateRoot(lastHead.Header.Slot) == lastHead.StateRoot {
+			if ht.GetStateRoot(lastHead.Header.Slot) == lastHead.StateRoot {
 				firstSlot = lastHead.Header.Slot + 1
 				extendFirst = false
 				break
 			}
-			lastHead = bc.getParent(lastHead)
+			lastHead = bc.GetParent(lastHead)
 		}
 
 		if firstSlot <= lastSlot {
@@ -669,10 +670,10 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 				if ht != nil {
 					// collect beacon blocks for specified range in blocks
 					// apply range extensions if necessary
-					firstBlock := bc.getBlockData(firstSlot, ht.getStateRoot(firstSlot), false)
-					for firstBlock == nil && extendFirst && firstSlot > bc.tailLongTerm {
+					firstBlock := bc.GetBlockData(firstSlot, ht.GetStateRoot(firstSlot), false)
+					for firstBlock == nil && extendFirst && firstSlot > tailSlot {
 						firstSlot-- // extend range so that first returned slot is not empty
-						firstBlock = bc.getBlockData(firstSlot, ht.getStateRoot(firstSlot), false)
+						firstBlock = bc.GetBlockData(firstSlot, ht.GetStateRoot(firstSlot), false)
 					}
 					var lastBlock *beacon.BlockData
 					for {
@@ -681,7 +682,7 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 							break
 						}
 						// historic tree should exist because lastSlot != headSlot
-						if lastBlock = bc.getBlockData(lastSlot, ht.getStateRoot(lastSlot), false); lastBlock != nil {
+						if lastBlock = bc.GetBlockData(lastSlot, ht.GetStateRoot(lastSlot), false); lastBlock != nil {
 							break
 						}
 						lastSlot++ // extend range so that last returned slot is not empty
@@ -689,7 +690,7 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 					blocks = make([]*beacon.BlockData, lastSlot+1-firstSlot)
 					blocks[0] = firstBlock
 					for slot := firstSlot + 1; slot < lastSlot; slot++ {
-						blocks[int(slot-firstSlot)] = bc.getBlockData(slot, ht.getStateRoot(slot), false)
+						blocks[int(slot-firstSlot)] = bc.GetBlockData(slot, ht.GetStateRoot(slot), false)
 					}
 					blocks[int(lastSlot-firstSlot)] = lastBlock
 				} else {
@@ -719,21 +720,18 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 
 			// create multiproof
 			if ht != nil && firstSlot < headSlot {
-				if _, ok := beacon.TraverseProof(ht.historicStateReader(), beacon.NewMultiProofWriter(slotRangeFormat(headSlot, firstSlot, proofFormats), &proofValues, nil)); !ok {
+				if _, ok := beacon.TraverseProof(ht.HistoricStateReader(), beacon.NewMultiProofWriter(beacon.SlotRangeFormat(headSlot, firstSlot, proofFormats), &proofValues, nil)); !ok {
 					//TODO error log
 					return nil
 				}
 			} else {
-				if _, ok := beacon.TraverseProof(headBlock.proof().Reader(nil), beacon.NewMultiProofWriter(beacon.StateProofFormats[proofFormats[0]], &proofValues, nil)); !ok {
+				if _, ok := beacon.TraverseProof(headBlock.Proof().Reader(nil), beacon.NewMultiProofWriter(beacon.StateProofFormats[proofFormats[0]], &proofValues, nil)); !ok {
 					//TODO error log
 					return nil
 				}
 			}
 		}
 
-		if ht != nil {
-			// ht.release()  //TODO
-		}
 		/*  //TODO ???
 			if bytes += len(code); bytes >= softResponseLimit {
 			break
@@ -761,12 +759,12 @@ func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 			execHash     common.Hash
 			reader       beacon.ProofReader
 			leafIndex    uint64
-			ht           *historicTree
+			ht           *beacon.HistoricTree
 			historicSlot uint64
 			proofValues  beacon.MerkleValues
 		)
 		if r.ReqMode != ExecHashMode {
-			if refBlock = bc.getBlockDataByBlockRoot(r.BeaconOrExecHash); refBlock == nil {
+			if refBlock = bc.GetBlockDataByBlockRoot(r.BeaconOrExecHash); refBlock == nil {
 				return nil
 			}
 		}
@@ -774,8 +772,8 @@ func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 		case ExecHashMode:
 			execHash = r.BeaconOrExecHash
 		case BeaconHashMode:
-			reader = refBlock.proof().Reader(nil)
-			if e, ok := refBlock.getStateValue(beacon.BsiExecHead); ok {
+			reader = refBlock.Proof().Reader(nil)
+			if e, ok := refBlock.GetStateValue(beacon.BsiExecHead); ok {
 				execHash = common.Hash(e)
 			} else {
 				return nil
@@ -783,40 +781,39 @@ func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 			leafIndex = beacon.BsiExecHead
 		case HistoricMode:
 			// use historic tree (BeaconHash needs to be close to the current local head)
-			if ht = bc.getHistoricTree(r.BeaconOrExecHash); ht == nil {
-				//TODO ??ht.release
+			if ht = bc.GetHistoricTree(r.BeaconOrExecHash); ht == nil {
 				return nil
 			}
-			reader = ht.historicStateReader()
-			block := bc.getBlockDataByExecNumber(ht, r.HistoricNumber)
+			reader = ht.HistoricStateReader()
+			block := bc.GetBlockDataByExecNumber(ht, r.HistoricNumber) //TODO is tail check needed?
 			if block == nil {
 				return nil
 			}
-			if e, ok := block.getStateValue(beacon.BsiExecHead); ok {
+			if e, ok := block.GetStateValue(beacon.BsiExecHead); ok {
 				execHash = common.Hash(e)
 			} else {
 				return nil
 			}
 			historicSlot = block.Header.Slot
-			leafIndex = childIndex(slotProofIndex(ht.headBlock.Header.Slot, historicSlot), beacon.BsiExecHead)
+			leafIndex = beacon.ChildIndex(beacon.SlotProofIndex(ht.HeadBlock.Header.Slot, historicSlot), beacon.BsiExecHead)
 		case FinalizedMode:
 			var finalBlock *beacon.BlockData
-			if finalBlockRoot, ok := refBlock.getStateValue(beacon.BsiFinalBlock); ok {
-				finalBlock = bc.getBlockDataByBlockRoot(common.Hash(finalBlockRoot))
+			if finalBlockRoot, ok := refBlock.GetStateValue(beacon.BsiFinalBlock); ok {
+				finalBlock = bc.GetBlockDataByBlockRoot(common.Hash(finalBlockRoot))
 			}
 			if finalBlock == nil {
 				return nil
 			}
-			if e, ok := finalBlock.getStateValue(beacon.BsiExecHead); ok {
+			if e, ok := finalBlock.GetStateValue(beacon.BsiExecHead); ok {
 				execHash = common.Hash(e)
 			} else {
 				return nil
 			}
-			reader = refBlock.proof().Reader(func(index uint64) beacon.ProofReader {
+			reader = refBlock.Proof().Reader(func(index uint64) beacon.ProofReader {
 				if index == beacon.BsiFinalBlock {
-					return finalBlock.Header.proof(finalBlock.StateRoot).Reader(func(index uint64) beacon.ProofReader {
-						if index == bhiStateRoot {
-							return finalBlock.proof().Reader(nil)
+					return finalBlock.Header.Proof(finalBlock.StateRoot).Reader(func(index uint64) beacon.ProofReader {
+						if index == beacon.BhiStateRoot {
+							return finalBlock.Proof().Reader(nil)
 						}
 						return nil
 					})
@@ -832,9 +829,6 @@ func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 				//TODO error log
 				return nil
 			}
-		}
-		if ht != nil {
-			// ht.release()  //TODO
 		}
 		headers := make([]*types.Header, int(r.MaxAmount))
 		headerPtr := int(r.MaxAmount)

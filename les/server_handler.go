@@ -422,7 +422,7 @@ func (h *serverHandler) broadcastLoop() {
 		select {
 		case ev := <-headCh:
 			if h.server.beaconChain != nil {
-				h.server.beaconChain.setHead(common.Hash{})
+				h.server.beaconChain.SetHead(common.Hash{})
 			}
 			header := ev.Block.Header()
 			hash, number := header.Hash(), header.Number.Uint64()

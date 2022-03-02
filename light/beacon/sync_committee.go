@@ -129,6 +129,7 @@ func NewSyncCommitteeTracker(db ethdb.Database, forks Forks) *SyncCommitteeTrack
 		}
 		s.nextPeriod = period + 1
 	}
+	iter.Release()
 
 	// roll back updates belonging to a different fork
 	for s.nextPeriod > 0 {
@@ -174,6 +175,7 @@ func (s *SyncCommitteeTracker) clearDb() {
 	for iter.Next() {
 		s.db.Delete(iter.Key())
 	}
+	iter.Release()
 	s.bestUpdateCache.Purge()
 	s.serializedCommitteeCache.Purge()
 	s.syncCommitteeCache.Purge()

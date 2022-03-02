@@ -361,7 +361,7 @@ func printIndices(f ProofFormat, index uint64) { //TODO
 	}
 }
 
-func childIndex(a, b uint64) uint64 {
+func ChildIndex(a, b uint64) uint64 {
 	return (a-1)<<(63-bits.LeadingZeros64(b)) + b
 }
 
