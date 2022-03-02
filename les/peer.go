@@ -925,13 +925,15 @@ func (p *clientPeer) replyTxStatus(reqID uint64, stats []light.TxStatus) *reply 
 }
 
 //TODO
-func (p *clientPeer) replyBeaconSlots(reqID, firstSlot uint64, proofFormats []byte, proofValues merkleValues, firstParentRoot common.Hash, headers []beaconHeaderForTransmission) *reply {
-	return nil
+func (p *clientPeer) replyBeaconSlots(reqID uint64, resp BeaconSlotsResponse) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, BeaconSlotsMsg, reqID, data}
 }
 
 //TODO
-func (p *clientPeer) replyExecHeaders(reqID, historicSlot uint64, proofValues merkleValues, headers []*types.Header) *reply {
-	return nil
+func (p *clientPeer) replyExecHeaders(reqID uint64, resp ExecHeadersResponse) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, ExecHeadersMsg, reqID, data}
 }
 
 // sendAnnounce announces the availability of a number of blocks through

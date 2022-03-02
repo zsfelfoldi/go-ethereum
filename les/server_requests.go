@@ -737,7 +737,13 @@ func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 			if bytes += len(code); bytes >= softResponseLimit {
 			break
 		}*/
-		return p.replyBeaconSlots(r.ReqID, firstSlot, proofFormats, proofValues, firstParentRoot, headers)
+		return p.replyBeaconSlots(r.ReqID, BeaconSlotsResponse{
+			FirstSlot:         firstSlot,
+			StateProofFormats: proofFormats,
+			ProofValues:       proofValues,
+			FirstParentRoot:   firstParentRoot,
+			Headers:           headers,
+		})
 	}, r.ReqID, r.MaxSlots, nil //TODO ???amount calculation
 }
 
@@ -857,6 +863,10 @@ func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 			if bytes += len(code); bytes >= softResponseLimit {
 			break
 		}*/
-		return p.replyExecHeaders(r.ReqID, historicSlot, proofValues, headers)
+		return p.replyExecHeaders(r.ReqID, ExecHeadersResponse{
+			HistoricSlot: historicSlot,
+			ProofValues:  proofValues,
+			Headers:      headers,
+		})
 	}, r.ReqID, r.MaxAmount, nil //TODO ???amount calculation, check
 }

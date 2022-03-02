@@ -204,8 +204,7 @@ type beaconHeaderForTransmission struct {
 	BodyRoot      common.Hash
 }
 
-type BeaconSlotsPacket struct {
-	ReqID, BV uint64
+type BeaconSlotsResponse struct {
 	// MultiProof contains state proofs for the requested blocks; included state fields for each block are defined in ProofFormat
 	// - head block state is proven directly from beacon_head.state_root
 	// - states not older than 8192 slots are proven from beacon_head.state_roots[slot % 8192]
@@ -233,8 +232,7 @@ type GetExecHeadersPacket struct {
 	LastExecHead     common.Hash `rlp:"optional"` // optional exec block hash; retrieval stops before the common ancestor
 }
 
-type ExecHeadersPacket struct {
-	ReqID, BV uint64
+type ExecHeadersResponse struct {
 	// Proof format (depends on ReqMode):
 	//   exec hash mode:
 	//      no proof

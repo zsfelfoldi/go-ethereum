@@ -360,6 +360,38 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 		p.fcServer.ResumeFreeze(bv)
 		p.unfreeze()
 		p.Log().Debug("Service resumed")
+	case msg.Code == BeaconSlotsMsg && p.version >= lpv5:
+		p.Log().Trace("Received beacon slots response")
+		var resp struct {
+			ReqID, BV           uint64
+			BeaconSlotsResponse //TODO check RLP encoding
+		}
+		if err := msg.Decode(&resp); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		p.answeredRequest(resp.ReqID)
+		deliverMsg = &Msg{
+			MsgType: MsgBeaconSlots,
+			ReqID:   resp.ReqID,
+			Obj:     resp.BeaconSlotsResponse,
+		}
+	case msg.Code == ExecHeadersMsg && p.version >= lpv5:
+		p.Log().Trace("Received exec headers response")
+		var resp struct {
+			ReqID, BV           uint64
+			ExecHeadersResponse //TODO check RLP encoding
+		}
+		if err := msg.Decode(&resp); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		p.answeredRequest(resp.ReqID)
+		deliverMsg = &Msg{
+			MsgType: MsgExecHeaders,
+			ReqID:   resp.ReqID,
+			Obj:     resp.ExecHeadersResponse,
+		}
 	default:
 		p.Log().Trace("Received invalid message", "code", msg.Code)
 		return errResp(ErrInvalidMsgCode, "%v", msg.Code)

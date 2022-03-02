@@ -191,3 +191,11 @@ type TxStatusRequest struct {
 
 // StoreResult stores the retrieved data in local database
 func (req *TxStatusRequest) StoreResult(db ethdb.Database) {}
+
+type BeaconSlotsRequest struct {
+	OdrRequest
+	BeaconHash, LastBeaconHead common.Hash
+	LastSlot, MaxSlots         uint64
+	ProofFormatMask            byte
+	//Blocks                     []*beacon.Block
+}
