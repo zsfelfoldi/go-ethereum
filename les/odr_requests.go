@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -68,6 +69,10 @@ func LesRequest(req light.OdrRequest) LesOdrRequest {
 		return (*BloomRequest)(r)
 	case *light.TxStatusRequest:
 		return (*TxStatusRequest)(r)
+	case *light.BeaconSlotsRequest:
+		return (*BeaconSlotsRequest)(r)
+	case *light.ExecHeadersRequest:
+		return (*ExecHeadersRequest)(r)
 	default:
 		return nil
 	}
@@ -534,3 +539,166 @@ func (db *readTraceDB) Has(key []byte) (bool, error) {
 	_, err := db.Get(key)
 	return err == nil, nil
 }
+
+type BeaconSlotsRequest light.BeaconSlotsRequest
+
+// GetCost returns the cost of the given ODR request according to the serving
+// peer's cost table (implementation of LesOdrRequest)
+func (r *BeaconSlotsRequest) GetCost(peer *serverPeer) uint64 {
+	return peer.getRequestCost(GetBeaconSlotsMsg, int(r.MaxSlots))
+}
+
+// CanSend tells if a certain peer is suitable for serving the given request
+func (r *BeaconSlotsRequest) CanSend(peer *serverPeer) bool {
+	return peer.version >= lpv5
+}
+
+// Request sends an ODR request to the LES network (implementation of LesOdrRequest)
+func (r *BeaconSlotsRequest) Request(reqID uint64, peer *serverPeer) error {
+	peer.Log().Debug("Requesting beacon slots", "beaconHash", r.BeaconHash, "lastSlot", r.LastSlot, "maxSlots", r.MaxSlots)
+	return peer.requestBeaconSlots(GetBeaconSlotsPacket{
+		ReqID:           reqID,
+		BeaconHash:      r.BeaconHash,
+		LastSlot:        r.LastSlot,
+		MaxSlots:        r.MaxSlots,
+		ProofFormatMask: r.ProofFormatMask,
+		LastBeaconHead:  r.LastBeaconHead,
+	})
+}
+
+// Validate processes an ODR request reply message from the LES network
+// returns true and stores results in memory if the message was a valid reply
+// to the request (implementation of LesOdrRequest)
+func (request *BeaconSlotsRequest) Validate(db ethdb.Database, msg *Msg) error {
+	log.Debug("Validating beacon slots", "beaconHash", request.BeaconHash, "lastSlot", request.LastSlot, "maxSlots", request.MaxSlots)
+	// Ensure we have a correct message with a single proof element
+	if msg.MsgType != MsgBeaconSlots {
+		return errInvalidMessageType
+	}
+	reply := msg.Obj.(BeaconSlotsResponse)
+
+	// check that the returned range is as expected
+	firstSlot, lastSlot := reply.FirstSlot, reply.FirstSlot+uint64(len(reply.StateProofFormats))-1
+	expLastSlot := request.LastSlot
+	hasHeadStateRoot := request.HeadStateRoot != (common.Hash{})
+	var headSlot uint64
+	if hasHeadStateRoot {
+		headSlot = request.HeadSlot
+	} else {
+		headSlot = lastSlot
+	}
+
+	if expLastSlot > headSlot {
+		expLastSlot = headSlot
+	}
+	var expFirstSlot uint64
+	if request.MaxSlots <= expLastSlot {
+		expFirstSlot = expLastSlot + 1 - request.MaxSlots
+	}
+	if request.ProofFormatMask == 0 {
+		if firstSlot != expFirstSlot || lastSlot != expLastSlot {
+			return errors.New("Returned slot range incorrect")
+		}
+	} else {
+		if lastSlot < expLastSlot || firstSlot > expLastSlot { //TODO ??? first check
+			return errors.New("Returned slot range incorrect")
+		}
+		for slot := expLastSlot; slot <= lastSlot; slot++ {
+			format := reply.StateProofFormats[int(slot-firstSlot)]
+			if (format != 0) != (slot == lastSlot) {
+				return errors.New("Returned slot range incorrect")
+			}
+		}
+	}
+
+	reader := beacon.MultiProof{Format: SlotRangeFormat(headSlot, reply.FirstSlot, reply.StateProofFormats), Values: reply.ProofValues}.Reader(nil)
+	target := make([]*beacon.MerkleValues, len(reply.StateProofFormats))
+	for i := range target {
+		target[i] = new(beacon.MerkleValues)
+	}
+	writer := beacon.SlotRangeWriter(header.Slot, reply.FirstSlot, reply.StateProofFormats, target)
+	if stateRoot, ok := beacon.TraverseProof(reader, writer); ok && reader.exhausted() {
+		if hasHeadStateRoot && stateRoot != request.HeadStateRoot {
+			return errors.New("Multiproof root hash does not match")
+		}
+	} else {
+		return errors.New("Multiproof format error")
+	}
+	blocks = make([]*beacon.BlockData, len(reply.Headers))
+	lastRoot := reply.FirstParentRoot
+	var (
+		blockPtr       int
+		stateRootDiffs MerkleValues
+	)
+	slot := reply.FirstSlot
+	for i, format := range reply.StateProofFormats {
+		if format == 0 {
+			stateRootDiffs = append(stateRootDiffs, (*target[i])[0])
+		} else {
+			if blockPtr >= len(reply.Headers) {
+				return errors.New("Not enough beacon headers")
+			}
+			header := reply.Headers[blockPtr]
+			block := &BlockData{
+				Header: HeaderWithoutState{
+					Slot:          slot,
+					ProposerIndex: header.ProposerIndex,
+					BodyRoot:      header.BodyRoot,
+					ParentRoot:    lastRoot,
+				},
+				ProofFormat:    format,
+				StateProof:     *target[i],
+				ParentSlotDiff: uint64(len(stateRootDiffs) + 1), //TODO first one?
+				StateRootDiffs: stateRootDiffs,
+			}
+			block.calculateRoots()
+			lastRoot = block.BlockRoot
+			blocks[blockPtr] = block
+			blockPtr++
+			stateRootDiffs = nil
+		}
+		slot++
+	}
+	if blockPtr != len(blocks) {
+		return errors.New("Too many beacon headers")
+	}
+	if !hasHeadStateRoot && lastRoot != request.BeaconHash {
+		return errors.New("Last block hash does not match")
+	}
+	request.Blocks = blocks
+	if request.ProofFormatMask == 0 {
+		request.StateRoots = stateRootDiffs
+	}
+	return nil
+}
+
+type ExecHeadersRequest light.ExecHeadersRequest
+
+// GetCost returns the cost of the given ODR request according to the serving
+// peer's cost table (implementation of LesOdrRequest)
+func (r *ExecHeadersRequest) GetCost(peer *serverPeer) uint64 {
+	return peer.getRequestCost(GetExecHeadersMsg, int(r.MaxAmount))
+}
+
+// CanSend tells if a certain peer is suitable for serving the given request
+func (r *ExecHeadersRequest) CanSend(peer *serverPeer) bool {
+	return peer.version >= lpv5
+}
+
+// Request sends an ODR request to the LES network (implementation of LesOdrRequest)
+func (r *ExecHeadersRequest) Request(reqID uint64, peer *serverPeer) error {
+	peer.Log().Debug("Requesting exec headers", "mode", r.ReqMode, "hash", r.BeaconOrExecHash, "historicNumber", r.HistoricNumber, "maxAmount", r.MaxAmount)
+	return peer.requestExecHeaders(GetExecHeadersPacket{
+		ReqID:            reqID,
+		ReqMode:          r.ReqMode,
+		BeaconOrExecHash: r.BeaconOrExecHash,
+		HistoricNumber:   r.HistoricNumber,
+		MaxAmount:        r.MaxAmount,
+		LastExecHead:     r.LastExecHead,
+	})
+}
+
+// Validate processes an ODR request reply message from the LES network
+// returns true and stores results in memory if the message was a valid reply
+// to the request (implementation of LesOdrRequest)
+func (r *ExecHeadersRequest) Validate(db ethdb.Database, msg *Msg) error { return nil }

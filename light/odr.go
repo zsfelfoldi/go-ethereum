@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/light/beacon"
 )
 
 // NoOdr is the default context passed to an ODR capable function when the ODR
@@ -194,8 +195,30 @@ func (req *TxStatusRequest) StoreResult(db ethdb.Database) {}
 
 type BeaconSlotsRequest struct {
 	OdrRequest
-	BeaconHash, LastBeaconHead common.Hash
-	LastSlot, MaxSlots         uint64
-	ProofFormatMask            byte
-	//Blocks                     []*beacon.Block
+	BeaconHash      common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
+	LastSlot        uint64      // last slot of requested range (reference block is used if LastSlot is higher than its slot number)
+	MaxSlots        uint64      // maximum number of retrieved slots
+	ProofFormatMask byte        // requested state fields (where available); bits correspond to beacon.Hsp* constants
+	LastBeaconHead  common.Hash // optional beacon block hash; retrieval stops before the common ancestor
+
+	HeadStateRoot common.Hash // filled by caller; may be omitted if last requested header is identified by BeaconHash
+	HeadSlot      uint64      // filled by caller; may be omitted if last requested header is identified by BeaconHash
+
+	Blocks     []*beacon.BlockData // filled by Validate
+	StateRoots beacon.MerkleValues // filled by Validate when ProofFormatMask == 0
 }
+
+func (req *BeaconSlotsRequest) StoreResult(db ethdb.Database) {}
+
+type ExecHeadersRequest struct {
+	OdrRequest
+	ReqMode          uint        // 0: exec hash  1: beacon hash  1: historic  2: finalized
+	BeaconOrExecHash common.Hash // beacon or exec block hash (depending on ReqMode) used as a reference to the canonical chain state (client already has the header)
+	HistoricNumber   uint64      // highest retrieved exec header number (for historic mode only)
+	MaxAmount        uint64      // maximum number of retrieved exec headers
+	LastExecHead     common.Hash `rlp:"optional"` // optional exec block hash; retrieval stops before the common ancestor
+
+	Headers []*types.Header
+}
+
+func (req *ExecHeadersRequest) StoreResult(db ethdb.Database) {}

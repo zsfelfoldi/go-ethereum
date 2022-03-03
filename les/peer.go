@@ -429,6 +429,12 @@ func (p *serverPeer) sendRequest(msgcode, reqID uint64, data interface{}, amount
 	return sendRequest(p.rw, msgcode, reqID, data)
 }
 
+// packet includes reqID; rest is not encapsulated in an unnecessary extra struct
+func (p *serverPeer) sendRequestPacket(msgcode, packet interface{}, amount int) error {
+	p.sentRequest(reqID, uint32(msgcode), uint32(amount))
+	return p2p.Send(p.rw, msgcode, packet)
+}
+
 // requestHeadersByHash fetches a batch of blocks' headers corresponding to the
 // specified header query, based on the hash of an origin block.
 func (p *serverPeer) requestHeadersByHash(reqID uint64, origin common.Hash, amount int, skip int, reverse bool) error {
@@ -489,6 +495,16 @@ func (p *serverPeer) sendTxs(reqID uint64, amount int, txs rlp.RawValue) error {
 		amount = sizeFactor
 	}
 	return p.sendRequest(SendTxV2Msg, reqID, txs, amount)
+}
+
+func (p *serverPeer) requestBeaconSlots(packet GetBeaconSlotsPacket) error {
+	p.Log().Debug("Requesting beacon slots", "maxSlots", packet.MaxSlots)
+	return p.sendRequestPacket(GetBeaconSlotsMsg, packet, int(packet.MaxSlots))
+}
+
+func (p *serverPeer) requestExecHeaders(packet GetExecHeadersPacket) error {
+	p.Log().Debug("Requesting exec headers", "maxAmount", packet.MaxAmount)
+	return p.sendRequestPacket(GetExecHeadersMsg, packet, int(packet.MaxAmount))
 }
 
 // waitBefore implements distPeer interface
