@@ -583,8 +583,8 @@ func (mpr multiProofReader) readNode() (MerkleValue, bool) {
 }
 
 // should be checked after TraverseProof if received from an untrusted source
-func (mp *multiProofReader) finished() bool {
-	return len(*mp.values) == 0
+func (mpr multiProofReader) Finished() bool { //TODO erdemes meg valahol hasznalni?
+	return len(*mpr.values) == 0
 }
 
 type MergedReader []ProofReader
@@ -629,6 +629,7 @@ type multiProofWriter struct {
 }
 
 // subtrees are not included in format
+// dummy writer if target is nil; only subtrees are stored
 func NewMultiProofWriter(format ProofFormat, target *MerkleValues, subtrees func(uint64) ProofWriter) multiProofWriter {
 	return multiProofWriter{format: format, values: target, index: 1, subtrees: subtrees}
 }
@@ -648,8 +649,10 @@ func (mpw multiProofWriter) children() (left, right ProofWriter) {
 }
 
 func (mpw multiProofWriter) writeNode(node MerkleValue) {
-	if lf, _ := mpw.format.children(); lf == nil {
-		*mpw.values = append(*mpw.values, node)
+	if mpw.values != nil {
+		if lf, _ := mpw.format.children(); lf == nil {
+			*mpw.values = append(*mpw.values, node)
+		}
 	}
 	if mpw.subtrees != nil {
 		if subtree := mpw.subtrees(mpw.index); subtree != nil {

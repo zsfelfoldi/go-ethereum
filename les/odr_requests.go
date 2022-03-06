@@ -611,24 +611,30 @@ func (request *BeaconSlotsRequest) Validate(db ethdb.Database, msg *Msg) error {
 		}
 	}
 
-	reader := beacon.MultiProof{Format: SlotRangeFormat(headSlot, reply.FirstSlot, reply.StateProofFormats), Values: reply.ProofValues}.Reader(nil)
+	format := beacon.SlotRangeFormat(headSlot, reply.FirstSlot, reply.StateProofFormats)
+	reader := beacon.MultiProof{Format: format, Values: reply.ProofValues}.Reader(nil)
 	target := make([]*beacon.MerkleValues, len(reply.StateProofFormats))
+	targetMap := make(map[uint64]beacon.ProofWriter)
 	for i := range target {
 		target[i] = new(beacon.MerkleValues)
+		targetMap[beacon.SlotProofIndex(headSlot, reply.FirstSlot+uint64(i))] = beacon.NewMultiProofWriter(beacon.StateProofFormats[reply.StateProofFormats[i]], target[i], nil)
 	}
-	writer := beacon.SlotRangeWriter(header.Slot, reply.FirstSlot, reply.StateProofFormats, target)
-	if stateRoot, ok := beacon.TraverseProof(reader, writer); ok && reader.exhausted() {
+
+	writer := beacon.NewMultiProofWriter(format, nil, func(index uint64) beacon.ProofWriter {
+		return targetMap[index]
+	})
+	if stateRoot, ok := beacon.TraverseProof(reader, writer); ok && reader.Finished() {
 		if hasHeadStateRoot && stateRoot != request.HeadStateRoot {
 			return errors.New("Multiproof root hash does not match")
 		}
 	} else {
 		return errors.New("Multiproof format error")
 	}
-	blocks = make([]*beacon.BlockData, len(reply.Headers))
+	blocks := make([]*beacon.BlockData, len(reply.Headers))
 	lastRoot := reply.FirstParentRoot
 	var (
 		blockPtr       int
-		stateRootDiffs MerkleValues
+		stateRootDiffs beacon.MerkleValues
 	)
 	slot := reply.FirstSlot
 	for i, format := range reply.StateProofFormats {
@@ -639,8 +645,8 @@ func (request *BeaconSlotsRequest) Validate(db ethdb.Database, msg *Msg) error {
 				return errors.New("Not enough beacon headers")
 			}
 			header := reply.Headers[blockPtr]
-			block := &BlockData{
-				Header: HeaderWithoutState{
+			block := &beacon.BlockData{
+				Header: beacon.HeaderWithoutState{
 					Slot:          slot,
 					ProposerIndex: header.ProposerIndex,
 					BodyRoot:      header.BodyRoot,
@@ -651,7 +657,7 @@ func (request *BeaconSlotsRequest) Validate(db ethdb.Database, msg *Msg) error {
 				ParentSlotDiff: uint64(len(stateRootDiffs) + 1), //TODO first one?
 				StateRootDiffs: stateRootDiffs,
 			}
-			block.calculateRoots()
+			block.CalculateRoots()
 			lastRoot = block.BlockRoot
 			blocks[blockPtr] = block
 			blockPtr++

@@ -195,8 +195,8 @@ func (bh *HeaderWithoutState) Proof(stateRoot common.Hash) MultiProof {
 
 type BlockData struct {
 	Header         HeaderWithoutState
-	StateRoot      common.Hash `rlp:"-"` // calculated by calculateRoots()
-	BlockRoot      common.Hash `rlp:"-"` // calculated by calculateRoots()
+	StateRoot      common.Hash `rlp:"-"` // calculated by CalculateRoots()
+	BlockRoot      common.Hash `rlp:"-"` // calculated by CalculateRoots()
 	ProofFormat    byte
 	StateProof     MerkleValues
 	ParentSlotDiff uint64       // slot-parentSlot; 0 if not initialized
@@ -223,7 +223,7 @@ func (block *BlockData) mustGetStateValue(index uint64) MerkleValue {
 	return v
 }
 
-func (block *BlockData) calculateRoots() {
+func (block *BlockData) CalculateRoots() {
 	block.StateRoot = block.Proof().rootHash()
 	block.BlockRoot = block.Header.hash(block.StateRoot)
 }
@@ -305,7 +305,7 @@ func (bc *BeaconChain) GetBlockData(slot uint64, hash common.Hash, byBlockRoot b
 		for iter.Next() {
 			blockData = new(BlockData)
 			if err := rlp.DecodeBytes(iter.Value(), blockData); err == nil {
-				blockData.calculateRoots()
+				blockData.CalculateRoots()
 				if blockData.BlockRoot == hash {
 					break
 				} else {
@@ -321,7 +321,7 @@ func (bc *BeaconChain) GetBlockData(slot uint64, hash common.Hash, byBlockRoot b
 		if blockDataEnc, err := bc.db.Get(key); err != nil {
 			blockData = new(BlockData)
 			if err := rlp.DecodeBytes(blockDataEnc, blockData); err == nil {
-				blockData.calculateRoots()
+				blockData.CalculateRoots()
 			} else {
 				blockData = nil
 				log.Error("Error decoding stored beacon slot data", "slot", slot, "stateRoot", hash, "error", err)
@@ -723,7 +723,7 @@ func (bc *BeaconChain) findCloseBlocks(block *BlockData, maxDistance int) (res [
 	for iter.Next() {
 		block := new(BlockData)
 		if err := rlp.DecodeBytes(iter.Value(), block); err == nil {
-			block.calculateRoots()
+			block.CalculateRoots()
 			if _, ok := dist[block.BlockRoot]; ok {
 				continue
 			}
@@ -826,7 +826,7 @@ type BeaconSlotsPacket struct {
 
 type BlockData struct {
 	Header               HeaderWithoutState
-	stateRoot, blockRoot common.Hash // calculated by calculateRoots()
+	stateRoot, blockRoot common.Hash // calculated by CalculateRoots()
 	ProofFormat          byte
 	StateProof           MerkleValues
 	ParentSlotDiff       uint64       // slot-parentSlot; 0 if not initialized
@@ -901,7 +901,7 @@ func validateBeaconSlots(header *Header, request *GetBeaconSlotsPacket, reply *B
 				ParentSlotDiff: uint64(len(stateRootDiffs) + 1), //TODO first one?
 				StateRootDiffs: stateRootDiffs,
 			}
-			block.calculateRoots()
+			block.CalculateRoots()
 			lastRoot = block.BlockRoot
 			blocks[blockPtr] = block
 			blockPtr++

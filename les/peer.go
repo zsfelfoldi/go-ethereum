@@ -430,7 +430,7 @@ func (p *serverPeer) sendRequest(msgcode, reqID uint64, data interface{}, amount
 }
 
 // packet includes reqID; rest is not encapsulated in an unnecessary extra struct
-func (p *serverPeer) sendRequestPacket(msgcode, packet interface{}, amount int) error {
+func (p *serverPeer) sendRequestPacket(msgcode, reqID uint64, packet interface{}, amount int) error {
 	p.sentRequest(reqID, uint32(msgcode), uint32(amount))
 	return p2p.Send(p.rw, msgcode, packet)
 }
@@ -499,12 +499,12 @@ func (p *serverPeer) sendTxs(reqID uint64, amount int, txs rlp.RawValue) error {
 
 func (p *serverPeer) requestBeaconSlots(packet GetBeaconSlotsPacket) error {
 	p.Log().Debug("Requesting beacon slots", "maxSlots", packet.MaxSlots)
-	return p.sendRequestPacket(GetBeaconSlotsMsg, packet, int(packet.MaxSlots))
+	return p.sendRequestPacket(GetBeaconSlotsMsg, packet.ReqID, packet, int(packet.MaxSlots))
 }
 
 func (p *serverPeer) requestExecHeaders(packet GetExecHeadersPacket) error {
 	p.Log().Debug("Requesting exec headers", "maxAmount", packet.MaxAmount)
-	return p.sendRequestPacket(GetExecHeadersMsg, packet, int(packet.MaxAmount))
+	return p.sendRequestPacket(GetExecHeadersMsg, packet.ReqID, packet, int(packet.MaxAmount))
 }
 
 // waitBefore implements distPeer interface
