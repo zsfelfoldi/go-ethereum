@@ -89,8 +89,8 @@ type SyncCommitteeTracker struct {
 	nextPeriod            uint64 // first bestUpdate not stored in db
 	genesisValidatorsRoot common.Hash
 	forks                 Forks
-	updateInfo            *updateInfo
-	sentCommitteeReqs     map[uint64]chan committeeReply
+	updateInfo            *UpdateInfo
+	sentCommitteeReqs     map[uint64]chan CommitteeReply
 	requestTokenCh        chan struct{}
 }
 
@@ -99,7 +99,7 @@ func NewSyncCommitteeTracker(db ethdb.Database, forks Forks) *SyncCommitteeTrack
 	s := &SyncCommitteeTracker{
 		db:                db,
 		forks:             forks,
-		sentCommitteeReqs: make(map[uint64]chan committeeReply),
+		sentCommitteeReqs: make(map[uint64]chan CommitteeReply),
 		requestTokenCh:    make(chan struct{}, 1),
 	}
 	s.bestUpdateCache, _ = lru.New(1000)
@@ -533,17 +533,17 @@ func (u *UpdateScore) decode(data []byte) {
 	u.finalized = (v & 0x800000) != 0
 }
 
-type updateInfo struct {
+type UpdateInfo struct {
 	LastPeriod uint64
 	Scores     []byte // encoded; 3 bytes per period		//TODO use decoded version in memory
 	//NextCommitteeRoot common.Hash	//TODO not needed?
 }
 
-func (s *SyncCommitteeTracker) getUpdateInfo() *updateInfo {
+func (s *SyncCommitteeTracker) getUpdateInfo() *UpdateInfo {
 	if s.updateInfo != nil {
 		return s.updateInfo
 	}
-	u := &updateInfo{
+	u := &UpdateInfo{
 		LastPeriod: s.nextPeriod - 1,
 		Scores:     make([]byte, maxUpdateInfoLength*3),
 		//NextCommitteeRoot: s.getSyncCommitteeRoot(s.nextPeriod),
@@ -562,27 +562,27 @@ func (s *SyncCommitteeTracker) getUpdateInfo() *updateInfo {
 	return u
 }
 
-type committeeRequest struct {
+type CommitteeRequest struct {
 	UpdatePeriods, CommitteePeriods []uint64
 }
 
-type committeeReply struct {
+type CommitteeReply struct {
 	Updates    []LightClientUpdate
 	Committees [][]byte
 }
 
 type committeeSyncProcess struct {
-	remoteInfo  *updateInfo
+	remoteInfo  *UpdateInfo
 	forkPeriod  uint64
-	sentRequest committeeRequest
+	sentRequest CommitteeRequest
 }
 
 type sctPeer interface {
-	requestCommittees(reqID uint64, req committeeRequest) error
-	closeChannel() chan struct{}
+	RequestCommitteeProofs(id uint64, req CommitteeRequest) error
+	CloseChannel() chan struct{}
 }
 
-func (s *SyncCommitteeTracker) synchronize(peer sctPeer, remoteInfo *updateInfo) chan bool {
+func (s *SyncCommitteeTracker) Synchronize(peer sctPeer, remoteInfo *UpdateInfo) chan bool {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -603,18 +603,18 @@ func (s *SyncCommitteeTracker) synchronize(peer sctPeer, remoteInfo *updateInfo)
 			if len(req.CommitteePeriods) > 0 {
 				select {
 				case s.requestTokenCh <- struct{}{}:
-				case <-peer.closeChannel():
+				case <-peer.CloseChannel():
 					doneCh <- false
 					return
 				}
 			}
 
 			reqID := rand.Uint64()
-			deliverCh := make(chan committeeReply, 1)
+			deliverCh := make(chan CommitteeReply, 1)
 			s.lock.Lock()
 			s.sentCommitteeReqs[reqID] = deliverCh
 			s.lock.Unlock()
-			if peer.requestCommittees(reqID, req) != nil {
+			if peer.RequestCommitteeProofs(reqID, req) != nil {
 				s.lock.Lock()
 				delete(s.sentCommitteeReqs, reqID)
 				s.lock.Unlock()
@@ -628,7 +628,7 @@ func (s *SyncCommitteeTracker) synchronize(peer sctPeer, remoteInfo *updateInfo)
 					doneCh <- false
 					return
 				}
-			case <-peer.closeChannel():
+			case <-peer.CloseChannel():
 				s.lock.Lock()
 				delete(s.sentCommitteeReqs, reqID)
 				s.lock.Unlock()
@@ -641,7 +641,7 @@ func (s *SyncCommitteeTracker) synchronize(peer sctPeer, remoteInfo *updateInfo)
 	return doneCh
 }
 
-func (s *SyncCommitteeTracker) nextRequest(sp *committeeSyncProcess) committeeRequest {
+func (s *SyncCommitteeTracker) nextRequest(sp *committeeSyncProcess) CommitteeRequest {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -651,7 +651,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *committeeSyncProcess) committeeRe
 	var (
 		localIndex, remoteIndex int
 		period                  uint64
-		request                 committeeRequest
+		request                 CommitteeRequest
 	)
 	if remotePeriod > localPeriod {
 		period = remotePeriod
@@ -680,7 +680,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *committeeSyncProcess) committeeRe
 	return request
 }
 
-func (s *SyncCommitteeTracker) deliverReply(reqID uint64, reply committeeReply) {
+func (s *SyncCommitteeTracker) deliverReply(reqID uint64, reply CommitteeReply) {
 	s.lock.Lock()
 	if deliverCh := s.sentCommitteeReqs[reqID]; deliverCh != nil {
 		deliverCh <- reply
@@ -689,7 +689,7 @@ func (s *SyncCommitteeTracker) deliverReply(reqID uint64, reply committeeReply) 
 	s.lock.Unlock()
 }
 
-func (s *SyncCommitteeTracker) processReply(sp *committeeSyncProcess, reply committeeReply) bool {
+func (s *SyncCommitteeTracker) processReply(sp *committeeSyncProcess, reply CommitteeReply) bool {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
