@@ -40,6 +40,7 @@ import (
 	"github.com/ethereum/go-ethereum/les/vflux"
 	vfc "github.com/ethereum/go-ethereum/les/vflux/client"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -74,6 +75,9 @@ type LightEthereum struct {
 	engine         consensus.Engine
 	accountManager *accounts.Manager
 	netRPCService  *ethapi.PublicNetAPI
+
+	syncCommitteeTracker *beacon.SyncCommitteeTracker //TODO vegignezni, mi milyen esetben lehet nil es a handler nem okozhat-e panic-ot
+	headPropagator       *beacon.HeadPropagator
 
 	p2pServer  *p2p.Server
 	p2pConfig  *p2p.Config

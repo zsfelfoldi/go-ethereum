@@ -70,8 +70,9 @@ type LesServer struct {
 	servingQueue *servingQueue
 	clientPool   *vfs.ClientPool
 
-	beaconChain    *beacon.BeaconChain
-	headPropagator *beacon.HeadPropagator
+	beaconChain          *beacon.BeaconChain
+	syncCommitteeTracker *beacon.SyncCommitteeTracker
+	headPropagator       *beacon.HeadPropagator
 
 	minCapacity, maxCapacity uint64
 	threadsIdle              int // Request serving threads count when system is idle.
@@ -108,17 +109,18 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 			bloomTrieIndexer: light.NewBloomTrieIndexer(e.ChainDb(), nil, params.BloomBitsBlocks, params.BloomTrieFrequency, true),
 			closeCh:          make(chan struct{}),
 		},
-		archiveMode:    e.ArchiveMode(),
-		peers:          newClientPeerSet(),
-		serverset:      newServerSet(),
-		vfluxServer:    vfs.NewServer(time.Millisecond * 10),
-		fcManager:      flowcontrol.NewClientManager(nil, &mclock.System{}),
-		servingQueue:   newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
-		threadsBusy:    config.LightServ/100 + 1,
-		threadsIdle:    threads,
-		p2pSrv:         node.Server(),
-		beaconChain:    beacon.NewBeaconChain(bdata, e.BlockChain(), sct, e.ChainDb()),
-		headPropagator: beacon.NewHeadPropagator(sct, &mclock.System{}, 3),
+		archiveMode:          e.ArchiveMode(),
+		peers:                newClientPeerSet(),
+		serverset:            newServerSet(),
+		vfluxServer:          vfs.NewServer(time.Millisecond * 10),
+		fcManager:            flowcontrol.NewClientManager(nil, &mclock.System{}),
+		servingQueue:         newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
+		threadsBusy:          config.LightServ/100 + 1,
+		threadsIdle:          threads,
+		p2pSrv:               node.Server(),
+		beaconChain:          beacon.NewBeaconChain(bdata, e.BlockChain(), sct, e.ChainDb()),
+		syncCommitteeTracker: sct,
+		headPropagator:       beacon.NewHeadPropagator(sct, &mclock.System{}, 3),
 	}
 
 	bdata.chain = srv.beaconChain

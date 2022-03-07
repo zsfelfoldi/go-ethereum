@@ -966,6 +966,12 @@ func (p *clientPeer) replyExecHeaders(reqID uint64, resp ExecHeadersResponse) *r
 	return &reply{p.rw, ExecHeadersMsg, reqID, data}
 }
 
+//TODO
+func (p *clientPeer) replyCommitteeProofs(reqID uint64, resp CommitteeProofsResponse) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, CommitteeProofsMsg, reqID, data}
+}
+
 // sendAnnounce announces the availability of a number of blocks through
 // a hash notification.
 func (p *clientPeer) sendAnnounce(request announceData) error {

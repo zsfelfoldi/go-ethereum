@@ -350,6 +350,11 @@ func (h *serverHandler) BeaconChain() *beacon.BeaconChain {
 	return h.server.beaconChain
 }
 
+// SyncCommitteeTracker implements serverBackend
+func (h *serverHandler) SyncCommitteeTracker() *beacon.SyncCommitteeTracker {
+	return h.server.syncCommitteeTracker
+}
+
 // TxPool implements serverBackend
 func (h *serverHandler) TxPool() *core.TxPool {
 	return h.txpool

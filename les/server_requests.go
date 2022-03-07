@@ -37,9 +37,10 @@ type serverBackend interface {
 	ArchiveMode() bool
 	AddTxsSync() bool
 	BlockChain() *core.BlockChain
-	BeaconChain() *beacon.BeaconChain
 	TxPool() *core.TxPool
 	GetHelperTrie(typ uint, index uint64) *trie.Trie
+	BeaconChain() *beacon.BeaconChain
+	SyncCommitteeTracker() *beacon.SyncCommitteeTracker
 }
 
 // Decoder is implemented by the messages passed to the handler functions
@@ -153,7 +154,7 @@ var Les3 = map[uint64]RequestType{
 var Les5 = map[uint64]RequestType{
 	GetCommitteeProofsMsg: {
 		Name:             "sync committee proof request",
-		MaxCount:         MaxCommitteeFetch,
+		MaxCount:         MaxCommitteeFetch, //TODO ez hogy legyen az update+committee*factor szamitassal?
 		InPacketsMeter:   miscInCommitteeProofPacketsMeter,
 		InTrafficMeter:   miscInCommitteeProofTrafficMeter,
 		OutPacketsMeter:  miscOutCommitteeProofPacketsMeter,
@@ -162,7 +163,7 @@ var Les5 = map[uint64]RequestType{
 		Handle:           handleGetCommitteeProofs,
 	},
 	GetBeaconSlotsMsg: {
-		Name:             "les/5 beacon header request",
+		Name:             "beacon header request",
 		MaxCount:         MaxHeaderFetch,
 		InPacketsMeter:   miscInBeaconHeaderPacketsMeter,
 		InTrafficMeter:   miscInBeaconHeaderTrafficMeter,
@@ -172,7 +173,7 @@ var Les5 = map[uint64]RequestType{
 		Handle:           handleGetBeaconSlots,
 	},
 	GetExecHeadersMsg: {
-		Name:             "les/5 exec header request",
+		Name:             "exec header request",
 		MaxCount:         MaxHeaderFetch,
 		InPacketsMeter:   miscInExecHeaderPacketsMeter,
 		InTrafficMeter:   miscInExecHeaderTrafficMeter,
@@ -604,16 +605,34 @@ func txStatus(b serverBackend, hash common.Hash) light.TxStatus {
 	return stat
 }
 
-func handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) { //TODO
-	return nil, 0, 0, nil
+func handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+	var r GetCommitteeProofsPacket
+	if err := msg.Decode(&r); err != nil {
+		return nil, 0, 0, err
+	}
+	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+		sct := backend.SyncCommitteeTracker()
+		updates := make([]beacon.LightClientUpdate, len(r.UpdatePeriods))
+		for i, period := range r.UpdatePeriods {
+			updates[i] = *sct.GetBestUpdate(period)
+		}
+		committees := make([][]byte, len(r.CommitteePeriods))
+		for i, period := range r.CommitteePeriods {
+			committees[i] = sct.GetSerializedSyncCommittee(period, sct.GetSyncCommitteeRoot(period))
+		}
+		return p.replyCommitteeProofs(r.ReqID, CommitteeProofsResponse{
+			Updates:    updates,
+			Committees: committees,
+		})
+	}, r.ReqID, uint64(len(r.UpdatePeriods) + len(r.CommitteePeriods)*committeeCostFactor), nil
 }
 
-func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) { //TODO
+func handleGetBeaconSlots(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r GetBeaconSlotsPacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		bc := backend.BeaconChain()
 		headBlock := bc.GetBlockDataByBlockRoot(r.BeaconHash)
 		if headBlock == nil {
@@ -751,7 +770,7 @@ func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		bc := backend.BeaconChain()
 		ec := backend.BlockChain()
 		var (

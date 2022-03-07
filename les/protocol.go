@@ -164,8 +164,7 @@ type GetCommitteeProofsPacket struct {
 	UpdatePeriods, CommitteePeriods []uint64
 }
 
-type CommitteeProofsPacket struct {
-	ReqID, BV  uint64
+type CommitteeProofsResponse struct {
 	Updates    []beacon.LightClientUpdate
 	Committees [][]byte
 }

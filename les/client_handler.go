@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/les/downloader"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/params"
@@ -392,6 +393,18 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 			ReqID:   resp.ReqID,
 			Obj:     resp.ExecHeadersResponse,
 		}
+	case msg.Code == CommitteeProofsMsg && p.version >= lpv5:
+		p.Log().Trace("Received committee proofs response")
+		var resp struct {
+			ReqID, BV               uint64
+			CommitteeProofsResponse //TODO check RLP encoding
+		}
+		if err := msg.Decode(&resp); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+		p.answeredRequest(resp.ReqID)
+		h.backend.syncCommitteeTracker.DeliverReply(resp.ReqID, beacon.CommitteeReply{Updates: resp.Updates, Committees: resp.Committees})
 	default:
 		p.Log().Trace("Received invalid message", "code", msg.Code)
 		return errResp(ErrInvalidMsgCode, "%v", msg.Code)

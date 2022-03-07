@@ -81,7 +81,7 @@ type syncCommittee struct {
 }
 
 type SyncCommitteeTracker struct {
-	lock                                                          sync.Mutex
+	lock                                                          sync.RWMutex
 	db                                                            ethdb.Database
 	bestUpdateCache, serializedCommitteeCache, syncCommitteeCache *lru.Cache
 
@@ -133,7 +133,7 @@ func NewSyncCommitteeTracker(db ethdb.Database, forks Forks) *SyncCommitteeTrack
 
 	// roll back updates belonging to a different fork
 	for s.nextPeriod > 0 {
-		if update := s.getBestUpdate(s.nextPeriod - 1); update == nil || update.checkForkVersion(forks) {
+		if update := s.GetBestUpdate(s.nextPeriod - 1); update == nil || update.checkForkVersion(forks) {
 			break
 		}
 		s.nextPeriod--
@@ -143,8 +143,8 @@ func NewSyncCommitteeTracker(db ethdb.Database, forks Forks) *SyncCommitteeTrack
 }
 
 func (s *SyncCommitteeTracker) getInitData() lightClientInitData {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.lock.RLock()
+	defer s.lock.RUnlock()
 
 	return s.initData
 }
@@ -191,13 +191,13 @@ func getBestUpdateKey(period uint64) []byte {
 }
 
 func (s *SyncCommitteeTracker) getNextPeriod() uint64 {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.lock.RLock()
+	defer s.lock.RUnlock()
 
 	return s.nextPeriod
 }
 
-func (s *SyncCommitteeTracker) getBestUpdate(period uint64) *LightClientUpdate {
+func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
 	if v, ok := s.bestUpdateCache.Get(period); ok {
 		update, _ := v.(*LightClientUpdate)
 		return update
@@ -282,7 +282,7 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, committee
 	var rollback bool
 	if period < s.nextPeriod {
 		// update should already exist
-		oldUpdate := s.getBestUpdate(period)
+		oldUpdate := s.GetBestUpdate(period)
 		if oldUpdate == nil {
 			log.Error("Update expected to exist but missing from db")
 			return sciUnexpectedError
@@ -294,7 +294,7 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, committee
 		rollback = update.NextSyncCommitteeRoot != oldUpdate.NextSyncCommitteeRoot
 	}
 
-	if (period == s.nextPeriod || rollback) && s.getSerializedSyncCommittee(period+1, update.NextSyncCommitteeRoot) == nil {
+	if (period == s.nextPeriod || rollback) && s.GetSerializedSyncCommittee(period+1, update.NextSyncCommitteeRoot) == nil {
 		// committee is not yet stored in db
 		if nextCommittee == nil {
 			fmt.Println("need committee")
@@ -329,7 +329,7 @@ func getSyncCommitteeKey(period uint64, committeeRoot common.Hash) []byte {
 	return key
 }
 
-func (s *SyncCommitteeTracker) getSerializedSyncCommittee(period uint64, committeeRoot common.Hash) []byte {
+func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committeeRoot common.Hash) []byte {
 	key := getSyncCommitteeKey(period, committeeRoot)
 	var committee []byte
 	if v, ok := s.serializedCommitteeCache.Get(string(key)); ok {
@@ -478,13 +478,20 @@ func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) common.Hash {
 	if period == 0 {
 		return common.Hash{}
 	}
-	if update := s.getBestUpdate(period - 1); update != nil {
+	if update := s.GetBestUpdate(period - 1); update != nil {
 		return update.NextSyncCommitteeRoot
 	}
 	return common.Hash{}
 }
 
-func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) *syncCommittee {
+func (s *SyncCommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+
+	return s.getSyncCommitteeRoot(period)
+}
+
+func (s *SyncCommitteeTracker) getSyncCommitteeLocked(period uint64) *syncCommittee {
 	//fmt.Println("sct.getSyncCommittee", period)
 	if v, ok := s.syncCommitteeCache.Get(period); ok {
 		//fmt.Println(" cached")
@@ -493,7 +500,7 @@ func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) *syncCommittee {
 	}
 	if root := s.getSyncCommitteeRoot(period); root != (common.Hash{}) {
 		//fmt.Println(" root", root)
-		if sc := s.getSerializedSyncCommittee(period, root); sc != nil {
+		if sc := s.GetSerializedSyncCommittee(period, root); sc != nil {
 			c := deserializeSyncCommittee(sc)
 			s.syncCommitteeCache.Add(period, c)
 			return c
@@ -505,6 +512,13 @@ func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) *syncCommittee {
 		//fmt.Println(" no root", s.initData.Period)
 	}
 	return nil
+}
+
+func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) *syncCommittee {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+
+	return s.getSyncCommitteeLocked(period)
 }
 
 type UpdateScore struct {
@@ -550,7 +564,7 @@ func (s *SyncCommitteeTracker) getUpdateInfo() *UpdateInfo {
 	}
 	scoreIndex := maxUpdateInfoLength * 3
 	for period := int64(s.nextPeriod - 1); period >= 0 && scoreIndex > 0; period-- {
-		update := s.getBestUpdate(uint64(period))
+		update := s.GetBestUpdate(uint64(period))
 		if update == nil {
 			break
 		}
@@ -680,7 +694,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *committeeSyncProcess) CommitteeRe
 	return request
 }
 
-func (s *SyncCommitteeTracker) deliverReply(reqID uint64, reply CommitteeReply) {
+func (s *SyncCommitteeTracker) DeliverReply(reqID uint64, reply CommitteeReply) {
 	s.lock.Lock()
 	if deliverCh := s.sentCommitteeReqs[reqID]; deliverCh != nil {
 		deliverCh <- reply
@@ -719,7 +733,7 @@ func (s *SyncCommitteeTracker) processReply(sp *committeeSyncProcess, reply Comm
 		if remoteInfoScore.betterThan(update.score) {
 			return false
 		}
-		committee := s.getSyncCommittee(period)
+		committee := s.getSyncCommitteeLocked(period)
 		if committee == nil {
 			return false
 		}
