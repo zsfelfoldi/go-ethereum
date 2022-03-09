@@ -280,7 +280,6 @@ func (bn *beaconNodeApiSource) getCommitteeUpdate(period uint64) (committeeUpdat
 
 // assumes that ParentSlotDiff is already initialized
 func (bn *beaconNodeApiSource) getBlockState(block *beacon.BlockData) error {
-	block.ProofFormat = beacon.ProofFormatForBlock(block)
 	proof, err := bn.getStateProof(block.StateRoot, blockStatePaths(block.ProofFormat, block.Header.Slot, block.ParentSlotDiff))
 	if err != nil {
 		return err
@@ -356,6 +355,7 @@ func (bn *beaconNodeApiSource) GetBlocksFromHead(ctx context.Context, head commo
 		}
 		blocks[blockPtr] = block
 		if lastHead == nil {
+			block.ProofFormat = beacon.HspFormatCount - 1
 			if err := bn.getBlockState(block); err != nil {
 				return nil, false, err
 			}
@@ -366,6 +366,7 @@ func (bn *beaconNodeApiSource) GetBlocksFromHead(ctx context.Context, head commo
 		}
 		if parentHeader, err := bn.getHeader(header.ParentRoot); err == nil {
 			block.ParentSlotDiff = block.Header.Slot - uint64(parentHeader.Slot)
+			block.ProofFormat = beacon.ProofFormatForBlock(block)
 			if err := bn.getBlockState(block); err != nil {
 				return nil, false, err
 			}
