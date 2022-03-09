@@ -104,6 +104,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 
 	peers := newServerPeerSet()
 	merger := consensus.NewMerger(chainDb)
+	sct := beacon.NewSyncCommitteeTracker(chainDb, beacon.Forks{{Epoch: 0, Version: []byte{98, 0, 0, 113}}}, &mclock.System{}) //TODO beacon chain config
 	leth := &LightEthereum{
 		lesCommons: lesCommons{
 			genesis:     genesisHash,
@@ -114,18 +115,20 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 			lesDb:       lesDb,
 			closeCh:     make(chan struct{}),
 		},
-		peers:           peers,
-		eventMux:        stack.EventMux(),
-		reqDist:         newRequestDistributor(peers, &mclock.System{}),
-		accountManager:  stack.AccountManager(),
-		merger:          merger,
-		engine:          ethconfig.CreateConsensusEngine(stack, chainConfig, &config.Ethash, nil, false, chainDb),
-		bloomRequests:   make(chan chan *bloombits.Retrieval),
-		bloomIndexer:    core.NewBloomIndexer(chainDb, params.BloomBitsBlocksClient, params.HelperTrieConfirmations),
-		p2pServer:       stack.Server(),
-		p2pConfig:       &stack.Config().P2P,
-		udpEnabled:      stack.Config().P2P.DiscoveryV5,
-		shutdownTracker: shutdowncheck.NewShutdownTracker(chainDb),
+		peers:                peers,
+		eventMux:             stack.EventMux(),
+		reqDist:              newRequestDistributor(peers, &mclock.System{}),
+		accountManager:       stack.AccountManager(),
+		merger:               merger,
+		engine:               ethconfig.CreateConsensusEngine(stack, chainConfig, &config.Ethash, nil, false, chainDb),
+		bloomRequests:        make(chan chan *bloombits.Retrieval),
+		bloomIndexer:         core.NewBloomIndexer(chainDb, params.BloomBitsBlocksClient, params.HelperTrieConfirmations),
+		p2pServer:            stack.Server(),
+		p2pConfig:            &stack.Config().P2P,
+		udpEnabled:           stack.Config().P2P.DiscoveryV5,
+		shutdownTracker:      shutdowncheck.NewShutdownTracker(chainDb),
+		syncCommitteeTracker: sct,
+		headPropagator:       beacon.NewHeadPropagator(sct, &mclock.System{}, 3),
 	}
 
 	var prenegQuery vfc.QueryFunc
@@ -393,6 +396,7 @@ func (s *LightEthereum) Stop() error {
 
 	s.chainDb.Close()
 	s.lesDb.Close()
+	s.syncCommitteeTracker.Stop()
 	s.wg.Wait()
 	log.Info("Light ethereum stopped")
 	return nil

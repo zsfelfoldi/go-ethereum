@@ -93,8 +93,8 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		threads = 4
 	}
 
-	sct := beacon.NewSyncCommitteeTracker(e.ChainDb(), beacon.Forks{{Epoch: 0, Version: []byte{98, 0, 0, 113}}}) //TODO beacon chain config
-	bdata := &beaconNodeApiSource{url: "http://127.0.0.1:9596"}                                                  //TODO beaconData
+	sct := beacon.NewSyncCommitteeTracker(e.ChainDb(), beacon.Forks{{Epoch: 0, Version: []byte{98, 0, 0, 113}}}, &mclock.System{}) //TODO beacon chain config
+	bdata := &beaconNodeApiSource{url: "http://127.0.0.1:9596"}                                                                    //TODO beaconData
 
 	srv := &LesServer{
 		lesCommons: lesCommons{
@@ -245,6 +245,7 @@ func (s *LesServer) Stop() error {
 	if s.lesDb != nil {
 		s.lesDb.Close()
 	}
+	s.syncCommitteeTracker.Stop()
 	s.wg.Wait()
 	log.Info("Les server stopped")
 

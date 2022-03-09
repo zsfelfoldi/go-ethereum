@@ -24,6 +24,7 @@ import (
 	"math/bits"
 	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -83,24 +84,27 @@ type syncCommittee struct {
 type SyncCommitteeTracker struct {
 	lock                                                          sync.RWMutex
 	db                                                            ethdb.Database
+	clock                                                         mclock.Clock
 	bestUpdateCache, serializedCommitteeCache, syncCommitteeCache *lru.Cache
 
-	initData              lightClientInitData
-	nextPeriod            uint64 // first bestUpdate not stored in db
-	genesisValidatorsRoot common.Hash
-	forks                 Forks
-	updateInfo            *UpdateInfo
-	sentCommitteeReqs     map[uint64]chan CommitteeReply
-	requestTokenCh        chan struct{}
+	initData               lightClientInitData
+	nextPeriod             uint64 // first bestUpdate not stored in db
+	genesisValidatorsRoot  common.Hash
+	forks                  Forks
+	updateInfo             *UpdateInfo
+	peers                  map[sctPeer]*sctPeerInfo
+	requestTokenCh, stopCh chan struct{}
 }
 
-func NewSyncCommitteeTracker(db ethdb.Database, forks Forks) *SyncCommitteeTracker {
+func NewSyncCommitteeTracker(db ethdb.Database, forks Forks, clock mclock.Clock) *SyncCommitteeTracker {
 	db = rawdb.NewTable(db, "sct-")
 	s := &SyncCommitteeTracker{
-		db:                db,
-		forks:             forks,
-		sentCommitteeReqs: make(map[uint64]chan CommitteeReply),
-		requestTokenCh:    make(chan struct{}, 1),
+		db:             db,
+		clock:          clock,
+		forks:          forks,
+		peers:          make(map[sctPeer]*sctPeerInfo),
+		requestTokenCh: make(chan struct{}),
+		stopCh:         make(chan struct{}),
 	}
 	s.bestUpdateCache, _ = lru.New(1000)
 	s.serializedCommitteeCache, _ = lru.New(100)
@@ -139,7 +143,25 @@ func NewSyncCommitteeTracker(db ethdb.Database, forks Forks) *SyncCommitteeTrack
 		s.nextPeriod--
 		s.deleteBestUpdate(s.nextPeriod)
 	}
+	go func() {
+		for {
+			select {
+			case <-s.requestTokenCh:
+				select {
+				case <-s.clock.After(time.Second):
+				case <-s.stopCh:
+					return
+				}
+			case <-s.stopCh:
+				return
+			}
+		}
+	}()
 	return s
+}
+
+func (s *SyncCommitteeTracker) Stop() {
+	close(s.stopCh)
 }
 
 func (s *SyncCommitteeTracker) getInitData() lightClientInitData {
@@ -585,77 +607,111 @@ type CommitteeReply struct {
 	Committees [][]byte
 }
 
-type committeeSyncProcess struct {
-	remoteInfo  *UpdateInfo
+type committeeReplyWithId struct {
+	id    uint64
+	reply CommitteeReply
+}
+
+type sctPeerInfo struct {
+	remoteInfo  UpdateInfo
+	updateCh    chan UpdateInfo
 	forkPeriod  uint64
 	sentRequest CommitteeRequest
+	deliverCh   chan committeeReplyWithId
 }
 
 type sctPeer interface {
 	RequestCommitteeProofs(id uint64, req CommitteeRequest) error
 	CloseChannel() chan struct{}
+	WrongReply()
+	Timeout()
 }
 
-func (s *SyncCommitteeTracker) Synchronize(peer sctPeer, remoteInfo *UpdateInfo) chan bool {
+func (s *SyncCommitteeTracker) AdvertisedCommitteeProofs(peer sctPeer, remoteInfo UpdateInfo) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	sp := &committeeSyncProcess{
-		remoteInfo: remoteInfo,
-		forkPeriod: remoteInfo.LastPeriod + 1,
+	sp := s.peers[peer]
+	if sp == nil {
+		sp = &sctPeerInfo{
+			remoteInfo: remoteInfo,
+			forkPeriod: remoteInfo.LastPeriod + 1,
+			updateCh:   make(chan UpdateInfo, 1),
+			deliverCh:  make(chan committeeReplyWithId, 1),
+		}
+		s.peers[peer] = sp
+	} else {
+		select {
+		case sp.updateCh <- remoteInfo:
+		default:
+		}
+		return
 	}
-	doneCh := make(chan bool, 1)
 
 	go func() {
+		defer func() {
+			s.lock.Lock()
+			delete(s.peers, peer)
+			s.lock.Unlock()
+		}()
+
 		for {
-			req := s.nextRequest(sp)
-			if req.UpdatePeriods == nil && req.CommitteePeriods == nil {
-				doneCh <- true
-				return
+			var req CommitteeRequest
+			for {
+				req = s.nextRequest(sp)
+				if req.UpdatePeriods == nil && req.CommitteePeriods == nil {
+					select {
+					case sp.remoteInfo = <-sp.updateCh:
+					case <-sp.deliverCh:
+						peer.WrongReply()
+					case <-peer.CloseChannel():
+						return
+					}
+				} else {
+					break
+				}
 			}
 
 			if len(req.CommitteePeriods) > 0 {
-				select {
-				case s.requestTokenCh <- struct{}{}:
-				case <-peer.CloseChannel():
-					doneCh <- false
-					return
+				for {
+					select {
+					case sp.remoteInfo = <-sp.updateCh:
+					case s.requestTokenCh <- struct{}{}:
+						break
+					case <-sp.deliverCh:
+						peer.WrongReply()
+					case <-peer.CloseChannel():
+						return
+					}
 				}
 			}
 
 			reqID := rand.Uint64()
-			deliverCh := make(chan CommitteeReply, 1)
-			s.lock.Lock()
-			s.sentCommitteeReqs[reqID] = deliverCh
-			s.lock.Unlock()
 			if peer.RequestCommitteeProofs(reqID, req) != nil {
-				s.lock.Lock()
-				delete(s.sentCommitteeReqs, reqID)
-				s.lock.Unlock()
-				doneCh <- false
 				return
 			}
 
-			select {
-			case reply := <-deliverCh:
-				if !s.processReply(sp, reply) {
-					doneCh <- false
+			timeout := s.clock.After(time.Second * 10)
+			for {
+				select {
+				case sp.remoteInfo = <-sp.updateCh:
+				case reply := <-sp.deliverCh:
+					if reply.id != reqID || !s.processReply(sp, reply.reply) {
+						peer.WrongReply()
+					}
+					break
+				case <-peer.CloseChannel():
+					return
+				case <-timeout:
+					peer.Timeout()
 					return
 				}
-			case <-peer.CloseChannel():
-				s.lock.Lock()
-				delete(s.sentCommitteeReqs, reqID)
-				s.lock.Unlock()
-				doneCh <- false
-				return
 			}
 		}
 	}()
-
-	return doneCh
 }
 
-func (s *SyncCommitteeTracker) nextRequest(sp *committeeSyncProcess) CommitteeRequest {
+func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -694,16 +750,23 @@ func (s *SyncCommitteeTracker) nextRequest(sp *committeeSyncProcess) CommitteeRe
 	return request
 }
 
-func (s *SyncCommitteeTracker) DeliverReply(reqID uint64, reply CommitteeReply) {
-	s.lock.Lock()
-	if deliverCh := s.sentCommitteeReqs[reqID]; deliverCh != nil {
-		deliverCh <- reply
+func (s *SyncCommitteeTracker) DeliverReply(peer sctPeer, reqID uint64, reply CommitteeReply) {
+	s.lock.RLock()
+	sp := s.peers[peer]
+	s.lock.RUnlock()
+	if peer == nil {
+		peer.WrongReply()
+		return
 	}
-	delete(s.sentCommitteeReqs, reqID)
-	s.lock.Unlock()
+
+	select {
+	case sp.deliverCh <- committeeReplyWithId{id: reqID, reply: reply}:
+	default:
+		peer.WrongReply()
+	}
 }
 
-func (s *SyncCommitteeTracker) processReply(sp *committeeSyncProcess, reply CommitteeReply) bool {
+func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, reply CommitteeReply) bool {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 

@@ -508,17 +508,13 @@ func (p *serverPeer) requestExecHeaders(packet GetExecHeadersPacket) error {
 	return p.sendRequestPacket(GetExecHeadersMsg, packet.ReqID, packet, int(packet.MaxAmount))
 }
 
-func (p *serverPeer) RequestCommitteeProofs(id uint64, req beacon.CommitteeRequest) error {
+func (p *serverPeer) requestCommitteeProofs(id uint64, req beacon.CommitteeRequest) error {
 	p.Log().Debug("Requesting committee proofs", "updates", len(req.UpdatePeriods), "committees", len(req.CommitteePeriods))
 	return p.sendRequestPacket(GetCommitteeProofsMsg, id, GetCommitteeProofsPacket{
 		ReqID:            id,
 		UpdatePeriods:    req.UpdatePeriods,
 		CommitteePeriods: req.CommitteePeriods,
 	}, len(req.UpdatePeriods)+len(req.CommitteePeriods)*committeeCostFactor)
-}
-
-func (p *serverPeer) CloseChannel() chan struct{} {
-	return p.closeCh
 }
 
 // waitBefore implements distPeer interface

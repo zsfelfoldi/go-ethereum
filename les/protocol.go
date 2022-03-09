@@ -154,10 +154,10 @@ type GetTxStatusPacket struct {
 	Hashes []common.Hash
 }
 
-type AdvertiseCommitteeProofsPacket struct {
+/*type AdvertiseCommitteeProofsPacket struct {
 	LastPeriod uint64
 	Scores     beacon.UpdateScores
-}
+}*/
 
 type GetCommitteeProofsPacket struct {
 	ReqID                           uint64
