@@ -297,6 +297,18 @@ var (
 		Name:  "light.nosyncserve",
 		Usage: "Enables serving light clients before syncing",
 	}
+	BeaconConfigFlag = cli.StringFlag{
+		Name:  "beacon.config",
+		Usage: "Beacon chain config YAML file",
+	}
+	BeaconCheckpointFlag = cli.StringFlag{
+		Name:  "beacon.checkpoint",
+		Usage: "Beacon chain weak subjectivity checkpoint block hash",
+	}
+	BeaconApiFlag = cli.StringFlag{
+		Name:  "beacon.api",
+		Usage: "Beacon node light client API URL (currently only supports LodeStar)",
+	}
 	// Ethash settings
 	EthashCacheDirFlag = DirectoryFlag{
 		Name:  "ethash.cachedir",
@@ -1052,6 +1064,15 @@ func setLes(ctx *cli.Context, cfg *ethconfig.Config) {
 	}
 	if ctx.GlobalIsSet(LightNoSyncServeFlag.Name) {
 		cfg.LightNoSyncServe = ctx.GlobalBool(LightNoSyncServeFlag.Name)
+	}
+	if ctx.GlobalIsSet(BeaconConfigFlag.Name) {
+		cfg.BeaconConfig = ctx.GlobalString(BeaconConfigFlag.Name)
+	}
+	if ctx.GlobalIsSet(BeaconCheckpointFlag.Name) {
+		cfg.BeaconCheckpoint = ctx.GlobalString(BeaconCheckpointFlag.Name)
+	}
+	if ctx.GlobalIsSet(BeaconApiFlag.Name) {
+		cfg.BeaconApi = ctx.GlobalString(BeaconApiFlag.Name)
 	}
 }
 

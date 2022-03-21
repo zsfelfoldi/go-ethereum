@@ -575,7 +575,10 @@ type UpdateInfo struct {
 	//NextCommitteeRoot common.Hash	//TODO not needed?
 }
 
-func (s *SyncCommitteeTracker) getUpdateInfo() *UpdateInfo {
+func (s *SyncCommitteeTracker) GetUpdateInfo() *UpdateInfo {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
 	if s.updateInfo != nil {
 		return s.updateInfo
 	}
@@ -712,10 +715,7 @@ func (s *SyncCommitteeTracker) AdvertisedCommitteeProofs(peer sctPeer, remoteInf
 }
 
 func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	localInfo := s.getUpdateInfo()
+	localInfo := s.GetUpdateInfo()
 	localPeriod := localInfo.LastPeriod + 1 - uint64(len(localInfo.Scores)/3)
 	remotePeriod := sp.remoteInfo.LastPeriod + 1 - uint64(len(sp.remoteInfo.Scores)/3)
 	var (
@@ -770,6 +770,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, reply CommitteeRepl
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
+	fmt.Println("Processing committee reply", reply)
 	if len(reply.Updates) != len(sp.sentRequest.UpdatePeriods) || len(reply.Committees) != len(sp.sentRequest.CommitteePeriods) {
 		return false
 	}
@@ -830,7 +831,7 @@ func (l *LightClientUpdate) hasFinality() bool {
 	return l.FinalizedHeader.BodyRoot != (common.Hash{})
 }
 
-func (l *LightClientUpdate) signedHeader() *Header {
+func (l *LightClientUpdate) signedHeader() *Header { //TODO
 	/*if l.hasFinality() {
 		return &l.FinalizedHeader
 	}*/
@@ -912,7 +913,7 @@ func NewHeadPropagator(sct *SyncCommitteeTracker, clock mclock.Clock, maxCount i
 	return hp
 }
 
-func (hp *HeadPropagator) add(head SignedHead) {
+func (hp *HeadPropagator) Add(head SignedHead) {
 	hp.lock.Lock()
 	defer hp.lock.Unlock()
 

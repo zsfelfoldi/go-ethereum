@@ -19,6 +19,7 @@ package les
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -606,10 +607,13 @@ func txStatus(b serverBackend, hash common.Hash) light.TxStatus {
 }
 
 func handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+	fmt.Println("Handling GetCommitteeProofsMsg")
 	var r GetCommitteeProofsPacket
 	if err := msg.Decode(&r); err != nil {
+		fmt.Println(" decode err", err)
 		return nil, 0, 0, err
 	}
+	fmt.Println(" decode ok", r)
 	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		sct := backend.SyncCommitteeTracker()
 		updates := make([]beacon.LightClientUpdate, len(r.UpdatePeriods))
@@ -620,6 +624,7 @@ func handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, erro
 		for i, period := range r.CommitteePeriods {
 			committees[i] = sct.GetSerializedSyncCommittee(period, sct.GetSyncCommitteeRoot(period))
 		}
+		fmt.Println(" sending reply", updates, committees)
 		return p.replyCommitteeProofs(r.ReqID, CommitteeProofsResponse{
 			Updates:    updates,
 			Committees: committees,

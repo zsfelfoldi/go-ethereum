@@ -104,7 +104,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 
 	peers := newServerPeerSet()
 	merger := consensus.NewMerger(chainDb)
-	sct := beacon.NewSyncCommitteeTracker(chainDb, beacon.Forks{{Epoch: 0, Version: []byte{98, 0, 0, 113}}}, &mclock.System{}) //TODO beacon chain config
+	sct := beacon.NewSyncCommitteeTracker(chainDb, beacon.Forks{{Epoch: 0, Version: []byte{96, 0, 16, 113}}}, &mclock.System{}) //TODO beacon chain config
 	leth := &LightEthereum{
 		lesCommons: lesCommons{
 			genesis:     genesisHash,

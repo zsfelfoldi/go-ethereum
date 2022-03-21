@@ -18,6 +18,7 @@ package les
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 	"math/rand"
 	"sync"
@@ -106,6 +107,7 @@ func (h *clientHandler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter)
 }
 
 func (h *clientHandler) handle(p *serverPeer, noInitAnnounce bool) error {
+	fmt.Println("handle", p.id)
 	if h.backend.peers.len() >= h.backend.config.LightPeers && !p.Peer.Info().Network.Trusted {
 		return p2p.DiscTooManyPeers
 	}
@@ -114,9 +116,11 @@ func (h *clientHandler) handle(p *serverPeer, noInitAnnounce bool) error {
 	// Execute the LES handshake
 	forkid := forkid.NewID(h.backend.blockchain.Config(), h.backend.genesis, h.backend.blockchain.CurrentHeader().Number.Uint64())
 	if err := p.Handshake(h.backend.blockchain.Genesis().Hash(), forkid, h.forkFilter); err != nil {
+		fmt.Println(" handshake err", err)
 		p.Log().Debug("Light Ethereum handshake failed", "err", err)
 		return err
 	}
+	fmt.Println(" handshake ok")
 	// Register peer with the server pool
 	if h.backend.serverPool != nil {
 		if nvt, err := h.backend.serverPool.RegisterNode(p.Node()); err == nil {
@@ -149,6 +153,9 @@ func (h *clientHandler) handle(p *serverPeer, noInitAnnounce bool) error {
 	// Also discarding initial signal to prevent syncing during testing.
 	if !(noInitAnnounce || h.backend.merger.TDDReached()) {
 		h.fetcher.announce(p, &announceData{Hash: p.headInfo.Hash, Number: p.headInfo.Number, Td: p.headInfo.Td})
+	}
+	if p.updateInfo != nil {
+		h.backend.syncCommitteeTracker.AdvertisedCommitteeProofs(sctPeer{peer: p, dist: h.backend.reqDist}, *p.updateInfo)
 	}
 
 	// Mark the peer starts to be served.
@@ -399,9 +406,12 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 			ReqID, BV               uint64
 			CommitteeProofsResponse //TODO check RLP encoding
 		}
+		fmt.Println("Received CommitteeProofsMsg")
 		if err := msg.Decode(&resp); err != nil {
+			fmt.Println(" decode err", err)
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
+		fmt.Println(" decode ok", resp)
 		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 		//p.answeredRequest(resp.ReqID)		//TODO ???
 		h.backend.syncCommitteeTracker.DeliverReply(sctPeer{peer: p, dist: h.backend.reqDist}, resp.ReqID, beacon.CommitteeReply{Updates: resp.Updates, Committees: resp.Committees})

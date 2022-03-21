@@ -18,6 +18,7 @@ package les
 
 import (
 	"crypto/ecdsa"
+	"fmt"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -70,6 +71,7 @@ type LesServer struct {
 	servingQueue *servingQueue
 	clientPool   *vfs.ClientPool
 
+	beaconNodeApi        *beaconNodeApiSource
 	beaconChain          *beacon.BeaconChain
 	syncCommitteeTracker *beacon.SyncCommitteeTracker
 	headPropagator       *beacon.HeadPropagator
@@ -93,9 +95,6 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		threads = 4
 	}
 
-	sct := beacon.NewSyncCommitteeTracker(e.ChainDb(), beacon.Forks{{Epoch: 0, Version: []byte{98, 0, 0, 113}}}, &mclock.System{}) //TODO beacon chain config
-	bdata := &beaconNodeApiSource{url: "http://127.0.0.1:9596"}                                                                    //TODO beaconData
-
 	srv := &LesServer{
 		lesCommons: lesCommons{
 			genesis:          e.BlockChain().Genesis().Hash(),
@@ -109,21 +108,33 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 			bloomTrieIndexer: light.NewBloomTrieIndexer(e.ChainDb(), nil, params.BloomBitsBlocks, params.BloomTrieFrequency, true),
 			closeCh:          make(chan struct{}),
 		},
-		archiveMode:          e.ArchiveMode(),
-		peers:                newClientPeerSet(),
-		serverset:            newServerSet(),
-		vfluxServer:          vfs.NewServer(time.Millisecond * 10),
-		fcManager:            flowcontrol.NewClientManager(nil, &mclock.System{}),
-		servingQueue:         newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
-		threadsBusy:          config.LightServ/100 + 1,
-		threadsIdle:          threads,
-		p2pSrv:               node.Server(),
-		beaconChain:          beacon.NewBeaconChain(bdata, e.BlockChain(), sct, e.ChainDb()),
-		syncCommitteeTracker: sct,
-		headPropagator:       beacon.NewHeadPropagator(sct, &mclock.System{}, 3),
+		archiveMode:  e.ArchiveMode(),
+		peers:        newClientPeerSet(),
+		serverset:    newServerSet(),
+		vfluxServer:  vfs.NewServer(time.Millisecond * 10),
+		fcManager:    flowcontrol.NewClientManager(nil, &mclock.System{}),
+		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
+		threadsBusy:  config.LightServ/100 + 1,
+		threadsIdle:  threads,
+		p2pSrv:       node.Server(),
 	}
 
-	bdata.chain = srv.beaconChain
+	if config.BeaconConfig != "" {
+		if forks, err := beacon.LoadForks(config.BeaconConfig); err == nil {
+			fmt.Println("Forks", forks)
+			sct := beacon.NewSyncCommitteeTracker(e.ChainDb(), forks, &mclock.System{})
+			bdata := &beaconNodeApiSource{url: config.BeaconApi} //TODO beaconData
+			srv.beaconChain = beacon.NewBeaconChain(bdata, e.BlockChain(), sct, e.ChainDb())
+			bdata.chain = srv.beaconChain
+			srv.beaconNodeApi = bdata
+			srv.syncCommitteeTracker = sct
+			srv.headPropagator = beacon.NewHeadPropagator(sct, &mclock.System{}, 3)
+		} else {
+			log.Error("Could not load beacon chain config file", "error", err)
+			return nil, fmt.Errorf("Could not load beacon chain config file: %v", err)
+		}
+	}
+
 	issync := e.Synced
 	if config.LightNoSyncServe {
 		issync = func() bool { return true }

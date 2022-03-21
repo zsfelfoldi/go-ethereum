@@ -18,6 +18,7 @@ package les
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -140,10 +141,10 @@ func (h *serverHandler) handle(p *clientPeer) error {
 
 	// Reject light clients if server is not synced. Put this checking here, so
 	// that "non-synced" les-server peers are still allowed to keep the connection.
-	if !h.synced() {
+	/*if !h.synced() {		//TODO synced status after merge
 		p.Log().Debug("Light server not synced, rejecting peer")
 		return p2p.DiscRequested
-	}
+	}*/
 
 	// Register the peer into the peerset and clientpool
 	if err := h.server.peers.register(p); err != nil {
@@ -288,6 +289,9 @@ func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
 	// Lookup the request handler table, ensure it's supported
 	// message type by the protocol.
 	req, ok := Les3[msg.Code]
+	if !ok && p.version >= lpv5 {
+		req, ok = Les5[msg.Code] //TODO do this in a nicer way
+	}
 	if !ok {
 		p.Log().Trace("Received invalid message", "code", msg.Code)
 		clientErrorMeter.Mark(1)
@@ -428,6 +432,13 @@ func (h *serverHandler) broadcastLoop() {
 		case ev := <-headCh:
 			if h.server.beaconChain != nil {
 				h.server.beaconChain.SetHead(common.Hash{})
+				headUpdate, err := h.server.beaconNodeApi.getHeadUpdate()
+				if err == nil {
+					fmt.Println("Fetched head update", headUpdate)
+					h.server.headPropagator.Add(headUpdate)
+				} else {
+					fmt.Println("Error fetching head update", err)
+				}
 			}
 			header := ev.Block.Header()
 			hash, number := header.Hash(), header.Number.Uint64()

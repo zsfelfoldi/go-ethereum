@@ -139,8 +139,8 @@ func (ht *HistoricTree) moveToHead(newHead *BlockData) error {
 	}
 	var listLength MerkleValue
 	binary.LittleEndian.PutUint64(listLength[:8], newPeriod)
-	ht.historic.put(0, 3, listLength)
-	ht.historic.get(0, 1) // force re-hashing
+	ht.historic.put(0, 3, listLength) //TODO akkor is, ha az altair fork kesobb tortent?
+	ht.historic.get(0, 1)             // force re-hashing
 	ht.HeadBlock = newHead
 	return nil
 }

@@ -17,13 +17,20 @@
 package beacon
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -800,6 +807,69 @@ func (bf Forks) computeDomains(genesisValidatorsRoot common.Hash) {
 	for i := range bf {
 		bf[i].domain = computeDomain(bf[i].Version, genesisValidatorsRoot)
 	}
+}
+
+func (f Forks) Len() int           { return len(f) }
+func (f Forks) Swap(i, j int)      { f[i], f[j] = f[j], f[i] }
+func (f Forks) Less(i, j int) bool { return f[i].Epoch < f[j].Epoch }
+
+func fieldValue(line, field string) (name, value string, ok bool) {
+	if pos := strings.Index(line, field); pos >= 0 {
+		return line[:pos], strings.TrimSpace(line[pos+len(field):]), true
+	}
+	return "", "", false
+}
+
+func LoadForks(fileName string) (Forks, error) {
+	file, err := os.Open(fileName)
+	if err != nil {
+		return nil, fmt.Errorf("Error opening beacon chain config file: %v", err)
+	}
+	defer file.Close()
+
+	forkVersions := make(map[string][]byte)
+	forkEpochs := make(map[string]uint64)
+	reader := bufio.NewReader(file)
+	for {
+		l, _, err := reader.ReadLine()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("Error reading beacon chain config file: %v", err)
+		}
+		line := string(l)
+		if name, value, ok := fieldValue(line, "_FORK_VERSION:"); ok {
+			if v, err := hexutil.Decode(value); err == nil {
+				forkVersions[name] = v
+			} else {
+				return nil, fmt.Errorf("Error decoding hex fork id \"%s\" in beacon chain config file: %v", value, err)
+			}
+		}
+		if name, value, ok := fieldValue(line, "_FORK_EPOCH:"); ok {
+			if v, err := strconv.ParseUint(value, 10, 64); err == nil {
+				forkEpochs[name] = v
+			} else {
+				return nil, fmt.Errorf("Error parsing epoch number \"%s\" in beacon chain config file: %v", value, err)
+			}
+		}
+	}
+
+	var forks Forks
+	forkEpochs["GENESIS"] = 0
+	for name, epoch := range forkEpochs {
+		if version, ok := forkVersions[name]; ok {
+			delete(forkVersions, name)
+			forks = append(forks, Fork{Epoch: epoch, Version: version})
+		} else {
+			return nil, fmt.Errorf("Fork id missing for \"%s\" in beacon chain config file", name)
+		}
+	}
+	for name := range forkVersions {
+		return nil, fmt.Errorf("Epoch number missing for fork \"%s\" in beacon chain config file", name)
+	}
+	sort.Sort(forks)
+	return forks, nil
 }
 
 /*type GetBeaconSlotsPacket struct {

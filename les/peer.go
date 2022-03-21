@@ -362,6 +362,8 @@ type serverPeer struct {
 
 	// Test callback hooks
 	hasBlockHook func(common.Hash, uint64, bool) bool // Used to determine whether the server has the specified block.
+
+	updateInfo *beacon.UpdateInfo
 }
 
 func newServerPeer(version int, network uint64, trusted bool, p *p2p.Peer, rw p2p.MsgReadWriter) *serverPeer {
@@ -696,6 +698,13 @@ func (p *serverPeer) Handshake(genesis common.Hash, forkid forkid.ID, forkFilter
 					return errResp(ErrUselessPeer, "peer does not support message %d", msgCode)
 				}
 			}
+		}
+
+		fmt.Println("Handshake with peer", p.id, "version", p.version)
+		updateInfo := new(beacon.UpdateInfo)
+		if err := recv.get("beacon/updateInfo", updateInfo); err == nil {
+			fmt.Println("Received update info", *updateInfo)
+			p.updateInfo = updateInfo
 		}
 		return nil
 	})
@@ -1133,6 +1142,13 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 				*lists = (*lists).add("checkpoint/value", cp)
 				*lists = (*lists).add("checkpoint/registerHeight", height)
 			}
+		}
+
+		fmt.Println("Handshake with peer", p.id, "version", p.version)
+		if p.version >= lpv5 {
+			updateInfo := server.syncCommitteeTracker.GetUpdateInfo()
+			fmt.Println("Adding update info", updateInfo)
+			*lists = (*lists).add("beacon/updateInfo", updateInfo)
 		}
 	}, func(recv keyValueMap) error {
 		p.server = recv.get("flowControl/MRR", nil) == nil

@@ -185,7 +185,7 @@ type syncAggregate struct {
 }
 
 func (bn *beaconNodeApiSource) getHeadUpdate() (beacon.SignedHead, error) {
-	resp, err := http.Get(bn.url + "/eth/v1/beacon/head_update/")
+	resp, err := http.Get(bn.url + "/eth/v1/lightclient/head_update/")
 	if err != nil {
 		return beacon.SignedHead{}, err
 	}
