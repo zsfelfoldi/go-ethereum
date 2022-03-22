@@ -115,13 +115,25 @@ func init() {
 	}
 }
 
-type beaconData interface {
+type commonData interface {
 	// if connected is false then first block is not expected to have ParentSlotDiff and StateRootDiffs set but is expected to have HspInitData
 	GetBlocksFromHead(ctx context.Context, head common.Hash, lastHead *BlockData) (blocks []*BlockData, connected bool, err error)
 	GetRootsProof(ctx context.Context, block *BlockData) (MultiProof, MultiProof, error)
 	GetHistoricRootsProof(ctx context.Context, block *BlockData, period uint64) (MultiProof, error)
 	GetSyncCommittees(ctx context.Context, block *BlockData) ([]byte, []byte, error)
+}
+
+type beaconData interface {
+	commonData
 	GetBestUpdate(ctx context.Context, period uint64) (*LightClientUpdate, []byte, error)
+}
+
+type committeeData interface {
+	commonData
+	GetInitBlock(ctx context.Context, checkpoint common.Hash) (block *BlockData, err error)                                                            // ODR
+	GetBlocks(ctx context.Context, head common.Hash, lastSlot, maxAmount uint64, lastHead *BlockData) (blocks []*BlockData, connected bool, err error) // ODR; recent head, any range
+	//	GetSyncCommittee(ctx context.Context, period uint64, root common.Hash) ([]byte, error)      // ODR   (API eseten jobb, ha ott a block)
+	GetBestUpdate(ctx context.Context, peer sctPeer, period uint64) (*LightClientUpdate, []byte, error)
 }
 
 /*type beaconBackfillData interface {

@@ -27,6 +27,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/light/beacon"
 )
 
@@ -513,4 +514,53 @@ func (bn *beaconNodeApiSource) GetBestUpdate(ctx context.Context, period uint64)
 		SyncCommitteeSignature:  c.Aggregate.Signature,
 		ForkVersion:             c.ForkVersion,
 	}, committee, nil
+}
+
+type odrDataSource LesOdr
+
+func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head common.Hash, lastHead *beacon.BlockData) (blocks []*beacon.BlockData, connected bool, err error) {
+}
+
+func (od *odrDataSource) GetInitBlock(ctx context.Context, checkpoint common.Hash) (block *BlockData, err error) {
+	req := &light.BeaconSlotsRequest{
+		BeaconHash:      checkpoint,
+		LastSlot:        math.MaxUint64,
+		MaxSlots:        1,
+		ProofFormatMask: beacon.HspInitData,
+	}
+	if err := od.Retrieve(ctx, req); err != nil {
+		return nil, err
+	}
+	if len(req.Blocks) != 1 {
+		return nil, errors.New("Init block not available")
+	}
+	return req.Blocks[0], nil
+}
+
+func (od *odrDataSource) GetBlocks(ctx context.Context, head beacon.Header, lastSlot, maxAmount uint64, lastHeadHash common.Hash, proofFormatMask int) (blocks []*BlockData, connected bool, err error) {
+	req := &light.BeaconSlotsRequest{
+		BeaconHash:      head.Hash(),
+		LastSlot:        lastSlot,
+		MaxSlots:        maxAmount,
+		ProofFormatMask: proofFormatMask,
+		LastBeaconHead:  lastHeadHash,
+		HeadStateRoot:   head.StateRoot,
+		HeadSlot:        head.Slot,
+	}
+	if err := od.Retrieve(ctx, req); err != nil {
+		return nil, err
+	}
+	return req.Blocks, len(req.Blocks) > 0 && req.Blocks[0].Header.ParentRoot == lastHeadHash nil
+}
+
+func (od *odrDataSource) GetRootsProof(ctx context.Context, block *beacon.BlockData) (beacon.MultiProof, beacon.MultiProof, error) {
+}
+
+func (od *odrDataSource) GetHistoricRootsProof(ctx context.Context, block *beacon.BlockData, period uint64) (beacon.MultiProof, error) {
+}
+
+func (od *odrDataSource) GetSyncCommittees(ctx context.Context, block *beacon.BlockData) ([]byte, []byte, error) {
+}
+
+func (od *odrDataSource) GetBestUpdate(ctx context.Context, period uint64) (*beacon.LightClientUpdate, []byte, error) {
 }
