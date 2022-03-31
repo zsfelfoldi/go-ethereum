@@ -95,6 +95,7 @@ const (
 	MsgTxStatus
 	MsgBeaconSlots
 	MsgExecHeaders
+	MsgCommitteeProofs
 )
 
 // Msg encodes a LES message that delivers reply data for a request

@@ -678,6 +678,31 @@ func (request *BeaconSlotsRequest) Validate(db ethdb.Database, msg *Msg) error {
 	return nil
 }
 
+type BeaconInitRequest light.BeaconInitRequest
+
+// GetCost returns the cost of the given ODR request according to the serving
+// peer's cost table (implementation of LesOdrRequest)
+func (r *BeaconInitRequest) GetCost(peer *serverPeer) uint64 {
+	return peer.getRequestCost(GetBeaconInitMsg, 1)
+}
+
+// CanSend tells if a certain peer is suitable for serving the given request
+func (r *BeaconInitRequest) CanSend(peer *serverPeer) bool {
+	return peer.version >= lpv5
+}
+
+// Request sends an ODR request to the LES network (implementation of LesOdrRequest)
+func (r *BeaconInitRequest) Request(reqID uint64, peer *serverPeer) error {
+	peer.Log().Debug("Requesting beacon init data", "checkpoint", r.Checkpoint, "part", r.Part)
+	return peer.requestBeaconInit(r.Checkpoint, r.Part)
+}
+
+// Validate processes an ODR request reply message from the LES network
+// returns true and stores results in memory if the message was a valid reply
+// to the request (implementation of LesOdrRequest)
+func (request *BeaconInitRequest) Validate(db ethdb.Database, msg *Msg) error {
+}
+
 type ExecHeadersRequest light.ExecHeadersRequest
 
 // GetCost returns the cost of the given ODR request according to the serving

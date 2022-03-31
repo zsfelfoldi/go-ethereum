@@ -155,7 +155,7 @@ func (h *clientHandler) handle(p *serverPeer, noInitAnnounce bool) error {
 		h.fetcher.announce(p, &announceData{Hash: p.headInfo.Hash, Number: p.headInfo.Number, Td: p.headInfo.Td})
 	}
 	if p.updateInfo != nil {
-		h.backend.syncCommitteeTracker.AdvertisedCommitteeProofs(sctPeer{peer: p, dist: h.backend.reqDist}, *p.updateInfo)
+		h.backend.syncCommitteeTracker.AdvertisedCommitteeProofs(p.ID(), *p.updateInfo)
 	}
 
 	// Mark the peer starts to be served.
@@ -413,15 +413,24 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 		}
 		fmt.Println(" decode ok", resp)
 		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		//p.answeredRequest(resp.ReqID)		//TODO ???
-		h.backend.syncCommitteeTracker.DeliverReply(sctPeer{peer: p, dist: h.backend.reqDist}, resp.ReqID, beacon.CommitteeReply{Updates: resp.Updates, Committees: resp.Committees})
+		p.answeredRequest(resp.ReqID)
+		deliverMsg = &Msg{
+			MsgType: MsgCommitteeProofs,
+			ReqID:   resp.ReqID,
+			Obj:     resp.CommitteeProofsResponse,
+		}
 	case msg.Code == AdvertiseCommitteeProofsMsg && p.version >= lpv5:
 		p.Log().Trace("Received committee proofs advertisement")
 		var resp beacon.UpdateInfo
 		if err := msg.Decode(&resp); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
-		h.backend.syncCommitteeTracker.AdvertisedCommitteeProofs(sctPeer{peer: p, dist: h.backend.reqDist}, resp)
+		errorFn := func() {
+			if val := p.errCount.Add(1, mclock.Now()); val > maxResponseErrors {
+				h.backend.peers.unregister(p.id)
+			}
+		}
+		h.backend.syncCommitteeTracker.AdvertisedCommitteeProofs(p.ID(), p.closeCh, errorFn, resp)
 	default:
 		p.Log().Trace("Received invalid message", "code", msg.Code)
 		return errResp(ErrInvalidMsgCode, "%v", msg.Code)
@@ -549,44 +558,4 @@ func (d *downloaderPeerNotify) registerPeer(p *serverPeer) {
 func (d *downloaderPeerNotify) unregisterPeer(p *serverPeer) {
 	h := (*clientHandler)(d)
 	h.downloader.UnregisterPeer(p.id)
-}
-
-type sctPeer struct {
-	peer *serverPeer
-	dist *requestDistributor
-}
-
-func (sp sctPeer) RequestCommitteeProofs(reqID uint64, req beacon.CommitteeRequest) error {
-	if _, ok := <-sp.dist.queue(&distReq{
-		getCost: func(dp distPeer) uint64 {
-			peer := dp.(*serverPeer)
-			return peer.getRequestCost(GetCommitteeProofsMsg, len(req.UpdatePeriods)+len(req.CommitteePeriods)*committeeCostFactor)
-		},
-		canSend: func(dp distPeer) bool {
-			return dp.(*serverPeer) == sp.peer
-		},
-		request: func(dp distPeer) func() {
-			peer := dp.(*serverPeer)
-			cost := peer.getRequestCost(GetCommitteeProofsMsg, len(req.UpdatePeriods)+len(req.CommitteePeriods)*committeeCostFactor)
-			peer.fcServer.QueuedRequest(reqID, cost)
-			return func() { peer.requestCommitteeProofs(reqID, req) }
-		},
-	}); !ok {
-		return light.ErrNoPeers
-	}
-	return nil
-}
-
-func (sp sctPeer) CloseChannel() chan struct{} {
-	return sp.peer.closeCh
-}
-
-func (sp sctPeer) WrongReply() {
-	if sp.peer.errCount.Add(1, mclock.Now()) > maxResponseErrors {
-		sp.peer.Peer.Disconnect(p2p.DiscProtocolError)
-	}
-}
-
-func (sp sctPeer) Timeout() {
-	sp.peer.Peer.Disconnect(p2p.DiscReadTimeout)
 }

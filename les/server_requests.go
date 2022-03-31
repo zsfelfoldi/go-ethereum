@@ -164,7 +164,7 @@ var Les5 = map[uint64]RequestType{
 		Handle:           handleGetCommitteeProofs,
 	},
 	GetBeaconSlotsMsg: {
-		Name:             "beacon header request",
+		Name:             "beacon slots request",
 		MaxCount:         MaxHeaderFetch,
 		InPacketsMeter:   miscInBeaconHeaderPacketsMeter,
 		InTrafficMeter:   miscInBeaconHeaderTrafficMeter,
@@ -172,6 +172,16 @@ var Les5 = map[uint64]RequestType{
 		OutTrafficMeter:  miscOutBeaconHeaderTrafficMeter,
 		ServingTimeMeter: miscServingTimeBeaconHeaderTimer,
 		Handle:           handleGetBeaconSlots,
+	},
+	GetBeaconInitMsg: {
+		Name:             "beacon init request",
+		MaxCount:         1,
+		InPacketsMeter:   miscInBeaconInitPacketsMeter,
+		InTrafficMeter:   miscInBeaconInitTrafficMeter,
+		OutPacketsMeter:  miscOutBeaconInitPacketsMeter,
+		OutTrafficMeter:  miscOutBeaconInitTrafficMeter,
+		ServingTimeMeter: miscServingTimeBeaconInitTimer,
+		Handle:           handleGetBeaconInit,
 	},
 	GetExecHeadersMsg: {
 		Name:             "exec header request",

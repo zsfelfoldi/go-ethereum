@@ -60,6 +60,8 @@ const (
 	HspInitData                // state proof init data fields (genesis_time, genesis_validators_root, sync_committee_root, next_sync_committee_root)
 	HspFormatCount             // number of possible format configurations
 
+	HspAll = HspFormatCount - 1
+
 	// beacon header fields
 	BhiSlot          = 8
 	BhiProposerIndex = 9

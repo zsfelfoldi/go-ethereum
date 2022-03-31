@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -516,26 +517,7 @@ func (bn *beaconNodeApiSource) GetBestUpdate(ctx context.Context, period uint64)
 	}, committee, nil
 }
 
-type odrDataSource LesOdr
-
-func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head common.Hash, lastHead *beacon.BlockData) (blocks []*beacon.BlockData, connected bool, err error) {
-}
-
-func (od *odrDataSource) GetInitBlock(ctx context.Context, checkpoint common.Hash) (block *BlockData, err error) {
-	req := &light.BeaconSlotsRequest{
-		BeaconHash:      checkpoint,
-		LastSlot:        math.MaxUint64,
-		MaxSlots:        1,
-		ProofFormatMask: beacon.HspInitData,
-	}
-	if err := od.Retrieve(ctx, req); err != nil {
-		return nil, err
-	}
-	if len(req.Blocks) != 1 {
-		return nil, errors.New("Init block not available")
-	}
-	return req.Blocks[0], nil
-}
+type odrDataSource LightEthereum
 
 func (od *odrDataSource) GetBlocks(ctx context.Context, head beacon.Header, lastSlot, maxAmount uint64, lastHeadHash common.Hash, proofFormatMask int) (blocks []*BlockData, connected bool, err error) {
 	req := &light.BeaconSlotsRequest{
@@ -547,20 +529,128 @@ func (od *odrDataSource) GetBlocks(ctx context.Context, head beacon.Header, last
 		HeadStateRoot:   head.StateRoot,
 		HeadSlot:        head.Slot,
 	}
-	if err := od.Retrieve(ctx, req); err != nil {
+	if err := od.odr.Retrieve(ctx, req); err != nil {
 		return nil, err
 	}
-	return req.Blocks, len(req.Blocks) > 0 && req.Blocks[0].Header.ParentRoot == lastHeadHash nil
+	return req.Blocks, len(req.Blocks) > 0 && req.Blocks[0].Header.ParentRoot == lastHeadHash, nil
 }
 
-func (od *odrDataSource) GetRootsProof(ctx context.Context, block *beacon.BlockData) (beacon.MultiProof, beacon.MultiProof, error) {
+func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head common.Hash, lastHead *beacon.BlockData) (blocks []*beacon.BlockData, connected bool, err error) {
+	if head == (common.Hash{}) {
+		panic(nil) //TODO remove later (sanity check)
+	}
+	var lastHeadHash common.Hash
+	if lastHead != nil {
+		if lastHead.BlockRoot == (common.Hash{}) {
+			panic(nil) //TODO remove later (sanity check)
+		}
+		lastHeadHash = lastHead.BlockRoot
+	}
+	req := &light.BeaconSlotsRequest{
+		BeaconHash:      head,
+		LastSlot:        math.MaxUint64,
+		MaxSlots:        beacon.ReverseSyncLimit,
+		ProofFormatMask: beacon.HspAll,
+		LastBeaconHead:  lastHeadHash,
+	}
+	if err := od.odr.Retrieve(ctx, req); err != nil {
+		return nil, false, err
+	}
+	return req.Blocks, len(req.Blocks) > 0 && req.Blocks[0].Header.ParentRoot == lastHeadHash, nil
 }
 
-func (od *odrDataSource) GetHistoricRootsProof(ctx context.Context, block *beacon.BlockData, period uint64) (beacon.MultiProof, error) {
+func (od *odrDataSource) GetInitData(ctx context.Context, checkpoint common.Hash) (block *BlockData, committee, nextCommittee []byte, err error) {
+	req := &light.BeaconInitRequest{
+		Checkpoint: checkpoint,
+		Part:       0,
+	}
+	if err := od.odr.Retrieve(ctx, req); err != nil {
+		return nil, nil, nil, err
+	}
+	return req.Block, req.Committee, req.NextCommittee, nil
 }
 
-func (od *odrDataSource) GetSyncCommittees(ctx context.Context, block *beacon.BlockData) ([]byte, []byte, error) {
+func (od *odrDataSource) GetRootsProof(ctx context.Context, block *beacon.BlockData) (block, state, historic beacon.MultiProof, err error) {
+	reqs := make([]*light.BeaconInitRequest, 8)
+	errCh := make(chan error, 8)
+	for i := range reqs {
+		reqs[i] = &light.BeaconInitRequest{
+			Checkpoint: checkpoint,
+			Part:       uint(i + 1),
+		}
+		go func() {
+			errCh <- od.odr.Retrieve(ctx, req)
+		}()
+	}
+	for i := range reqs {
+		if err := <-errCh; err != nil {
+			return beacon.MultiProof{}, beacon.MultiProof{}, beacon.MultiProof{}, err
+		}
+	}
+	reader := make(beacon.MergedReader, 8)
+	for i, req := range reqs {
+		reader[i] = req.MultiProof
+	}
+
+	var blockValues, stateValues, historicValues, mv beacon.MerkleValues
+	rootsFormat := beacon.NewRangeFormat(0x2000, 0x3fff, nil)
+	period := block.Header.Slot >> 13
+	if period > 0 {
+		period--
+	}
+	historicFormat := beacon.NewRangeFormat(0x2000000+period, 0x2000000+period, nil)
+
+	blockWriter := beacon.NewMultiProofWriter(format, &blockValues, nil)
+	stateWriter := beacon.NewMultiProofWriter(format, &stateValues, nil)
+	historicWriter := beacon.NewMultiProofWriter(historicFormat, &historicValues, nil)
+	writer := beacon.NewMultiProofWriter(beacon.NewIndexMapFormat().AddLeaf(leafIndex, nil), &mv, func(index uint64) beacon.ProofWriter {
+		switch index {
+		case beacon.BsiBlockRoots:
+			return blockWriter
+		case beacon.BsiStateRoots:
+			return stateWriter
+		case beacon.BsiHistoricRoots:
+			return historicWriter
+		default:
+			return nil
+		}
+	})
+
+	if root, ok := beacon.TraverseProof(reader, writer); !ok || root != block.StateRoot {
+		log.Error("odrDataSource.GetRootsProof: invalid state proof after ODR validation")
+		return beacon.MultiProof{}, beacon.MultiProof{}, beacon.MultiProof{}, errors.New("invalid state proof")
+	}
+
+	return beacon.MultiProof{Format: format, Values: blockValues},
+		beacon.MultiProof{Format: format, Values: stateValues},
+		beacon.MultiProof{Format: historicFormat, Values: historicValues},
+		nil
 }
 
-func (od *odrDataSource) GetBestUpdate(ctx context.Context, period uint64) (*beacon.LightClientUpdate, []byte, error) {
+func (od *odrDataSource) GetBestUpdates(ctx context.Context, peerID enode.ID, updatePeriods, committeePeriods []uint64) ([]beacon.LightClientUpdate, [][]byte, error) {
+	reqID := rand.Uint64()
+	req := &distReq{
+		getCost: func(dp distPeer) uint64 {
+			peer := dp.(*serverPeer)
+			return peer.getRequestCost(GetCommitteeProofsMsg, len(updatePeriods)+len(committeePeriods)*committeeCostFactor)
+		},
+		canSend: func(dp distPeer) bool {
+			return dp.(*serverPeer).ID() == peerID
+		},
+		request: func(dp distPeer) func() {
+			peer := dp.(*serverPeer)
+			cost := peer.getRequestCost(GetCommitteeProofsMsg, len(updatePeriods)+len(committeePeriods)*committeeCostFactor)
+			peer.fcServer.QueuedRequest(reqID, cost)
+			return func() { peer.requestCommitteeProofs(reqID, updatePeriods, committeePeriods) }
+		},
+	}
+	valFn := func(distPeer, *Msg) error {
+		log.Debug("Validating committee proofs", "updatePeriods", updatePeriods, "committeePeriods", committeePeriods)
+		if msg.MsgType != Msg {
+			return errInvalidMessageType
+		}
+		reply := msg.Obj.(BeaconSlotsResponse)
+
+	}
+	od.retriever.retrieve(ctx, reqID, req, valFn, nil)
 }

@@ -210,6 +210,18 @@ type BeaconSlotsRequest struct {
 
 func (req *BeaconSlotsRequest) StoreResult(db ethdb.Database) {}
 
+type BeaconInitRequest struct {
+	OdrRequest
+	Checkpoint common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
+	Part       uint
+
+	Header                   beacon.HeaderWithoutState
+	ProofValues              beacon.MerkleValues
+	Committee, NextCommittee []byte
+}
+
+func (req *BeaconSlotsRequest) StoreResult(db ethdb.Database) {}
+
 type ExecHeadersRequest struct {
 	OdrRequest
 	ReqMode          uint        // 0: exec hash  1: beacon hash  1: historic  2: finalized

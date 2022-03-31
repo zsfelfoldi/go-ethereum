@@ -48,7 +48,7 @@ var (
 )
 
 // Number of implemented message corresponding to different protocol versions.
-var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24, lpv5: 33}
+var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24, lpv5: 35}
 
 const (
 	NetworkId          = 1
@@ -94,8 +94,10 @@ const (
 	SignedHeadersMsg            = 0x1c
 	GetBeaconSlotsMsg           = 0x1e
 	BeaconSlotsMsg              = 0x1f
-	GetExecHeadersMsg           = 0x20
-	ExecHeadersMsg              = 0x21
+	GetBeaconInitMsg            = 0x20
+	BeaconInitMsg               = 0x21
+	GetExecHeadersMsg           = 0x22
+	ExecHeadersMsg              = 0x23
 )
 
 // GetBlockHeadersData represents a block header query (the request ID is not included)
@@ -190,7 +192,7 @@ type HeadAnnouncementsPacket struct {
 
 type GetBeaconSlotsPacket struct {
 	ReqID           uint64
-	BeaconHash      common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
+	BeaconHead      common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
 	LastSlot        uint64      // last slot of requested range (reference block is used if LastSlot is higher than its slot number)
 	MaxSlots        uint64      // maximum number of retrieved slots
 	ProofFormatMask byte        // requested state fields (where available); bits correspond to beacon.Hsp* constants
@@ -216,6 +218,21 @@ type BeaconSlotsResponse struct {
 	ProofValues       beacon.MerkleValues           // external value multiproof for block and state roots (format is determined by BeaconHash.Slot, LastSlot and length of ProofFormat)
 	FirstParentRoot   common.Hash                   // used for reconstructing all header parent roots
 	Headers           []beaconHeaderForTransmission // one for each slot where state proof format includes beacon.HspLongTerm
+}
+
+type GetBeaconInitPacket struct {
+	ReqID      uint64
+	Checkpoint common.Hash
+	// part 0: HspInitData and committees
+	// parts 1..4: 2k long slices of blockRoots
+	// parts 2..8: 2k long slices of stateRoots (part 8 also includes historicRoots proof for last period)
+	Part uint
+}
+
+type BeaconInitResponse struct {
+	Header                   beacon.HeaderWithoutState
+	ProofValues              beacon.MerkleValues
+	Committee, NextCommittee []byte
 }
 
 const (

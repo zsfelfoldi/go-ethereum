@@ -601,7 +601,7 @@ func (s *SyncCommitteeTracker) GetUpdateInfo() *UpdateInfo {
 	return u
 }
 
-type CommitteeRequest struct {
+/*type CommitteeRequest struct {
 	UpdatePeriods, CommitteePeriods []uint64
 }
 
@@ -613,48 +613,34 @@ type CommitteeReply struct {
 type committeeReplyWithId struct {
 	id    uint64
 	reply CommitteeReply
-}
+}*/
 
 type sctPeerInfo struct {
-	remoteInfo  UpdateInfo
-	updateCh    chan UpdateInfo
-	forkPeriod  uint64
-	sentRequest CommitteeRequest
-	deliverCh   chan committeeReplyWithId
+	// protected by SyncCommitteeTracker.lock
+	remoteInfo UpdateInfo
+	// only accessed by own goroutine
+	forkPeriod uint64
 }
 
-type sctPeer interface {
-	RequestCommitteeProofs(id uint64, req CommitteeRequest) error
-	CloseChannel() chan struct{}
-	WrongReply()
-	Timeout()
-}
-
-func (s *SyncCommitteeTracker) AdvertisedCommitteeProofs(peer sctPeer, remoteInfo UpdateInfo) {
+func (s *SyncCommitteeTracker) AdvertisedCommitteeProofs(peerID enode.ID, peerClosed chan struct{}, wrongReply func(), remoteInfo UpdateInfo) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	sp := s.peers[peer]
-	if sp == nil {
-		sp = &sctPeerInfo{
-			remoteInfo: remoteInfo,
-			forkPeriod: remoteInfo.LastPeriod + 1,
-			updateCh:   make(chan UpdateInfo, 1),
-			deliverCh:  make(chan committeeReplyWithId, 1),
-		}
-		s.peers[peer] = sp
-	} else {
-		select {
-		case sp.updateCh <- remoteInfo:
-		default:
-		}
+	sp := s.peers[peerID]
+	if sp != nil {
+		sp.remoteInfo = remoteInfo
 		return
 	}
+	sp = &sctPeerInfo{
+		remoteInfo: remoteInfo,
+		forkPeriod: remoteInfo.LastPeriod + 1,
+	}
+	s.peers[peerID] = sp
 
 	go func() {
 		defer func() {
 			s.lock.Lock()
-			delete(s.peers, peer)
+			delete(s.peers, peerID)
 			s.lock.Unlock()
 		}()
 
@@ -665,9 +651,7 @@ func (s *SyncCommitteeTracker) AdvertisedCommitteeProofs(peer sctPeer, remoteInf
 				if req.UpdatePeriods == nil && req.CommitteePeriods == nil {
 					select {
 					case sp.remoteInfo = <-sp.updateCh:
-					case <-sp.deliverCh:
-						peer.WrongReply()
-					case <-peer.CloseChannel():
+					case <-peerClosed:
 						return
 					}
 				} else {
@@ -681,34 +665,18 @@ func (s *SyncCommitteeTracker) AdvertisedCommitteeProofs(peer sctPeer, remoteInf
 					case sp.remoteInfo = <-sp.updateCh:
 					case s.requestTokenCh <- struct{}{}:
 						break
-					case <-sp.deliverCh:
-						peer.WrongReply()
-					case <-peer.CloseChannel():
+					case <-peerClosed:
 						return
 					}
 				}
 			}
 
-			reqID := rand.Uint64()
-			if peer.RequestCommitteeProofs(reqID, req) != nil {
+			reply, err := s.node.GetBestCommitteeProofs(context.Background, peerID, req)
+			if err != nil {
 				return
 			}
-
-			timeout := s.clock.After(time.Second * 10)
-			for {
-				select {
-				case sp.remoteInfo = <-sp.updateCh:
-				case reply := <-sp.deliverCh:
-					if reply.id != reqID || !s.processReply(sp, reply.reply) {
-						peer.WrongReply()
-					}
-					break
-				case <-peer.CloseChannel():
-					return
-				case <-timeout:
-					peer.Timeout()
-					return
-				}
+			if !s.processReply(sp, req, reply) {
+				wrongReply()
 			}
 		}
 	}()
@@ -746,35 +714,19 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		localIndex += 3
 		remoteIndex += 3
 	}
-	sp.sentRequest = request
 	return request
 }
 
-func (s *SyncCommitteeTracker) DeliverReply(peer sctPeer, reqID uint64, reply CommitteeReply) {
-	s.lock.RLock()
-	sp := s.peers[peer]
-	s.lock.RUnlock()
-	if peer == nil {
-		peer.WrongReply()
-		return
-	}
-
-	select {
-	case sp.deliverCh <- committeeReplyWithId{id: reqID, reply: reply}:
-	default:
-		peer.WrongReply()
-	}
-}
-
-func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, reply CommitteeReply) bool {
+func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest CommitteeRequest, reply CommitteeReply) bool {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	fmt.Println("Processing committee reply", reply)
-	if len(reply.Updates) != len(sp.sentRequest.UpdatePeriods) || len(reply.Committees) != len(sp.sentRequest.CommitteePeriods) {
+	if len(reply.Updates) != len(sentRequest.UpdatePeriods) || len(reply.Committees) != len(sentRequest.CommitteePeriods) {
 		return false
 	}
 	var committeeIndex int
+	firstPeriod := sp.remoteInfo.LastPeriod + 1 - uint64(len(sp.remoteInfo.Scores)/3)
 	for i, update := range reply.Updates {
 		period := uint64(update.Header.Slot) >> 13
 		if period != sp.sentRequest.UpdatePeriods[i] {
@@ -789,7 +741,6 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, reply CommitteeRepl
 			committeeIndex++
 		}
 
-		firstPeriod := sp.remoteInfo.LastPeriod + 1 - uint64(len(sp.remoteInfo.Scores)/3)
 		remoteInfoIndex := int(period-firstPeriod) * 3
 		var remoteInfoScore UpdateScore
 		remoteInfoScore.decode(sp.remoteInfo.Scores[remoteInfoIndex : remoteInfoIndex+3])

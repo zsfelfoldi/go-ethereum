@@ -687,11 +687,11 @@ func (vw valueWriter) writeNode(node MerkleValue) {
 	}
 }
 
-type mergedWriter []ProofWriter
+/*type MergedWriter []ProofWriter
 
-func (m mergedWriter) children() (left, right ProofWriter) {
-	l := make(mergedWriter, 0, len(m))
-	r := make(mergedWriter, 0, len(m))
+func (m MergedWriter) children() (left, right ProofWriter) {
+	l := make(MergedWriter, 0, len(m))
+	r := make(MergedWriter, 0, len(m))
 	for _, w := range m {
 		if left, right := w.children(); left != nil {
 			l = append(l, left)
@@ -704,8 +704,9 @@ func (m mergedWriter) children() (left, right ProofWriter) {
 	return nil, nil
 }
 
-func (m mergedWriter) writeNode(value MerkleValue) {
+func (m MergedWriter) writeNode(value MerkleValue) {
 	for _, w := range m {
 		w.writeNode(value)
 	}
 }
+*/
