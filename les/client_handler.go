@@ -430,7 +430,7 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 				h.backend.peers.unregister(p.id)
 			}
 		}
-		h.backend.syncCommitteeTracker.AdvertisedCommitteeProofs(p.ID(), p.closeCh, errorFn, resp)
+		h.backend.syncCommitteeTracker.SyncWithPeer(p.ID(), p.closeCh, errorFn, resp)
 	default:
 		p.Log().Trace("Received invalid message", "code", msg.Code)
 		return errResp(ErrInvalidMsgCode, "%v", msg.Code)

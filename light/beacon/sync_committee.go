@@ -81,13 +81,22 @@ type syncCommittee struct {
 	aggregate *bls.Pubkey
 }
 
+type sctBackend interface {
+	GetInitData(ctx context.Context, checkpoint common.Hash) (*BlockData, []byte, []byte, error)
+	GetBestCommitteeProofs(ctx context.Context, peerID enode.ID, req CommitteeRequest) (CommitteeReply, error)
+}
+
 type SyncCommitteeTracker struct {
 	lock                                                          sync.RWMutex
 	db                                                            ethdb.Database
+	backend                                                       sctBackend
 	clock                                                         mclock.Clock
 	bestUpdateCache, serializedCommitteeCache, syncCommitteeCache *lru.Cache
 
-	initData               lightClientInitData
+	initData                  lightClientInitData
+	initTriggerCh, initDoneCh chan struct{}
+
+	firstPeriod            uint64 // first bestUpdate stored in db (can be <= initData.Period)
 	nextPeriod             uint64 // first bestUpdate not stored in db
 	genesisValidatorsRoot  common.Hash
 	forks                  Forks
@@ -96,13 +105,16 @@ type SyncCommitteeTracker struct {
 	requestTokenCh, stopCh chan struct{}
 }
 
-func NewSyncCommitteeTracker(db ethdb.Database, forks Forks, clock mclock.Clock) *SyncCommitteeTracker {
+func NewSyncCommitteeTracker(db ethdb.Database, backend sctBackend, forks Forks, clock mclock.Clock) *SyncCommitteeTracker {
 	db = rawdb.NewTable(db, "sct-")
 	s := &SyncCommitteeTracker{
 		db:             db,
+		backend:        backend,
 		clock:          clock,
 		forks:          forks,
 		peers:          make(map[sctPeer]*sctPeerInfo),
+		initTriggerCh:  make(chan struct{}),
+		initDoneCh:     make(chan struct{}),
 		requestTokenCh: make(chan struct{}),
 		stopCh:         make(chan struct{}),
 	}
@@ -128,6 +140,9 @@ func NewSyncCommitteeTracker(db ethdb.Database, forks Forks, clock mclock.Clock)
 	// iterate through them all for simplicity; at most a few hundred items
 	for iter.Next() {
 		period := binary.BigEndian.Uint64(iter.Key()[kl : kl+8])
+		if s.nextPeriod == 0 {
+			s.firstPeriod = period
+		}
 		if s.nextPeriod != period {
 			break // continuity guaranteed
 		}
@@ -138,7 +153,7 @@ func NewSyncCommitteeTracker(db ethdb.Database, forks Forks, clock mclock.Clock)
 	// roll back updates belonging to a different fork
 	for s.nextPeriod > 0 {
 		if update := s.GetBestUpdate(s.nextPeriod - 1); update == nil || update.checkForkVersion(forks) {
-			break
+			break //TODO checkpoint ele ne rollbackeljunk, ???
 		}
 		s.nextPeriod--
 		s.deleteBestUpdate(s.nextPeriod)
@@ -164,6 +179,32 @@ func (s *SyncCommitteeTracker) Stop() {
 	close(s.stopCh)
 }
 
+func (s *SyncCommitteeTracker) InitCheckpoint(checkpoint common.Hash) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if s.nextPeriod != nil && s.initData.Checkpoint == checkpoint {
+		close(s.initDoneCh)
+		return
+	}
+
+	go func() {
+		for {
+			select {
+			case <-s.stopCh:
+				return
+			case <-s.initTriggerCh:
+			}
+			ctx, _ := context.WithTimeout(context.Background, time.Second*20)
+			if block, committee, nextCommittee, err := s.backend.GetInitData(ctx, checkpoint); err == nil {
+				s.init(block, committee, nextCommittee)
+				close(s.initDoneCh)
+				return
+			}
+		}
+	}()
+}
+
 func (s *SyncCommitteeTracker) getInitData() lightClientInitData {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
@@ -184,6 +225,7 @@ func (s *SyncCommitteeTracker) init(initData *lightClientInitData, committee, ne
 	if s.getSyncCommitteeRoot(initData.Period) != initData.CommitteeRoot || s.getSyncCommitteeRoot(initData.Period+1) != initData.NextCommitteeRoot {
 		s.clearDb()
 		s.nextPeriod = initData.Period + 1
+		s.firstPeriod = s.nextPeriod
 		s.storeSerializedSyncCommittee(initData.Period, initData.CommitteeRoot, committee)
 		s.storeSerializedSyncCommittee(initData.Period+1, initData.NextCommitteeRoot, nextCommittee)
 	}
@@ -296,8 +338,8 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, committee
 		return sciWrongUpdate
 	}
 
-	if s.nextPeriod == 0 || period > s.nextPeriod || period <= s.initData.Period {
-		log.Error("Unexpected insertUpdate", "period", period, "initPeriod", s.initData.Period, "nextPeriod", s.nextPeriod)
+	if s.nextPeriod == 0 || period > s.nextPeriod || period < s.firstPeriod {
+		log.Error("Unexpected insertUpdate", "period", period, "firstPeriod", s.firstPeriod, "nextPeriod", s.nextPeriod)
 		return sciUnexpectedError
 	}
 	update.calculateScore()
@@ -309,11 +351,15 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, committee
 			log.Error("Update expected to exist but missing from db")
 			return sciUnexpectedError
 		}
+		rollback = update.NextSyncCommitteeRoot != oldUpdate.NextSyncCommitteeRoot
+		if rollback && period <= s.initData.Period {
+			// never accept a different fork before the local checkpoint
+			return sciWrongUpdate
+		}
 		if !update.score.betterThan(oldUpdate.score) {
 			// not better that existing one, nothing to do
 			return sciSuccess
 		}
-		rollback = update.NextSyncCommitteeRoot != oldUpdate.NextSyncCommitteeRoot
 	}
 
 	if (period == s.nextPeriod || rollback) && s.GetSerializedSyncCommittee(period+1, update.NextSyncCommitteeRoot) == nil {
@@ -582,21 +628,27 @@ func (s *SyncCommitteeTracker) GetUpdateInfo() *UpdateInfo {
 	if s.updateInfo != nil {
 		return s.updateInfo
 	}
+	l := s.nextPeriod - s.firstPeriod
+	if l > maxUpdateInfoLength {
+		l = maxUpdateInfoLength
+	}
+	firstPeriod := s.nextPeriod - l
+
 	u := &UpdateInfo{
 		LastPeriod: s.nextPeriod - 1,
-		Scores:     make([]byte, maxUpdateInfoLength*3),
+		Scores:     make([]byte, int(l)*3),
 		//NextCommitteeRoot: s.getSyncCommitteeRoot(s.nextPeriod),
 	}
-	scoreIndex := maxUpdateInfoLength * 3
-	for period := int64(s.nextPeriod - 1); period >= 0 && scoreIndex > 0; period-- {
-		update := s.GetBestUpdate(uint64(period))
-		if update == nil {
-			break
+
+	for period := firstPeriod; period < s.nextPeriod; period++ {
+		if update := s.GetBestUpdate(uint64(period)); update != nil {
+			scoreIndex := int(period-firstPeriod) * 3
+			update.score.encode(u.Scores[scoreIndex : scoreIndex+3])
+		} else {
+			log.Error("Update missing from database", "period", period)
 		}
-		scoreIndex -= 3
-		update.score.encode(u.Scores[scoreIndex : scoreIndex+3])
 	}
-	u.Scores = u.Scores[scoreIndex:]
+
 	s.updateInfo = u
 	return u
 }
@@ -616,67 +668,96 @@ type committeeReplyWithId struct {
 }*/
 
 type sctPeerInfo struct {
-	// protected by SyncCommitteeTracker.lock
 	remoteInfo UpdateInfo
-	// only accessed by own goroutine
 	forkPeriod uint64
+	peerClosed chan struct{}
+	wrongReply func()
 }
 
-func (s *SyncCommitteeTracker) AdvertisedCommitteeProofs(peerID enode.ID, peerClosed chan struct{}, wrongReply func(), remoteInfo UpdateInfo) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	sp := s.peers[peerID]
-	if sp != nil {
-		sp.remoteInfo = remoteInfo
-		return
-	}
-	sp = &sctPeerInfo{
+func (s *SyncCommitteeTracker) SyncWithPeer(peerID enode.ID, peerClosed chan struct{}, wrongReply func(), remoteInfo UpdateInfo) {
+	sp := &sctPeerInfo{
 		remoteInfo: remoteInfo,
 		forkPeriod: remoteInfo.LastPeriod + 1,
+		peerClosed: peerClosed,
+		wrongReply: wrongReply,
 	}
-	s.peers[peerID] = sp
+
+	s.lock.Lock()
+	oldSp := s.peers[peerID]
+	s.peers[peerID] = peerInfo
+	s.lock.Unlock()
+
+	if oldSp != nil {
+		// if the s.peers entry is changed before the goroutine could delete it then
+		// it will continue with the updated sctPeerInfo instead of quitting
+		return
+	}
 
 	go func() {
-		defer func() {
+		exit := func() bool {
 			s.lock.Lock()
-			delete(s.peers, peerID)
+			oldSp := sp
+			sp = s.peers[peerID]
+			if sp == oldSp {
+				delete(s.peers, peerID)
+			}
 			s.lock.Unlock()
-		}()
+			return sp == oldSp
+		}
+
+		select {
+		case s.initTriggerCh <- struct{}{}:
+			for {
+				select {
+				case <-s.initDoneCh:
+					break
+				case <-s.stopCh:
+					return
+				}
+			}
+		case <-s.initDoneCh:
+		case <-s.stopCh:
+			return
+		}
 
 		for {
 			var req CommitteeRequest
 			for {
+				s.lock.RLock()
+				sp = s.peers[peerID]
+				s.lock.RUnlock()
 				req = s.nextRequest(sp)
 				if req.UpdatePeriods == nil && req.CommitteePeriods == nil {
-					select {
-					case sp.remoteInfo = <-sp.updateCh:
-					case <-peerClosed:
+					if exit() {
 						return
 					}
+					// if exit() returned false then sp is updated so it's worth trying again
 				} else {
 					break
 				}
 			}
 
-			if len(req.CommitteePeriods) > 0 {
-				for {
-					select {
-					case sp.remoteInfo = <-sp.updateCh:
-					case s.requestTokenCh <- struct{}{}:
-						break
-					case <-peerClosed:
+			// throttle committee requests globally by waiting for a token
+			for {
+				select {
+				case s.requestTokenCh <- struct{}{}:
+					break
+				case <-sp.peerClosed:
+					if exit() {
 						return
 					}
 				}
 			}
 
-			reply, err := s.node.GetBestCommitteeProofs(context.Background, peerID, req)
-			if err != nil {
-				return
-			}
-			if !s.processReply(sp, req, reply) {
-				wrongReply()
+			ctx, _ := context.WithTimeout(context.Background, time.Second*20)
+			if reply, err := s.backend.GetBestCommitteeProofs(ctx, peerID, req); err == nil {
+				if !s.processReply(sp, req, reply) {
+					sp.wrongReply()
+				}
+			} else {
+				if exit() {
+					return
+				}
 			}
 		}
 	}()
@@ -684,35 +765,42 @@ func (s *SyncCommitteeTracker) AdvertisedCommitteeProofs(peerID enode.ID, peerCl
 
 func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	localInfo := s.GetUpdateInfo()
-	localPeriod := localInfo.LastPeriod + 1 - uint64(len(localInfo.Scores)/3)
-	remotePeriod := sp.remoteInfo.LastPeriod + 1 - uint64(len(sp.remoteInfo.Scores)/3)
+	localFirstPeriod := localInfo.LastPeriod + 1 - uint64(len(localInfo.Scores)/3)
+	remoteFirstPeriod := sp.remoteInfo.LastPeriod + 1 - uint64(len(sp.remoteInfo.Scores)/3)
 	var (
-		localIndex, remoteIndex int
-		period                  uint64
-		request                 CommitteeRequest
+		period  uint64
+		request CommitteeRequest
 	)
-	if remotePeriod > localPeriod {
-		period = remotePeriod
-		localIndex = int(remotePeriod-localPeriod) * 3
+	if remoteFirstPeriod > localFirstPeriod {
+		period = remoteFirstPeriod
 	} else {
-		period = localPeriod
-		remoteIndex = int(localPeriod-remotePeriod) * 3
+		period = localFirstPeriod
 	}
 	for period <= sp.remoteInfo.LastPeriod && len(request.UpdatePeriods) < MaxUpdateFetch && len(request.CommitteePeriods) < MaxCommitteeFetch {
-		if period <= localInfo.LastPeriod && period < sp.forkPeriod {
+		var reqUpdate, reqCommittee bool
+		if period <= localInfo.LastPeriod && period <= sp.forkPeriod {
 			var localScore, remoteScore UpdateScore
-			localScore.decode(localInfo.Scores[localIndex : localIndex+3])
-			remoteScore.decode(sp.remoteInfo.Scores[remoteIndex : remoteIndex+3])
-			if remoteScore.betterThan(localScore) {
-				request.UpdatePeriods = append(request.UpdatePeriods, period)
+			localPtr := int(period-localFirstPeriod) * 3
+			localScore.decode(localInfo.Scores[localPtr : localPtr+3])
+			remotePtr := int(period-remoteFirstPeriod) * 3
+			remoteScore.decode(sp.remoteInfo.Scores[remotePtr : remotePtr+3])
+			reqUpdate = remoteScore.betterThan(localScore)
+			if period == sp.forkPeriod {
+				reqCommittee = reqUpdate
+				if !reqUpdate {
+					break
+				}
 			}
 		} else {
+			reqUpdate, reqCommitee = true, true
+		}
+		if reqUpdate {
 			request.UpdatePeriods = append(request.UpdatePeriods, period)
+		}
+		if reqCommitee {
 			request.CommitteePeriods = append(request.CommitteePeriods, period+1)
 		}
 		period++
-		localIndex += 3
-		remoteIndex += 3
 	}
 	return request
 }
@@ -732,8 +820,12 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 		if period != sp.sentRequest.UpdatePeriods[i] {
 			return false
 		}
+		if period < s.nextPeriod { // a previous insertUpdate could have reduced nextPeriod since the request was created
+			return true // exit but do not fail because it is not the remote side's fault; retry with new request
+		}
 		var nextCommittee []byte
 		if committeeIndex < len(sp.sentRequest.CommitteePeriods) && sp.sentRequest.CommitteePeriods[committeeIndex] == period+1 {
+			// pick the matching nextCommittee from the Committees reply if present
 			nextCommittee = reply.Committees[committeeIndex]
 			if len(nextCommittee) != 513*48 {
 				return false
@@ -741,20 +833,33 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 			committeeIndex++
 		}
 
-		remoteInfoIndex := int(period-firstPeriod) * 3
+		remoteInfoIndex := int(period - firstPeriod)
 		var remoteInfoScore UpdateScore
-		remoteInfoScore.decode(sp.remoteInfo.Scores[remoteInfoIndex : remoteInfoIndex+3])
+		remoteInfoScore.decode(sp.remoteInfo.Scores[remoteInfoIndex*3 : remoteInfoIndex*3+3])
 		update.calculateScore()
 		if remoteInfoScore.betterThan(update.score) {
-			return false
+			return false // remote did not deliver an update with the promised score
 		}
 		committee := s.getSyncCommitteeLocked(period)
 		if committee == nil {
-			return false
+			log.Error("Missing sync committee while processing committee proofs reply", "period", period)
+			return false // though not the remote's fault, fail here to avoid infinite retries
 		}
-		if s.insertUpdate(&update, committee, nextCommittee) != sciSuccess {
+		switch s.insertUpdate(&update, committee, nextCommittee) {
+		case sciSuccess:
+			if sp.forkPeriod == period {
+				// if local chain is successfully updated to the remote fork then remote is not on a different fork anymore
+				sp.forkPeriod = sp.remoteInfo.LastPeriod + 1
+			}
+		case sciWrongUpdate:
+			return false
+		case sciNeedCommittee:
+			// remember that remote is on a different and more valuable fork; do not fail but construct next request accordingly
 			sp.forkPeriod = period
 			return true
+		case sciUnexpectedError:
+			// local error, insertUpdate has already printed an error log
+			return false // though not the remote's fault, fail here to avoid infinite retries
 		}
 	}
 	return true
