@@ -48,7 +48,7 @@ var (
 )
 
 // Number of implemented message corresponding to different protocol versions.
-var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24, lpv5: 34}
+var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24, lpv5: 32}
 
 const (
 	NetworkId          = 1
@@ -87,16 +87,14 @@ const (
 	StopMsg   = 0x16
 	ResumeMsg = 0x17
 	// Protocol messages introduced in LPV5
-	GetBeaconInitMsg            = 0x18
-	BeaconInitMsg               = 0x19
-	AdvertiseCommitteeProofsMsg = 0x1a
-	GetCommitteeProofsMsg       = 0x1b
-	CommitteeProofsMsg          = 0x1c
-	SignedBeaconHeadsMsg        = 0x1d
-	GetBeaconSlotsMsg           = 0x1e
-	BeaconSlotsMsg              = 0x1f
-	GetExecHeadersMsg           = 0x20
-	ExecHeadersMsg              = 0x21
+	AdvertiseCommitteeProofsMsg = 0x18
+	GetCommitteeProofsMsg       = 0x19
+	CommitteeProofsMsg          = 0x1a
+	SignedBeaconHeadsMsg        = 0x1b
+	GetBeaconSlotsMsg           = 0x1c
+	BeaconSlotsMsg              = 0x1d
+	GetExecHeadersMsg           = 0x1e
+	ExecHeadersMsg              = 0x1f
 )
 
 // GetBlockHeadersData represents a block header query (the request ID is not included)
@@ -193,21 +191,6 @@ type BeaconSlotsResponse struct {
 	ProofValues       beacon.MerkleValues           // external value multiproof for block and state roots (format is determined by BeaconHash.Slot, LastSlot and length of ProofFormat)
 	FirstParentRoot   common.Hash                   // used for reconstructing all header parent roots
 	Headers           []beaconHeaderForTransmission // one for each slot where state proof format includes beacon.HspLongTerm
-}
-
-type GetBeaconInitPacket struct {
-	ReqID      uint64
-	Checkpoint common.Hash
-	// part 0: HspInitData and committees
-	// parts 1..4: 2k long slices of blockRoots
-	// parts 2..8: 2k long slices of stateRoots (part 8 also includes historicRoots proof for last period)
-	Part uint
-}
-
-type BeaconInitResponse struct {
-	Header                   beacon.HeaderWithoutState
-	ProofValues              beacon.MerkleValues
-	Committee, NextCommittee []byte `rlp:"optional"`
 }
 
 const (

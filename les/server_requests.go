@@ -173,16 +173,6 @@ var Les5 = map[uint64]RequestType{
 		ServingTimeMeter: miscServingTimeBeaconHeaderTimer,
 		Handle:           handleGetBeaconSlots,
 	},
-	GetBeaconInitMsg: {
-		Name:             "beacon init request",
-		MaxCount:         1,
-		InPacketsMeter:   miscInBeaconInitPacketsMeter,
-		InTrafficMeter:   miscInBeaconInitTrafficMeter,
-		OutPacketsMeter:  miscOutBeaconInitPacketsMeter,
-		OutTrafficMeter:  miscOutBeaconInitTrafficMeter,
-		ServingTimeMeter: miscServingTimeBeaconInitTimer,
-		Handle:           handleGetBeaconInit,
-	},
 	GetExecHeadersMsg: {
 		Name:             "exec header request",
 		MaxCount:         MaxHeaderFetch,
@@ -898,8 +888,4 @@ func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 			Headers:      headers,
 		})
 	}, r.ReqID, r.MaxAmount, nil //TODO ???amount calculation, check
-}
-
-func handleGetBeaconInit(msg Decoder) (serveRequestFn, uint64, uint64, error) {
-	panic(nil) //TODO
 }
