@@ -18,7 +18,6 @@ package les
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -432,13 +431,13 @@ func (h *serverHandler) broadcastLoop() {
 		case ev := <-headCh:
 			if h.server.beaconChain != nil {
 				h.server.beaconChain.SetHead(common.Hash{})
-				headUpdate, err := h.server.beaconNodeApi.getHeadUpdate()
+				/*headUpdate, err := h.server.beaconNodeApi.getHeadUpdate()
 				if err == nil {
 					fmt.Println("Fetched head update", headUpdate)
 					h.server.headPropagator.Add(headUpdate)
 				} else {
 					fmt.Println("Error fetching head update", err)
-				}
+				}*/
 			}
 			header := ev.Block.Header()
 			hash, number := header.Hash(), header.Number.Uint64()

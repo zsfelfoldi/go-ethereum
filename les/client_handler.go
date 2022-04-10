@@ -403,8 +403,8 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 	case msg.Code == CommitteeProofsMsg && p.version >= lpv5:
 		p.Log().Trace("Received committee proofs response")
 		var resp struct {
-			ReqID, BV               uint64
-			CommitteeProofsResponse //TODO check RLP encoding
+			ReqID, BV             uint64
+			beacon.CommitteeReply //TODO check RLP encoding
 		}
 		fmt.Println("Received CommitteeProofsMsg")
 		if err := msg.Decode(&resp); err != nil {
@@ -417,7 +417,7 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 		deliverMsg = &Msg{
 			MsgType: MsgCommitteeProofs,
 			ReqID:   resp.ReqID,
-			Obj:     resp.CommitteeProofsResponse,
+			Obj:     resp.CommitteeReply,
 		}
 	case msg.Code == AdvertiseCommitteeProofsMsg && p.version >= lpv5:
 		p.Log().Trace("Received committee proofs advertisement")
@@ -431,6 +431,14 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 			}
 		}
 		h.backend.syncCommitteeTracker.SyncWithPeer(p.ID(), p.closeCh, errorFn, resp)
+	case msg.Code == SignedBeaconHeadsMsg && p.version >= lpv5:
+		p.Log().Trace("Received beacon chain head update")
+		var heads []beacon.SignedHead
+		if err := msg.Decode(&heads); err != nil {
+			return errResp(ErrDecode, "msg %v: %v", msg, err)
+		}
+		h.backend.syncCommitteeTracker.NewBeaconHeads(heads)
+
 	default:
 		p.Log().Trace("Received invalid message", "code", msg.Code)
 		return errResp(ErrInvalidMsgCode, "%v", msg.Code)

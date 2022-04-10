@@ -48,7 +48,7 @@ var (
 )
 
 // Number of implemented message corresponding to different protocol versions.
-var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24, lpv5: 35}
+var ProtocolLengths = map[uint]uint64{lpv2: 22, lpv3: 24, lpv4: 24, lpv5: 34}
 
 const (
 	NetworkId          = 1
@@ -87,17 +87,16 @@ const (
 	StopMsg   = 0x16
 	ResumeMsg = 0x17
 	// Protocol messages introduced in LPV5
-	AdvertiseCommitteeProofsMsg = 0x18
-	GetCommitteeProofsMsg       = 0x19
-	CommitteeProofsMsg          = 0x1a
-	GetSignedHeadersMsg         = 0x1b
-	SignedHeadersMsg            = 0x1c
+	GetBeaconInitMsg            = 0x18
+	BeaconInitMsg               = 0x19
+	AdvertiseCommitteeProofsMsg = 0x1a
+	GetCommitteeProofsMsg       = 0x1b
+	CommitteeProofsMsg          = 0x1c
+	SignedBeaconHeadsMsg        = 0x1d
 	GetBeaconSlotsMsg           = 0x1e
 	BeaconSlotsMsg              = 0x1f
-	GetBeaconInitMsg            = 0x20
-	BeaconInitMsg               = 0x21
-	GetExecHeadersMsg           = 0x22
-	ExecHeadersMsg              = 0x23
+	GetExecHeadersMsg           = 0x20
+	ExecHeadersMsg              = 0x21
 )
 
 // GetBlockHeadersData represents a block header query (the request ID is not included)
@@ -162,32 +161,8 @@ type GetTxStatusPacket struct {
 }*/
 
 type GetCommitteeProofsPacket struct {
-	ReqID                           uint64
-	UpdatePeriods, CommitteePeriods []uint64
-}
-
-type CommitteeProofsResponse struct {
-	Updates    []beacon.LightClientUpdate
-	Committees [][]byte
-}
-
-type GetHeadAnnouncementsPacket struct {
-	ReqID          uint64
-	BestHeads      uint
-	MinSignerCount uint
-	Level          uint // 0: signature + beacon header  1: + exec_head proof + exec header  2: + exec_block
-	Subscribe      bool
-}
-
-type headAnnouncement struct {
-	beacon.SignedHead
-	ExecProof     beacon.MerkleValues
-	HeaderOrBlock []byte
-}
-
-type HeadAnnouncementsPacket struct {
-	ReqID uint64 // zero for subscription messages
-	Heads []headAnnouncement
+	ReqID uint64
+	beacon.CommitteeRequest
 }
 
 type GetBeaconSlotsPacket struct {
@@ -232,7 +207,7 @@ type GetBeaconInitPacket struct {
 type BeaconInitResponse struct {
 	Header                   beacon.HeaderWithoutState
 	ProofValues              beacon.MerkleValues
-	Committee, NextCommittee []byte
+	Committee, NextCommittee []byte `rlp:"optional"`
 }
 
 const (

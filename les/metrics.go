@@ -44,6 +44,8 @@ var (
 	miscInCommitteeProofTrafficMeter = metrics.NewRegisteredMeter("les/misc/in/traffic/committee", nil)
 	miscInBeaconHeaderPacketsMeter   = metrics.NewRegisteredMeter("les/misc/in/packets/beaconHeader", nil)
 	miscInBeaconHeaderTrafficMeter   = metrics.NewRegisteredMeter("les/misc/in/traffic/beaconHeader", nil)
+	miscInBeaconInitPacketsMeter     = metrics.NewRegisteredMeter("les/misc/in/packets/beaconInit", nil)
+	miscInBeaconInitTrafficMeter     = metrics.NewRegisteredMeter("les/misc/in/traffic/beaconInit", nil)
 	miscInExecHeaderPacketsMeter     = metrics.NewRegisteredMeter("les/misc/in/packets/execHeader", nil)
 	miscInExecHeaderTrafficMeter     = metrics.NewRegisteredMeter("les/misc/in/traffic/execHeader", nil)
 
@@ -69,6 +71,8 @@ var (
 	miscOutCommitteeProofTrafficMeter = metrics.NewRegisteredMeter("les/misc/out/traffic/committee", nil)
 	miscOutBeaconHeaderPacketsMeter   = metrics.NewRegisteredMeter("les/misc/out/packets/beaconHeader", nil)
 	miscOutBeaconHeaderTrafficMeter   = metrics.NewRegisteredMeter("les/misc/out/traffic/beaconHeader", nil)
+	miscOutBeaconInitPacketsMeter     = metrics.NewRegisteredMeter("les/misc/out/packets/beaconInit", nil)
+	miscOutBeaconInitTrafficMeter     = metrics.NewRegisteredMeter("les/misc/out/traffic/beaconInit", nil)
 	miscOutExecHeaderPacketsMeter     = metrics.NewRegisteredMeter("les/misc/out/packets/execHeader", nil)
 	miscOutExecHeaderTrafficMeter     = metrics.NewRegisteredMeter("les/misc/out/traffic/execHeader", nil)
 
@@ -82,6 +86,7 @@ var (
 	miscServingTimeTxStatusTimer       = metrics.NewRegisteredTimer("les/misc/serve/txStatus", nil)
 	miscServingTimeCommitteeProofTimer = metrics.NewRegisteredTimer("les/misc/serve/committee", nil)
 	miscServingTimeBeaconHeaderTimer   = metrics.NewRegisteredTimer("les/misc/serve/beaconHeader", nil)
+	miscServingTimeBeaconInitTimer     = metrics.NewRegisteredTimer("les/misc/serve/beaconInit", nil)
 	miscServingTimeExecHeaderTimer     = metrics.NewRegisteredTimer("les/misc/serve/execHeader", nil)
 
 	connectionTimer       = metrics.NewRegisteredTimer("les/connection/duration", nil)

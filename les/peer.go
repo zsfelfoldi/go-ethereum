@@ -972,7 +972,7 @@ func (p *clientPeer) replyExecHeaders(reqID uint64, resp ExecHeadersResponse) *r
 }
 
 //TODO
-func (p *clientPeer) replyCommitteeProofs(reqID uint64, resp CommitteeProofsResponse) *reply {
+func (p *clientPeer) replyCommitteeProofs(reqID uint64, resp beacon.CommitteeReply) *reply {
 	data, _ := rlp.EncodeToBytes(resp)
 	return &reply{p.rw, CommitteeProofsMsg, reqID, data}
 }

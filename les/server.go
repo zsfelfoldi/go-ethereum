@@ -74,7 +74,6 @@ type LesServer struct {
 	beaconNodeApi        *beaconNodeApiSource
 	beaconChain          *beacon.BeaconChain
 	syncCommitteeTracker *beacon.SyncCommitteeTracker
-	headPropagator       *beacon.HeadPropagator
 
 	minCapacity, maxCapacity uint64
 	threadsIdle              int // Request serving threads count when system is idle.
@@ -126,9 +125,10 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 			bdata := &beaconNodeApiSource{url: config.BeaconApi} //TODO beaconData
 			srv.beaconChain = beacon.NewBeaconChain(bdata, e.BlockChain(), sct, e.ChainDb())
 			bdata.chain = srv.beaconChain
+			bdata.sct = sct
+			bdata.start()
 			srv.beaconNodeApi = bdata
 			srv.syncCommitteeTracker = sct
-			srv.headPropagator = beacon.NewHeadPropagator(sct, &mclock.System{}, 3)
 		} else {
 			log.Error("Could not load beacon chain config file", "error", err)
 			return nil, fmt.Errorf("Could not load beacon chain config file: %v", err)
@@ -236,6 +236,7 @@ func (s *LesServer) Start() error {
 func (s *LesServer) Stop() error {
 	close(s.closeCh)
 
+	s.beaconNodeApi.stop()
 	s.clientPool.Stop()
 	if s.serverset != nil {
 		s.serverset.close()

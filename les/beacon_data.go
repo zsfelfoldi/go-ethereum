@@ -25,20 +25,285 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/light/beacon"
+	"github.com/ethereum/go-ethereum/log"
+	lru "github.com/hashicorp/golang-lru"
+)
+
+const (
+	headPollFrequency = time.Millisecond * 200
+	headPollCount     = 50
 )
 
 type beaconNodeApiSource struct {
-	chain chainIterator
+	chain *beacon.BeaconChain
+	sct   *beacon.SyncCommitteeTracker
 	url   string
+
+	updateCache, committeeCache *lru.Cache
+	headTriggerCh               chan chan struct{}
+	closedCh                    chan struct{}
 }
 
-type chainIterator interface { // no locking needed
-	GetParent(*beacon.BlockData) *beacon.BlockData
+func (bn *beaconNodeApiSource) start() {
+	bn.headTriggerCh = make(chan chan struct{})
+	bn.closedCh = make(chan struct{})
+	bn.updateCache, _ = lru.New(beacon.MaxUpdateFetch)
+	bn.committeeCache, _ = lru.New(beacon.MaxUpdateFetch)
+	go bn.headPollLoop()
+}
+
+func (bn *beaconNodeApiSource) newHead() {
+	bn.updateCache.Purge()
+	bn.committeeCache.Purge()
+	select {
+	case bn.headTriggerCh <- nil:
+	default:
+	}
+}
+
+func (bn *beaconNodeApiSource) stop() {
+	close(bn.closedCh)
+	stop := make(chan struct{})
+	bn.headTriggerCh <- stop
+	<-stop
+}
+
+func (bn *beaconNodeApiSource) headPollLoop() {
+	timer := time.NewTimer(0)
+	var (
+		counter  int
+		lastHead beacon.SignedHead
+	)
+	nextAdvertiseSlot := uint64(1)
+
+	for {
+		select {
+		case <-timer.C:
+			if head, err := bn.getHeadUpdate(); err == nil {
+				if !head.Equal(&lastHead) {
+					bn.sct.AddSignedHeads(bn, []beacon.SignedHead{head})
+					lastHead = head
+					if uint64(head.Header.Slot) >= nextAdvertiseSlot {
+						lastPeriod := uint64(head.Header.Slot-1) >> 13
+						if bn.advertiseUpdates(lastPeriod) {
+							nextAdvertiseSlot = (lastPeriod + 1) << 13
+							if uint64(head.Header.Slot) >= nextAdvertiseSlot {
+								nextAdvertiseSlot += 8000
+							}
+						}
+					}
+				}
+				counter++
+				if counter < headPollCount {
+					timer.Reset(headPollFrequency)
+				}
+			}
+		case stopCh := <-bn.headTriggerCh:
+			if stopCh != nil {
+				close(stopCh)
+				return
+			}
+			counter = 0
+			timer.Reset(headPollFrequency)
+		}
+	}
+}
+
+func (bn *beaconNodeApiSource) advertiseUpdates(lastPeriod uint64) bool {
+	nextPeriod := bn.sct.NextPeriod()
+	if nextPeriod == 0 {
+		return false
+	}
+	if nextPeriod-1 > lastPeriod {
+		return true
+	}
+	updateInfo := &beacon.UpdateInfo{
+		LastPeriod: lastPeriod,
+		Scores:     make([]byte, int(lastPeriod+2-nextPeriod)*3),
+	}
+	var ptr int
+	for period := nextPeriod - 1; period <= lastPeriod; period++ {
+		if update, err := bn.getBestUpdate(period); err == nil {
+			update.CalculateScore().Encode(updateInfo.Scores[ptr : ptr+3])
+		} else {
+			log.Error("Error retrieving best committee update from API", "period", period)
+		}
+		ptr += 3
+	}
+	bn.sct.SyncWithPeer(bn, updateInfo)
+	return true
+}
+
+func (bn *beaconNodeApiSource) GetBestCommitteeProofs(ctx context.Context, req beacon.CommitteeRequest) (beacon.CommitteeReply, error) {
+	reply := beacon.CommitteeReply{
+		Updates:    make([]beacon.LightClientUpdate, len(req.UpdatePeriods)),
+		Committees: make([][]byte, len(req.CommitteePeriods)),
+	}
+	var err error
+	for i, period := range req.UpdatePeriods {
+		if reply.Updates[i], err = bn.getBestUpdate(period); err != nil {
+			return beacon.CommitteeReply{}, err
+		}
+	}
+	for i, period := range req.CommitteePeriods {
+		if reply.Committees[i], err = bn.getCommittee(period); err != nil {
+			return beacon.CommitteeReply{}, err
+		}
+	}
+	return reply, nil
+}
+
+func (bn *beaconNodeApiSource) getBestUpdate(period uint64) (beacon.LightClientUpdate, error) {
+	if c, _ := bn.updateCache.Get(period); c != nil {
+		return c.(beacon.LightClientUpdate), nil
+	}
+	update, _, err := bn.getBestUpdateAndCommittee(period)
+	return update, err
+}
+
+func (bn *beaconNodeApiSource) getCommittee(period uint64) ([]byte, error) {
+	if c, _ := bn.committeeCache.Get(period); c != nil {
+		return c.([]byte), nil
+	}
+	_, committee, err := bn.getBestUpdateAndCommittee(period - 1)
+	return committee, err
+}
+
+func (bn *beaconNodeApiSource) getBestUpdateAndCommittee(period uint64) (beacon.LightClientUpdate, []byte, error) {
+	c, err := bn.getCommitteeUpdate(period)
+	if err != nil {
+		return beacon.LightClientUpdate{}, nil, err
+	}
+	committee, ok := c.NextSyncCommittee.serialize()
+	if !ok {
+		return beacon.LightClientUpdate{}, nil, errors.New("invalid sync committee")
+	}
+	update := beacon.LightClientUpdate{
+		Header:                  c.Header,
+		NextSyncCommitteeRoot:   beacon.SerializedCommitteeRoot(committee),
+		NextSyncCommitteeBranch: c.NextSyncCommitteeBranch,
+		FinalizedHeader:         c.FinalizedHeader,
+		FinalityBranch:          c.FinalityBranch,
+		SyncCommitteeBits:       c.Aggregate.BitMask,
+		SyncCommitteeSignature:  c.Aggregate.Signature,
+		ForkVersion:             c.ForkVersion,
+	}
+	bn.updateCache.Add(period, update)
+	bn.committeeCache.Add(period+1, committee)
+	return update, committee, nil
+}
+
+type syncAggregate struct {
+	BitMask   hexutil.Bytes `json:"sync_committee_bits"`
+	Signature hexutil.Bytes `json:"sync_committee_signature"`
+}
+
+func (bn *beaconNodeApiSource) getHeadUpdate() (beacon.SignedHead, error) {
+	resp, err := http.Get(bn.url + "/eth/v1/lightclient/head_update/")
+	if err != nil {
+		return beacon.SignedHead{}, err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return beacon.SignedHead{}, err
+	}
+
+	var data struct {
+		Data struct {
+			Aggregate syncAggregate `json:"sync_aggregate"`
+			Header    beacon.Header `json:"attested_header"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return beacon.SignedHead{}, err
+	}
+	if len(data.Data.Aggregate.BitMask) != 64 {
+		return beacon.SignedHead{}, errors.New("invalid sync_committee_bits length")
+	}
+	if len(data.Data.Aggregate.Signature) != 96 {
+		return beacon.SignedHead{}, errors.New("invalid sync_committee_signature length")
+	}
+	return beacon.SignedHead{
+		Header:    data.Data.Header,
+		BitMask:   data.Data.Aggregate.BitMask,
+		Signature: data.Data.Aggregate.Signature,
+	}, nil
+}
+
+type syncCommitteeJson struct {
+	Pubkeys   []hexutil.Bytes `json:"pubkeys"`
+	Aggregate hexutil.Bytes   `json:"aggregate_pubkey"`
+}
+
+func (s *syncCommitteeJson) serialize() ([]byte, bool) {
+	if len(s.Pubkeys) != 512 {
+		return nil, false
+	}
+	sk := make([]byte, 513*48)
+	for i, key := range s.Pubkeys {
+		if len(key) != 48 {
+			return nil, false
+		}
+		copy(sk[i*48:(i+1)*48], key[:])
+	}
+	if len(s.Aggregate) != 48 {
+		return nil, false
+	}
+	copy(sk[512*48:], s.Aggregate[:])
+	return sk, true
+}
+
+type committeeUpdate struct {
+	Header                  beacon.Header       `json:"attested_header"`
+	NextSyncCommittee       syncCommitteeJson   `json:"next_sync_committee"`
+	NextSyncCommitteeBranch beacon.MerkleValues `json:"next_sync_committee_branch"`
+	FinalizedHeader         beacon.Header       `json:"finalized_header"`
+	FinalityBranch          beacon.MerkleValues `json:"finality_branch"`
+	Aggregate               syncAggregate       `json:"sync_committee_aggregate"`
+	ForkVersion             hexutil.Bytes       `json:"fork_version"`
+}
+
+func (bn *beaconNodeApiSource) getCommitteeUpdate(period uint64) (committeeUpdate, error) {
+	periodStr := strconv.Itoa(int(period))
+	resp, err := http.Get(bn.url + "/eth/v1/lightclient/committee_updates?from=" + periodStr + "&to=" + periodStr)
+	if err != nil {
+		return committeeUpdate{}, err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return committeeUpdate{}, err
+	}
+
+	var data struct {
+		Data []committeeUpdate `json:"data"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return committeeUpdate{}, err
+	}
+	if len(data.Data) != 1 {
+		return committeeUpdate{}, errors.New("invalid number of committee updates")
+	}
+	update := data.Data[0]
+	if len(update.NextSyncCommittee.Pubkeys) != 512 {
+		return committeeUpdate{}, errors.New("invalid number of pubkeys in next_sync_committee")
+	}
+	return update, nil
+}
+
+func (bn *beaconNodeApiSource) ClosedChannel() chan struct{} {
+	return bn.closedCh
+}
+
+func (bn *beaconNodeApiSource) WrongReply(description string) {
+	log.Error("Beacon node API data source delivered wrong reply", "error", description)
 }
 
 // null hash -> current head
@@ -179,105 +444,6 @@ func (bn *beaconNodeApiSource) getMultiStateProof(stateRoot common.Hash, pathCou
 		}
 	}
 	return reader, nil
-}
-
-type syncAggregate struct {
-	BitMask   hexutil.Bytes `json:"sync_committee_bits"`
-	Signature hexutil.Bytes `json:"sync_committee_signature"`
-}
-
-func (bn *beaconNodeApiSource) getHeadUpdate() (beacon.SignedHead, error) {
-	resp, err := http.Get(bn.url + "/eth/v1/lightclient/head_update/")
-	if err != nil {
-		return beacon.SignedHead{}, err
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		return beacon.SignedHead{}, err
-	}
-
-	var data struct {
-		Data struct {
-			Aggregate syncAggregate `json:"sync_aggregate"`
-			Header    beacon.Header `json:"attested_header"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return beacon.SignedHead{}, err
-	}
-	if len(data.Data.Aggregate.BitMask) != 64 {
-		return beacon.SignedHead{}, errors.New("invalid sync_committee_bits length")
-	}
-	if len(data.Data.Aggregate.Signature) != 96 {
-		return beacon.SignedHead{}, errors.New("invalid sync_committee_signature length")
-	}
-	return beacon.SignedHead{
-		Header:    data.Data.Header,
-		BitMask:   data.Data.Aggregate.BitMask,
-		Signature: data.Data.Aggregate.Signature,
-	}, nil
-}
-
-type syncCommitteeJson struct {
-	Pubkeys   []hexutil.Bytes `json:"pubkeys"`
-	Aggregate hexutil.Bytes   `json:"aggregate_pubkey"`
-}
-
-func (s *syncCommitteeJson) serialize() ([]byte, bool) {
-	if len(s.Pubkeys) != 512 {
-		return nil, false
-	}
-	sk := make([]byte, 513*48)
-	for i, key := range s.Pubkeys {
-		if len(key) != 48 {
-			return nil, false
-		}
-		copy(sk[i*48:(i+1)*48], key[:])
-	}
-	if len(s.Aggregate) != 48 {
-		return nil, false
-	}
-	copy(sk[512*48:], s.Aggregate[:])
-	return sk, true
-}
-
-type committeeUpdate struct {
-	Header                  beacon.Header       `json:"attested_header"`
-	NextSyncCommittee       syncCommitteeJson   `json:"next_sync_committee"`
-	NextSyncCommitteeBranch beacon.MerkleValues `json:"next_sync_committee_branch"`
-	FinalizedHeader         beacon.Header       `json:"finalized_header"`
-	FinalityBranch          beacon.MerkleValues `json:"finality_branch"`
-	Aggregate               syncAggregate       `json:"sync_committee_aggregate"`
-	ForkVersion             hexutil.Bytes       `json:"fork_version"`
-}
-
-func (bn *beaconNodeApiSource) getCommitteeUpdate(period uint64) (committeeUpdate, error) {
-	periodStr := strconv.Itoa(int(period))
-	resp, err := http.Get(bn.url + "/eth/v1/lightclient/committee_updates?from=" + periodStr + "&to=" + periodStr)
-	if err != nil {
-		return committeeUpdate{}, err
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		return committeeUpdate{}, err
-	}
-
-	var data struct {
-		Data []committeeUpdate `json:"data"`
-	}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return committeeUpdate{}, err
-	}
-	if len(data.Data) != 1 {
-		return committeeUpdate{}, errors.New("invalid number of committee updates")
-	}
-	update := data.Data[0]
-	if len(update.NextSyncCommittee.Pubkeys) != 512 {
-		return committeeUpdate{}, errors.New("invalid number of pubkeys in next_sync_committee")
-	}
-	return update, nil
 }
 
 // assumes that ParentSlotDiff is already initialized
@@ -484,42 +650,27 @@ func (bn *beaconNodeApiSource) getSyncCommittee(block *beacon.BlockData, leafInd
 	return committee, nil
 }
 
-func (bn *beaconNodeApiSource) GetSyncCommittees(ctx context.Context, block *beacon.BlockData) ([]byte, []byte, error) {
-	committee, err := bn.getSyncCommittee(block, beacon.BsiSyncCommittee, "currentSyncCommittee")
+// checkpoint should be a recent block (no need to be on epoch boundary)
+// empty hash: latest head
+func (bn *beaconNodeApiSource) GetInitData(ctx context.Context, checkpoint common.Hash) (*beacon.BlockData, []byte, []byte, error) {
+	blocks, _, err := bn.GetBlocksFromHead(ctx, checkpoint, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	nextCommittee, err := bn.getSyncCommittee(block, beacon.BsiNextSyncCommittee, "nextSyncCommittee")
+	committee, err := bn.getSyncCommittee(blocks[0], beacon.BsiSyncCommittee, "currentSyncCommittee")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return committee, nextCommittee, nil
-}
-
-func (bn *beaconNodeApiSource) GetBestUpdate(ctx context.Context, period uint64) (*beacon.LightClientUpdate, []byte, error) {
-	c, err := bn.getCommitteeUpdate(period)
+	nextCommittee, err := bn.getSyncCommittee(blocks[0], beacon.BsiNextSyncCommittee, "nextSyncCommittee")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	committee, ok := c.NextSyncCommittee.serialize()
-	if !ok {
-		return nil, nil, errors.New("invalid sync committee")
-	}
-	return &beacon.LightClientUpdate{
-		Header:                  c.Header,
-		NextSyncCommitteeRoot:   beacon.SerializedCommitteeRoot(committee),
-		NextSyncCommitteeBranch: c.NextSyncCommitteeBranch,
-		FinalizedHeader:         c.FinalizedHeader,
-		FinalityBranch:          c.FinalityBranch,
-		SyncCommitteeBits:       c.Aggregate.BitMask,
-		SyncCommitteeSignature:  c.Aggregate.Signature,
-		ForkVersion:             c.ForkVersion,
-	}, committee, nil
+	return blocks[0], committee, nextCommittee, nil
 }
 
 type odrDataSource LightEthereum
 
-func (od *odrDataSource) GetBlocks(ctx context.Context, head beacon.Header, lastSlot, maxAmount uint64, lastHeadHash common.Hash, proofFormatMask int) (blocks []*BlockData, connected bool, err error) {
+func (od *odrDataSource) GetBlocks(ctx context.Context, head beacon.Header, lastSlot, maxAmount uint64, lastHeadHash common.Hash, proofFormatMask byte) (blocks []*beacon.BlockData, connected bool, err error) {
 	req := &light.BeaconSlotsRequest{
 		BeaconHash:      head.Hash(),
 		LastSlot:        lastSlot,
@@ -527,10 +678,10 @@ func (od *odrDataSource) GetBlocks(ctx context.Context, head beacon.Header, last
 		ProofFormatMask: proofFormatMask,
 		LastBeaconHead:  lastHeadHash,
 		HeadStateRoot:   head.StateRoot,
-		HeadSlot:        head.Slot,
+		HeadSlot:        uint64(head.Slot),
 	}
 	if err := od.odr.Retrieve(ctx, req); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	return req.Blocks, len(req.Blocks) > 0 && req.Blocks[0].Header.ParentRoot == lastHeadHash, nil
 }
@@ -559,7 +710,7 @@ func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head common.Hash
 	return req.Blocks, len(req.Blocks) > 0 && req.Blocks[0].Header.ParentRoot == lastHeadHash, nil
 }
 
-func (od *odrDataSource) GetInitData(ctx context.Context, checkpoint common.Hash) (block *BlockData, committee, nextCommittee []byte, err error) {
+func (od *odrDataSource) GetInitData(ctx context.Context, checkpoint common.Hash) (block *beacon.BlockData, committee, nextCommittee []byte, err error) {
 	req := &light.BeaconInitRequest{
 		Checkpoint: checkpoint,
 		Part:       0,
@@ -570,7 +721,7 @@ func (od *odrDataSource) GetInitData(ctx context.Context, checkpoint common.Hash
 	return req.Block, req.Committee, req.NextCommittee, nil
 }
 
-func (od *odrDataSource) GetRootsProof(ctx context.Context, block *beacon.BlockData) (block, state, historic beacon.MultiProof, err error) {
+func (od *odrDataSource) GetRootsProof(ctx context.Context, block *beacon.BlockData) (blockRoots, stateRoots, historicRoots beacon.MultiProof, err error) {
 	reqs := make([]*light.BeaconInitRequest, 8)
 	errCh := make(chan error, 8)
 	for i := range reqs {
@@ -627,30 +778,39 @@ func (od *odrDataSource) GetRootsProof(ctx context.Context, block *beacon.BlockD
 		nil
 }
 
-func (od *odrDataSource) GetBestUpdates(ctx context.Context, peerID enode.ID, updatePeriods, committeePeriods []uint64) ([]beacon.LightClientUpdate, [][]byte, error) {
+type sctServerPeer struct {
+	peer      *serverPeer
+	retriever *retrieveManager
+}
+
+func (sp *sctServerPeer) GetBestCommitteeProofs(ctx context.Context, req beacon.CommitteeRequest) (beacon.CommitteeReply, error) {
 	reqID := rand.Uint64()
-	req := &distReq{
+	var reply beacon.CommitteeReply
+	r := &distReq{
 		getCost: func(dp distPeer) uint64 {
 			peer := dp.(*serverPeer)
-			return peer.getRequestCost(GetCommitteeProofsMsg, len(updatePeriods)+len(committeePeriods)*committeeCostFactor)
+			return peer.getRequestCost(GetCommitteeProofsMsg, len(req.UpdatePeriods)+len(req.CommitteePeriods)*committeeCostFactor)
 		},
 		canSend: func(dp distPeer) bool {
-			return dp.(*serverPeer).ID() == peerID
+			return dp.(*serverPeer) == sp.peer
 		},
 		request: func(dp distPeer) func() {
 			peer := dp.(*serverPeer)
-			cost := peer.getRequestCost(GetCommitteeProofsMsg, len(updatePeriods)+len(committeePeriods)*committeeCostFactor)
+			cost := peer.getRequestCost(GetCommitteeProofsMsg, len(req.UpdatePeriods)+len(req.CommitteePeriods)*committeeCostFactor)
 			peer.fcServer.QueuedRequest(reqID, cost)
-			return func() { peer.requestCommitteeProofs(reqID, updatePeriods, committeePeriods) }
+			return func() { peer.requestCommitteeProofs(reqID, req.UpdatePeriods, req.CommitteePeriods) }
 		},
 	}
 	valFn := func(distPeer, *Msg) error {
-		log.Debug("Validating committee proofs", "updatePeriods", updatePeriods, "committeePeriods", committeePeriods)
-		if msg.MsgType != Msg {
+		log.Debug("Validating committee proofs", "updatePeriods", req.UpdatePeriods, "committeePeriods", req.CommitteePeriods)
+		if msg.MsgType != MsgCommitteeProofs {
 			return errInvalidMessageType
 		}
-		reply := msg.Obj.(BeaconSlotsResponse)
-
+		reply = msg.Obj.(beacon.CommitteeReply)
 	}
-	od.retriever.retrieve(ctx, reqID, req, valFn, nil)
+	if err := sp.retriever.retrieve(ctx, reqID, r, valFn, nil); err == nil {
+		return reply, nil
+	} else {
+		return beacon.CommitteeReply{}, err
+	}
 }

@@ -635,7 +635,7 @@ func handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, erro
 			committees[i] = sct.GetSerializedSyncCommittee(period, sct.GetSyncCommitteeRoot(period))
 		}
 		fmt.Println(" sending reply", updates, committees)
-		return p.replyCommitteeProofs(r.ReqID, CommitteeProofsResponse{
+		return p.replyCommitteeProofs(r.ReqID, beacon.CommitteeReply{
 			Updates:    updates,
 			Committees: committees,
 		})
@@ -898,4 +898,8 @@ func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 			Headers:      headers,
 		})
 	}, r.ReqID, r.MaxAmount, nil //TODO ???amount calculation, check
+}
+
+func handleGetBeaconInit(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+	panic(nil) //TODO
 }

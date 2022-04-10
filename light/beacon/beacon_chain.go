@@ -17,20 +17,13 @@
 package beacon
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"sort"
-	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -117,46 +110,21 @@ func init() {
 	}
 }
 
-type commonData interface {
+type beaconData interface {
 	// if connected is false then first block is not expected to have ParentSlotDiff and StateRootDiffs set but is expected to have HspInitData
 	GetBlocksFromHead(ctx context.Context, head common.Hash, lastHead *BlockData) (blocks []*BlockData, connected bool, err error)
 	GetRootsProof(ctx context.Context, block *BlockData) (MultiProof, MultiProof, error)
 	GetHistoricRootsProof(ctx context.Context, block *BlockData, period uint64) (MultiProof, error)
-	GetSyncCommittees(ctx context.Context, block *BlockData) ([]byte, []byte, error)
 }
-
-type beaconData interface {
-	commonData
-	GetBestUpdate(ctx context.Context, period uint64) (*LightClientUpdate, []byte, error)
-}
-
-type committeeData interface {
-	commonData
-	GetInitBlock(ctx context.Context, checkpoint common.Hash) (block *BlockData, err error)                                                            // ODR
-	GetBlocks(ctx context.Context, head common.Hash, lastSlot, maxAmount uint64, lastHead *BlockData) (blocks []*BlockData, connected bool, err error) // ODR; recent head, any range
-	//	GetSyncCommittee(ctx context.Context, period uint64, root common.Hash) ([]byte, error)      // ODR   (API eseten jobb, ha ott a block)
-	GetBestUpdate(ctx context.Context, peer sctPeer, period uint64) (*LightClientUpdate, []byte, error)
-}
-
-/*type beaconBackfillData interface {
-	// if connected is false then first block is not expected to have ParentSlotDiff and StateRootDiffs set
-	getBlocks(ctx context.Context, head common.Hash, lastSlot, maxAmount uint64, lastHead *BlockData, getParent func(*BlockData) *BlockData) (blocks []*BlockData, connected bool, err error)
-	getStateRoots(ctx context.Context, blockHash common.Hash, period uint64) (MerkleValues, error)
-	getHistoricRoots(ctx context.Context, blockHash common.Hash, period uint64) (blockRoots, stateRoots MerkleValue, path MerkleValues, err error)
-	getSyncCommittee(ctx context.Context, period uint64, committeeRoot common.Hash) ([]byte, error)
-	getBestUpdate(ctx context.Context, period uint64) (*LightClientUpdate, []byte, error)
-	subscribeSignedHead(cb func(SignedHead), bestHeads, minSignerCount, level uint)
-}*/
 
 type execChain interface {
-	GetHeader(common.Hash, uint64) *types.Header
+	// GetHeader(common.Hash, uint64) *types.Header   ???
 	GetHeaderByHash(common.Hash) *types.Header
 }
 
 type BeaconChain struct {
 	dataSource     beaconData
 	execChain      execChain
-	sct            *SyncCommitteeTracker
 	db             ethdb.Database
 	failCounter    int
 	blockDataCache *lru.Cache // string(dbKey) -> *BlockData  (either blockDataKey, slotByBlockRootKey or blockDataByBlockRootKey)  //TODO use separate cache?
@@ -261,7 +229,6 @@ func NewBeaconChain(dataSource beaconData, execChain execChain, sct *SyncCommitt
 		blockDataCache:  blockDataCache,
 		historicCache:   historicCache,
 		execNumberCache: execNumberCache,
-		sct:             sct,
 	}
 	bc.reset()
 	if enc, err := bc.db.Get(beaconHeadTailKey); err == nil {
@@ -551,7 +518,6 @@ func (bc *BeaconChain) clearDb() {
 	bc.blockDataCache.Purge()
 	bc.historicCache.Purge()
 	bc.execNumberCache.Purge()
-	bc.sct.clearDb()
 }
 
 func (bc *BeaconChain) reset() {
@@ -648,20 +614,6 @@ func (bc *BeaconChain) trySetHead(headHash common.Hash) error {
 	headBlock := blocks[len(blocks)-1]
 	headSlot := headBlock.Header.Slot
 	headHash = headBlock.BlockRoot
-	nextPeriod := bc.sct.getNextPeriod()
-	nextPeriodStart := nextPeriod << 13
-	if headSlot >= nextPeriodStart+8000 {
-		fmt.Println("Fetching best update for next period", nextPeriod)
-		if err := bc.fetchBestUpdate(ctx, nextPeriod); err != nil {
-			return err
-		}
-	}
-	if headSlot >= nextPeriodStart && bc.headSlot < nextPeriodStart && nextPeriod-1 > bc.sct.getInitData().Period {
-		fmt.Println("Fetching best update again for last period", nextPeriod-1)
-		if err := bc.fetchBestUpdate(ctx, nextPeriod-1); err != nil {
-			return err
-		}
-	}
 
 	//fmt.Println("headBlock.root", headBlock.BlockRoot)
 	if err := headTree.moveToHead(headBlock); err != nil {
@@ -705,25 +657,6 @@ func (bc *BeaconChain) trySetHead(headHash common.Hash) error {
 	return nil
 }
 
-func (bc *BeaconChain) fetchBestUpdate(ctx context.Context, period uint64) error {
-	committee := bc.sct.getSyncCommittee(period)
-	if committee == nil {
-		return errors.New("missing sync committee for requested period")
-	}
-	if update, nextCommittee, err := bc.dataSource.GetBestUpdate(ctx, period); err == nil {
-		fmt.Println(" getBestUpdate", period, "update header period", update.Header.Slot>>13)
-		if period != uint64(update.Header.Slot)>>13 {
-			return errors.New("received best update for wrong period")
-		}
-		if bc.sct.insertUpdate(update, committee, nextCommittee) != sciSuccess {
-			return errors.New("cannot insert best update")
-		}
-		return nil
-	} else {
-		return err
-	}
-}
-
 func (bc *BeaconChain) findCloseBlocks(block *BlockData, maxDistance int) (res []*BlockData) {
 	dist := make(map[common.Hash]int)
 	dist[block.BlockRoot] = 0
@@ -765,236 +698,7 @@ func (bc *BeaconChain) initChain(ctx context.Context, block *BlockData) error {
 		return errors.New("init data not found in fetched beacon states")
 	}
 	bc.clearDb()
-	initData, committee, nextCommittee, err := bc.fetchInitData(ctx, block)
-	if err != nil {
-		return err //TODO wrap the error message?
-	}
-	bc.sct.init(initData, committee, nextCommittee)
+	//bc.sct.InitCheckpoint(block.BlockRoot)
 	return nil
+
 }
-
-func (bc *BeaconChain) fetchInitData(ctx context.Context, block *BlockData) (initData *lightClientInitData, committee, nextCommittee []byte, err error) {
-	gt := block.mustGetStateValue(BsiGenesisTime)
-	initData = &lightClientInitData{
-		Checkpoint:            block.BlockRoot,
-		Period:                block.Header.Slot >> 13,
-		GenesisTime:           binary.LittleEndian.Uint64(gt[:]), //TODO check if encoding is correct
-		GenesisValidatorsRoot: common.Hash(block.mustGetStateValue(BsiGenesisValidators)),
-		CommitteeRoot:         common.Hash(block.mustGetStateValue(BsiSyncCommittee)),
-		NextCommitteeRoot:     common.Hash(block.mustGetStateValue(BsiNextSyncCommittee)),
-	}
-	if committee, nextCommittee, err = bc.dataSource.GetSyncCommittees(ctx, block); err != nil {
-		return nil, nil, nil, err
-	}
-	return
-}
-
-type Fork struct {
-	Epoch   uint64
-	Version []byte
-	domain  MerkleValue
-}
-
-type Forks []Fork
-
-func (bf Forks) version(epoch uint64) []byte {
-	for i := len(bf) - 1; i >= 0; i-- {
-		if epoch >= bf[i].Epoch {
-			return bf[i].Version
-		}
-	}
-	log.Error("Fork version unknown", "epoch", epoch)
-	return nil
-}
-
-func (bf Forks) domain(epoch uint64) MerkleValue {
-	for i := len(bf) - 1; i >= 0; i-- {
-		if epoch >= bf[i].Epoch {
-			return bf[i].domain
-		}
-	}
-	log.Error("Fork domain unknown", "epoch", epoch)
-	return MerkleValue{}
-}
-
-func (bf Forks) computeDomains(genesisValidatorsRoot common.Hash) {
-	for i := range bf {
-		bf[i].domain = computeDomain(bf[i].Version, genesisValidatorsRoot)
-	}
-}
-
-func (f Forks) Len() int           { return len(f) }
-func (f Forks) Swap(i, j int)      { f[i], f[j] = f[j], f[i] }
-func (f Forks) Less(i, j int) bool { return f[i].Epoch < f[j].Epoch }
-
-func fieldValue(line, field string) (name, value string, ok bool) {
-	if pos := strings.Index(line, field); pos >= 0 {
-		return line[:pos], strings.TrimSpace(line[pos+len(field):]), true
-	}
-	return "", "", false
-}
-
-func LoadForks(fileName string) (Forks, error) {
-	file, err := os.Open(fileName)
-	if err != nil {
-		return nil, fmt.Errorf("Error opening beacon chain config file: %v", err)
-	}
-	defer file.Close()
-
-	forkVersions := make(map[string][]byte)
-	forkEpochs := make(map[string]uint64)
-	reader := bufio.NewReader(file)
-	for {
-		l, _, err := reader.ReadLine()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("Error reading beacon chain config file: %v", err)
-		}
-		line := string(l)
-		if name, value, ok := fieldValue(line, "_FORK_VERSION:"); ok {
-			if v, err := hexutil.Decode(value); err == nil {
-				forkVersions[name] = v
-			} else {
-				return nil, fmt.Errorf("Error decoding hex fork id \"%s\" in beacon chain config file: %v", value, err)
-			}
-		}
-		if name, value, ok := fieldValue(line, "_FORK_EPOCH:"); ok {
-			if v, err := strconv.ParseUint(value, 10, 64); err == nil {
-				forkEpochs[name] = v
-			} else {
-				return nil, fmt.Errorf("Error parsing epoch number \"%s\" in beacon chain config file: %v", value, err)
-			}
-		}
-	}
-
-	var forks Forks
-	forkEpochs["GENESIS"] = 0
-	for name, epoch := range forkEpochs {
-		if version, ok := forkVersions[name]; ok {
-			delete(forkVersions, name)
-			forks = append(forks, Fork{Epoch: epoch, Version: version})
-		} else {
-			return nil, fmt.Errorf("Fork id missing for \"%s\" in beacon chain config file", name)
-		}
-	}
-	for name := range forkVersions {
-		return nil, fmt.Errorf("Epoch number missing for fork \"%s\" in beacon chain config file", name)
-	}
-	sort.Sort(forks)
-	return forks, nil
-}
-
-/*type GetBeaconSlotsPacket struct {
-	ReqID           uint64
-	BeaconHash      common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
-	LastSlot        uint64      // last slot of requested range (<= beacon_head.slot)
-	MaxSlots        uint64      // maximum number of retrieved slots
-	ProofFormatMask byte        // requested state fields (where available); bits correspond to Hsp* constants
-	LastBeaconHead  common.Hash `rlp:"optional"` // optional beacon block hash; retrieval stops before the common ancestor
-}
-
-type BeaconSlotsPacket struct {
-	ReqID, BV uint64
-	// MultiProof contains state proofs for the requested blocks; included state fields for each block are defined in ProofFormat
-	// - head block state is proven directly from beacon_head.state_root
-	// - states not older than 8192 slots are proven from beacon_head.state_roots[slot % 8192]
-	// - states older than 8192 slots are proven from beacon_head.historic_roots[slot / 8192].state_roots[slot % 8192]
-	FirstSlot         uint64
-	StateProofFormats []byte                        // slot index equals FirstSlot plus slice index
-	ProofValues       MerkleValues                  // external value multiproof for block and state roots (format is determined by BeaconHash.Slot, LastSlot and length of ProofFormat)
-	FirstParentRoot   common.Hash                   // used for reconstructing all header parent roots
-	Headers           []beaconHeaderForTransmission // one for each slot where state proof format includes HspLongTerm
-}
-
-type BlockData struct {
-	Header               HeaderWithoutState
-	stateRoot, blockRoot common.Hash // calculated by CalculateRoots()
-	ProofFormat          byte
-	StateProof           MerkleValues
-	ParentSlotDiff       uint64       // slot-parentSlot; 0 if not initialized
-	StateRootDiffs       MerkleValues // only valid if ParentSlotDiff is initialized
-}
-*/
-/*
-func validateBeaconSlots(header *Header, request *GetBeaconSlotsPacket, reply *BeaconSlotsPacket, hasBlockData func(uint64, common.Hash) bool) (blocks []*BlockData, connected bool, err error) {
-	// check that the returned range is as expected
-	firstSlot, lastSlot := reply.FirstSlot, reply.FirstSlot+uint64(len(reply.StateProofFormats))-1
-	expLastSlot := request.LastSlot
-	if expLastSlot > header.Slot {
-		expLastSlot = header.Slot
-	}
-	var expFirstSlot uint64
-	if request.MaxSlots <= expLastSlot {
-		expFirstSlot = expLastSlot + 1 - request.MaxSlots
-	}
-	if request.ProofFormatMask == 0 {
-		if firstSlot != expFirstSlot || lastSlot != expLastSlot {
-			return nil, false, errors.New("Returned slot range incorrect")
-		}
-	} else {
-		if lastSlot < expLastSlot || firstSlot > expLastSlot { //TODO ??? first check
-			return nil, false, errors.New("Returned slot range incorrect")
-		}
-		for slot := expLastSlot; slot <= lastSlot; slot++ {
-			format := reply.StateProofFormats[int(slot-firstSlot)]
-			if (format != 0) != (slot == lastSlot) {
-				return nil, false, errors.New("Returned slot range incorrect")
-			}
-		}
-	}
-
-	reader := MultiProof{format: SlotRangeFormat(header.Slot, reply.FirstSlot, reply.StateProofFormats), values: reply.ProofValues}.Reader(nil)
-	target := make([]*MerkleValues, len(reply.StateProofFormats))
-	for i := range target {
-		target[i] = new(MerkleValues)
-	}
-	writer := slotRangeWriter(header.Slot, reply.FirstSlot, reply.StateProofFormats, target)
-	if stateRoot, ok := TraverseProof(reader, writer); ok && reader.exhausted() {
-		if stateRoot != header.StateRoot {
-			return nil, false, errors.New("Multiproof root hash does not match")
-		}
-	} else {
-		return nil, false, errors.New("Multiproof format error")
-	}
-	blocks = make([]*BlockData, len(reply.Headers))
-	lastRoot := reply.FirstParentRoot
-	var (
-		blockPtr       int
-		stateRootDiffs MerkleValues
-	)
-	slot := reply.FirstSlot
-	for i, format := range reply.StateProofFormats {
-		if format == 0 {
-			stateRootDiffs = append(stateRootDiffs, (*target[i])[0])
-		} else {
-			if blockPtr >= len(reply.Headers) {
-				return nil, false, errors.New("Not enough beacon headers")
-			}
-			header := reply.Headers[blockPtr]
-			block := &BlockData{
-				Header: HeaderWithoutState{
-					Slot:          slot,
-					ProposerIndex: header.ProposerIndex,
-					BodyRoot:      header.BodyRoot,
-					ParentRoot:    lastRoot,
-				},
-				ProofFormat:    format,
-				StateProof:     *target[i],
-				ParentSlotDiff: uint64(len(stateRootDiffs) + 1), //TODO first one?
-				StateRootDiffs: stateRootDiffs,
-			}
-			block.CalculateRoots()
-			lastRoot = block.BlockRoot
-			blocks[blockPtr] = block
-			blockPtr++
-		}
-		slot++
-	}
-	if blockPtr != len(reply.Headers) {
-		return nil, false, errors.New("Too many beacon headers")
-	}
-	//TODO return state roots only
-}
-*/

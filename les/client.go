@@ -77,7 +77,6 @@ type LightEthereum struct {
 	netRPCService  *ethapi.PublicNetAPI
 
 	syncCommitteeTracker *beacon.SyncCommitteeTracker //TODO vegignezni, mi milyen esetben lehet nil es a handler nem okozhat-e panic-ot
-	headPropagator       *beacon.HeadPropagator
 
 	p2pServer  *p2p.Server
 	p2pConfig  *p2p.Config
@@ -104,7 +103,6 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 
 	peers := newServerPeerSet()
 	merger := consensus.NewMerger(chainDb)
-	sct := beacon.NewSyncCommitteeTracker(chainDb, beacon.Forks{{Epoch: 0, Version: []byte{96, 0, 16, 113}}}, &mclock.System{}) //TODO beacon chain config
 	leth := &LightEthereum{
 		lesCommons: lesCommons{
 			genesis:     genesisHash,
@@ -127,8 +125,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		p2pConfig:            &stack.Config().P2P,
 		udpEnabled:           stack.Config().P2P.DiscoveryV5,
 		shutdownTracker:      shutdowncheck.NewShutdownTracker(chainDb),
-		syncCommitteeTracker: sct,
-		headPropagator:       beacon.NewHeadPropagator(sct, &mclock.System{}, 3),
+		syncCommitteeTracker: beacon.NewSyncCommitteeTracker(chainDb, beacon.Forks{{Epoch: 0, Version: []byte{96, 0, 16, 113}}}, &mclock.System{}), //TODO beacon chain config
 	}
 
 	var prenegQuery vfc.QueryFunc

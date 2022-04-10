@@ -215,12 +215,13 @@ type BeaconInitRequest struct {
 	Checkpoint common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
 	Part       uint
 
-	Header                   beacon.HeaderWithoutState
-	ProofValues              beacon.MerkleValues
-	Committee, NextCommittee []byte
+	Block                    *beacon.BlockData
+	Committee, NextCommittee []byte              // filled when Part=0
+	Roots                    beacon.MerkleValues // part of block roots (when Part=1..4) or state roots (when Part=5..8)
+	HistoricRoots            beacon.MultiProof   // filled when Part=8
 }
 
-func (req *BeaconSlotsRequest) StoreResult(db ethdb.Database) {}
+func (req *BeaconInitRequest) StoreResult(db ethdb.Database) {}
 
 type ExecHeadersRequest struct {
 	OdrRequest
