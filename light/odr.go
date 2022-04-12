@@ -195,20 +195,25 @@ func (req *TxStatusRequest) StoreResult(db ethdb.Database) {}
 
 type BeaconSlotsRequest struct {
 	OdrRequest
-	BeaconHash      common.Hash // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
-	LastSlot        uint64      // last slot of requested range (reference block is used if LastSlot is higher than its slot number)
-	MaxSlots        uint64      // maximum number of retrieved slots
-	ProofFormatMask byte        // requested state fields (where available); bits correspond to beacon.Hsp* constants
-	LastBeaconHead  common.Hash // optional beacon block hash; retrieval stops before the common ancestor
+	Head            beacon.Header        // recent beacon block hash used as a reference to the canonical chain state (client already has the header)
+	LastSlot        uint64               // last slot of requested range (reference block is used if LastSlot is higher than its slot number)
+	MaxSlots        uint64               // maximum number of retrieved slots
+	ProofFormatMask byte                 // requested state fields (where available); bits correspond to beacon.Hsp* constants
+	RecentBlocks    *beacon.RecentBlocks // optional; retrieval stops before the common ancestor
 
-	HeadStateRoot common.Hash // filled by caller; may be omitted if last requested header is identified by BeaconHash
-	HeadSlot      uint64      // filled by caller; may be omitted if last requested header is identified by BeaconHash
-
-	Blocks     []*beacon.BlockData // filled by Validate
-	StateRoots beacon.MerkleValues // filled by Validate when ProofFormatMask == 0
+	Blocks []*beacon.BlockData // filled by Validate
 }
 
 func (req *BeaconSlotsRequest) StoreResult(db ethdb.Database) {}
+
+type BeaconInitRequest struct {
+	OdrRequest
+	Checkpoint common.Hash
+
+	Block *beacon.BlockData // filled by Validate
+}
+
+func (req *BeaconInitRequest) StoreResult(db ethdb.Database) {}
 
 type ExecHeadersRequest struct {
 	OdrRequest

@@ -95,7 +95,7 @@ type syncCommittee struct {
 }
 
 type sctBackend interface {
-	GetInitData(ctx context.Context, checkpoint common.Hash) (*BlockData, []byte, []byte, error)
+	GetInitBlock(ctx context.Context, checkpoint common.Hash) (*BlockData, error)
 	SetBeaconHead(common.Hash)
 }
 

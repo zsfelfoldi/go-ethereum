@@ -111,8 +111,14 @@ func init() {
 }
 
 type beaconData interface {
-	// if connected is false then first block is not expected to have ParentSlotDiff and StateRootDiffs set but is expected to have HspInitData
-	GetBlocksFromHead(ctx context.Context, head common.Hash, lastHead *BlockData) (blocks []*BlockData, connected bool, err error)
+	GetBlocksFromHead(ctx context.Context, head Header, amount uint64) ([]*BlockData, error)
+}
+
+type historicData interface { // only supported by ODR
+	GetHistoricBlocks(ctx context.Context, head Header, lastSlot, amount uint64) ([]*BlockData, error)
+}
+
+type historicInitData interface { // only supported by beacon node API; ODR supports retrieving 8k historic slots instead
 	GetRootsProof(ctx context.Context, block *BlockData) (MultiProof, MultiProof, error)
 	GetHistoricRootsProof(ctx context.Context, block *BlockData, period uint64) (MultiProof, error)
 }

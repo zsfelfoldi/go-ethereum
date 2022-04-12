@@ -188,7 +188,7 @@ type BeaconSlotsResponse struct {
 	// - states older than 8192 slots are proven from beacon_head.historic_roots[slot / 8192].state_roots[slot % 8192]
 	FirstSlot         uint64
 	StateProofFormats []byte                        // slot index equals FirstSlot plus slice index
-	ProofValues       beacon.MerkleValues           // external value multiproof for block and state roots (format is determined by BeaconHash.Slot, LastSlot and length of ProofFormat)
+	ProofValues       beacon.MerkleValues           // multiproof for block and state roots (format is determined by BeaconHash.Slot, LastSlot and length of ProofFormat)
 	FirstParentRoot   common.Hash                   // used for reconstructing all header parent roots
 	Headers           []beaconHeaderForTransmission // one for each slot where state proof format includes beacon.HspLongTerm
 }

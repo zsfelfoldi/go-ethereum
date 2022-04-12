@@ -670,23 +670,21 @@ func (bn *beaconNodeApiSource) GetInitData(ctx context.Context, checkpoint commo
 
 type odrDataSource LightEthereum
 
-func (od *odrDataSource) GetBlocks(ctx context.Context, head beacon.Header, lastSlot, maxAmount uint64, lastHeadHash common.Hash, proofFormatMask byte) (blocks []*beacon.BlockData, connected bool, err error) {
+func (od *odrDataSource) GetBlocks(ctx context.Context, head beacon.Header, lastSlot, maxAmount uint64, recentBlocks *beacon.RecentBlocks, proofFormatMask byte) (blocks []*beacon.BlockData, connected bool, err error) {
 	req := &light.BeaconSlotsRequest{
-		BeaconHash:      head.Hash(),
+		Head:            head,
 		LastSlot:        lastSlot,
 		MaxSlots:        maxAmount,
 		ProofFormatMask: proofFormatMask,
-		LastBeaconHead:  lastHeadHash,
-		HeadStateRoot:   head.StateRoot,
-		HeadSlot:        uint64(head.Slot),
+		RecentBlocks:    recentBlocks,
 	}
 	if err := od.odr.Retrieve(ctx, req); err != nil {
 		return nil, false, err
 	}
-	return req.Blocks, len(req.Blocks) > 0 && req.Blocks[0].Header.ParentRoot == lastHeadHash, nil
+	return req.Blocks, recentBlocks != nil && len(req.Blocks) > 0 && recentBlocks.HasBlock(req.Blocks[0].Header.ParentRoot), nil
 }
 
-func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head common.Hash, lastHead *beacon.BlockData) (blocks []*beacon.BlockData, connected bool, err error) {
+func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head beacon.Header, recentBlocks *beacon.RecentBlocks) (blocks []*beacon.BlockData, connected bool, err error) {
 	if head == (common.Hash{}) {
 		panic(nil) //TODO remove later (sanity check)
 	}

@@ -595,19 +595,13 @@ func (request *BeaconSlotsRequest) Validate(db ethdb.Database, msg *Msg) error {
 	if request.MaxSlots <= expLastSlot {
 		expFirstSlot = expLastSlot + 1 - request.MaxSlots
 	}
-	if request.ProofFormatMask == 0 {
-		if firstSlot != expFirstSlot || lastSlot != expLastSlot {
+	if lastSlot < expLastSlot || firstSlot > expLastSlot { //TODO ??? first check
+		return errors.New("Returned slot range incorrect")
+	}
+	for slot := expLastSlot; slot <= lastSlot; slot++ {
+		format := reply.StateProofFormats[int(slot-firstSlot)]
+		if (format != 0) != (slot == lastSlot) {
 			return errors.New("Returned slot range incorrect")
-		}
-	} else {
-		if lastSlot < expLastSlot || firstSlot > expLastSlot { //TODO ??? first check
-			return errors.New("Returned slot range incorrect")
-		}
-		for slot := expLastSlot; slot <= lastSlot; slot++ {
-			format := reply.StateProofFormats[int(slot-firstSlot)]
-			if (format != 0) != (slot == lastSlot) {
-				return errors.New("Returned slot range incorrect")
-			}
 		}
 	}
 
@@ -623,8 +617,9 @@ func (request *BeaconSlotsRequest) Validate(db ethdb.Database, msg *Msg) error {
 	writer := beacon.NewMultiProofWriter(format, nil, func(index uint64) beacon.ProofWriter {
 		return targetMap[index]
 	})
-	if stateRoot, ok := beacon.TraverseProof(reader, writer); ok && reader.Finished() {
-		if hasHeadStateRoot && stateRoot != request.HeadStateRoot {
+	proofRoot, ok := beacon.TraverseProof(reader, writer)
+	if ok && reader.Finished() {
+		if hasHeadStateRoot && proofRoot != request.HeadStateRoot {
 			return errors.New("Multiproof root hash does not match")
 		}
 	} else {
@@ -668,13 +663,12 @@ func (request *BeaconSlotsRequest) Validate(db ethdb.Database, msg *Msg) error {
 	if blockPtr != len(blocks) {
 		return errors.New("Too many beacon headers")
 	}
-	if !hasHeadStateRoot && lastRoot != request.BeaconHash {
+	if !hasHeadStateRoot {
+		lastBlock := blocks[len(blocks)-1]
+		lastRoot != request.BeaconHash {
 		return errors.New("Last block hash does not match")
 	}
 	request.Blocks = blocks
-	if request.ProofFormatMask == 0 {
-		request.StateRoots = stateRootDiffs
-	}
 	return nil
 }
 
