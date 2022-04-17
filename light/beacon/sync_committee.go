@@ -226,8 +226,8 @@ func (s *SyncCommitteeTracker) InitCheckpoint(checkpoint common.Hash) {
 			case <-s.initTriggerCh:
 			}
 			ctx, _ := context.WithTimeout(context.Background(), time.Second*20)
-			if block, committee, nextCommittee, err := s.backend.GetInitData(ctx, checkpoint); err == nil {
-				s.init(block, committee, nextCommittee)
+			if block, err := s.backend.GetInitBlock(ctx, checkpoint); err == nil {
+				s.init(block)
 				close(s.initDoneCh)
 				return
 			}
@@ -242,7 +242,7 @@ func (s *SyncCommitteeTracker) getInitData() lightClientInitData {
 	return s.initData
 }
 
-func (s *SyncCommitteeTracker) init(block *BlockData, committee, nextCommittee []byte) {
+func (s *SyncCommitteeTracker) init(block *BlockData) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -265,8 +265,6 @@ func (s *SyncCommitteeTracker) init(block *BlockData, committee, nextCommittee [
 		s.clearDb()
 		s.nextPeriod = initData.Period + 1
 		s.firstPeriod = s.nextPeriod
-		s.storeSerializedSyncCommittee(initData.Period, initData.CommitteeRoot, committee)
-		s.storeSerializedSyncCommittee(initData.Period+1, initData.NextCommitteeRoot, nextCommittee)
 	}
 	s.db.Put(initDataKey, enc)
 	s.initData = *initData
@@ -1019,10 +1017,6 @@ func (h *headList) updateHead(head *headInfo) {
 		}
 		pos--
 	}
-	/*if pos < len(h.list) {
-		h.list[pos] = head
-		h.updateCallback(head, pos)
-	}*/
 }
 
 func (s *SyncCommitteeTracker) AddSignedHeads(peer sctServer, heads []SignedHead) {
