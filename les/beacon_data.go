@@ -96,9 +96,9 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 		select {
 		case <-timer.C:
 			timerStarted = false
-			//fmt.Println(" headPollLoop timer")
+			fmt.Println(" headPollLoop timer")
 			if head, err := bn.getHeadUpdate(); err == nil {
-				//fmt.Println(" headPollLoop head update for slot", head.Header.Slot, nextAdvertiseSlot)
+				fmt.Println(" headPollLoop head update for slot", head.Header.Slot, nextAdvertiseSlot)
 				if !head.Equal(&lastHead) {
 					fmt.Println("head poll: new head", head.Header.Slot, nextAdvertiseSlot)
 					bn.sct.AddSignedHeads(bn, []beacon.SignedHead{head})
@@ -259,11 +259,11 @@ func (bn *beaconNodeApiSource) getHeadUpdate() (beacon.SignedHead, error) {
 			Header    beacon.Header `json:"attested_header"`
 		} `json:"data"`
 	}
-	//fmt.Println("getHeadUpdate:", string(body))
+	fmt.Println("getHeadUpdate:", string(body))
 	if err := json.Unmarshal(body, &data); err != nil {
 		return beacon.SignedHead{}, err
 	}
-	//fmt.Println(" data:", data)
+	fmt.Println(" data:", data)
 	if len(data.Data.Aggregate.BitMask) != 64 {
 		return beacon.SignedHead{}, errors.New("invalid sync_committee_bits length")
 	}
@@ -374,7 +374,7 @@ func (bn *beaconNodeApiSource) getHeader(blockRoot common.Hash) (beacon.Header, 
 			} `json:"header"`
 		} `json:"data"`
 	}
-	//fmt.Println("header json", string(body), "url", url)
+	fmt.Println("header json", string(body), "url", url)
 	if err := json.Unmarshal(body, &data); err != nil {
 		fmt.Println("header unmarshal err", err)
 		return beacon.Header{}, err
@@ -460,7 +460,7 @@ func (bn *beaconNodeApiSource) getStateProof(stateRoot common.Hash, paths []stri
 	if err != nil {
 		return beacon.MultiProof{}, err
 	}
-	//fmt.Println("paths", paths, "proof length", len(body))
+	fmt.Println("paths", paths, "proof length", len(body))
 	return beacon.ParseMultiProof(body)
 }
 
@@ -517,9 +517,9 @@ func (bn *beaconNodeApiSource) getBlockState(block *beacon.BlockData) error {
 		}
 		return nil
 	}))
-	//fmt.Print("received format:")
+	fmt.Print("received format:")
 	//printIndices(proof.format, 1)
-	//fmt.Print("expected format ", block.ProofFormat, ":")
+	fmt.Print("expected format ", block.ProofFormat, ":")
 	//printIndices(beacon.StateProofFormats[block.ProofFormat], 1)
 	if root, ok := beacon.TraverseProof(proof.Reader(nil), writer); !ok || root != block.StateRoot {
 		fmt.Println("invalid block state proof", ok, root, block.StateRoot, block.ProofFormat)
@@ -605,7 +605,7 @@ func (bn *beaconNodeApiSource) getSingleRootsProof(block *beacon.BlockData, leaf
 		return nil
 	})
 	if root, ok := beacon.TraverseProof(reader, writer); !ok || root != block.StateRoot {
-		//fmt.Println("invalid state roots state proof", ok, root, block.StateRoot)
+		fmt.Println("invalid state roots state proof", ok, root, block.StateRoot)
 		return beacon.MultiProof{}, errors.New("invalid state proof")
 	}
 	return beacon.MultiProof{Format: format, Values: values}, nil
@@ -627,7 +627,7 @@ func (bn *beaconNodeApiSource) GetHistoricRootsProof(ctx context.Context, block 
 		return nil
 	})
 	if root, ok := beacon.TraverseProof(proof.Reader(nil), writer); !ok || root != block.StateRoot {
-		//fmt.Println("invalid historic roots state proof", ok, root, block.StateRoot)
+		fmt.Println("invalid historic roots state proof", ok, root, block.StateRoot)
 		return beacon.MultiProof{}, errors.New("invalid state proof")
 	}
 	return beacon.MultiProof{Format: format, Values: values}, nil
@@ -667,7 +667,7 @@ func (bn *beaconNodeApiSource) getSyncCommittee(block *beacon.BlockData, leafInd
 	}
 	committee := make([]byte, 513*48)
 	for i, v := range values {
-		//fmt.Println("committee", i, v)
+		fmt.Println("committee", i, v)
 		i2 := i / 2
 		if i&1 == 0 {
 			copy(committee[i2*48:i2*48+32], v[:])

@@ -681,14 +681,14 @@ func (bc *BeaconChain) trySetHead(head Header) (*BlockData, error) {
 	*/
 	headSlot, headHash := headBlock.Header.Slot, headBlock.BlockRoot
 
-	//fmt.Println("headBlock.root", headBlock.BlockRoot)
+	fmt.Println("headBlock.root", headBlock.BlockRoot)
 	if err := headTree.moveToHead(headBlock); err != nil {
 		return nil, err
 	}
 	newTreeMap := make(map[common.Hash]*HistoricTree)
 	newTreeMap[headBlock.BlockRoot] = headTree
 	for _, block := range bc.findCloseBlocks(headBlock, maxHistoricTreeDistance) {
-		//fmt.Println("close block.root", block.BlockRoot)
+		fmt.Println("close block.root", block.BlockRoot)
 		var err error
 		if newTreeMap[block.BlockRoot], err = headTree.makeChildTree(block); err != nil {
 			return nil, err

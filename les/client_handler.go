@@ -18,7 +18,7 @@ package les
 
 import (
 	"context"
-	//"fmt"
+	"fmt"
 	"math/big"
 	"math/rand"
 	"sync"
@@ -115,7 +115,7 @@ func (d *dummyChain) Genesis() *types.Block { return (*light.LightChain)(d).Gene
 func (d *dummyChain) CurrentHeader() *types.Header { return d.Genesis().Header() }
 
 func (h *clientHandler) handle(p *serverPeer, noInitAnnounce bool) error {
-	//fmt.Println("handle", p.id)
+	fmt.Println("handle", p.id)
 	if h.backend.peers.len() >= h.backend.config.LightPeers && !p.Peer.Info().Network.Trusted {
 		return p2p.DiscTooManyPeers
 	}
@@ -124,11 +124,11 @@ func (h *clientHandler) handle(p *serverPeer, noInitAnnounce bool) error {
 	// Execute the LES handshake
 	forkid := forkid.NewID(h.backend.blockchain.Config(), h.backend.genesis, 0 /*h.backend.blockchain.CurrentHeader().Number.Uint64()*/)
 	if err := p.Handshake(h.backend.blockchain.Genesis().Hash(), forkid, h.forkFilter); err != nil {
-		//fmt.Println(" handshake err", err)
+		fmt.Println(" handshake err", err)
 		p.Log().Debug("Light Ethereum handshake failed", "err", err)
 		return err
 	}
-	//fmt.Println(" handshake ok")
+	fmt.Println(" handshake ok")
 	// Register peer with the server pool
 	if h.backend.serverPool != nil {
 		if nvt, err := h.backend.serverPool.RegisterNode(p.Node()); err == nil {
@@ -430,12 +430,12 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 			ReqID, BV             uint64
 			beacon.CommitteeReply //TODO check RLP encoding
 		}
-		//fmt.Println("Received CommitteeProofsMsg")
+		fmt.Println("Received CommitteeProofsMsg")
 		if err := msg.Decode(&resp); err != nil {
-			//fmt.Println(" decode err", err)
+			fmt.Println(" decode err", err)
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
-		//fmt.Println(" decode ok")
+		fmt.Println(" decode ok")
 		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 		p.answeredRequest(resp.ReqID)
 		deliverMsg = &Msg{
@@ -452,10 +452,10 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 		h.backend.syncCommitteeTracker.SyncWithPeer(sctServerPeer{peer: p, retriever: h.backend.retriever}, &resp)
 	case msg.Code == SignedBeaconHeadsMsg && p.version >= lpv5:
 		p.Log().Trace("Received beacon chain head update")
-		//fmt.Println("*** Received beacon chain head update")
+		fmt.Println("*** Received beacon chain head update")
 		var heads []beacon.SignedHead
 		if err := msg.Decode(&heads); err != nil {
-			//fmt.Println(" decode error", err)
+			fmt.Println(" decode error", err)
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		for _, head := range heads {

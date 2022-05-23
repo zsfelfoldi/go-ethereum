@@ -588,7 +588,7 @@ func (p *serverPeer) HasBlock(hash common.Hash, number uint64, hasState bool) bo
 		since = p.chainSince
 		recent = p.chainRecent
 	}
-	//fmt.Println("HasBlock  number", number, "head", head, "since", since, "recent", recent, "result", head >= number && number >= since && (recent == 0 || number+recent+4 > head))
+	fmt.Println("HasBlock  number", number, "head", head, "since", since, "recent", recent, "result", head >= number && number >= since && (recent == 0 || number+recent+4 > head))
 	return head >= number && number >= since && (recent == 0 || number+recent+4 > head)
 }
 
@@ -751,10 +751,10 @@ func (p *serverPeer) Handshake(genesis common.Hash, forkid forkid.ID, forkFilter
 			}
 		}
 
-		//fmt.Println("Handshake with peer", p.id, "version", p.version)
+		fmt.Println("Handshake with peer", p.id, "version", p.version)
 		updateInfo := new(beacon.UpdateInfo)
 		if err := recv.get("beacon/updateInfo", updateInfo); err == nil {
-			//fmt.Println("Received update info", *updateInfo)
+			fmt.Println("Received update info", *updateInfo)
 			p.updateInfo = updateInfo
 		}
 		return nil
@@ -1201,10 +1201,10 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 			}
 		}
 
-		//fmt.Println("Handshake with peer", p.id, "version", p.version)
+		fmt.Println("Handshake with peer", p.id, "version", p.version)
 		if p.version >= lpv5 {
 			updateInfo := server.syncCommitteeTracker.GetUpdateInfo()
-			//fmt.Println("Adding update info", updateInfo)
+			fmt.Println("Adding update info", updateInfo)
 			*lists = (*lists).add("beacon/updateInfo", updateInfo)
 		}
 	}, func(recv keyValueMap) error {

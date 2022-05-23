@@ -157,7 +157,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 
 	if config.BeaconConfig != "" {
 		if forks, err := beacon.LoadForks(config.BeaconConfig); err == nil {
-			//fmt.Println("Forks", forks)
+			fmt.Println("Forks", forks)
 			leth.syncCommitteeTracker = beacon.NewSyncCommitteeTracker(chainDb, (*odrDataSource)(leth), forks, &mclock.System{})
 			leth.syncCommitteeTracker.SubscribeToNewHeads(leth.blockchain.SetBeaconHead)
 			if config.BeaconCheckpoint != "" {
