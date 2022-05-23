@@ -320,9 +320,11 @@ func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
 	fmt.Println("GetBestUpdate", period)
 	if v, ok := s.bestUpdateCache.Get(period); ok {
 		update, _ := v.(*LightClientUpdate)
-		fmt.Println(" cache", update.Header.Slot>>13)
-		if uint64(update.Header.Slot>>13) != period {
-			log.Error("Best update from wrong period found in cache")
+		if update != nil {
+			fmt.Println(" cache", update.Header.Slot>>13)
+			if uint64(update.Header.Slot>>13) != period {
+				log.Error("Best update from wrong period found in cache")
+			}
 		}
 		return update
 	}
@@ -371,9 +373,17 @@ const (
 	sciUnexpectedError
 )
 
-func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate, committee *syncCommittee) bool {
+func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
+	if update.Header.Slot&0x1fff == 0x1fff {
+		// last slot of each period is not suitable for an update because it is signed by the next period's sync committee, proves the same committee it is signed by
+		return false
+	}
 	var checkRoot common.Hash
 	if update.hasFinality() {
+		if update.FinalizedHeader.Slot>>13 != update.Header.Slot>>13 {
+			// finalized header is from the previous period, proves the same committee it is signed by
+			return false
+		}
 		if root, ok := verifySingleProof(update.FinalityBranch, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()), 0); !ok || root != update.Header.StateRoot {
 			fmt.Println("wrong finality proof", ok, root, update.FinalizedHeader.StateRoot)
 			return false
@@ -386,17 +396,16 @@ func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate, committee
 		fmt.Println("wrong nsc proof", ok, root, checkRoot)
 		return false
 	}
-	return s.verifySignature(SignedHead{Header: *(update.signedHeader()), Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits}, committee)
+	return s.verifySignature(SignedHead{Header: update.Header, Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits})
 }
 
 // returns true if nextCommittee is needed; call again
 // verifies update before inserting
-func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, committee *syncCommittee, nextCommittee []byte) int {
+func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommittee []byte) int {
 	fmt.Println("insertUpdate", update, nextCommittee != nil)
-	header := update.signedHeader()
-	period := uint64(header.Slot) >> 13
+	period := uint64(update.Header.Slot) >> 13
 	fmt.Println(" before insert (first, next, update):", s.firstPeriod, s.nextPeriod, period)
-	if !s.verifyUpdate(update, committee) {
+	if !s.verifyUpdate(update) {
 		fmt.Println("wrong update")
 		return sciWrongUpdate
 	}
@@ -498,7 +507,8 @@ func (s *SyncCommitteeTracker) storeSerializedSyncCommittee(period uint64, commi
 	s.db.Put(key, committee)
 }
 
-func (s *SyncCommitteeTracker) verifySignature(head SignedHead, committee *syncCommittee) bool {
+// caller should ensure that previous advertised committees are synced before checking signature
+func (s *SyncCommitteeTracker) verifySignature(head SignedHead) bool {
 	if len(head.Signature) != 96 || len(head.BitMask) != 64 {
 		fmt.Println("wrong sig size")
 		return false
@@ -511,9 +521,9 @@ func (s *SyncCommitteeTracker) verifySignature(head SignedHead, committee *syncC
 		return false
 	}
 
-	//committee := s.getSyncCommittee(uint64(head.Header.Slot) >> 13)
+	committee := s.getSyncCommitteeLocked(uint64(head.Header.Slot+1) >> 13) // signed with the next slot's committee
 	if committee == nil {
-		fmt.Println("sig check: committee not found", uint64(head.Header.Slot)>>13)
+		fmt.Println("sig check: committee not found", uint64(head.Header.Slot+1)>>13)
 		return false
 	}
 	var signerKeys [512]*bls.Pubkey
@@ -990,13 +1000,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 			return false // remote did not deliver an update with the promised score
 		}
 
-		committee := s.getSyncCommitteeLocked(period)
-		if committee == nil {
-			log.Error("Missing sync committee while processing committee proofs reply", "period", period)
-			fmt.Println(" missing sync committee")
-			return false // though not the remote's fault, fail here to avoid infinite retries
-		}
-		switch s.insertUpdate(&update, committee, nextCommittee) {
+		switch s.insertUpdate(&update, nextCommittee) {
 		case sciSuccess:
 			if sp.forkPeriod == period {
 				// if local chain is successfully updated to the remote fork then remote is not on a different fork anymore
@@ -1040,13 +1044,6 @@ func (l *LightClientUpdate) hasFinality() bool {
 	return l.FinalizedHeader.BodyRoot != (common.Hash{})
 }
 
-func (l *LightClientUpdate) signedHeader() *Header { //TODO
-	/*if l.hasFinality() {
-		return &l.FinalizedHeader
-	}*/
-	return &l.Header
-}
-
 func (l *LightClientUpdate) CalculateScore() *UpdateScore {
 	l.score.signerCount = 0
 	for _, v := range l.SyncCommitteeBits {
@@ -1084,7 +1081,7 @@ func trimZeroes(data []byte) []byte {
 }
 
 func (l *LightClientUpdate) checkForkVersion(forks Forks) bool {
-	return bytes.Equal(trimZeroes(l.ForkVersion), trimZeroes(forks.version(uint64(l.signedHeader().Slot>>5))))
+	return bytes.Equal(trimZeroes(l.ForkVersion), trimZeroes(forks.version(uint64(l.Header.Slot>>5))))
 }
 
 type headInfo struct {
@@ -1155,6 +1152,10 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 	}
 	for _, head := range heads {
 		fmt.Println("*** addSignedHead", head.Header.Slot, head.Header.Hash())
+		if !s.verifySignature(head) {
+			peer.WrongReply("invalid header signature")
+			continue
+		}
 		signerCount, score := head.calculateScore()
 		hash := head.Header.Hash()
 		if h := s.receivedList.getHead(hash); h != nil {
