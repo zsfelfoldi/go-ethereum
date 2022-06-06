@@ -90,7 +90,7 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 		lastHead     beacon.SignedHead
 		timerStarted bool
 	)
-	nextAdvertiseSlot := uint64(1)
+	nextAdvertiseSlot := uint64(8000xxx)
 
 	for {
 		select {
@@ -101,17 +101,16 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 				fmt.Println(" headPollLoop head update for slot", head.Header.Slot, nextAdvertiseSlot)
 				if !head.Equal(&lastHead) {
 					fmt.Println("head poll: new head", head.Header.Slot, nextAdvertiseSlot)
-					bn.sct.AddSignedHeads(bn, []beacon.SignedHead{head})
 					lastHead = head
 					if uint64(head.Header.Slot) >= nextAdvertiseSlot {
-						lastPeriod := uint64(head.Header.Slot-1) >> 13
-						if bn.advertiseUpdates(lastPeriod) {
-							nextAdvertiseSlot = (lastPeriod + 1) << 13
-							if uint64(head.Header.Slot) >= nextAdvertiseSlot {
-								nextAdvertiseSlot += 8000
-							}
+						lastPeriod := uint64(head.Header.Slot-8000) >> 13
+						bn.advertiseUpdates(lastPeriod)
+						nextAdvertiseSlot = (lastPeriod + 1) << 13
+						if uint64(head.Header.Slot) >= nextAdvertiseSlot {
+							nextAdvertiseSlot += 8000
 						}
 					}
+					bn.sct.AddSignedHeads(bn, []beacon.SignedHead{head})
 				}
 				if counter < headPollCount {
 					counter++
@@ -151,21 +150,21 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 	}
 }
 
-func (bn *beaconNodeApiSource) advertiseUpdates(lastPeriod uint64) bool {
+func (bn *beaconNodeApiSource) advertiseUpdates(lastPeriod uint64) {
 	fmt.Println("advertiseUpdates", lastPeriod)
-	nextPeriod := bn.sct.NextPeriod()
-	if nextPeriod == 0 {
-		return false
+	firstPeriod := lastPeriod
+	if nextPeriod := bn.sct.NextPeriod(); nextPeriod > 0 {
+		firstPeriod = nextPeriod - 1
 	}
-	if nextPeriod-1 > lastPeriod {
-		return true
+	if firstPeriod > lastPeriod+1 {
+		return
 	}
 	updateInfo := &beacon.UpdateInfo{
 		LastPeriod: lastPeriod,
-		Scores:     make([]byte, int(lastPeriod+2-nextPeriod)*3),
+		Scores:     make([]byte, int(lastPeriod+1-firstPeriod)*3),
 	}
 	var ptr int
-	for period := nextPeriod - 1; period <= lastPeriod; period++ {
+	for period := firstPeriod; period <= lastPeriod; period++ {
 		if update, err := bn.getBestUpdate(period); err == nil {
 			update.CalculateScore().Encode(updateInfo.Scores[ptr : ptr+3])
 		} else {
@@ -175,7 +174,6 @@ func (bn *beaconNodeApiSource) advertiseUpdates(lastPeriod uint64) bool {
 	}
 	fmt.Println("advertiseUpdates", lastPeriod, updateInfo, len(updateInfo.Scores)/3)
 	bn.sct.SyncWithPeer(bn, updateInfo)
-	return true
 }
 
 func (bn *beaconNodeApiSource) GetBestCommitteeProofs(ctx context.Context, req beacon.CommitteeRequest) (beacon.CommitteeReply, error) {

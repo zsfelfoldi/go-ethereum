@@ -140,6 +140,8 @@ type BeaconChain struct {
 	blockDataCache *lru.Cache // string(dbKey) -> *BlockData  (either blockDataKey, slotByBlockRootKey or blockDataByBlockRootKey)  //TODO use separate cache?
 	historicCache  *lru.Cache // string(dbKey) -> MerkleValue (either stateRootsKey or historicRootsKey)
 
+	bellatrixSlot uint64
+
 	execNumberCacheMu sync.RWMutex //TODO ???
 	execNumberCache   *lru.Cache   // uint64(execNumber) -> []struct{slot, stateRoot}
 
@@ -237,7 +239,7 @@ func (block *BlockData) CalculateRoots() {
 	block.BlockRoot = block.Header.Hash(block.StateRoot)
 }
 
-func NewBeaconChain(dataSource beaconData, execChain execChain /*sct *SyncCommitteeTracker, */, db ethdb.Database) *BeaconChain {
+func NewBeaconChain(dataSource beaconData, execChain execChain /*sct *SyncCommitteeTracker, */, db ethdb.Database, forks Forks) *BeaconChain {
 	chainDb := rawdb.NewTable(db, "bc-")
 	blockDataCache, _ := lru.New(2000)
 	historicCache, _ := lru.New(20000)
@@ -249,6 +251,12 @@ func NewBeaconChain(dataSource beaconData, execChain execChain /*sct *SyncCommit
 		blockDataCache:  blockDataCache,
 		historicCache:   historicCache,
 		execNumberCache: execNumberCache,
+	}
+	if epoch, ok := forks.epoch("BELLATRIX"); ok {
+		bc.bellatrixSlot = epoch << 5
+	} else {
+		log.Error("Bellatrix fork not found in beacon chain config")
+		return nil
 	}
 	bc.reset()
 	if enc, err := bc.db.Get(beaconHeadTailKey); err == nil {
@@ -585,6 +593,10 @@ func (bc *BeaconChain) reset() {
 }
 
 func (bc *BeaconChain) SetHead(head Header) *BlockData {
+	if uint64(head.Slot) < bc.bellatrixSlot {
+		log.Info("Waiting for bellatrix fork", "slot", head.Slot, "fork", bc.bellatrixSlot)
+		return nil
+	}
 	if head, err := bc.trySetHead(head); err == nil {
 		log.Info("BeaconChain.setHead successful")
 		bc.failCounter = 0

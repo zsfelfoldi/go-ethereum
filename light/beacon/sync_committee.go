@@ -164,6 +164,9 @@ func NewSyncCommitteeTracker(db ethdb.Database, backend sctBackend, forks Forks,
 			log.Error("Error decoding initData", "error", err)
 		}
 	}
+	/*if s.initData.Checkpoint == (common.Hash{}) {
+		s.clearDb()
+	}*/
 
 	/*var np [8]byte
 	binary.BigEndian.PutUint64(np[:], s.nextPeriod)*/
@@ -184,7 +187,7 @@ func NewSyncCommitteeTracker(db ethdb.Database, backend sctBackend, forks Forks,
 		s.nextPeriod = period + 1
 	}
 	iter.Release()
-	if first {
+	if first && s.initData.Checkpoint != (common.Hash{}) {
 		s.firstPeriod = s.initData.Period + 1
 		s.nextPeriod = s.firstPeriod
 	}
@@ -888,20 +891,28 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	localFirstPeriod := localInfo.LastPeriod + 1 - uint64(len(localInfo.Scores)/3)
 	remoteFirstPeriod := sp.remoteInfo.LastPeriod + 1 - uint64(len(sp.remoteInfo.Scores)/3)
 	var (
-		period  uint64
-		request CommitteeRequest
+		period   uint64
+		request  CommitteeRequest
+		reqCount int
 	)
+	if localFirstPeriod == localInfo.LastPeriod+1 {
+		// update chain empty, request committee for init period(s)
+		if (localInfo.LastPeriod == sp.remoteInfo.LastPeriod || localInfo.LastPeriod == sp.remoteInfo.LastPeriod+1) && localInfo.LastPeriod >= remoteFirstPeriod && s.getSyncCommittee(localInfo.LastPeriod) == nil {
+			// if the init period might still be active and current committee is available then request it
+			request.CommitteePeriods = []uint64{localInfo.LastPeriod}
+			reqCount = CommitteeCostFactor
+		}
+		if localInfo.LastPeriod <= sp.remoteInfo.LastPeriod && localInfo.LastPeriod+1 >= remoteFirstPeriod && s.getSyncCommittee(localInfo.LastPeriod+1) == nil {
+			// if next committee is available at remote then always request it
+			request.CommitteePeriods = append(request.CommitteePeriods, localInfo.LastPeriod+1)
+			reqCount += CommitteeCostFactor
+		}
+	}
+
 	if remoteFirstPeriod > localFirstPeriod {
 		period = remoteFirstPeriod
 	} else {
 		period = localFirstPeriod
-	}
-
-	var reqCount int
-	if localFirstPeriod == localInfo.LastPeriod+1 { //TODO ...
-		// update chain empty, request committee for first update
-		request.CommitteePeriods = []uint64{localFirstPeriod}
-		reqCount = CommitteeCostFactor
 	}
 	for period <= sp.remoteInfo.LastPeriod && reqCount < MaxCommitteeUpdateFetch {
 		var reqUpdate, reqCommittee bool
@@ -958,7 +969,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 		return false
 	}
 	var committeeIndex int
-	for len(sentRequest.UpdatePeriods) > 0 && len(sentRequest.CommitteePeriods) > committeeIndex && sentRequest.CommitteePeriods[committeeIndex] <= sentRequest.UpdatePeriods[0] {
+	for len(sentRequest.CommitteePeriods) > committeeIndex && (len(sentRequest.UpdatePeriods) == 0 || sentRequest.CommitteePeriods[committeeIndex] <= sentRequest.UpdatePeriods[0]) {
 		period, committee := sentRequest.CommitteePeriods[committeeIndex], reply.Committees[committeeIndex]
 		committeeRoot := s.getSyncCommitteeRoot(period)
 		if SerializedCommitteeRoot(committee) != committeeRoot {
@@ -1324,6 +1335,7 @@ func (s *SyncCommitteeTracker) advertiseCommitteesTo(peer sctClient) {
 
 type Fork struct {
 	Epoch   uint64
+	Name    string
 	Version []byte
 	domain  MerkleValue
 }
@@ -1354,6 +1366,15 @@ func (bf Forks) computeDomains(genesisValidatorsRoot common.Hash) {
 	for i := range bf {
 		bf[i].domain = computeDomain(bf[i].Version, genesisValidatorsRoot)
 	}
+}
+
+func (bf Forks) epoch(name string) (uint64, bool) {
+	for _, fork := range bf {
+		if fork.Name == name {
+			return fork.Epoch, true
+		}
+	}
+	return 0, false
 }
 
 func (f Forks) Len() int           { return len(f) }
@@ -1407,7 +1428,7 @@ func LoadForks(fileName string) (Forks, error) {
 	for name, epoch := range forkEpochs {
 		if version, ok := forkVersions[name]; ok {
 			delete(forkVersions, name)
-			forks = append(forks, Fork{Epoch: epoch, Version: version})
+			forks = append(forks, Fork{Epoch: epoch, Name: name, Version: version})
 		} else {
 			return nil, fmt.Errorf("Fork id missing for \"%s\" in beacon chain config file", name)
 		}
