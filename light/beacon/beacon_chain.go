@@ -76,6 +76,7 @@ const (
 	BsiExecHead          = 908 // ??? 56
 
 	ReverseSyncLimit = 64
+	MaxHeaderFetch   = 192
 )
 
 var BsiFinalExecHash = ChildIndex(ChildIndex(BsiFinalBlock, BhiStateRoot), BsiExecHead)
@@ -132,7 +133,9 @@ type execChain interface {
 }
 
 type BeaconChain struct {
-	dataSource beaconData
+	dataSource     beaconData
+	historicSource historicData
+
 	//historicInitSource historicInitData
 	execChain      execChain
 	db             ethdb.Database
@@ -146,9 +149,12 @@ type BeaconChain struct {
 	execNumberCache   *lru.Cache   // uint64(execNumber) -> []struct{slot, stateRoot}
 
 	chainMu                               sync.RWMutex
-	headSlot                              uint64
-	headHash                              common.Hash
-	tailShortTerm, tailLongTerm           uint64 // shortTerm >= longTerm
+	storedChain                           *chainSection
+	head                                  Header
+	newHeadCh                             chan struct{} // closed and replaced when head is changed
+	headCounter                           uint64        // +1 when head is changed
+	newHeadReqCancel                      []func()      // called shortly after head is changed
+	tailShortTerm, tailLongTerm           uint64        // shortTerm >= longTerm
 	blockRoots, stateRoots, historicRoots *merkleListVersion
 
 	historicMu    sync.RWMutex
@@ -251,6 +257,7 @@ func NewBeaconChain(dataSource beaconData, execChain execChain /*sct *SyncCommit
 		blockDataCache:  blockDataCache,
 		historicCache:   historicCache,
 		execNumberCache: execNumberCache,
+		storedChain:     &chainSection{xxx},
 	}
 	if epoch, ok := forks.epoch("BELLATRIX"); ok {
 		bc.bellatrixSlot = epoch << 5
@@ -290,6 +297,206 @@ func NewBeaconChain(dataSource beaconData, execChain execChain /*sct *SyncCommit
 
 	return bc
 }
+
+// chainMu locked
+func (bc *BeaconChain) setHead(head Header) {
+	bc.head = head
+	close(bc.newHeadCh)
+	bc.newHeadCh = make(chan struct{})
+	bc.headCounter++
+	cancelList := bc.newHeadReqCancel
+	bc.newHeadReqCancel = nil
+	time.AfterFunc(time.Second, func() {
+		for _, cancel := range cancelList {
+			cancel()
+		}
+	})
+}
+
+type chainSection struct {
+	headSlot, parentSlot, headCounter uint64
+	requesting                        bool
+	blocks                            []*BlockData // stored in db if nil
+	prev, next                        *chainSection
+}
+
+func (cs *chainSection) trim(front bool) {
+	length := cs.headSlot - cs.parentSlot // cs.headSlot > cs.parentSlot
+	length /= ((length + MaxHeaderFetch - 1) / MaxHeaderFetch)
+	if front {
+		cs.headSlot = cs.parentSlot + length
+	} else {
+		cs.parentSlot = cs.headSlot - length
+	}
+}
+
+func (cs *chainSection) remove() {
+	if cs.prev != nil {
+		cs.prev.next = cs.next
+	}
+	if cs.next != nil {
+		cs.next.prev = cs.prev
+	}
+}
+
+// chainMu locked
+func (bc *BeaconChain) nextRequest() *chainSection {
+	cs := bc.storedSection
+	for cs.next != nil {
+		if cs.next.parentSlot > cs.headSlot {
+			req := &chainSection{
+				headSlot:    cs.next.parentSlot,
+				parentSlot:  cs.headSlot,
+				headCounter: bc.headCounter,
+				prev:        cs,
+				next:        cs.next,
+			}
+			cs.next.prev = req
+			cs.next = req
+			req.trim(true)
+			return req
+		}
+		cs = cs.next
+	}
+	if uint64(bc.head.Slot) > cs.headSlot {
+		req := &chainSection{
+			headSlot:    uint64(bc.head.Slot),
+			parentSlot:  cs.headSlot,
+			headCounter: bc.headCounter,
+			prev:        cs,
+		}
+		cs.next = req
+		req.trim(true)
+		return req
+	}
+	cs = bc.storedSection
+	for cs.prev != nil {
+		if cs.parentSlot > cs.prev.headSlot {
+			req := &chainSection{
+				headSlot:    cs.parentSlot,
+				parentSlot:  cs.prev.headSlot,
+				headCounter: bc.headCounter,
+				prev:        cs.prev,
+				next:        cs,
+			}
+			cs.prev.next = req
+			cs.prev = req
+			req.trim(false)
+			return req
+		}
+		cs = cs.prev
+	}
+	if cs.parentSlot > bc.tailLongTerm {
+		req := &chainSection{
+			headSlot:    cs.parentSlot,
+			parentSlot:  bc.tailLongTerm,
+			headCounter: bc.headCounter,
+			next:        cs,
+		}
+		cs.prev = req
+		req.trim(false)
+		return req
+	}
+	return nil
+}
+
+func (bc *BeaconChain) addBlocks(cs *chainSection, blocks []*BeaconData) {
+	cs.headSlot = blocks[len(blocks)-1].Header.Slot
+	cs.parentSlot = blocks[0].Header.Slot - blocks[0].ParentSlotDiff
+	cs.blocks = blocks
+
+	if deleted, _ := bc.matchNext(cs); deleted {
+		return
+	}
+	for cs.prev != nil {
+		if _, promoted := bc.matchNext(cs.prev); !promoted {
+			return
+		}
+		cs = cs.prev
+	}
+}
+
+func (bc *BeaconChain) matchNext(cs *chainSection) (deleted, promoted bool) {
+	var connected bool
+	if c.next == nil {
+		// match end to current head
+		if cs.headSlot < uint64(bc.head.Slot) {
+			// there is a gap, more requests are needed
+			return false, false
+		}
+		connected = cs.headSlot == uint64(bc.head.Slot) && bc.blockRootAt(cs, cs.headSlot) == bc.head.Hash()
+	} else {
+		// match to next section
+		if cs.headSlot < cs.next.parentSlot {
+			// there is a gap, more requests are needed
+			return false, false
+		}
+		checkSlot := cs.headSlot
+		if cs.next.headSlot < checkSlot {
+			checkSlot = cs.next.headSlot
+		}
+		connected = bc.blockRootAt(cs.next, checkSlot) == bc.blockRootAt(cs, checkSlot)
+	}
+
+	switch {
+	case c.prev.headCounter < c.headCounter:
+	case c.prev.headCounter > c.headCounter:
+	default:
+		if !connected {
+			log.Error("Sections belonging to the same head ")
+		}
+		return false, false
+	}
+}
+
+func (bc *BeaconChain) requestWorker() {
+	bc.chainMu.Lock()
+	for {
+		if cs := bc.nextRequest(); cs != nil {
+			ctx, cancel := context.WithTimeout(ctx, time.Second*15)
+			bc.newHeadReqCancel = append(bc.newHeadReqCancel, cancel)
+			cs.requesting = true
+			head := bc.head
+			var (
+				blocks []*BlockData
+				err    error
+			)
+			bc.chainMu.Unlock()
+			if bc.dataSource != nil && cs.parentSlot+MaxHeaderFetch >= uint64(head.Slot) {
+				blocks, err = bc.dataSource.GetBlocksFromHead(ctx, head, uint64(head.Slot)-cs.parentSlot)
+			} else if bc.historicSource != nil {
+				blocks, err = bc.historicSource.GetHistoricBlocks(ctx, head, cs.headSlot, cs.headSlot-cs.parentSlot)
+			} else {
+				log.Error("Historic data source not available") //TODO print only once, ?reset chain?
+			}
+			if blocks == nil {
+				select {
+				case <-newHeadCh:
+				case <-bc.stopCh:
+					return
+				}
+			}
+			bc.chainMu.Lock()
+			if blocks != nil {
+				cs.requesting = false
+				bc.addBlocks(cs, blocks)
+			} else {
+				cs.remove()
+			}
+		} else {
+			newHeadCh := bc.newHeadCh
+			bc.chainMu.Unlock()
+			select {
+			case <-newHeadCh:
+			case <-bc.stopCh:
+				return
+			}
+			bc.chainMu.Lock()
+		}
+	}
+}
+
+//func (cs *chainSection) getBlockBySlot(slot uint64) *BlockData
 
 type beaconHeadTailInfo struct {
 	HeadSlot                    uint64

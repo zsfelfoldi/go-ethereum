@@ -90,26 +90,18 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 		lastHead     beacon.SignedHead
 		timerStarted bool
 	)
-	nextAdvertiseSlot := uint64(8000xxx)
 
 	for {
 		select {
 		case <-timer.C:
 			timerStarted = false
 			fmt.Println(" headPollLoop timer")
-			if head, err := bn.getHeadUpdate(); err == nil {
-				fmt.Println(" headPollLoop head update for slot", head.Header.Slot, nextAdvertiseSlot)
+			ctx, _ := context.WithTimeout(context.Background(), time.Second*10)
+			if head, err := bn.getHeadUpdate(ctx); err == nil {
+				fmt.Println(" headPollLoop head update for slot", head.Header.Slot)
 				if !head.Equal(&lastHead) {
-					fmt.Println("head poll: new head", head.Header.Slot, nextAdvertiseSlot)
+					fmt.Println("head poll: new head", head.Header.Slot)
 					lastHead = head
-					if uint64(head.Header.Slot) >= nextAdvertiseSlot {
-						lastPeriod := uint64(head.Header.Slot-8000) >> 13
-						bn.advertiseUpdates(lastPeriod)
-						nextAdvertiseSlot = (lastPeriod + 1) << 13
-						if uint64(head.Header.Slot) >= nextAdvertiseSlot {
-							nextAdvertiseSlot += 8000
-						}
-					}
 					bn.sct.AddSignedHeads(bn, []beacon.SignedHead{head})
 				}
 				if counter < headPollCount {
@@ -126,20 +118,14 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 				close(stopCh)
 				return
 			}
-			if head, err := bn.getHeader(common.Hash{}); err == nil {
-				if headBlock := bn.chain.SetHead(head); headBlock != nil {
-					if !bn.sctStarted {
-						nextPeriod := bn.sct.NextPeriod()
-						fmt.Println("SCT start(headPeriod, nextPeriod): ", uint64(head.Slot)>>13, nextPeriod)
-						if nextPeriod == 0 {
-							bn.sct.Start(head.Hash())
-						} else {
-							bn.sct.Start(common.Hash{})
-						}
-						bn.sctStarted = true
+			if head, err := bn.getHeader(ctx, common.Hash{}); err == nil {
+				bn.chain.SetHead(head, func(headBlock *beacon.Block, err error) {
+					if err == nil {
+						bn.sct.ProcessedBeaconHead(headBlock.BlockRoot)
+					} else {
+						xxx
 					}
-					bn.sct.ProcessedBeaconHead(headBlock.BlockRoot)
-				}
+				})
 			}
 			if !timerStarted {
 				timer.Reset(headPollFrequency)
@@ -148,32 +134,6 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 			counter = 0
 		}
 	}
-}
-
-func (bn *beaconNodeApiSource) advertiseUpdates(lastPeriod uint64) {
-	fmt.Println("advertiseUpdates", lastPeriod)
-	firstPeriod := lastPeriod
-	if nextPeriod := bn.sct.NextPeriod(); nextPeriod > 0 {
-		firstPeriod = nextPeriod - 1
-	}
-	if firstPeriod > lastPeriod+1 {
-		return
-	}
-	updateInfo := &beacon.UpdateInfo{
-		LastPeriod: lastPeriod,
-		Scores:     make([]byte, int(lastPeriod+1-firstPeriod)*3),
-	}
-	var ptr int
-	for period := firstPeriod; period <= lastPeriod; period++ {
-		if update, err := bn.getBestUpdate(period); err == nil {
-			update.CalculateScore().Encode(updateInfo.Scores[ptr : ptr+3])
-		} else {
-			log.Error("Error retrieving best committee update from API", "period", period)
-		}
-		ptr += 3
-	}
-	fmt.Println("advertiseUpdates", lastPeriod, updateInfo, len(updateInfo.Scores)/3)
-	bn.sct.SyncWithPeer(bn, updateInfo)
 }
 
 func (bn *beaconNodeApiSource) GetBestCommitteeProofs(ctx context.Context, req beacon.CommitteeRequest) (beacon.CommitteeReply, error) {
