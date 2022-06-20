@@ -257,7 +257,6 @@ func NewBeaconChain(dataSource beaconData, execChain execChain /*sct *SyncCommit
 		blockDataCache:  blockDataCache,
 		historicCache:   historicCache,
 		execNumberCache: execNumberCache,
-		storedChain:     &chainSection{xxx},
 	}
 	if epoch, ok := forks.epoch("BELLATRIX"); ok {
 		bc.bellatrixSlot = epoch << 5
@@ -269,13 +268,19 @@ func NewBeaconChain(dataSource beaconData, execChain execChain /*sct *SyncCommit
 	if enc, err := bc.db.Get(beaconHeadTailKey); err == nil {
 		var ht beaconHeadTailInfo
 		if rlp.DecodeBytes(enc, &ht) == nil {
-			bc.headSlot, bc.headHash = ht.HeadSlot, ht.HeadHash
-			bc.tailShortTerm, bc.tailLongTerm = ht.TailShortTerm, ht.TailLongTerm
+			if block := bc.GetBlockData(ht.HeadSlot, ht.HeadHash, true); block != nil {
+				bc.head = block.Header
+				bc.tailShortTerm, bc.tailLongTerm = ht.TailShortTerm, ht.TailLongTerm
+				bc.storedChain = &chainSection{headSlot: ht.HeadSlot, parentSlot: ht.TailLongTerm}
+			} else {
+				log.Error("Head block data not found in database")
+			}
 		}
 	}
-	if bc.headHash == (common.Hash{}) {
+	if bc.head.StateRoot == (common.Hash{}) {
 		bc.clearDb()
 	}
+
 	/*for i := uint64(400000); i <= 477639; i++ {
 		if len(bc.getSlotsAndStateRoots(i)) > 0 {
 			fmt.Print(i, ",")
@@ -418,7 +423,7 @@ func (bc *BeaconChain) addBlocks(cs *chainSection, blocks []*BeaconData) {
 
 func (bc *BeaconChain) matchNext(cs *chainSection) (deleted, promoted bool) {
 	var connected bool
-	if c.next == nil {
+	if cs.next == nil {
 		// match end to current head
 		if cs.headSlot < uint64(bc.head.Slot) {
 			// there is a gap, more requests are needed
@@ -443,7 +448,7 @@ func (bc *BeaconChain) matchNext(cs *chainSection) (deleted, promoted bool) {
 	case c.prev.headCounter > c.headCounter:
 	default:
 		if !connected {
-			log.Error("Sections belonging to the same head ")
+			log.Error("Sections belonging to the same head are not connected")
 		}
 		return false, false
 	}
