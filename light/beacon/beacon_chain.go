@@ -49,7 +49,7 @@ var (
 
 const (
 	HspLongTerm    = 1 << iota // state proof long term fields (latest_block_header.root, exec_head)
-	HspShortTerm               // state proof short term fields (block_roots, state_roots, historic_roots, finalized.root)
+	HspShortTerm               // state proof short term fields (block_roots, state_roots, historical_roots, finalized.root)
 	HspInitData                // state proof init data fields (genesis_time, genesis_validators_root, sync_committee_root, next_sync_committee_root)
 	HspFormatCount             // number of possible format configurations
 
@@ -149,8 +149,8 @@ type BeaconChain struct {
 	execNumberCache   *lru.Cache   // uint64(execNumber) -> []struct{slot, stateRoot}
 
 	chainMu                               sync.RWMutex
-	storedChain                           *chainSection
-	head                                  Header
+	storedSection, syncHeadSection        *chainSection
+	storedHead                            Header
 	newHeadCh                             chan struct{} // closed and replaced when head is changed
 	headCounter                           uint64        // +1 when head is changed
 	newHeadReqCancel                      []func()      // called shortly after head is changed
@@ -269,9 +269,9 @@ func NewBeaconChain(dataSource beaconData, execChain execChain /*sct *SyncCommit
 		var ht beaconHeadTailInfo
 		if rlp.DecodeBytes(enc, &ht) == nil {
 			if block := bc.GetBlockData(ht.HeadSlot, ht.HeadHash, true); block != nil {
-				bc.head = block.Header
+				bc.storedHead = block.Header
 				bc.tailShortTerm, bc.tailLongTerm = ht.TailShortTerm, ht.TailLongTerm
-				bc.storedChain = &chainSection{headSlot: ht.HeadSlot, parentSlot: ht.TailLongTerm}
+				bc.storedSection = &chainSection{headSlot: ht.HeadSlot, tailSlot: ht.TailLongTerm}
 			} else {
 				log.Error("Head block data not found in database")
 			}
@@ -281,57 +281,89 @@ func NewBeaconChain(dataSource beaconData, execChain execChain /*sct *SyncCommit
 		bc.clearDb()
 	}
 
-	/*for i := uint64(400000); i <= 477639; i++ {
-		if len(bc.getSlotsAndStateRoots(i)) > 0 {
-			fmt.Print(i, ",")
-		}
-	}
-	fmt.Println()
-	fmt.Println("*****************************************************************************")
-	ht := bc.GetHistoricTree(bc.headHash)
-	if ht == nil {
-		fmt.Println("ht not found")
-	} else {
-		for i := uint64(400000); i <= 477639; i++ {
-			if bc.GetBlockDataByExecNumber(ht, i) != nil {
-				fmt.Print(i, ",")
-			}
-		}
-	}
-	fmt.Println()*/
-
 	return bc
 }
 
 // chainMu locked
 func (bc *BeaconChain) setHead(head Header) {
-	bc.head = head
+	cs := &chainSection{
+		tailSlot:   uint64(head.Slot) + 1,
+		headSlot:   uint64(head.Slot),
+		parentHash: head.Hash(),
+	}
+	if bc.syncHeadSection != nil && bc.syncHeadSection.prev != nil {
+		bc.syncHeadSection.prev.next = cs
+		cs.prev = bc.syncHeadSection.prev
+	}
+	bc.syncHeadSection = cs
+	if bc.storedSection == nil {
+		bc.storedSection = cs
+	}
+
 	close(bc.newHeadCh)
 	bc.newHeadCh = make(chan struct{})
 	bc.headCounter++
 	cancelList := bc.newHeadReqCancel
 	bc.newHeadReqCancel = nil
-	time.AfterFunc(time.Second, func() {
-		for _, cancel := range cancelList {
-			cancel()
-		}
-	})
+	if cancelList != nil {
+		time.AfterFunc(time.Second, func() {
+			for _, cancel := range cancelList {
+				cancel()
+			}
+		})
+	}
 }
 
 type chainSection struct {
-	headSlot, parentSlot, headCounter uint64
-	requesting                        bool
-	blocks                            []*BlockData // stored in db if nil
-	prev, next                        *chainSection
+	headSlot, tailSlot, headCounter uint64 // tail is parent slot + 1 or 0 if no parent (genesis)
+	requesting                      bool
+	blocks                          []*BlockData // nil for stored section, sync head section and sections being requested
+	parentHash                      common.Hash  // empty for stored section, section starting at genesis and sections being requested
+	prev, next                      *chainSection
+}
+
+func (cs *chainSection) blockIndex(slot uint64) int {
+	if slot > cs.headSlot || slot < cs.tailSlot {
+		return -1
+	}
+
+	min, max := 0, len(cs.blocks)-1
+	for min < max {
+		mid := (min + max) / 2
+		if uint64(cs.blocks[min].Header.Slot) < slot {
+			min = mid + 1
+		} else {
+			max = mid
+		}
+	}
+	return max
+}
+
+// returns empty hash for missed slots and slots outside the parent..head range
+func (cs *chainSection) blockHashAt(slot uint64) common.Hash {
+	if slot+1 == cs.tailSlot {
+		return cs.parentHash
+	}
+	if index := cs.blockIndex(slot); index != -1 {
+		block := cs.blocks[index]
+		if uint64(block.Header.Slot) == slot {
+			return block.BlockRoot
+		}
+	}
+	return common.Hash{}
+}
+
+func (cs *chainSection) blockRange(begin, end uint64) []*BlockData {
+	return cs.blocks[cs.blockIndex(begin) : cs.blockIndex(end)+1]
 }
 
 func (cs *chainSection) trim(front bool) {
-	length := cs.headSlot - cs.parentSlot // cs.headSlot > cs.parentSlot
+	length := cs.headSlot + 1 - cs.tailSlot
 	length /= ((length + MaxHeaderFetch - 1) / MaxHeaderFetch)
 	if front {
-		cs.headSlot = cs.parentSlot + length
+		cs.headSlot = cs.tailSlot + length - 1
 	} else {
-		cs.parentSlot = cs.headSlot - length
+		cs.tailSlot = cs.headSlot + 1 - length
 	}
 }
 
@@ -347,11 +379,11 @@ func (cs *chainSection) remove() {
 // chainMu locked
 func (bc *BeaconChain) nextRequest() *chainSection {
 	cs := bc.storedSection
-	for cs.next != nil {
-		if cs.next.parentSlot > cs.headSlot {
+	for cs != bc.syncHeadSection && cs.next != nil {
+		if cs.next.tailSlot > cs.headSlot+1 {
 			req := &chainSection{
-				headSlot:    cs.next.parentSlot,
-				parentSlot:  cs.headSlot,
+				headSlot:    cs.next.tailSlot - 1,
+				tailSlot:    cs.headSlot + 1,
 				headCounter: bc.headCounter,
 				prev:        cs,
 				next:        cs.next,
@@ -362,17 +394,6 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 			return req
 		}
 		cs = cs.next
-	}
-	if uint64(bc.head.Slot) > cs.headSlot {
-		req := &chainSection{
-			headSlot:    uint64(bc.head.Slot),
-			parentSlot:  cs.headSlot,
-			headCounter: bc.headCounter,
-			prev:        cs,
-		}
-		cs.next = req
-		req.trim(true)
-		return req
 	}
 	cs = bc.storedSection
 	for cs.prev != nil {
@@ -403,6 +424,56 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 		return req
 	}
 	return nil
+}
+
+func (bc *BeaconChain) mergeSection(cs *chainSection) bool { // ha a result true, ezutan cs eldobhato
+	if cs.tail > dbc.head+1 || cs.head+1 < dbc.tail {
+		return false
+	}
+
+	if cs.tail < dbc.tail {
+		if cs.blockHashAt(dbc.tail-1) == dbc.blockHashAt(dbc.tail-1) {
+			dbc.addToTail(cs.blockRange(cs.tail, dbc.tail-1))
+		} else {
+			if cs.headCounter <= dbc.headCounter {
+				return true
+			}
+			dbc.reset()
+			return false
+		}
+	}
+
+	if cs.headCounter <= dbc.headCounter {
+		if cs.head > dbc.head && cs.blockHashAt(dbc.head) == dbc.blockHashAt(dbc.head) {
+			dbc.addToHead(cs.blockRange(dbc.head+1, cs.head))
+		}
+		return true
+	}
+
+	lastCommon := cs.head
+	if dbc.head < lastCommon {
+		lastCommon = dbc.head
+	}
+	for cs.blockHashAt(lastCommon) != dbc.blockHashAt(lastCommon) {
+		if lastCommon == 0 || lastCommon < cs.tail || lastCommon < dbc.tail {
+			rollback := dbc.nextRollback
+			dbc.nextRollback += dbc.nextRollback // addToHead resets it to 1
+			if lastCommon >= dbc.tail+rollback {
+				dbc.rollback(lastCommon - rollback)
+			} else {
+				dbc.reset()
+			}
+			return false
+		}
+		lastCommon--
+	}
+	if lastCommon < dbc.head {
+		dbc.rollback(lastCommon)
+	}
+	if lastCommon < cs.head {
+		dbc.addToHead(cs.blockRange(lastCommon+1, cs.head))
+	}
+	return true
 }
 
 func (bc *BeaconChain) addBlocks(cs *chainSection, blocks []*BeaconData) {
@@ -792,6 +863,7 @@ func (bc *BeaconChain) clearDb() {
 	bc.blockDataCache.Purge()
 	bc.historicCache.Purge()
 	bc.execNumberCache.Purge()
+	bc.storedSection = bc.syncHeadSection
 }
 
 func (bc *BeaconChain) reset() {
@@ -802,150 +874,6 @@ func (bc *BeaconChain) reset() {
 	bc.stateRoots = &merkleListVersion{list: &merkleList{db: bc.db, cache: bc.historicCache, dbKey: stateRootsKey, zeroLevel: 13}}
 	bc.historicRoots = &merkleListVersion{list: &merkleList{db: bc.db, cache: bc.historicCache, dbKey: historicRootsKey, zeroLevel: 25}}
 	bc.historicTrees = make(map[common.Hash]*HistoricTree)
-}
-
-func (bc *BeaconChain) SetHead(head Header) *BlockData {
-	if uint64(head.Slot) < bc.bellatrixSlot {
-		log.Info("Waiting for bellatrix fork", "slot", head.Slot, "fork", bc.bellatrixSlot)
-		return nil
-	}
-	if head, err := bc.trySetHead(head); err == nil {
-		log.Info("BeaconChain.setHead successful")
-		bc.failCounter = 0
-		return head
-	} else {
-		bc.failCounter++
-		log.Error("Error setting beacon chain head", "attempt", bc.failCounter, "reset after", 100, "error", err)
-		if bc.failCounter == 100 {
-			bc.clearDb()
-			bc.reset()
-			log.Warn("Beacon chain has been reset to empty state")
-		}
-		return nil
-	}
-}
-
-func (bc *BeaconChain) trySetHead(head Header) (*BlockData, error) {
-	ctx := context.Background() //TODO
-
-	var lastHead, headBlock *BlockData
-	bc.chainMu.RLock()
-	if bc.headHash != (common.Hash{}) {
-		lastHead = bc.GetBlockData(bc.headSlot, bc.headHash, true)
-		if lastHead == nil {
-			bc.clearDb()
-			bc.reset()
-			log.Error("Head beacon block not found in database")
-			return nil, errors.New("Head beacon block not found in database")
-		}
-	}
-	log.Info("BeaconChain.trySetHead", "old head slot", bc.headSlot, "old head hash", bc.headHash, "found in db", lastHead != nil, "new head slot", head.Slot, "new head hash", head.Hash())
-	bc.chainMu.RUnlock()
-
-	var amount uint64
-	if lastHead != nil && uint64(head.Slot) > lastHead.Header.Slot {
-		amount = uint64(head.Slot) - lastHead.Header.Slot
-	} else {
-		amount = 1
-	}
-	for {
-		blocks, err := bc.dataSource.GetBlocksFromHead(ctx, head, amount)
-		if err != nil {
-			return nil, err
-		}
-		if len(blocks) == 0 {
-			return nil, errors.New("No blocks returned by GetBlocksFromHead")
-		}
-		headBlock = blocks[len(blocks)-1]
-		if connected, err := bc.insertBlocks(lastHead, blocks); connected {
-			if lastHead == nil {
-				tail := blocks[0].Header.Slot
-				bc.tailLongTerm, bc.tailShortTerm = tail, tail
-				log.Info("Tail slot set", "tail", tail)
-			}
-			break
-		} else {
-			if err != nil {
-				return nil, err
-			}
-		}
-		received := uint64(headBlock.Header.Slot-blocks[0].Header.Slot) + blocks[0].ParentSlotDiff
-		if received < amount || amount >= ReverseSyncLimit {
-			fmt.Println("received vs amount", received, amount)
-			//TODO try historic backend when available
-			bc.clearDb()
-			bc.reset()
-			return nil, errors.New("Could not connect to existing chain")
-		}
-		amount += amount
-		if amount > ReverseSyncLimit {
-			amount = ReverseSyncLimit
-		}
-	}
-
-	var headTree *HistoricTree
-	if lastHead == nil {
-		var err error
-		if headTree, err = bc.initHistoricTrees(ctx, headBlock); err != nil {
-			bc.clearDb()
-			return nil, err
-		}
-		log.Info("Successful BeaconChain init")
-	} else {
-		headTree = bc.newHistoricTree(lastHead)
-	}
-	/*
-		fmt.Println("****************** GetBlockDataByExecNumber")
-		for i := uint64(400000); i <= 500000; i++ {
-			if bc.GetBlockDataByExecNumber(headTree, i) != nil {
-				fmt.Print(i, ",")
-			}
-		}
-		fmt.Println("******************")
-	*/
-	headSlot, headHash := headBlock.Header.Slot, headBlock.BlockRoot
-
-	fmt.Println("headBlock.root", headBlock.BlockRoot)
-	if err := headTree.moveToHead(headBlock); err != nil {
-		return nil, err
-	}
-	newTreeMap := make(map[common.Hash]*HistoricTree)
-	newTreeMap[headBlock.BlockRoot] = headTree
-	for _, block := range bc.findCloseBlocks(headBlock, maxHistoricTreeDistance) {
-		fmt.Println("close block.root", block.BlockRoot)
-		var err error
-		if newTreeMap[block.BlockRoot], err = headTree.makeChildTree(block); err != nil {
-			return nil, err
-		}
-	}
-
-	bc.chainMu.Lock()
-	batch := bc.db.NewBatch()
-	bc.commitHistoricTree(batch, headTree)
-	// internal consistency check of state roots tree updates
-	var period uint64
-	if headSlot > 0 {
-		period = (headSlot - 1) >> 13
-	}
-	//if headTree.state.get(period, 1) != headBlock.mustGetStateValue(BsiStateRoots) {
-	fmt.Println("*** stateRoots", headBlock.mustGetStateValue(BsiStateRoots), "headTree.state root", headTree.state.get(period, 1))
-	//}
-	//if headTree.historic.get(0, 1) != headBlock.mustGetStateValue(BsiHistoricRoots) {
-	fmt.Println("*** historicRoots", headBlock.mustGetStateValue(BsiHistoricRoots), "headTree.historic root", headTree.historic.get(0, 1))
-	//}
-	log.Info("Successful HistoricTree check, setting head")
-	if headBlock.ProofFormat&HspInitData != 0 {
-		fmt.Println("forkVersion", headBlock.mustGetStateValue(BsiForkVersion))
-		fmt.Println("genesisValidatorsRoot", headBlock.mustGetStateValue(BsiGenesisValidators))
-	}
-	bc.headSlot, bc.headHash = headSlot, headHash
-	bc.storeHeadTail(batch)
-	batch.Write()
-	bc.historicMu.Lock()
-	bc.historicTrees = newTreeMap
-	bc.historicMu.Unlock()
-	bc.chainMu.Unlock()
-	return headBlock, nil
 }
 
 func (bc *BeaconChain) insertBlocks(lastHead *BlockData, blocks []*BlockData) (bool, error) {
