@@ -245,10 +245,17 @@ func (m *merkleListHasher) put(period, index uint64, value MerkleValue) {
 	return proof
 }*/
 
+const (
+	limitNone  = 0
+	limitLeft  // write only to the area left to limitPath
+	limitRight // write only to the area on or right to limitPath
+)
+
 type merkleListWriter struct {
-	list          *merkleListPeriodRepeat
-	format        ProofFormat
-	period, index uint64
+	list                     *merkleListPeriodRepeat
+	format                   ProofFormat
+	period, index, limitPath uint64
+	limitType                int
 }
 
 func (m merkleListWriter) children() (left, right ProofWriter) {
@@ -256,20 +263,35 @@ func (m merkleListWriter) children() (left, right ProofWriter) {
 	if lf == nil {
 		return nil, nil
 	}
-	return merkleListWriter{list: m.list, format: lf, period: m.period, index: m.index * 2},
-		merkleListWriter{list: m.list, format: rf, period: m.period, index: m.index*2 + 1}
+	return merkleListWriter{list: m.list, format: lf, period: m.period, index: m.index * 2, limitType: m.limitType, limitPath: m.limitPath},
+		merkleListWriter{list: m.list, format: rf, period: m.period, index: m.index*2 + 1, limitType: m.limitType, limitPath: m.limitPath}
 }
 
 func (m merkleListWriter) writeNode(node MerkleValue) {
+	if m.limitType != limitNone {
+		index, limit := m.index, m.limitPath
+		shift := bits.LeadingZeros64(index) - bits.LeadingZeros64(limit)
+		if shift > 0 {
+			limit >>= shift
+		}
+		if shift < 0 {
+			index >>= -shift
+		}
+		if (index < limitPath) == (m.limitType == limitRight) {
+			return
+		}
+	}
 	m.list.put(m.period, m.index, node)
 }
 
-func (m *merkleListHasher) addMultiProof(period uint64, proof MultiProof) {
+func (m *merkleListHasher) addMultiProof(period uint64, proof MultiProof, limitType int, limitPath uint64) {
 	writer := merkleListWriter{
-		list:   (*merkleListPeriodRepeat)(m),
-		format: proof.Format,
-		period: period,
-		index:  1,
+		list:      (*merkleListPeriodRepeat)(m),
+		format:    proof.Format,
+		period:    period,
+		index:     1,
+		limitType: limitType,
+		limitPath: limitPath,
 	}
 	TraverseProof(proof.Reader(nil), writer)
 }

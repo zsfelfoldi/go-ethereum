@@ -66,6 +66,12 @@ func (ht *HistoricTree) makeChildTree(newHead *BlockData) (*HistoricTree, error)
 	}
 }
 
+func (bc *BeaconChain) addHistoricTreeTail(batch ethdb.Batch, ht *HistoricTree, blocks []*BlockData, proof MultiProof) {
+	firstSlot := uint64(blocks[0].Header.Slot) + 1 - blocks[0].ParentSlotDiff
+	firstPeriod := firstSlot >> 13
+	if 
+}
+
 func (ht *HistoricTree) moveToHead(newHead *BlockData) error {
 	var (
 		rollbackHistoric, rollbackRoots int          // number of entries to roll back from old head to common ancestor
@@ -163,38 +169,41 @@ func (bc *BeaconChain) initHistoricTrees(ctx context.Context, block *BlockData) 
 	if err != nil {
 		return nil, err
 	}
-	ht.block.addMultiProof(period, blockRootsProof)
-	ht.state.addMultiProof(period, stateRootsProof)
+	ht.block.addMultiProof(period, blockRootsProof, limitLeft, 0x2000+index)
+	ht.state.addMultiProof(period, stateRootsProof, limitLeft, 0x2000+index)
 
 	if period > 0 {
 		//period--
 		historicRootsProof, err := bc.dataSource.GetHistoricRootsProof(ctx, block, period)
-		period--
 		if err != nil {
 			return nil, err
 		}
-		ht.historic.addMultiProof(0, historicRootsProof)
+		ht.historic.addMultiProof(0, historicRootsProof, limitNone, 0)
 
-		// move state_roots items beyond index to previous period
-		// (merkleListPeriodRepeat will still show them in current period until overwritten by new values)
-		ht.block.get(period, 1) // calculate internal tree nodes
-		for oi, value := range ht.block.list.diffs {
-			if oi.period == period+1 {
-				if oi.index > (0x2000+index)>>(bits.LeadingZeros64(oi.index)-50) {
-					delete(ht.block.list.diffs, oi)
-					ht.block.list.diffs[diffIndex{period, oi.index}] = value
+		period--
+		ht.block.addMultiProof(period, blockRootsProof, limitRight, 0x2000+index)
+		ht.state.addMultiProof(period, stateRootsProof, limitRight, 0x2000+index)
+
+		/*		// move state_roots items beyond index to previous period
+				// (merkleListPeriodRepeat will still show them in current period until overwritten by new values)
+				ht.block.get(period, 1) // calculate internal tree nodes
+				for oi, value := range ht.block.list.diffs {
+					if oi.period == period+1 {
+						if oi.index > (0x2000+index)>>(bits.LeadingZeros64(oi.index)-50) {
+							delete(ht.block.list.diffs, oi)
+							ht.block.list.diffs[diffIndex{period, oi.index}] = value
+						}
+					}
 				}
-			}
-		}
-		ht.state.get(period, 1)
-		for oi, value := range ht.state.list.diffs {
-			if oi.period == period+1 {
-				if oi.index > (0x2000+index)>>(bits.LeadingZeros64(oi.index)-50) {
-					delete(ht.state.list.diffs, oi)
-					ht.state.list.diffs[diffIndex{period, oi.index}] = value
-				}
-			}
-		}
+				ht.state.get(period, 1)
+				for oi, value := range ht.state.list.diffs {
+					if oi.period == period+1 {
+						if oi.index > (0x2000+index)>>(bits.LeadingZeros64(oi.index)-50) {
+							delete(ht.state.list.diffs, oi)
+							ht.state.list.diffs[diffIndex{period, oi.index}] = value
+						}
+					}
+				}*/
 	}
 
 	batch := bc.db.NewBatch()
