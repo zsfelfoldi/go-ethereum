@@ -29,18 +29,22 @@ import (
 const maxHistoricTreeDistance = 3
 
 type HistoricTree struct {
-	bc                     *BeaconChain
-	HeadBlock              *BlockData
-	block, state, historic *merkleListHasher
+	bc                               *BeaconChain //TODO kell ez?
+	HeadBlock                        *BlockData
+	tailSlot, tailPeriod, nextPeriod uint64
+	block, state, historic           *merkleListHasher
 }
 
-func (bc *BeaconChain) newHistoricTree(headBlock *BlockData) *HistoricTree { //TODO inkabb headBlock legyen mindig bc-ben? szebb lenne, mint parameterben itt atadni, hiszen bc allapotahoz kotodik
+func (bc *BeaconChain) newHistoricTree(tailSlot, tailPeriod, nextPeriod uint64) *HistoricTree {
 	return &HistoricTree{
-		bc:        bc,
-		HeadBlock: headBlock,
-		block:     newMerkleListHasher(bc.blockRoots, 1),
-		state:     newMerkleListHasher(bc.stateRoots, 1),
-		historic:  newMerkleListHasher(bc.historicRoots, 0),
+		bc:         bc,
+		HeadBlock:  bc.storedHead,
+		block:      newMerkleListHasher(bc.blockRoots, 1),
+		state:      newMerkleListHasher(bc.stateRoots, 1),
+		historic:   newMerkleListHasher(bc.historicRoots, 0),
+		tailSlot:   tailSlot,
+		tailPeriod: tailPeriod,
+		nextPeriod: nextPeriod,
 	}
 }
 
@@ -51,25 +55,126 @@ func (bc *BeaconChain) GetHistoricTree(blockHash common.Hash) *HistoricTree {
 	return ht
 }
 
-func (ht *HistoricTree) makeChildTree(newHead *BlockData) (*HistoricTree, error) {
-	child := &HistoricTree{
-		bc:        ht.bc,
-		HeadBlock: ht.HeadBlock,
-		block:     newMerkleListHasher(ht.block.list, 1),
-		state:     newMerkleListHasher(ht.state.list, 1),
-		historic:  newMerkleListHasher(ht.historic.list, 0),
-	}
-	if err := child.moveToHead(newHead); err == nil {
-		return child, nil
-	} else {
-		return nil, err
+//func (ht *HistoricTree) makeChildTree(newHead *BlockData) (*HistoricTree, error) {
+func (ht *HistoricTree) makeChildTree() *HistoricTree {
+	return &HistoricTree{
+		bc:          ht.bc,
+		HeadBlock:   ht.HeadBlock,
+		initialized: ht.initialized,
+		tailSlot:    ht.tailSlot,
+		tailPeriod:  ht.tailPeriod,
+		block:       newMerkleListHasher(ht.block.list, 1),
+		state:       newMerkleListHasher(ht.state.list, 1),
+		historic:    newMerkleListHasher(ht.historic.list, 0),
 	}
 }
 
-func (bc *BeaconChain) addHistoricTreeTail(batch ethdb.Batch, ht *HistoricTree, blocks []*BlockData, proof MultiProof) {
-	firstSlot := uint64(blocks[0].Header.Slot) + 1 - blocks[0].ParentSlotDiff
-	firstPeriod := firstSlot >> 13
-	if 
+// update HeadBlock after addRoots if necessary
+func (ht *HistoricTree) addRoots(firstSlot uint64, blockRoots, stateRoots MerkleValues, deleteAfter bool, tailProof MultiProof) {
+	lastSlot := firstSlot + uint64(len(blockRoots)-1)
+	var headSlot uint64
+	if ht.HeadBlock != nil {
+		headSlot = uint64(ht.HeadBlock.Header.Slot)
+	}
+
+	for slot := firstSlot; slot <= lastSlot; slot++ {
+		period, index := slot>>13, 0x2000+slot&0x1fff
+		i := int(slot - firstSlot)
+		ht.block.put(period, index, blockRoots[i])
+		ht.state.put(period, index, stateRoots[i])
+	}
+	if lastSlot+1 > headSlot {
+		headSlot = lastSlot + 1
+	}
+	if deleteAfter && lastSlot+1 < headSlot {
+		for slot := lastSlot + 1; slot < oldHeadSlot; slot++ {
+			period, index := slot>>13, 0x2000+slot&0x1fff
+			ht.block.put(period, index, MerkleValue{})
+			ht.state.put(period, index, MerkleValue{})
+		}
+		headSlot = lastSlot + 1
+	}
+
+	newNextPeriod := headSlot >> 13
+	if newNextPeriod < ht.nextPeriod {
+		for period := nextPeriod; period < ht.nextPeriod; period++ {
+			ht.deleteHistoricRoots(period)
+		}
+		ht.nextPeriod = newNextPeriod
+		if ht.nextPeriod < ht.tailPeriod {
+			ht.reset()
+		}
+	}
+
+	oldTailPeriod := ht.tailPeriod
+	tailProofPeriod := firstSlot >> 13
+	if (ht.nextPeriod == 0 || tailProofPeriod < ht.tailPeriod) && tailProof.Format != nil {
+		if verifyTailProof(tailProof, tailProofPeriod) {
+			ht.historic.addMultiProof(0, tailProof, limitLeft, 0x2000000+tailProofPeriod)
+			ht.tailPeriod = tailProofPeriod
+			if ht.nextPeriod == 0 {
+				ht.nextPeriod = tailProofPeriod
+				oldTailPeriod = tailProofPeriod
+			}
+			for period := ht.tailPeriod; period < oldTailPeriod; period++ {
+				ht.setHistoricRoots(period)
+			}
+		} else {
+			log.Error("Invalid historic tail proof")
+		}
+	}
+	firstUpdate, afterUpdate := tailProofPeriod, lastSlot>>13
+	if oldTailPeriod > firstUpdate {
+		firstUpdate = oldTailPeriod
+	}
+	if ht.nextPeriod < afterUpdate {
+		afterUpdate = ht.nextPeriod
+	}
+	for period := firstUpdate; period < afterUpdate; period++ {
+		ht.setHistoricRoots(period)
+	}
+	for period := ht.nextPeriod; period < newNextPeriod; period++ {
+		ht.setHistoricRoots(period)
+	}
+	ht.nextPeriod = newNextPeriod
+}
+
+func verifyTailProof(proof MultiProof, tailPeriod uint64) bool {
+	if tailPeriod == 0 {
+		return true
+	}
+	var values [2]MerkleValue
+	TraverseProof(proof.Reader(nil), NewValueWriter(proof.Format, values[:], func(index uint64) int {
+		if index == 0x2000000+tailPeriod-1 {
+			return 0
+		}
+		if index == 0x2000000+tailPeriod {
+			return 1
+		}
+		return -1
+	}))
+	return values[0] == (MerkleValue{}) && values[1] != (MerkleValue{})
+}
+
+func (ht *HistoricTree) setHistoricRoots(period uint64) {
+	ht.historic.put(0, 0x4000000+period*2, ht.block.get(period, 1))
+	ht.historic.put(0, 0x4000000+period*2+1, ht.state.get(period, 1))
+}
+
+func (ht *HistoricTree) deleteHistoricRoots(period uint64) {
+	ht.historic.put(0, 0x4000000+period*2, MerkleValue{})
+	ht.historic.put(0, 0x4000000+period*2+1, MerkleValue{})
+}
+
+func (ht *HistoricTree) isValid() bool {
+	return ht.nextPeriod > ht.tailPeriod && ht.nextPeriod == uint64(ht.HeadBlock.Header.Slot)>>13
+}
+
+func (ht *HistoricTree) reset() {
+	for period := ht.tailPeriod; period < ht.nextPeriod; period++ {
+		ht.deleteHistoricRoots(period)
+	}
+	ht.tailPeriod, ht.nextPeriod = 0, 0
 }
 
 func (ht *HistoricTree) moveToHead(newHead *BlockData) error {
@@ -151,7 +256,7 @@ func (ht *HistoricTree) moveToHead(newHead *BlockData) error {
 	return nil
 }
 
-func (bc *BeaconChain) commitHistoricTree(batch ethdb.Batch, ht *HistoricTree) {
+func (bc *BeaconChain) commitHistoricTree(batch ethdb.Batch, ht *HistoricTree) { //TODO esetleg mindig bc.headTree-t commitolja? vagy ez allitsa at?
 	bc.blockRoots.commit(batch, ht.block.list)
 	bc.stateRoots.commit(batch, ht.state.list)
 	bc.historicRoots.commit(batch, ht.historic.list)
