@@ -29,7 +29,7 @@ import (
 const maxHistoricTreeDistance = 3
 
 type HistoricTree struct {
-	bc                               *BeaconChain //TODO kell ez?
+	//bc                               *BeaconChain //TODO kell ez?
 	HeadBlock                        *BlockData
 	tailSlot, tailPeriod, nextPeriod uint64
 	block, state, historic           *merkleListHasher
@@ -264,24 +264,30 @@ func (bc *BeaconChain) commitHistoricTree(batch ethdb.Batch, ht *HistoricTree) {
 	ht.block = newMerkleListHasher(bc.blockRoots, 1)
 	ht.state = newMerkleListHasher(bc.stateRoots, 1)
 	ht.historic = newMerkleListHasher(bc.historicRoots, 0)
+	bc.headTree = ht
 }
 
-func (bc *BeaconChain) initHistoricTrees(ctx context.Context, block *BlockData) (*HistoricTree, error) {
-	period, index := block.Header.Slot>>13, block.Header.Slot&0x1fff
-	ht := bc.newHistoricTree(block)
-
-	blockRootsProof, stateRootsProof, err := bc.dataSource.GetRootsProof(ctx, block)
+func (ht *HistoricTree) initRecentRoots(ctx context.Context, dataSource beaconData) error {
+	period, index := uint64(ht.HeadBlock.Header.Slot)>>13, uint64(ht.HeadBlock.Header.Slot)&0x1fff
+	blockRootsProof, stateRootsProof, err := dataSource.GetRootsProof(ctx, ht.HeadBlock)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	ht.block.addMultiProof(period, blockRootsProof, limitLeft, 0x2000+index)
 	ht.state.addMultiProof(period, stateRootsProof, limitLeft, 0x2000+index)
 
+	if uint64(ht.HeadBlock.Header.Slot) >= 0x2000 {
+		ht.tailSlot = uint64(ht.HeadBlock.Header.Slot) - 0x2000
+	} else {
+		ht.tailSlot = 0
+	}
+
 	if period > 0 {
+		ht.tailPeriod, ht.nextPeriod = period, period
 		//period--
-		historicRootsProof, err := bc.dataSource.GetHistoricRootsProof(ctx, block, period)
+		historicRootsProof, err := dataSource.GetHistoricRootsProof(ctx, ht.HeadBlock, period)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		ht.historic.addMultiProof(0, historicRootsProof, limitNone, 0)
 
@@ -310,11 +316,6 @@ func (bc *BeaconChain) initHistoricTrees(ctx context.Context, block *BlockData) 
 					}
 				}*/
 	}
-
-	batch := bc.db.NewBatch()
-	bc.commitHistoricTree(batch, ht)
-	batch.Write()
-	return ht, nil
 }
 
 func (ht *HistoricTree) GetStateRoot(slot uint64) common.Hash {

@@ -116,21 +116,20 @@ func init() {
 	}
 }
 
-type beaconData interface {
+type beaconData interface { // supported by beacon node API
 	GetBlocksFromHead(ctx context.Context, head Header, amount uint64) ([]*BlockData, error)
-	//
 	GetRootsProof(ctx context.Context, block *BlockData) (MultiProof, MultiProof, error)
 	GetHistoricRootsProof(ctx context.Context, block *BlockData, period uint64) (MultiProof, error)
 }
 
-type historicData interface { // only supported by ODR
+type historicData interface { // supported by ODR
 	GetHistoricBlocks(ctx context.Context, head Header, lastSlot, amount uint64) ([]*BlockData, MultiProof, error)
 }
 
-type historicInitData interface { // only supported by beacon node API; ODR supports retrieving 8k historic slots instead
+/*type historicInitData interface { // only supported by beacon node API; ODR supports retrieving 8k historic slots instead
 	GetRootsProof(ctx context.Context, block *BlockData) (MultiProof, MultiProof, error)
 	GetHistoricRootsProof(ctx context.Context, block *BlockData, period uint64) (MultiProof, error)
-}
+}*/
 
 type execChain interface {
 	// GetHeader(common.Hash, uint64) *types.Header   ???
@@ -379,11 +378,11 @@ func (bc *BeaconChain) rollback(slot uint64) {
 		bc.reset()
 		return
 	}*/
-	bc.headTree = bc.headTree.makeChildTree()
-	bc.headTree.addRoots(slot, nil, nil, true, MultiProof{})
-	bc.headTree.HeadBlock = block
+	headTree := bc.headTree.makeChildTree()
+	headTree.addRoots(slot, nil, nil, true, MultiProof{})
+	headTree.HeadBlock = block
 	batch := bc.db.NewBatch()
-	bc.commitHistoricTree(batch, bc.headTree)
+	bc.commitHistoricTree(batch, headTree)
 	bc.storedHead = block
 	bc.storeHeadTail(batch)
 	batch.Write()
@@ -522,6 +521,56 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 	return nil
 }
 
+// assumes continuity; overwrite allowed
+func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData) error {
+	eh, ok := blocks[0].GetStateValue(BsiExecHead)
+	if !ok { // should not happen, backend should check proof format
+		return errors.New("exec header root not found in beacon state")
+	}
+	execHeader := bc.execChain.GetHeaderByHash(common.Hash(eh))
+	if execHeader == nil {
+		return errors.New("cannot find exec header")
+	}
+	execNumber := execHeader.Number.Uint64()
+	for _, block := range blocks {
+		if !bc.pruneBlockFormat(block) {
+			return errors.New("fetched state proofs insufficient")
+		}
+		bc.storeBlockData(block)
+		bc.storeSlotByBlockRoot(block)
+		bc.storeBlockDataByExecNumber(execNumber, block)
+		execNumber++
+	}
+	log.Info("Successful BeaconChain insert")
+	return nil
+}
+
+func (bc *BeaconChain) initWithSection(origin, cs *chainSection) bool { // ha a result true, a chain inicializalva van, storedSection != nil
+	if bc.syncHeadSection == nil || cs.next != bc.syncHeadSection || cs.headSlot != uint64(bc.syncHeader.Slot) || cs.blockRootAt(uint64(bc.syncHeader.Slot)) != bc.syncHeader.Hash() {
+		return false
+	}
+
+	headTree := bc.newHistoricTree(uint64(bc.syncHeader.Slot)+1, 0, 0)
+	if bc.dataSource != nil {
+		headTree := bc.headTree.makeChildTree()
+		ctx, _ := context.WithTimeout(context.Background(), time.Second*2) // API backend should respond immediately so waiting here once during init is acceptable
+		if err := headTree.initRecentRoots(ctx, bc.dataSource); err == nil {
+			batch := bc.db.NewBatch()
+			bc.commitHistoricTree(batch, headTree)
+			bc.storeHeadTail(batch)
+			batch.Write()
+		} else {
+			log.Error("Error retrieving recent roots from beacon API", "error", err)
+			return false
+		}
+	}
+	bc.storedHead = cs.blocks[len(cs.blocks)-1]
+	bc.headTree = headTree
+	bc.addCanonicalBlocks(cs.blocks)
+	bc.storedSection = cs
+	return true
+}
+
 // storedSection is expected to exist
 func (bc *BeaconChain) mergeSection(origin, cs *chainSection) bool { // ha a result true, ezutan cs eldobhato
 	if cs.tailSlot > origin.headSlot+1 || cs.headSlot+1 < origin.tailSlot {
@@ -581,7 +630,7 @@ func (bc *BeaconChain) mergeSection(origin, cs *chainSection) bool { // ha a res
 	return true
 }
 
-func (bc *BeaconChain) addBlocks(cs *chainSection, blocks []*BeaconData, proof MultiProof) {
+func (bc *BeaconChain) addBlocksToSection(cs *chainSection, blocks []*BeaconData, proof MultiProof) {
 	//	cs.headSlot = blocks[len(blocks)-1].Header.Slot
 	//	cs.parentSlot = blocks[0].Header.Slot - blocks[0].ParentSlotDiff
 	headSlot, parentSlot := blocks[len(blocks)-1].Header.Slot, blocks[0].Header.Slot-blocks[0].ParentSlotDiff
@@ -591,26 +640,22 @@ func (bc *BeaconChain) addBlocks(cs *chainSection, blocks []*BeaconData, proof M
 	cs.headSlot, cs.parentSlot = headSlot, parentSlot
 	cs.blocks, cs.proof = blocks, proof
 
-	origin := bc.storedSection
-	if origin == nil {
-		origin = bc.syncHeadSection
-	}
-	cs := origin
-	for cs.next != nil {
-		cs = cs.next
-		if bc.mergeSection(origin, cs) && cs != bc.syncHeadSection {
-			cs.remove()
-		} else {
-			break
+	for {
+		if bc.storedSection == nil && (bc.syncHeadSection == nil || bc.syncHeadSection.prev == nil || !bc.initWithSection(bc.syncHeadSection.prev)) {
+			return
 		}
-	}
-	cs = origin
-	for cs.prev != nil {
-		cs = cs.prev
-		if bc.mergeSection(origin, cs) {
-			cs.remove()
-		} else {
-			break
+		if bc.storedSection.next != nil && bc.mergeSection(bc.storedSection.next) && bc.storedSection.next != bc.syncHeadSection {
+			bc.storedSection.next.remove()
+			continue
+		}
+		if bc.storedSection == nil {
+			continue
+		}
+		if bc.storedSection.prev != nil && bc.mergeSection(bc.storedSection.prev) {
+			bc.storedSection.prev.remove()
+		}
+		if bc.storedSection != nil {
+			return
 		}
 	}
 }
@@ -649,7 +694,7 @@ func (bc *BeaconChain) requestWorker() {
 			bc.chainMu.Lock()
 			if blocks != nil {
 				cs.requesting = false
-				bc.addBlocks(cs, blocks, proof)
+				bc.addBlocksToSection(cs, blocks, proof)
 			} else {
 				cs.remove()
 			}
@@ -945,10 +990,8 @@ func (bc *BeaconChain) clearDb() {
 }
 
 func (bc *BeaconChain) reset() {
+	bc.storedSection.remove()
 	bc.storedHead, bc.headTree, bc.storedSection = nil, nil, nil
-	if bc.syncHeadSection != nil {
-		bc.syncHeadSection.prev = false
-	}
 	bc.cancelRequests(0)
 	bc.tailShortTerm, bc.tailLongTerm = 0, 0
 	bc.initHistoricStructures()
@@ -960,55 +1003,6 @@ func (bc *BeaconChain) initHistoricStructures() {
 	bc.stateRoots = &merkleListVersion{list: &merkleList{db: bc.db, cache: bc.historicCache, dbKey: stateRootsKey, zeroLevel: 13}}
 	bc.historicRoots = &merkleListVersion{list: &merkleList{db: bc.db, cache: bc.historicCache, dbKey: historicRootsKey, zeroLevel: 25}}
 	bc.historicTrees = make(map[common.Hash]*HistoricTree)
-}
-
-func (bc *BeaconChain) insertBlocks(lastHead *BlockData, blocks []*BlockData) (bool, error) {
-	if len(blocks) == 0 {
-		return false, nil
-	}
-	if lastHead != nil {
-		fmt.Println("insertBlocks  lastHead.Slot", lastHead.Header.Slot, "blocks[0]", blocks[0].Header.Slot, blocks[0].ParentSlotDiff, "blocks[x]", blocks[len(blocks)-1].Header.Slot)
-		oldBlock := lastHead
-		index := len(blocks) - 1
-		newBlock := blocks[index]
-		for oldBlock.BlockRoot != newBlock.Header.ParentRoot {
-			if oldBlock.Header.Slot < newBlock.Header.Slot {
-				if index == 0 {
-					return false, nil
-				}
-				index--
-				newBlock = blocks[index]
-			}
-			if oldBlock.Header.Slot >= newBlock.Header.Slot {
-				if oldBlock = bc.GetParent(oldBlock); oldBlock == nil {
-					return false, nil
-				}
-			}
-		}
-		blocks = blocks[index:]
-	}
-
-	eh, ok := blocks[0].GetStateValue(BsiExecHead)
-	if !ok { // should not happen, backend should check proof format
-		fmt.Println("proofFormat", blocks[0].ProofFormat)
-		return false, errors.New("exec header root not found in beacon state")
-	}
-	execHeader := bc.execChain.GetHeaderByHash(common.Hash(eh))
-	if execHeader == nil {
-		return false, errors.New("cannot find exec header")
-	}
-	execNumber := execHeader.Number.Uint64()
-	for _, block := range blocks {
-		if !bc.pruneBlockFormat(block) { //TODO itt viszont a tail-ben mindig hagyjuk benne a HspInitData-t
-			return false, errors.New("fetched state proofs insufficient")
-		}
-		bc.storeBlockData(block)
-		bc.storeSlotByBlockRoot(block)
-		bc.storeBlockDataByExecNumber(execNumber, block)
-		execNumber++
-	}
-	log.Info("Successful BeaconChain insert")
-	return true, nil
 }
 
 func (bc *BeaconChain) findCloseBlocks(block *BlockData, maxDistance int) (res []*BlockData) {
