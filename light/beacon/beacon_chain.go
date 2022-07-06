@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -297,7 +298,7 @@ func NewBeaconChain(dataSource beaconData, execChain execChain, db ethdb.Databas
 type beaconHeadTailInfo struct {
 	HeadSlot                                             uint64
 	HeadHash                                             common.Hash
-	TailShortTerm, tailLongTerm                          uint64
+	TailShortTerm, TailLongTerm                          uint64
 	TailHistoric, TailHistoricPeriod, NextHistoricPeriod uint64
 }
 
@@ -317,7 +318,7 @@ func (bc *BeaconChain) storeHeadTail(batch ethdb.Batch) {
 }
 
 // chainMu locked
-func (bc *BeaconChain) SetHead(head Header) {
+func (bc *BeaconChain) setHead(head Header) {
 	bc.syncHeader = head
 	cs := &chainSection{
 		tailSlot:   uint64(head.Slot) + 1,
@@ -406,6 +407,7 @@ type chainSection struct {
 	headSlot, tailSlot, headCounter uint64 // tail is parent slot + 1 or 0 if no parent (genesis)
 	requesting                      bool
 	blocks                          []*BlockData // nil for stored section, sync head section and sections being requested
+	tailProof                       MultiProof   // optional merkle proof including path leading to the first root in the historical_roots structure
 	parentHash                      common.Hash  // empty for stored section, section starting at genesis and sections being requested
 	prev, next                      *chainSection
 }
@@ -492,10 +494,10 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 	}
 	cs = origin
 	for cs.prev != nil {
-		if cs.parentSlot > cs.prev.headSlot {
+		if cs.tailSlot > cs.prev.headSlot+1 {
 			req := &chainSection{
-				headSlot:    cs.parentSlot,
-				parentSlot:  cs.prev.headSlot,
+				headSlot:    cs.tailSlot - 1,
+				tailSlot:    cs.prev.headSlot + 1,
 				headCounter: bc.latestHeadCounter,
 				prev:        cs.prev,
 				next:        cs,
@@ -507,10 +509,10 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 		}
 		cs = cs.prev
 	}
-	if cs.parentSlot > bc.tailLongTerm {
+	if cs.tailSlot > bc.tailLongTerm {
 		req := &chainSection{
-			headSlot:    cs.parentSlot,
-			parentSlot:  bc.tailLongTerm,
+			headSlot:    cs.tailSlot - 1,
+			tailSlot:    bc.tailLongTerm,
 			headCounter: bc.latestHeadCounter,
 			next:        cs,
 		}
@@ -545,7 +547,7 @@ func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData) error {
 	return nil
 }
 
-func (bc *BeaconChain) initWithSection(origin, cs *chainSection) bool { // ha a result true, a chain inicializalva van, storedSection != nil
+func (bc *BeaconChain) initWithSection(cs *chainSection) bool { // ha a result true, a chain inicializalva van, storedSection != nil
 	if bc.syncHeadSection == nil || cs.next != bc.syncHeadSection || cs.headSlot != uint64(bc.syncHeader.Slot) || cs.blockRootAt(uint64(bc.syncHeader.Slot)) != bc.syncHeader.Hash() {
 		return false
 	}
@@ -572,8 +574,8 @@ func (bc *BeaconChain) initWithSection(origin, cs *chainSection) bool { // ha a 
 }
 
 // storedSection is expected to exist
-func (bc *BeaconChain) mergeSection(origin, cs *chainSection) bool { // ha a result true, ezutan cs eldobhato
-	if cs.tailSlot > origin.headSlot+1 || cs.headSlot+1 < origin.tailSlot {
+func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a result true, ezutan cs eldobhato
+	if cs.tailSlot > bc.storedSection.headSlot+1 || cs.headSlot+1 < bc.storedSection.tailSlot {
 		return false
 	}
 
@@ -584,9 +586,9 @@ func (bc *BeaconChain) mergeSection(origin, cs *chainSection) bool { // ha a res
 
 	if cs.tailSlot < bc.storedSection.tailSlot {
 		if cs.blockRootAt(bc.storedSection.tailSlot-1) == bc.blockRootAt(bc.storedSection.tailSlot-1) {
-			bc.addToTail(cs.blockRange(cs.tailSlot, bc.storedSection.tailSlot-1), cs.proof)
+			bc.addToTail(cs.blockRange(cs.tailSlot, bc.storedSection.tailSlot-1), cs.tailProof)
 		} else {
-			if cs.headCounter <= bc.storedSection.headSlotCounter {
+			if cs.headCounter <= bc.storedSection.headCounter {
 				return true
 			}
 			bc.reset()
@@ -630,28 +632,26 @@ func (bc *BeaconChain) mergeSection(origin, cs *chainSection) bool { // ha a res
 	return true
 }
 
-func (bc *BeaconChain) addBlocksToSection(cs *chainSection, blocks []*BeaconData, proof MultiProof) {
-	//	cs.headSlot = blocks[len(blocks)-1].Header.Slot
-	//	cs.parentSlot = blocks[0].Header.Slot - blocks[0].ParentSlotDiff
-	headSlot, parentSlot := blocks[len(blocks)-1].Header.Slot, blocks[0].Header.Slot-blocks[0].ParentSlotDiff
-	if headSlot < cs.headSlot || parentSlot > cs.parentSlot {
+func (bc *BeaconChain) addBlocksToSection(cs *chainSection, blocks []*BlockData, tailProof MultiProof) {
+	headSlot, tailSlot := blocks[len(blocks)-1].Header.Slot, blocks[0].Header.Slot+1-blocks[0].ParentSlotDiff
+	if headSlot < cs.headSlot || tailSlot > cs.tailSlot {
 		panic(nil)
 	}
-	cs.headSlot, cs.parentSlot = headSlot, parentSlot
-	cs.blocks, cs.proof = blocks, proof
+	cs.headSlot, cs.tailSlot = headSlot, tailSlot
+	cs.blocks, cs.tailProof = blocks, tailProof
 
 	for {
 		if bc.storedSection == nil && (bc.syncHeadSection == nil || bc.syncHeadSection.prev == nil || !bc.initWithSection(bc.syncHeadSection.prev)) {
 			return
 		}
-		if bc.storedSection.next != nil && bc.mergeSection(bc.storedSection.next) && bc.storedSection.next != bc.syncHeadSection {
+		if bc.storedSection.next != nil && bc.mergeWithStoredSection(bc.storedSection.next) && bc.storedSection.next != bc.syncHeadSection {
 			bc.storedSection.next.remove()
 			continue
 		}
 		if bc.storedSection == nil {
 			continue
 		}
-		if bc.storedSection.prev != nil && bc.mergeSection(bc.storedSection.prev) {
+		if bc.storedSection.prev != nil && bc.mergeWithStoredSection(bc.storedSection.prev) {
 			bc.storedSection.prev.remove()
 		}
 		if bc.storedSection != nil {
@@ -664,25 +664,25 @@ func (bc *BeaconChain) requestWorker() {
 	bc.chainMu.Lock()
 	for {
 		if cs := bc.nextRequest(); cs != nil {
-			ctx, cancel := context.WithTimeout(ctx, time.Second*15)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 			bc.newHeadReqCancel = append(bc.newHeadReqCancel, cancel)
 			cs.requesting = true
-			head := bc.head
+			head := bc.syncHeader
 			var (
 				blocks []*BlockData
 				proof  MultiProof
 				err    error
 			)
 			bc.chainMu.Unlock()
-			if bc.dataSource != nil && cs.parentSlot+MaxHeaderFetch >= uint64(head.Slot) {
-				blocks, err = bc.dataSource.GetBlocksFromHead(ctx, head, uint64(head.Slot)-cs.parentSlot)
+			if bc.dataSource != nil && cs.tailSlot+MaxHeaderFetch-1 >= uint64(head.Slot) {
+				blocks, err = bc.dataSource.GetBlocksFromHead(ctx, head, uint64(head.Slot)+1-cs.tailSlot)
 			} else if bc.historicSource != nil {
-				blocks, proof, err = bc.historicSource.GetHistoricBlocks(ctx, head, cs.headSlot, cs.headSlot-cs.parentSlot)
+				blocks, proof, err = bc.historicSource.GetHistoricBlocks(ctx, head, cs.headSlot, cs.headSlot+1-cs.tailSlot)
 			} else {
 				log.Error("Historic data source not available") //TODO print only once, ?reset chain?
 			}
-			if err != nil && err != light.ErrNoPeers && err != context.Canceled {
-				log.Error("Beacon data source failed", "error", err)
+			if err != nil /*&& err != light.ErrNoPeers && err != context.Canceled*/ {
+				log.Warn("Beacon data source failed", "error", err)
 			}
 			if blocks == nil {
 				select {
