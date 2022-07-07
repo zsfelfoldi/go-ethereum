@@ -267,6 +267,7 @@ func NewBeaconChain(dataSource beaconData, execChain execChain, db ethdb.Databas
 		historicCache:   historicCache,
 		execNumberCache: execNumberCache,
 		nextRollback:    firstRollback,
+		newHeadCh:       make(chan struct{}),
 	}
 	if epoch, ok := forks.epoch("BELLATRIX"); ok {
 		bc.bellatrixSlot = epoch << 5
@@ -336,10 +337,10 @@ func (bc *BeaconChain) setHead(head Header) {
 	bc.syncHeadSection = cs
 	bc.cancelRequests(time.Second)
 	close(bc.newHeadCh)
+	bc.newHeadCh = make(chan struct{})
 }
 
 func (bc *BeaconChain) cancelRequests(dt time.Duration) {
-	bc.newHeadCh = make(chan struct{})
 	cancelList := bc.newHeadReqCancel
 	bc.newHeadReqCancel = nil
 	if cancelList != nil {
@@ -673,6 +674,7 @@ func (bc *BeaconChain) requestWorker() {
 				proof  MultiProof
 				err    error
 			)
+			newHeadCh := bc.newHeadCh
 			bc.chainMu.Unlock()
 			if bc.dataSource != nil && cs.tailSlot+MaxHeaderFetch-1 >= uint64(head.Slot) {
 				blocks, err = bc.dataSource.GetBlocksFromHead(ctx, head, uint64(head.Slot)+1-cs.tailSlot)
