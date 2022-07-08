@@ -251,6 +251,9 @@ func (s *LesServer) Stop() error {
 	if s.vfluxServer != nil {
 		s.vfluxServer.Stop()
 	}
+	if s.beaconChain != nil {
+		s.beaconChain.Stop()
+	}
 
 	// Note, bloom trie indexer is closed by parent bloombits indexer.
 	if s.chtIndexer != nil {

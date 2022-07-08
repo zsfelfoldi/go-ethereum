@@ -96,8 +96,8 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 		case <-timer.C:
 			timerStarted = false
 			fmt.Println(" headPollLoop timer")
-			ctx, _ := context.WithTimeout(context.Background(), time.Second*10)
-			if head, err := bn.getHeadUpdate(ctx); err == nil {
+			//ctx, _ := context.WithTimeout(context.Background(), time.Second*10)
+			if head, err := bn.getHeadUpdate(); err == nil {
 				fmt.Println(" headPollLoop head update for slot", head.Header.Slot)
 				if !head.Equal(&lastHead) {
 					fmt.Println("head poll: new head", head.Header.Slot)
@@ -118,8 +118,8 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 				close(stopCh)
 				return
 			}
-			if head, err := bn.getHeader(ctx, common.Hash{}); err == nil {
-				bn.chain.SetHead(head, func(headBlock *beacon.Block, err error) {
+			if head, err := bn.getHeader( /*ctx,*/ common.Hash{}); err == nil {
+				bn.chain.SetHead(head, func(headBlock *beacon.BlockData, err error) {
 					if err == nil {
 						bn.sct.ProcessedBeaconHead(headBlock.BlockRoot)
 					} else {

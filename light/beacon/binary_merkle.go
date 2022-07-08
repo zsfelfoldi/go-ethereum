@@ -277,7 +277,7 @@ func (m merkleListWriter) writeNode(node MerkleValue) {
 		if shift < 0 {
 			index >>= -shift
 		}
-		if (index < limitPath) == (m.limitType == limitRight) {
+		if (index < limit) == (m.limitType == limitRight) {
 			return
 		}
 	}

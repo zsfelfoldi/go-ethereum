@@ -18,18 +18,19 @@ package beacon
 
 import (
 	"context"
-	"encoding/binary"
-	"errors"
-	"math/bits"
+	//"encoding/binary"
+	//"errors"
+	//"math/bits"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 const maxHistoricTreeDistance = 3
 
 type HistoricTree struct {
-	//bc                               *BeaconChain //TODO kell ez?
+	bc                               *BeaconChain
 	HeadBlock                        *BlockData
 	tailSlot, tailPeriod, nextPeriod uint64
 	block, state, historic           *merkleListHasher
@@ -58,46 +59,46 @@ func (bc *BeaconChain) GetHistoricTree(blockHash common.Hash) *HistoricTree {
 //func (ht *HistoricTree) makeChildTree(newHead *BlockData) (*HistoricTree, error) {
 func (ht *HistoricTree) makeChildTree() *HistoricTree {
 	return &HistoricTree{
-		bc:          ht.bc,
-		HeadBlock:   ht.HeadBlock,
-		initialized: ht.initialized,
-		tailSlot:    ht.tailSlot,
-		tailPeriod:  ht.tailPeriod,
-		block:       newMerkleListHasher(ht.block.list, 1),
-		state:       newMerkleListHasher(ht.state.list, 1),
-		historic:    newMerkleListHasher(ht.historic.list, 0),
+		bc:         ht.bc,
+		HeadBlock:  ht.HeadBlock,
+		tailSlot:   ht.tailSlot,
+		tailPeriod: ht.tailPeriod,
+		nextPeriod: ht.nextPeriod,
+		block:      newMerkleListHasher(ht.block.list, 1),
+		state:      newMerkleListHasher(ht.state.list, 1),
+		historic:   newMerkleListHasher(ht.historic.list, 0),
 	}
 }
 
 // update HeadBlock after addRoots if necessary
 func (ht *HistoricTree) addRoots(firstSlot uint64, blockRoots, stateRoots MerkleValues, deleteAfter bool, tailProof MultiProof) {
-	lastSlot := firstSlot + uint64(len(blockRoots)-1)
+	afterLastSlot := firstSlot + uint64(len(blockRoots))
 	var headSlot uint64
 	if ht.HeadBlock != nil {
 		headSlot = uint64(ht.HeadBlock.Header.Slot)
 	}
 
-	for slot := firstSlot; slot <= lastSlot; slot++ {
+	for slot := firstSlot; slot < afterLastSlot; slot++ {
 		period, index := slot>>13, 0x2000+slot&0x1fff
 		i := int(slot - firstSlot)
 		ht.block.put(period, index, blockRoots[i])
 		ht.state.put(period, index, stateRoots[i])
 	}
-	if lastSlot+1 > headSlot {
-		headSlot = lastSlot + 1
+	if afterLastSlot > headSlot {
+		headSlot = afterLastSlot
 	}
-	if deleteAfter && lastSlot+1 < headSlot {
-		for slot := lastSlot + 1; slot < oldHeadSlot; slot++ {
+	if deleteAfter && afterLastSlot < headSlot {
+		for slot := afterLastSlot; slot < headSlot; slot++ {
 			period, index := slot>>13, 0x2000+slot&0x1fff
 			ht.block.put(period, index, MerkleValue{})
 			ht.state.put(period, index, MerkleValue{})
 		}
-		headSlot = lastSlot + 1
+		headSlot = afterLastSlot
 	}
 
 	newNextPeriod := headSlot >> 13
 	if newNextPeriod < ht.nextPeriod {
-		for period := nextPeriod; period < ht.nextPeriod; period++ {
+		for period := newNextPeriod; period < ht.nextPeriod; period++ {
 			ht.deleteHistoricRoots(period)
 		}
 		ht.nextPeriod = newNextPeriod
@@ -123,7 +124,7 @@ func (ht *HistoricTree) addRoots(firstSlot uint64, blockRoots, stateRoots Merkle
 			log.Error("Invalid historic tail proof")
 		}
 	}
-	firstUpdate, afterUpdate := tailProofPeriod, lastSlot>>13
+	firstUpdate, afterUpdate := tailProofPeriod, afterLastSlot>>13
 	if oldTailPeriod > firstUpdate {
 		firstUpdate = oldTailPeriod
 	}
@@ -177,7 +178,7 @@ func (ht *HistoricTree) reset() {
 	ht.tailPeriod, ht.nextPeriod = 0, 0
 }
 
-func (ht *HistoricTree) moveToHead(newHead *BlockData) error {
+/*func (ht *HistoricTree) moveToHead(newHead *BlockData) error {
 	var (
 		rollbackHistoric, rollbackRoots int          // number of entries to roll back from old head to common ancestor
 		blockRoots, stateRoots          MerkleValues // new entries to add from common ancestor to new head
@@ -254,7 +255,7 @@ func (ht *HistoricTree) moveToHead(newHead *BlockData) error {
 	ht.historic.get(0, 1)             // force re-hashing
 	ht.HeadBlock = newHead
 	return nil
-}
+}*/
 
 func (bc *BeaconChain) commitHistoricTree(batch ethdb.Batch, ht *HistoricTree) { //TODO esetleg mindig bc.headTree-t commitolja? vagy ez allitsa at?
 	bc.blockRoots.commit(batch, ht.block.list)
@@ -316,6 +317,7 @@ func (ht *HistoricTree) initRecentRoots(ctx context.Context, dataSource beaconDa
 					}
 				}*/
 	}
+	return nil
 }
 
 func (ht *HistoricTree) GetStateRoot(slot uint64) common.Hash {

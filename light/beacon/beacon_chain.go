@@ -168,6 +168,8 @@ type BeaconChain struct {
 
 	historicMu    sync.RWMutex
 	historicTrees map[common.Hash]*HistoricTree
+
+	stopCh chan chan struct{}
 }
 
 type Header struct {
@@ -268,6 +270,7 @@ func NewBeaconChain(dataSource beaconData, execChain execChain, db ethdb.Databas
 		execNumberCache: execNumberCache,
 		nextRollback:    firstRollback,
 		newHeadCh:       make(chan struct{}),
+		stopCh:          make(chan chan struct{}),
 	}
 	if epoch, ok := forks.epoch("BELLATRIX"); ok {
 		bc.bellatrixSlot = epoch << 5
@@ -294,6 +297,15 @@ func NewBeaconChain(dataSource beaconData, execChain execChain, db ethdb.Databas
 		bc.clearDb()
 	}
 	return bc
+}
+
+func (bc *BeaconChain) Stop() {
+	bc.chainMu.Lock()
+	bc.cancelRequests(0)
+	bc.chainMu.Unlock()
+	stop := make(chan struct{})
+	bc.stopCh <- stop
+	<-stop
 }
 
 type beaconHeadTailInfo struct {
@@ -356,9 +368,9 @@ func (bc *BeaconChain) cancelRequests(dt time.Duration) {
 	return (head.StateRoot != common.Hash{}) && (bc.tailSlot+0x1fff)>>13 <= bc.tailPeriod && (bc.tailHistoric == 0 || bc.tailHistoric < uint64(head.Slot)>>13)
 }*/
 
-func (bc *BeaconChain) addToTail(blocks []*BlockData, proof MultiProof) {
+/*func (bc *BeaconChain) addToTail(blocks []*BlockData, proof MultiProof) {
 
-}
+}*/
 
 func (bc *BeaconChain) rollback(slot uint64) {
 	if slot >= uint64(bc.storedHead.Header.Slot) {
@@ -390,9 +402,9 @@ func (bc *BeaconChain) rollback(slot uint64) {
 	batch.Write()
 }
 
-func (bc *BeaconChain) addToHead(blocks []*BlockData) {
+/*func (bc *BeaconChain) addToHead(blocks []*BlockData) {
 
-}
+}*/
 
 func (bc *BeaconChain) blockRootAt(slot uint64) common.Hash {
 	if bc.headTree == nil {
@@ -525,7 +537,7 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 }
 
 // assumes continuity; overwrite allowed
-func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData) error {
+func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData, setHead bool, tailProof MultiProof) error {
 	eh, ok := blocks[0].GetStateValue(BsiExecHead)
 	if !ok { // should not happen, backend should check proof format
 		return errors.New("exec header root not found in beacon state")
@@ -535,6 +547,16 @@ func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData) error {
 		return errors.New("cannot find exec header")
 	}
 	execNumber := execHeader.Number.Uint64()
+	firstSlot := uint64(blocks[0].Header.Slot) - uint64(len(blocks[0].StateRootDiffs))
+	lastBlock := bc.GetParent(blocks[0])
+	if lastBlock != nil {
+		firstSlot--
+	} else if firstSlot > bc.tailLongTerm {
+		log.Error("Missing parent block", "firstSlot", firstSlot-1)
+	}
+	rootCount := uint64(blocks[len(blocks)-1].Header.Slot) - firstSlot
+	blockRoots, stateRoots := make(MerkleValues, rootCount), make(MerkleValues, rootCount)
+	var rootIndex int
 	for _, block := range blocks {
 		if !bc.pruneBlockFormat(block) {
 			return errors.New("fetched state proofs insufficient")
@@ -543,7 +565,35 @@ func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData) error {
 		bc.storeSlotByBlockRoot(block)
 		bc.storeBlockDataByExecNumber(execNumber, block)
 		execNumber++
+
+		if lastBlock != nil {
+			blockRoots[rootIndex] = MerkleValue(block.Header.ParentRoot)
+			stateRoots[rootIndex] = MerkleValue(lastBlock.StateRoot)
+			rootIndex++
+		}
+		lastBlock = block
+		for _, stateRoot := range block.StateRootDiffs {
+			blockRoots[rootIndex] = MerkleValue(block.Header.ParentRoot)
+			stateRoots[rootIndex] = stateRoot
+			rootIndex++
+		}
 	}
+	if rootIndex != len(blockRoots) {
+		panic(nil)
+	}
+	headTree := bc.headTree.makeChildTree()
+	headTree.addRoots(firstSlot, blockRoots, stateRoots, setHead, tailProof)
+	if setHead {
+		if lastBlock == nil {
+			panic(nil)
+		}
+		bc.storedHead = lastBlock
+		headTree.HeadBlock = lastBlock
+	}
+	batch := bc.db.NewBatch()
+	bc.commitHistoricTree(batch, headTree)
+	bc.storeHeadTail(batch)
+	batch.Write()
 	log.Info("Successful BeaconChain insert")
 	return nil
 }
@@ -569,7 +619,7 @@ func (bc *BeaconChain) initWithSection(cs *chainSection) bool { // ha a result t
 	}
 	bc.storedHead = cs.blocks[len(cs.blocks)-1]
 	bc.headTree = headTree
-	bc.addCanonicalBlocks(cs.blocks)
+	bc.addCanonicalBlocks(cs.blocks, true, MultiProof{})
 	bc.storedSection = cs
 	return true
 }
@@ -587,7 +637,8 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 
 	if cs.tailSlot < bc.storedSection.tailSlot {
 		if cs.blockRootAt(bc.storedSection.tailSlot-1) == bc.blockRootAt(bc.storedSection.tailSlot-1) {
-			bc.addToTail(cs.blockRange(cs.tailSlot, bc.storedSection.tailSlot-1), cs.tailProof)
+			//bc.addToTail(cs.blockRange(cs.tailSlot, bc.storedSection.tailSlot-1), cs.tailProof)
+			bc.addCanonicalBlocks(cs.blockRange(cs.tailSlot, bc.storedSection.tailSlot-1), false, cs.tailProof)
 		} else {
 			if cs.headCounter <= bc.storedSection.headCounter {
 				return true
@@ -599,7 +650,8 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 
 	if cs.headCounter <= bc.storedSection.headCounter {
 		if cs.headSlot > bc.storedSection.headSlot && cs.blockRootAt(bc.storedSection.headSlot) == bc.blockRootAt(bc.storedSection.headSlot) {
-			bc.addToHead(cs.blockRange(bc.storedSection.headSlot+1, cs.headSlot))
+			//bc.addToHead(cs.blockRange(bc.storedSection.headSlot+1, cs.headSlot))
+			bc.addCanonicalBlocks(cs.blockRange(bc.storedSection.headSlot+1, cs.headSlot), true, MultiProof{})
 			bc.storedSection.headCounter = cs.headCounter
 			bc.nextRollback = firstRollback
 		}
@@ -627,7 +679,8 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 		bc.rollback(lastCommon)
 	}
 	if lastCommon < cs.headSlot {
-		bc.addToHead(cs.blockRange(lastCommon+1, cs.headSlot))
+		//bc.addToHead(cs.blockRange(lastCommon+1, cs.headSlot))
+		bc.addCanonicalBlocks(cs.blockRange(lastCommon+1, cs.headSlot), true, MultiProof{})
 		bc.nextRollback = firstRollback
 	}
 	return true
@@ -689,7 +742,8 @@ func (bc *BeaconChain) requestWorker() {
 			if blocks == nil {
 				select {
 				case <-newHeadCh:
-				case <-bc.stopCh:
+				case stop := <-bc.stopCh:
+					close(stop)
 					return
 				}
 			}
@@ -705,7 +759,8 @@ func (bc *BeaconChain) requestWorker() {
 			bc.chainMu.Unlock()
 			select {
 			case <-newHeadCh:
-			case <-bc.stopCh:
+			case stop := <-bc.stopCh:
+				close(stop)
 				return
 			}
 			bc.chainMu.Lock()
