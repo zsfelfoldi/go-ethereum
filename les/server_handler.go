@@ -439,19 +439,14 @@ func (h *serverHandler) broadcastLoop() {
 	for {
 		select {
 		case ev := <-headCh:
-			if h.server.beaconChain != nil {
-				//h.server.beaconChain.SetHead(common.Hash{})
-				h.server.beaconNodeApi.newHead()
-				/*headUpdate, err := h.server.beaconNodeApi.getHeadUpdate()
-				if err == nil {
-					fmt.Println("Fetched head update", headUpdate)
-					h.server.headPropagator.Add(headUpdate)
-				} else {
-					fmt.Println("Error fetching head update", err)
-				}*/
-			}
 			header := ev.Block.Header()
 			hash, number := header.Hash(), header.Number.Uint64()
+			if h.server.beaconChain != nil {
+				h.server.beaconChain.ProcessedExecHead(hash)
+			}
+			if h.server.beaconNodeApi != nil {
+				h.server.beaconNodeApi.newHead()
+			}
 			td := h.blockchain.GetTd(hash, number)
 			if td == nil || td.Cmp(lastTd) <= 0 {
 				continue

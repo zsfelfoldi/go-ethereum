@@ -1189,7 +1189,7 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 				score:        score,
 				sentTo:       make(map[sctClient]struct{}),
 				receivedFrom: map[sctServer]struct{}{peer: struct{}{}},
-				processed:    true, //TODO  hash == s.lastProcessed,
+				processed:    hash == s.lastProcessed,
 			}
 			s.receivedList.updateHead(h)
 			if h.processed {
@@ -1230,8 +1230,8 @@ func (s *SyncCommitteeTracker) ProcessedBeaconHead(hash common.Hash) {
 		s.broadcastHeads()
 	} else {
 		fmt.Println(" not found in received list")
-		s.lastProcessed = hash //TODO remember more than one?
 	}
+	s.lastProcessed = hash //TODO remember more than one?
 }
 
 func (s *SyncCommitteeTracker) Activate(peer sctClient) {

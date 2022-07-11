@@ -119,13 +119,9 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 				return
 			}
 			if head, err := bn.getHeader( /*ctx,*/ common.Hash{}); err == nil {
-				bn.chain.SetHead(head, func(headBlock *beacon.BlockData, err error) {
-					if err == nil {
-						bn.sct.ProcessedBeaconHead(headBlock.BlockRoot)
-					} else {
-						xxx
-					}
-				})
+				bn.chain.SyncToHead(head)
+			} else {
+				log.Error("Could not fetch header from beacon node API", "error", err)
 			}
 			if !timerStarted {
 				timer.Reset(headPollFrequency)

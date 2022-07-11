@@ -169,6 +169,11 @@ type BeaconChain struct {
 	historicMu    sync.RWMutex
 	historicTrees map[common.Hash]*HistoricTree
 
+	processedCallback                               func(common.Hash)
+	waitForExecHead                                 bool
+	lastProcessedBeaconHead, lastReportedBeaconHead common.Hash
+	lastProcessedExecHead, expectedExecHead         common.Hash
+
 	stopCh chan chan struct{}
 }
 
@@ -330,8 +335,10 @@ func (bc *BeaconChain) storeHeadTail(batch ethdb.Batch) {
 	}
 }
 
-// chainMu locked
-func (bc *BeaconChain) setHead(head Header) {
+func (bc *BeaconChain) SyncToHead(head Header) {
+	bc.chainMu.Lock()
+	defer bc.chainMu.Unlock()
+
 	bc.syncHeader = head
 	cs := &chainSection{
 		tailSlot:   uint64(head.Slot) + 1,
@@ -1096,4 +1103,42 @@ func (bc *BeaconChain) findCloseBlocks(block *BlockData, maxDistance int) (res [
 	}
 	iter.Release()
 	return res
+}
+
+func (bc *BeaconChain) SubscribeToProcessedHeads(processedCallback func(common.Hash), waitForExecHead bool) {
+	// Note: called during init phase, after that these variables are read-only
+	bc.processedCallback = processedCallback
+	bc.waitForExecHead = waitForExecHead
+}
+
+// called under chainMu
+// returns true if cb should be called with beaconHead as parameter after releasing lock
+func (bc *BeaconChain) processedHead(beaconHead, execHead common.Hash) bool {
+	if bc.processedCallback == nil {
+		return false
+	}
+	bc.lastProcessedBeaconHead, bc.expectedExecHead = beaconHead, execHead
+	if bc.lastReportedBeaconHead != beaconHead && (!bc.waitForExecHead || bc.lastProcessedExecHead == execHead) {
+		bc.lastReportedBeaconHead = beaconHead
+		return true
+	}
+	return false
+}
+
+func (bc *BeaconChain) ProcessedExecHead(execHead common.Hash) {
+	if bc.processedCallback == nil || !bc.waitForExecHead {
+		return
+	}
+	bc.chainMu.Lock()
+	var reportHead common.Hash
+	if bc.expectedExecHead == execHead && bc.lastReportedBeaconHead != bc.lastProcessedBeaconHead {
+		reportHead = bc.lastProcessedBeaconHead
+		bc.lastReportedBeaconHead = reportHead
+	}
+	bc.lastProcessedExecHead = execHead
+	bc.chainMu.Unlock()
+
+	if reportHead != (common.Hash{}) {
+		bc.processedCallback(reportHead)
+	}
 }
