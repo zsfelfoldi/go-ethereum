@@ -232,6 +232,9 @@ func (s *LesServer) Start() error {
 	if s.p2pSrv.DiscV5 != nil {
 		s.p2pSrv.DiscV5.RegisterTalkHandler("vfx", s.vfluxServer.ServeEncoded)
 	}
+	if s.beaconChain != nil {
+		s.beaconChain.StartSyncing()
+	}
 	return nil
 }
 
@@ -239,7 +242,12 @@ func (s *LesServer) Start() error {
 func (s *LesServer) Stop() error {
 	close(s.closeCh)
 
-	s.beaconNodeApi.stop()
+	if s.beaconChain != nil {
+		s.beaconChain.StopSyncing()
+	}
+	if s.beaconNodeApi != nil {
+		s.beaconNodeApi.stop()
+	}
 	s.clientPool.Stop()
 	if s.serverset != nil {
 		s.serverset.close()
@@ -251,9 +259,6 @@ func (s *LesServer) Stop() error {
 	s.servingQueue.stop()
 	if s.vfluxServer != nil {
 		s.vfluxServer.Stop()
-	}
-	if s.beaconChain != nil {
-		s.beaconChain.Stop()
 	}
 
 	// Note, bloom trie indexer is closed by parent bloombits indexer.
