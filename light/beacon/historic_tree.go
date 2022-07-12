@@ -18,13 +18,14 @@ package beacon
 
 import (
 	"context"
-	//"encoding/binary"
 	//"errors"
 	//"math/bits"
+	"encoding/binary"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 const maxHistoricTreeDistance = 3
@@ -178,86 +179,7 @@ func (ht *HistoricTree) reset() {
 	ht.tailPeriod, ht.nextPeriod = 0, 0
 }
 
-/*func (ht *HistoricTree) moveToHead(newHead *BlockData) error {
-	var (
-		rollbackHistoric, rollbackRoots int          // number of entries to roll back from old head to common ancestor
-		blockRoots, stateRoots          MerkleValues // new entries to add from common ancestor to new head
-		addHistoric                     int
-	)
-	block1 := ht.HeadBlock
-	block2 := newHead
-
-	//fmt.Println("mth1", block1.Header.Slot, block1.BlockRoot, block2.Header.Slot, block2.BlockRoot)
-	for block1.BlockRoot != block2.BlockRoot {
-		if block1.Header.Slot > block2.Header.Slot {
-			if block1.firstInPeriod() {
-				rollbackHistoric++
-			}
-			rollbackRoots += int(block1.ParentSlotDiff)
-			block1 = ht.bc.GetParent(block1)
-		} else {
-			if block2.firstInPeriod() {
-				addHistoric++
-			}
-			newBlockRoots := make(MerkleValues, len(block2.StateRootDiffs)+1+len(blockRoots))
-			for i := 0; i <= len(block2.StateRootDiffs); i++ {
-				newBlockRoots[i] = MerkleValue(block2.Header.ParentRoot)
-			}
-			copy(newBlockRoots[len(block2.StateRootDiffs)+1:], blockRoots)
-			blockRoots = newBlockRoots
-
-			newStateRoots := make(MerkleValues, len(block2.StateRootDiffs)+1+len(stateRoots))
-			copy(newStateRoots[1:len(block2.StateRootDiffs)+1], block2.StateRootDiffs)
-			copy(newStateRoots[len(block2.StateRootDiffs)+1:], stateRoots)
-			block2 = ht.bc.GetParent(block2)
-			newStateRoots[0] = MerkleValue(block2.StateRoot)
-			stateRoots = newStateRoots
-		}
-		if block1 == nil || block2 == nil {
-			return errors.New("common ancestor not found")
-		}
-		//fmt.Println(" mth1", block1.Header.Slot, block1.BlockRoot, block2.Header.Slot, block2.BlockRoot)
-	}
-
-	firstSlot := block1.Header.Slot
-	firstPeriod := firstSlot >> 13
-	newPeriod := newHead.Header.Slot >> 13
-	//fmt.Println("mth2", firstSlot, stateRoots, rollbackState)
-
-	for i, v := range blockRoots {
-		ht.block.put((firstSlot+uint64(i))>>13, 0x2000+((firstSlot+uint64(i))&0x1fff), v)
-	}
-	for i := len(blockRoots); i < rollbackRoots; i++ {
-		ht.block.put((firstSlot+uint64(i))>>13, 0x2000+((firstSlot+uint64(i))&0x1fff), MerkleValue{})
-	}
-	ht.block.get(newPeriod, 1) // force re-hashing
-
-	for i, v := range stateRoots {
-		ht.state.put((firstSlot+uint64(i))>>13, 0x2000+((firstSlot+uint64(i))&0x1fff), v)
-	}
-	for i := len(stateRoots); i < rollbackRoots; i++ {
-		ht.state.put((firstSlot+uint64(i))>>13, 0x2000+((firstSlot+uint64(i))&0x1fff), MerkleValue{})
-	}
-	ht.state.get(newPeriod, 1) // force re-hashing
-
-	firstHistoricIndex := 0x4000000 + 2*firstPeriod
-	for i := 0; i < addHistoric; i++ {
-		ht.historic.put(0, firstHistoricIndex+uint64(i)*2, ht.block.get(firstPeriod+uint64(i), 1))
-		ht.historic.put(0, firstHistoricIndex+uint64(i)*2+1, ht.state.get(firstPeriod+uint64(i), 1))
-	}
-	for i := addHistoric; i < rollbackHistoric; i++ {
-		ht.historic.put(0, firstHistoricIndex+uint64(i)*2, MerkleValue{})
-		ht.historic.put(0, firstHistoricIndex+uint64(i)*2+1, MerkleValue{})
-	}
-	var listLength MerkleValue
-	binary.LittleEndian.PutUint64(listLength[:8], newPeriod)
-	ht.historic.put(0, 3, listLength) //TODO akkor is, ha az altair fork kesobb tortent?
-	ht.historic.get(0, 1)             // force re-hashing
-	ht.HeadBlock = newHead
-	return nil
-}*/
-
-func (bc *BeaconChain) commitHistoricTree(batch ethdb.Batch, ht *HistoricTree) { //TODO esetleg mindig bc.headTree-t commitolja? vagy ez allitsa at?
+func (bc *BeaconChain) commitHistoricTree(batch ethdb.Batch, ht *HistoricTree) {
 	bc.blockRoots.commit(batch, ht.block.list)
 	bc.stateRoots.commit(batch, ht.state.list)
 	bc.historicRoots.commit(batch, ht.historic.list)
@@ -266,6 +188,91 @@ func (bc *BeaconChain) commitHistoricTree(batch ethdb.Batch, ht *HistoricTree) {
 	ht.state = newMerkleListHasher(bc.stateRoots, 1)
 	ht.historic = newMerkleListHasher(bc.historicRoots, 0)
 	bc.headTree = ht
+}
+
+// call after the batch of commitHistoricTree has been written
+func (bc *BeaconChain) updateTreeMap() {
+	newTreeMap := make(map[common.Hash]*HistoricTree)
+	newTreeMap[bc.storedHead.BlockRoot] = bc.headTree
+	for _, path := range bc.findCloseBlocks(bc.storedHead, maxHistoricTreeDistance) {
+		ht := bc.headTree.makeChildTree()
+		firstSlot, blockRoots, stateRoots := blockAndStateRoots(path[0], path[1:])
+		ht.addRoots(firstSlot, blockRoots, stateRoots, true, MultiProof{})
+		ht.HeadBlock = path[len(path)-1]
+		newTreeMap[ht.HeadBlock.BlockRoot] = ht
+	}
+
+	bc.historicMu.Lock()
+	bc.historicTrees = newTreeMap
+	bc.historicMu.Unlock()
+}
+
+func blockAndStateRoots(parent *BlockData, blocks []*BlockData) (firstSlot uint64, blockRoots, stateRoots MerkleValues) {
+	firstSlot = uint64(blocks[0].Header.Slot) - uint64(len(blocks[0].StateRootDiffs))
+	if parent != nil {
+		firstSlot--
+	}
+	rootCount := uint64(blocks[len(blocks)-1].Header.Slot) - firstSlot
+	blockRoots, stateRoots = make(MerkleValues, rootCount), make(MerkleValues, rootCount)
+	var rootIndex int
+	for _, block := range blocks {
+		if parent != nil {
+			blockRoots[rootIndex] = MerkleValue(block.Header.ParentRoot)
+			stateRoots[rootIndex] = MerkleValue(parent.StateRoot)
+			rootIndex++
+		}
+		parent = block
+		for _, stateRoot := range block.StateRootDiffs {
+			blockRoots[rootIndex] = MerkleValue(block.Header.ParentRoot)
+			stateRoots[rootIndex] = stateRoot
+			rootIndex++
+		}
+	}
+	if rootIndex != len(blockRoots) {
+		panic(nil)
+	}
+	return
+}
+
+func (bc *BeaconChain) findCloseBlocks(block *BlockData, maxDistance int) (res [][]*BlockData) {
+	type distanceWithPath struct {
+		distance int
+		path     []*BlockData
+	}
+	dist := make(map[common.Hash]distanceWithPath)
+	dist[block.BlockRoot] = distanceWithPath{0, []*BlockData{block}}
+	b := block
+	firstSlot := b.Header.Slot
+	for i := 1; i <= maxDistance; i++ {
+		if b = bc.GetParent(b); b == nil {
+			break
+		}
+		res = append(res, []*BlockData{b})
+		firstSlot = b.Header.Slot
+		dist[b.BlockRoot] = distanceWithPath{i, []*BlockData{b}}
+	}
+
+	var slotEnc [8]byte
+	binary.BigEndian.PutUint64(slotEnc[:], firstSlot)
+	iter := bc.db.NewIterator(blockDataKey, slotEnc[:])
+	for iter.Next() {
+		block := new(BlockData)
+		if err := rlp.DecodeBytes(iter.Value(), block); err == nil {
+			block.CalculateRoots()
+			if _, ok := dist[block.BlockRoot]; ok {
+				continue
+			}
+			if d, ok := dist[block.Header.ParentRoot]; ok && d.distance < maxDistance {
+				path := append(d.path, block)
+				dist[block.BlockRoot] = distanceWithPath{d.distance + 1, path}
+				res = append(res, path)
+			}
+		} else {
+			log.Error("Error decoding beacon block found by iterator", "key", iter.Key(), "value", iter.Value(), "error", err)
+		}
+	}
+	iter.Release()
+	return res
 }
 
 func (ht *HistoricTree) initRecentRoots(ctx context.Context, dataSource beaconData) error {
