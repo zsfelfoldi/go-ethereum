@@ -41,8 +41,9 @@ type beaconSyncer struct {
 	syncHeader                     Header
 	syncTail                       uint64
 	newHeadCh                      chan struct{} // closed and replaced when head is changed
-	latestHeadCounter              uint64        // +1 when head is changed
-	newHeadReqCancel               []func()      // called shortly after head is changed
+	syncedCh                       chan bool
+	latestHeadCounter              uint64   // +1 when head is changed
+	newHeadReqCancel               []func() // called shortly after head is changed
 	nextRollback                   uint64
 
 	processedCallback                               func(common.Hash)
@@ -54,11 +55,15 @@ type beaconSyncer struct {
 	syncWg     sync.WaitGroup
 }
 
-func (bc *BeaconChain) SyncToHead(head Header) {
+func (bc *BeaconChain) SyncToHead(head Header, syncedCh chan bool) {
 	bc.chainMu.Lock()
 	defer bc.chainMu.Unlock()
 
 	fmt.Println("SyncToHead", head.Slot)
+	if bc.syncedCh != nil {
+		bc.syncedCh <- false
+	}
+	bc.syncedCh = syncedCh
 	bc.syncHeader = head
 	cs := &chainSection{
 		tailSlot:   uint64(head.Slot) + 1,
@@ -169,6 +174,10 @@ func (bc *BeaconChain) syncWorker() {
 		} else {
 			newHeadCh := bc.newHeadCh
 			cb := bc.constraintCallbacks()
+			if bc.syncedCh != nil {
+				bc.syncedCh <- true
+				bc.syncedCh = nil
+			}
 			bc.chainMu.Unlock()
 			cb()
 			select {

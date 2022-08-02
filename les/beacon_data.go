@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"sync"
 
 	"math/rand"
 	"net/http"
@@ -50,12 +51,15 @@ type beaconNodeApiSource struct {
 	url   string
 
 	updateCache, committeeCache *lru.Cache
-	headTriggerCh               chan chan struct{}
+	headTriggerCh               chan chan bool
 	closedCh                    chan struct{}
+
+	syncedLock sync.Mutex
+	syncedCh   chan bool
 }
 
 func (bn *beaconNodeApiSource) start() {
-	bn.headTriggerCh = make(chan chan struct{})
+	bn.headTriggerCh = make(chan chan bool, 1)
 	bn.closedCh = make(chan struct{})
 	bn.updateCache, _ = lru.New(MaxCommitteeUpdateFetch)
 	bn.committeeCache, _ = lru.New(MaxCommitteeUpdateFetch / CommitteeCostFactor)
@@ -66,18 +70,29 @@ func (bn *beaconNodeApiSource) start() {
 func (bn *beaconNodeApiSource) newHead() {
 	bn.updateCache.Purge()
 	bn.committeeCache.Purge()
-	select {
-	case bn.headTriggerCh <- nil:
-	default:
+
+	bn.syncedLock.Lock()
+	oldSyncedCh := bn.syncedCh
+	newSyncedCh := make(chan bool, 1)
+	bn.syncedCh = newSyncedCh
+	bn.syncedLock.Unlock()
+
+	if oldSyncedCh != nil {
+		<-oldSyncedCh
 	}
+	bn.headTriggerCh <- newSyncedCh
+
+	/*select {
+	case bn.headTriggerCh <- newSyncedCh:
+	default:
+		newSyncedCh <- false
+	}*/
 }
 
 func (bn *beaconNodeApiSource) stop() {
 	bn.sct.Disconnect(bn)
-	close(bn.closedCh)
-	stop := make(chan struct{})
-	bn.headTriggerCh <- stop
-	<-stop
+	close(bn.headTriggerCh)
+	<-bn.closedCh
 }
 
 func (bn *beaconNodeApiSource) headPollLoop() {
@@ -119,16 +134,17 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 			} else {
 				fmt.Println(" getHeadUpdate failed:", err)
 			}
-		case stopCh := <-bn.headTriggerCh:
+		case syncedCh := <-bn.headTriggerCh:
 			fmt.Println(" headTriggerCh")
-			if stopCh != nil {
-				close(stopCh)
+			if syncedCh == nil {
+				close(bn.closedCh)
 				return
 			}
 			if head, err := bn.getHeader( /*ctx,*/ common.Hash{}); err == nil {
-				bn.chain.SyncToHead(head)
+				bn.chain.SyncToHead(head, syncedCh)
 			} else {
 				log.Error("Could not fetch header from beacon node API", "error", err)
+				syncedCh <- false
 			}
 			if !timerStarted {
 				timer.Reset(headPollFrequency)
