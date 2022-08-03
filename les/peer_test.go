@@ -36,19 +36,19 @@ import (
 )
 
 type testServerPeerSub struct {
-	regCh   chan *serverPeer
-	unregCh chan *serverPeer
+	regCh   chan *peer
+	unregCh chan *peer
 }
 
 func newTestServerPeerSub() *testServerPeerSub {
 	return &testServerPeerSub{
-		regCh:   make(chan *serverPeer, 1),
-		unregCh: make(chan *serverPeer, 1),
+		regCh:   make(chan *peer, 1),
+		unregCh: make(chan *peer, 1),
 	}
 }
 
-func (t *testServerPeerSub) registerPeer(p *serverPeer)   { t.regCh <- p }
-func (t *testServerPeerSub) unregisterPeer(p *serverPeer) { t.unregCh <- p }
+func (t *testServerPeerSub) registerPeer(p *peer)   { t.regCh <- p }
+func (t *testServerPeerSub) unregisterPeer(p *peer) { t.unregCh <- p }
 
 func TestPeerSubscription(t *testing.T) {
 	peers := newServerPeerSet()
@@ -65,7 +65,7 @@ func TestPeerSubscription(t *testing.T) {
 			t.Fatalf("all peer ids mismatch, want %v, given %v", expect, given)
 		}
 	}
-	checkPeers := func(peerCh chan *serverPeer) {
+	checkPeers := func(peerCh chan *peer) {
 		select {
 		case <-peerCh:
 		case <-time.NewTimer(100 * time.Millisecond).C:
@@ -85,7 +85,7 @@ func TestPeerSubscription(t *testing.T) {
 	// Generate a random id and create the peer
 	var id enode.ID
 	rand.Read(id[:])
-	peer := newServerPeer(2, NetworkId, false, p2p.NewPeer(id, "name", nil), nil)
+	peer := newPeer(2, NetworkId, false, p2p.NewPeer(id, "name", nil), nil)
 	peers.register(peer)
 
 	checkIds([]string{peer.id})
@@ -112,8 +112,8 @@ func TestHandshake(t *testing.T) {
 	var id enode.ID
 	rand.Read(id[:])
 
-	peer1 := newClientPeer(2, NetworkId, p2p.NewPeer(id, "name", nil), net)
-	peer2 := newServerPeer(2, NetworkId, true, p2p.NewPeer(id, "name", nil), app)
+	peer1 := newPeer(2, NetworkId, p2p.NewPeer(id, "name", nil), net)
+	peer2 := newPeer(2, NetworkId, true, p2p.NewPeer(id, "name", nil), app)
 
 	var (
 		errCh1 = make(chan error, 1)

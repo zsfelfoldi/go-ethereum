@@ -52,7 +52,7 @@ const (
 // In addition to the checkpoint registered in the registrar contract, there are
 // several legacy hardcoded checkpoints in our codebase. These checkpoints are
 // also considered as valid.
-func (h *clientHandler) validateCheckpoint(peer *serverPeer) error {
+func (h *clientHandler) validateCheckpoint(peer *peer) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
@@ -88,7 +88,7 @@ func (h *clientHandler) validateCheckpoint(peer *serverPeer) error {
 }
 
 // synchronise tries to sync up our local chain with a remote peer.
-/*func (h *clientHandler) synchronise(peer *serverPeer) {
+/*func (h *clientHandler) synchronise(peer *peer) {
 	// Short circuit if the peer is nil.
 	if peer == nil {
 		return

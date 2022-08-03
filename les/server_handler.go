@@ -104,14 +104,14 @@ func (h *serverHandler) stop() {
 
 // runPeer is the p2p protocol run function for the given version.
 func (h *serverHandler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter) error {
-	peer := newClientPeer(int(version), h.server.config.NetworkId, p, newMeteredMsgWriter(rw, int(version)))
+	peer := newPeer(int(version), h.server.config.NetworkId, p, newMeteredMsgWriter(rw, int(version)))
 	defer peer.close()
 	h.wg.Add(1)
 	defer h.wg.Done()
 	return h.handle(peer)
 }
 
-func (h *serverHandler) handle(p *clientPeer) error {
+func (h *serverHandler) handle(p *peer) error {
 	p.Log().Debug("Light Ethereum peer connected", "name", p.Name())
 
 	// Execute the LES handshake
@@ -122,7 +122,7 @@ func (h *serverHandler) handle(p *clientPeer) error {
 		td     = h.blockchain.GetTd(hash, number)
 		forkID = forkid.NewID(h.blockchain.Config(), h.blockchain.Genesis().Hash(), h.blockchain.CurrentBlock().NumberU64())
 	)
-	if err := p.Handshake(td, hash, number, h.blockchain.Genesis().Hash(), forkID, h.forkFilter, h.server); err != nil {
+	if err := p.HandshakeWithClient(td, hash, number, h.blockchain.Genesis().Hash(), forkID, h.forkFilter, h.server); err != nil {
 		p.Log().Debug("Light Ethereum handshake failed", "err", err)
 		return err
 	}
@@ -192,7 +192,7 @@ func (h *serverHandler) handle(p *clientPeer) error {
 }
 
 // beforeHandle will do a series of prechecks before handling message.
-func (h *serverHandler) beforeHandle(p *clientPeer, reqID, responseCount uint64, msg p2p.Msg, reqCnt uint64, maxCount uint64) (*servingTask, uint64) {
+func (h *serverHandler) beforeHandle(p *peer, reqID, responseCount uint64, msg p2p.Msg, reqCnt uint64, maxCount uint64) (*servingTask, uint64) {
 	// Ensure that the request sent by client peer is valid
 	inSizeCost := h.server.costTracker.realCost(0, msg.Size, 0)
 	if reqCnt == 0 || reqCnt > maxCount {
@@ -208,7 +208,7 @@ func (h *serverHandler) beforeHandle(p *clientPeer, reqID, responseCount uint64,
 	maxCost := p.fcCosts.getMaxCost(msg.Code, reqCnt)
 	accepted, bufShort, priority := p.fcClient.AcceptRequest(reqID, responseCount, maxCost)
 	if !accepted {
-		p.freeze()
+		p.freezeClient()
 		p.Log().Error("Request came too early", "remaining", common.PrettyDuration(time.Duration(bufShort*1000000/p.fcParams.MinRecharge)))
 		p.fcClient.OneTimeCost(inSizeCost)
 		return nil, 0
@@ -231,7 +231,7 @@ func (h *serverHandler) beforeHandle(p *clientPeer, reqID, responseCount uint64,
 
 // Afterhandle will perform a series of operations after message handling,
 // such as updating flow control data, sending reply, etc.
-func (h *serverHandler) afterHandle(p *clientPeer, reqID, responseCount uint64, msg p2p.Msg, maxCost uint64, reqCnt uint64, task *servingTask, reply *reply) {
+func (h *serverHandler) afterHandle(p *peer, reqID, responseCount uint64, msg p2p.Msg, maxCost uint64, reqCnt uint64, task *servingTask, reply *reply) {
 	//if reply != nil {
 	task.done()
 	//}
@@ -277,7 +277,7 @@ func (h *serverHandler) afterHandle(p *clientPeer, reqID, responseCount uint64, 
 
 // handleMsg is invoked whenever an inbound message is received from a remote
 // peer. The remote connection is torn down upon returning any error.
-func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
+func (h *serverHandler) handleMsg(p *peer, wg *sync.WaitGroup) error {
 	// Read the next message from the remote peer, and ensure it's fully consumed
 	msg, err := p.rw.ReadMsg()
 	if err != nil {

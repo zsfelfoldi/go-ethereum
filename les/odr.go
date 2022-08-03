@@ -132,7 +132,7 @@ type Msg struct {
 
 // peerByTxHistory is a heap.Interface implementation which can sort
 // the peerset by transaction history.
-type peerByTxHistory []*serverPeer
+type peerByTxHistory []*peer
 
 func (h peerByTxHistory) Len() int { return len(h) }
 func (h peerByTxHistory) Less(i, j int) bool {
@@ -162,7 +162,7 @@ func (odr *LesOdr) RetrieveTxStatus(ctx context.Context, req *light.TxStatusRequ
 	// select the peers with longest history.
 	var (
 		retries int
-		peers   []*serverPeer
+		peers   []*peer
 		missing = len(req.Hashes)
 		result  = make([]light.TxStatus, len(req.Hashes))
 		canSend = make(map[string]bool)
@@ -187,10 +187,10 @@ func (odr *LesOdr) RetrieveTxStatus(ctx context.Context, req *light.TxStatusRequ
 			req     = &TxStatusRequest{Hashes: req.Hashes}
 			id      = rand.Uint64()
 			distreq = &distReq{
-				getCost: func(dp distPeer) uint64 { return req.GetCost(dp.(*serverPeer)) },
-				canSend: func(dp distPeer) bool { return canSend[dp.(*serverPeer).id] },
+				getCost: func(dp distPeer) uint64 { return req.GetCost(dp.(*peer)) },
+				canSend: func(dp distPeer) bool { return canSend[dp.(*peer).id] },
 				request: func(dp distPeer) func() {
-					p := dp.(*serverPeer)
+					p := dp.(*peer)
 					p.fcServer.QueuedRequest(id, req.GetCost(p))
 					delete(canSend, p.id)
 					return func() { req.Request(id, p) }
@@ -232,17 +232,17 @@ func (odr *LesOdr) Retrieve(ctx context.Context, req light.OdrRequest) (err erro
 	reqID := rand.Uint64()
 	rq := &distReq{
 		getCost: func(dp distPeer) uint64 {
-			return lreq.GetCost(dp.(*serverPeer))
+			return lreq.GetCost(dp.(*peer))
 		},
 		canSend: func(dp distPeer) bool {
-			p := dp.(*serverPeer)
+			p := dp.(*peer)
 			if !p.onlyAnnounce {
 				return lreq.CanSend(p)
 			}
 			return false
 		},
 		request: func(dp distPeer) func() {
-			p := dp.(*serverPeer)
+			p := dp.(*peer)
 			cost := lreq.GetCost(p)
 			p.fcServer.QueuedRequest(reqID, cost)
 			return func() { lreq.Request(reqID, p) }

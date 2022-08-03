@@ -31,7 +31,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/common/mclock"
 
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/light/beacon"
@@ -763,7 +762,7 @@ func (od *odrDataSource) GetInitBlock(ctx context.Context, checkpoint common.Has
 }
 
 type sctServerPeer struct {
-	peer      *serverPeer
+	peer      *peer
 	retriever *retrieveManager
 }
 
@@ -772,14 +771,14 @@ func (sp sctServerPeer) GetBestCommitteeProofs(ctx context.Context, req beacon.C
 	var reply beacon.CommitteeReply
 	r := &distReq{
 		getCost: func(dp distPeer) uint64 {
-			peer := dp.(*serverPeer)
+			peer := dp.(*peer)
 			return peer.getRequestCost(GetCommitteeProofsMsg, len(req.UpdatePeriods)+len(req.CommitteePeriods)*CommitteeCostFactor)
 		},
 		canSend: func(dp distPeer) bool {
-			return dp.(*serverPeer) == sp.peer
+			return dp.(*peer) == sp.peer
 		},
 		request: func(dp distPeer) func() {
-			peer := dp.(*serverPeer)
+			peer := dp.(*peer)
 			cost := peer.getRequestCost(GetCommitteeProofsMsg, len(req.UpdatePeriods)+len(req.CommitteePeriods)*CommitteeCostFactor)
 			peer.fcServer.QueuedRequest(reqID, cost)
 			return func() {
@@ -810,7 +809,7 @@ func (sp sctServerPeer) ClosedChannel() chan struct{} {
 }
 
 func (sp sctServerPeer) WrongReply(description string) {
-	if val := sp.peer.errCount.Add(1, mclock.Now()); val > maxResponseErrors {
-		sp.peer.Disconnect(p2p.DiscProtocolError)
+	if val := sp.peer.bumpInvalid(); val > maxResponseErrors {
+		sp.peer.Peer.Disconnect(p2p.DiscProtocolError)
 	}
 }

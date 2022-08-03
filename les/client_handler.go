@@ -94,11 +94,11 @@ func (h *clientHandler) stop() {
 
 // runPeer is the p2p protocol run function for the given version.
 func (h *clientHandler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter) error {
-	trusted := false
+	/*trusted := false  //TODO remove ULC
 	if h.ulc != nil {
 		trusted = h.ulc.trusted(p.ID())
-	}
-	peer := newServerPeer(int(version), h.backend.config.NetworkId, trusted, p, newMeteredMsgWriter(rw, int(version)))
+	}*/
+	peer := newPeer(int(version), h.backend.config.NetworkId, p, newMeteredMsgWriter(rw, int(version)))
 	defer peer.close()
 	h.wg.Add(1)
 	defer h.wg.Done()
@@ -114,7 +114,7 @@ func (d *dummyChain) Genesis() *types.Block { return (*light.LightChain)(d).Gene
 
 func (d *dummyChain) CurrentHeader() *types.Header { return d.Genesis().Header() }
 
-func (h *clientHandler) handle(p *serverPeer, noInitAnnounce bool) error {
+func (h *clientHandler) handle(p *peer, noInitAnnounce bool) error {
 	fmt.Println("handle", p.id)
 	if h.backend.peers.len() >= h.backend.config.LightPeers && !p.Peer.Info().Network.Trusted {
 		return p2p.DiscTooManyPeers
@@ -123,7 +123,7 @@ func (h *clientHandler) handle(p *serverPeer, noInitAnnounce bool) error {
 
 	// Execute the LES handshake
 	forkid := forkid.NewID(h.backend.blockchain.Config(), h.backend.genesis, 0 /*h.backend.blockchain.CurrentHeader().Number.Uint64()*/)
-	if err := p.Handshake(h.backend.blockchain.Genesis().Hash(), forkid, h.forkFilter); err != nil {
+	if err := p.HandshakeWithServer(h.backend.blockchain.Genesis().Hash(), forkid, h.forkFilter); err != nil {
 		fmt.Println(" handshake err", err)
 		p.Log().Debug("Light Ethereum handshake failed", "err", err)
 		return err
@@ -185,7 +185,7 @@ func (h *clientHandler) handle(p *serverPeer, noInitAnnounce bool) error {
 
 // handleMsg is invoked whenever an inbound message is received from a remote
 // peer. The remote connection is torn down upon returning any error.
-func (h *clientHandler) handleMsg(p *serverPeer) error {
+func (h *clientHandler) handleMsg(p *peer) error {
 	// Read the next message from the remote peer, and ensure it's fully consumed
 	msg, err := p.rw.ReadMsg()
 	if err != nil {
@@ -368,7 +368,7 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 			Obj:     resp.Status,
 		}
 	case msg.Code == StopMsg && p.version >= lpv3:
-		p.freeze()
+		p.freezeServer()
 		h.backend.retriever.frozen(p)
 		p.Log().Debug("Service stopped")
 	case msg.Code == ResumeMsg && p.version >= lpv3:
@@ -377,7 +377,7 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
 		}
 		p.fcServer.ResumeFreeze(bv)
-		p.unfreeze()
+		p.unfreezeServer()
 		p.Log().Debug("Service resumed")
 	case msg.Code == BeaconInitMsg && p.version >= lpv5:
 		p.Log().Trace("Received beacon init response")
@@ -474,7 +474,7 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 	// Deliver the received response to retriever.
 	if deliverMsg != nil {
 		if err := h.backend.retriever.deliver(p, deliverMsg); err != nil {
-			if val := p.errCount.Add(1, mclock.Now()); val > maxResponseErrors {
+			if val := p.bumpInvalid(); val > maxResponseErrors {
 				return err
 			}
 		}
@@ -488,7 +488,7 @@ func (h *clientHandler) removePeer(id string) {
 
 type peerConnection struct {
 	handler *clientHandler
-	peer    *serverPeer
+	peer    *peer
 }
 
 func (pc *peerConnection) Head() (common.Hash, *big.Int) {
@@ -498,15 +498,15 @@ func (pc *peerConnection) Head() (common.Hash, *big.Int) {
 func (pc *peerConnection) RequestHeadersByHash(origin common.Hash, amount int, skip int, reverse bool) error {
 	rq := &distReq{
 		getCost: func(dp distPeer) uint64 {
-			peer := dp.(*serverPeer)
+			peer := dp.(*peer)
 			return peer.getRequestCost(GetBlockHeadersMsg, amount)
 		},
 		canSend: func(dp distPeer) bool {
-			return dp.(*serverPeer) == pc.peer
+			return dp.(*peer) == pc.peer
 		},
 		request: func(dp distPeer) func() {
 			reqID := rand.Uint64()
-			peer := dp.(*serverPeer)
+			peer := dp.(*peer)
 			cost := peer.getRequestCost(GetBlockHeadersMsg, amount)
 			peer.fcServer.QueuedRequest(reqID, cost)
 			return func() { peer.requestHeadersByHash(reqID, origin, amount, skip, reverse) }
@@ -522,15 +522,15 @@ func (pc *peerConnection) RequestHeadersByHash(origin common.Hash, amount int, s
 func (pc *peerConnection) RequestHeadersByNumber(origin uint64, amount int, skip int, reverse bool) error {
 	rq := &distReq{
 		getCost: func(dp distPeer) uint64 {
-			peer := dp.(*serverPeer)
+			peer := dp.(*peer)
 			return peer.getRequestCost(GetBlockHeadersMsg, amount)
 		},
 		canSend: func(dp distPeer) bool {
-			return dp.(*serverPeer) == pc.peer
+			return dp.(*peer) == pc.peer
 		},
 		request: func(dp distPeer) func() {
 			reqID := rand.Uint64()
-			peer := dp.(*serverPeer)
+			peer := dp.(*peer)
 			cost := peer.getRequestCost(GetBlockHeadersMsg, amount)
 			peer.fcServer.QueuedRequest(reqID, cost)
 			return func() { peer.requestHeadersByNumber(reqID, origin, amount, skip, reverse) }
@@ -549,14 +549,14 @@ func (pc *peerConnection) RetrieveSingleHeaderByNumber(context context.Context, 
 	reqID := rand.Uint64()
 	rq := &distReq{
 		getCost: func(dp distPeer) uint64 {
-			peer := dp.(*serverPeer)
+			peer := dp.(*peer)
 			return peer.getRequestCost(GetBlockHeadersMsg, 1)
 		},
 		canSend: func(dp distPeer) bool {
-			return dp.(*serverPeer) == pc.peer
+			return dp.(*peer) == pc.peer
 		},
 		request: func(dp distPeer) func() {
-			peer := dp.(*serverPeer)
+			peer := dp.(*peer)
 			cost := peer.getRequestCost(GetBlockHeadersMsg, 1)
 			peer.fcServer.QueuedRequest(reqID, cost)
 			return func() { peer.requestHeadersByNumber(reqID, number, 1, 0, false) }
@@ -582,7 +582,7 @@ func (pc *peerConnection) RetrieveSingleHeaderByNumber(context context.Context, 
 // downloaderPeerNotify implements peerSetNotify
 /*type downloaderPeerNotify clientHandler
 
-func (d *downloaderPeerNotify) registerPeer(p *serverPeer) {
+func (d *downloaderPeerNotify) registerPeer(p *peer) {
 	h := (*clientHandler)(d)
 	pc := &peerConnection{
 		handler: h,
@@ -591,7 +591,7 @@ func (d *downloaderPeerNotify) registerPeer(p *serverPeer) {
 	h.downloader.RegisterLightPeer(p.id, eth.ETH66, pc)
 }
 
-func (d *downloaderPeerNotify) unregisterPeer(p *serverPeer) {
+func (d *downloaderPeerNotify) unregisterPeer(p *peer) {
 	h := (*clientHandler)(d)
 	h.downloader.UnregisterPeer(p.id)
 }
