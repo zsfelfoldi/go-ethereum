@@ -154,6 +154,12 @@ func (bc *BeaconChain) syncWorker() {
 			}
 			fmt.Println(" blocks", len(blocks), "err", err)
 			if blocks == nil {
+				bc.chainMu.Lock()
+				if bc.syncedCh != nil {
+					bc.syncedCh <- true
+					bc.syncedCh = nil
+				}
+				bc.chainMu.Unlock()
 				select {
 				case <-newHeadCh:
 				case <-bc.stopSyncCh:

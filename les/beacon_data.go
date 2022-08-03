@@ -80,13 +80,13 @@ func (bn *beaconNodeApiSource) newHead() {
 	if oldSyncedCh != nil {
 		<-oldSyncedCh
 	}
-	bn.headTriggerCh <- newSyncedCh
+	//bn.headTriggerCh <- newSyncedCh
 
-	/*select {
+	select {
 	case bn.headTriggerCh <- newSyncedCh:
 	default:
 		newSyncedCh <- false
-	}*/
+	}
 }
 
 func (bn *beaconNodeApiSource) stop() {
