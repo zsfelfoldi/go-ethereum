@@ -34,10 +34,11 @@ import (
 
 // Constants to match up protocol versions and messages
 const (
-	lpv2 = 2
-	lpv3 = 3
-	lpv4 = 4
-	lpv5 = 5
+	lpv2      = 2
+	lpv3      = 3
+	lpv4      = 4
+	lpv5      = 5
+	lpvLatest = lpv5
 )
 
 // Supported versions of the les protocol (first is primary)
