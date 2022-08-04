@@ -65,19 +65,17 @@ func (bc *BeaconChain) SyncToHead(head Header, syncedCh chan bool) {
 	}
 	bc.syncedCh = syncedCh
 	bc.syncHeader = head
+	bc.latestHeadCounter++
 	cs := &chainSection{
-		tailSlot:   uint64(head.Slot) + 1,
-		headSlot:   uint64(head.Slot),
-		parentHash: head.Hash(),
+		headCounter: bc.latestHeadCounter,
+		tailSlot:    uint64(head.Slot) + 1,
+		headSlot:    uint64(head.Slot),
+		parentHash:  head.Hash(),
 	}
-	if bc.syncHeadSection != nil {
-		cs.headCounter = bc.syncHeadSection.headCounter
-		if bc.syncHeadSection.prev != nil {
-			bc.syncHeadSection.prev.next = cs
-			cs.prev = bc.syncHeadSection.prev
-		}
+	if bc.syncHeadSection != nil && bc.syncHeadSection.prev != nil {
+		bc.syncHeadSection.prev.next = cs
+		cs.prev = bc.syncHeadSection.prev
 	}
-	cs.headCounter++
 	if bc.historicSource == nil && cs.headSlot > bc.syncTail+32 {
 		bc.syncTail = cs.headSlot - 32 //TODO named constant
 	}
