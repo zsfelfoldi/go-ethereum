@@ -118,6 +118,100 @@ func (m keyValueMap) get(key string, val interface{}) error {
 	return rlp.DecodeBytes(enc, val)
 }
 
+// peer represents each node to which the client is connected.
+// The node here refers to the les server.
+type peer struct {
+	*p2p.Peer
+	rw p2p.MsgReadWriter
+
+	id           string    // Peer identity.
+	version      int       // Protocol version negotiated.
+	network      uint64    // Network ID being on.
+	frozen       uint32    // Flag whether the peer is frozen.
+	announceType uint64    // New block announcement type.
+	serving      uint32    // The status indicates the peer is served.
+	headInfo     blockInfo // Last announced block information.
+
+	// Background task queue for caching peer tasks and executing in order.
+	sendQueue *utils.ExecQueue
+
+	// Flow control agreement.
+	fcParams flowcontrol.ServerParams // The config for token bucket.
+	fcCosts  requestCostTable         // The Maximum request cost table.
+
+	closeCh chan struct{}
+	lock    sync.RWMutex // Lock used to protect all thread-sensitive fields.
+	wg      sync.WaitGroup
+
+	// invalidLock is used for protecting invalidCount.
+	invalidLock  sync.RWMutex
+	invalidCount utils.LinearExpiredValue
+
+	// fields related to provided service
+
+	// Status fields
+	trusted                 bool   // The flag whether the server is selected as trusted server.
+	onlyAnnounce            bool   // The flag whether the server sends announcement only.
+	chainSince, chainRecent uint64 // The range of chain server peer can serve.
+	stateSince, stateRecent uint64 // The range of state server peer can serve.
+	txHistory               uint64 // The length of available tx history, 0 means all, 1 means disabled
+
+	// Advertised checkpoint fields
+	checkpointNumber uint64                   // The block height which the checkpoint is registered.
+	checkpoint       params.TrustedCheckpoint // The advertised checkpoint sent by server.
+
+	fcServer         *flowcontrol.ServerNode // Client side mirror token bucket.
+	vtLock           sync.Mutex
+	nodeValueTracker *vfc.NodeValueTracker
+	sentReqs         map[uint64]sentReqEntry
+
+	// Statistics
+	updateCount uint64
+	updateTime  mclock.AbsTime
+
+	// Test callback hooks
+	hasBlockHook func(common.Hash, uint64, bool) bool // Used to determine whether the server has the specified block.
+
+	updateInfo              *beacon.UpdateInfo
+	announcedBeaconBlocks   [4]common.Hash
+	announcedBeaconBlockPtr int
+
+	// fields related to received service
+
+	// responseLock ensures that responses are queued in the same order as
+	// RequestProcessed is called
+	responseLock  sync.Mutex
+	responseCount uint64 // Counter to generate an unique id for request processing.
+
+	balance vfs.ConnectedBalance
+
+	capacity uint64
+	// lastAnnounce is the last broadcast created by the server; may be newer than the last head
+	// sent to the specific client (stored in headInfo) if capacity is zero. In this case the
+	// latest head is sent when the client gains non-zero capacity.
+	lastAnnounce announceData
+
+	connectedAt mclock.AbsTime
+	server      bool
+	errCh       chan error
+	fcClient    *flowcontrol.ClientNode // Server side mirror token bucket.
+}
+
+func newPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
+	return &peer{
+		Peer:         p,
+		rw:           rw,
+		id:           p.ID().String(),
+		version:      version,
+		network:      network,
+		sendQueue:    utils.NewExecQueue(100),
+		closeCh:      make(chan struct{}),
+		invalidCount: utils.LinearExpiredValue{Rate: mclock.AbsTime(time.Hour)},
+		errCh:        make(chan error, 1),
+	}
+
+}
+
 // peer contains fields needed by both server peer and client peer.
 // isFrozen returns true if the client is frozen or the server has put our
 // client in frozen state
@@ -234,32 +328,39 @@ func (p *peer) sendReceiveHandshake(sendList keyValueList) (keyValueList, error)
 // network IDs, difficulties, head and genesis blocks. Besides the basic handshake
 // fields, server and client can exchange and resolve some specified fields through
 // two callback functions.
-func (p *peer) handshake(td *big.Int, head common.Hash, headNum uint64, genesis common.Hash, forkID forkid.ID, forkFilter forkid.Filter, sendCallback func(*keyValueList), recvCallback func(keyValueMap) error) error {
+//func (p *peer) handshake(td *big.Int, head common.Hash, headNum uint64, genesis common.Hash, forkID forkid.ID, forkFilter forkid.Filter, sendCallback func(*keyValueList), recvCallback func(keyValueMap) error) error {
+func (p *peer) handshake(modules []peerHandshake) error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
 	var send keyValueList
 
-	// Add some basic handshake fields
-	send = send.add("protocolVersion", uint64(p.version))
-	send = send.add("networkId", p.network)
-	// Note: the head info announced at handshake is only used in case of server peers
-	// but dummy values are still announced by clients for compatibility with older servers
-	send = send.add("headTd", td)
-	send = send.add("headHash", head)
-	send = send.add("headNum", headNum)
-	send = send.add("genesisHash", genesis)
+	/*
+		// Add some basic handshake fields
+		send = send.add("protocolVersion", uint64(p.version))
+		send = send.add("networkId", p.network)
+		// Note: the head info announced at handshake is only used in case of server peers
+		// but dummy values are still announced by clients for compatibility with older servers
+		send = send.add("headTd", td)
+		send = send.add("headHash", head)
+		send = send.add("headNum", headNum)
+		send = send.add("genesisHash", genesis)
 
-	// If the protocol version is beyond les4, then pass the forkID
-	// as well. Check http://eips.ethereum.org/EIPS/eip-2124 for more
-	// spec detail.
-	if p.version >= lpv4 {
-		send = send.add("forkID", forkID)
+		// If the protocol version is beyond les4, then pass the forkID
+		// as well. Check http://eips.ethereum.org/EIPS/eip-2124 for more
+		// spec detail.
+		if p.version >= lpv4 {
+			send = send.add("forkID", forkID)
+		}
+		// Add client-specified or server-specified fields
+		if sendCallback != nil {
+			sendCallback(&send)
+		}*/
+
+	for _, m := range modules {
+		m.sendHandshake(p, &send)
 	}
-	// Add client-specified or server-specified fields
-	if sendCallback != nil {
-		sendCallback(&send)
-	}
+
 	// Exchange the handshake packet and resolve the received one.
 	recvList, err := p.sendReceiveHandshake(send)
 	if err != nil {
@@ -269,7 +370,7 @@ func (p *peer) handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 	if size > allowedUpdateBytes {
 		return errResp(ErrRequestRejected, "")
 	}
-	var rGenesis common.Hash
+	/*var rGenesis common.Hash
 	var rVersion, rNetwork uint64
 	if err := recv.get("protocolVersion", &rVersion); err != nil {
 		return err
@@ -301,6 +402,11 @@ func (p *peer) handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 	}
 	if recvCallback != nil {
 		return recvCallback(recv)
+	}*/
+	for _, m := range modules {
+		if err := m.receiveHandshake(p, recv); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -309,99 +415,6 @@ func (p *peer) handshake(td *big.Int, head common.Hash, headNum uint64, genesis 
 func (p *peer) close() {
 	close(p.closeCh)
 	p.sendQueue.Quit()
-}
-
-// peer represents each node to which the client is connected.
-// The node here refers to the les server.
-type peer struct {
-	*p2p.Peer
-	rw p2p.MsgReadWriter
-
-	id           string    // Peer identity.
-	version      int       // Protocol version negotiated.
-	network      uint64    // Network ID being on.
-	frozen       uint32    // Flag whether the peer is frozen.
-	announceType uint64    // New block announcement type.
-	serving      uint32    // The status indicates the peer is served.
-	headInfo     blockInfo // Last announced block information.
-
-	// Background task queue for caching peer tasks and executing in order.
-	sendQueue *utils.ExecQueue
-
-	// Flow control agreement.
-	fcParams flowcontrol.ServerParams // The config for token bucket.
-	fcCosts  requestCostTable         // The Maximum request cost table.
-
-	closeCh chan struct{}
-	lock    sync.RWMutex // Lock used to protect all thread-sensitive fields.
-
-	// invalidLock is used for protecting invalidCount.
-	invalidLock  sync.RWMutex
-	invalidCount utils.LinearExpiredValue
-
-	// fields related to provided service
-
-	// Status fields
-	trusted                 bool   // The flag whether the server is selected as trusted server.
-	onlyAnnounce            bool   // The flag whether the server sends announcement only.
-	chainSince, chainRecent uint64 // The range of chain server peer can serve.
-	stateSince, stateRecent uint64 // The range of state server peer can serve.
-	txHistory               uint64 // The length of available tx history, 0 means all, 1 means disabled
-
-	// Advertised checkpoint fields
-	checkpointNumber uint64                   // The block height which the checkpoint is registered.
-	checkpoint       params.TrustedCheckpoint // The advertised checkpoint sent by server.
-
-	fcServer         *flowcontrol.ServerNode // Client side mirror token bucket.
-	vtLock           sync.Mutex
-	nodeValueTracker *vfc.NodeValueTracker
-	sentReqs         map[uint64]sentReqEntry
-
-	// Statistics
-	updateCount uint64
-	updateTime  mclock.AbsTime
-
-	// Test callback hooks
-	hasBlockHook func(common.Hash, uint64, bool) bool // Used to determine whether the server has the specified block.
-
-	updateInfo              *beacon.UpdateInfo
-	announcedBeaconBlocks   [4]common.Hash
-	announcedBeaconBlockPtr int
-
-	// fields related to received service
-
-	// responseLock ensures that responses are queued in the same order as
-	// RequestProcessed is called
-	responseLock  sync.Mutex
-	responseCount uint64 // Counter to generate an unique id for request processing.
-
-	balance vfs.ConnectedBalance
-
-	capacity uint64
-	// lastAnnounce is the last broadcast created by the server; may be newer than the last head
-	// sent to the specific client (stored in headInfo) if capacity is zero. In this case the
-	// latest head is sent when the client gains non-zero capacity.
-	lastAnnounce announceData
-
-	connectedAt mclock.AbsTime
-	server      bool
-	errCh       chan error
-	fcClient    *flowcontrol.ClientNode // Server side mirror token bucket.
-}
-
-func newPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *peer {
-	return &peer{
-		Peer:         p,
-		rw:           rw,
-		id:           p.ID().String(),
-		version:      version,
-		network:      network,
-		sendQueue:    utils.NewExecQueue(100),
-		closeCh:      make(chan struct{}),
-		invalidCount: utils.LinearExpiredValue{Rate: mclock.AbsTime(time.Hour)},
-		errCh:        make(chan error, 1),
-	}
-
 }
 
 // rejectUpdate returns true if a parameter update has to be rejected because
