@@ -150,8 +150,6 @@ type peer struct {
 	// fields related to provided service
 
 	// Status fields
-	trusted                 bool   // The flag whether the server is selected as trusted server.
-	onlyAnnounce            bool   // The flag whether the server sends announcement only.
 	chainSince, chainRecent uint64 // The range of chain server peer can serve.
 	stateSince, stateRecent uint64 // The range of state server peer can serve.
 	txHistory               uint64 // The length of available tx history, 0 means all, 1 means disabled
@@ -329,7 +327,7 @@ func (p *peer) sendReceiveHandshake(sendList keyValueList) (keyValueList, error)
 // fields, server and client can exchange and resolve some specified fields through
 // two callback functions.
 //func (p *peer) handshake(td *big.Int, head common.Hash, headNum uint64, genesis common.Hash, forkID forkid.ID, forkFilter forkid.Filter, sendCallback func(*keyValueList), recvCallback func(keyValueMap) error) error {
-func (p *peer) handshake(modules []peerHandshake) error {
+func (p *peer) handshake(modules []handshakeModule) error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
@@ -695,103 +693,6 @@ func (p *peer) updateHead(hash common.Hash, number uint64, td *big.Int) {
 	defer p.lock.Unlock()
 
 	p.headInfo = blockInfo{Hash: hash, Number: number, Td: td}
-}
-
-// Handshake executes the les protocol handshake, negotiating version number,
-// network IDs and genesis blocks.
-func (p *peer) HandshakeWithServer(genesis common.Hash, forkid forkid.ID, forkFilter forkid.Filter) error {
-	// Note: there is no need to share local head with a server but older servers still
-	// require these fields so we announce zero values.
-	return p.handshake(common.Big0, common.Hash{}, 0, genesis, forkid, forkFilter, func(lists *keyValueList) {
-		// Add some client-specific handshake fields
-		//
-		// Enable signed announcement randomly even the server is not trusted.
-		p.announceType = announceTypeSimple
-		if p.trusted {
-			p.announceType = announceTypeSigned
-		}
-		*lists = (*lists).add("announceType", p.announceType)
-	}, func(recv keyValueMap) error {
-		var (
-			rHash common.Hash
-			rNum  uint64
-			rTd   *big.Int
-		)
-		if err := recv.get("headTd", &rTd); err != nil {
-			return err
-		}
-		if err := recv.get("headHash", &rHash); err != nil {
-			return err
-		}
-		if err := recv.get("headNum", &rNum); err != nil {
-			return err
-		}
-		p.headInfo = blockInfo{Hash: rHash, Number: rNum, Td: rTd}
-		if recv.get("serveChainSince", &p.chainSince) != nil {
-			p.onlyAnnounce = true
-		}
-		if recv.get("serveRecentChain", &p.chainRecent) != nil {
-			p.chainRecent = 0
-		}
-		if recv.get("serveStateSince", &p.stateSince) != nil {
-			p.onlyAnnounce = true
-		}
-		if recv.get("serveRecentState", &p.stateRecent) != nil {
-			p.stateRecent = 0
-		}
-		if recv.get("txRelay", nil) != nil {
-			p.onlyAnnounce = true
-		}
-		if p.version >= lpv4 {
-			var recentTx uint
-			if err := recv.get("recentTxLookup", &recentTx); err != nil {
-				return err
-			}
-			p.txHistory = uint64(recentTx)
-		} else {
-			// The weak assumption is held here that legacy les server(les2,3)
-			// has unlimited transaction history. The les serving in these legacy
-			// versions is disabled if the transaction is unindexed.
-			p.txHistory = txIndexUnlimited
-		}
-		if p.onlyAnnounce && !p.trusted {
-			return errResp(ErrUselessPeer, "peer cannot serve requests")
-		}
-		// Parse flow control handshake packet.
-		var sParams flowcontrol.ServerParams
-		if err := recv.get("flowControl/BL", &sParams.BufLimit); err != nil {
-			return err
-		}
-		if err := recv.get("flowControl/MRR", &sParams.MinRecharge); err != nil {
-			return err
-		}
-		var MRC RequestCostList
-		if err := recv.get("flowControl/MRC", &MRC); err != nil {
-			return err
-		}
-		p.fcParams = sParams
-		p.fcServer = flowcontrol.NewServerNode(sParams, &mclock.System{})
-		p.fcCosts = MRC.decode(ProtocolLengths[uint(p.version)])
-
-		recv.get("checkpoint/value", &p.checkpoint)
-		recv.get("checkpoint/registerHeight", &p.checkpointNumber)
-
-		if !p.onlyAnnounce {
-			for msgCode := range reqAvgTimeCost {
-				if p.fcCosts[msgCode] == nil {
-					return errResp(ErrUselessPeer, "peer does not support message %d", msgCode)
-				}
-			}
-		}
-
-		fmt.Println("Handshake with peer", p.id, "version", p.version)
-		updateInfo := new(beacon.UpdateInfo)
-		if err := recv.get("beacon/updateInfo", updateInfo); err == nil {
-			fmt.Println("Received update info", *updateInfo)
-			p.updateInfo = updateInfo
-		}
-		return nil
-	})
 }
 
 // setValueTracker sets the value tracker references for connected servers. Note that the

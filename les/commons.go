@@ -159,3 +159,7 @@ func (c *lesCommons) setupOracle(node *node.Node, genesis common.Hash, ethconfig
 	log.Info("Configured checkpoint oracle", "address", config.Address, "signers", len(config.Signers), "threshold", config.Threshold)
 	return oracle
 }
+
+type commonHandshakeModule {
+td *big.Int, head common.Hash, headNum uint64, genesis common.Hash, forkID forkid.ID, forkFilter forkid.Filter
+}

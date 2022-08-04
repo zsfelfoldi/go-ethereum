@@ -90,6 +90,8 @@ func newServerHandler(server *LesServer, blockchain *core.BlockChain, chainDb et
 	return handler
 }
 
+//func (h *serverHandler)
+
 // start starts the server handler.
 func (h *serverHandler) start() {
 	h.wg.Add(1)

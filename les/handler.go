@@ -40,25 +40,49 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 )
 
-type peerConnection interface {
-	peerConnected(*peer) (func(), error)
-}
-
-type peerHandshake interface {
+type handshakeModule interface {
 	sendHandshake(*peer, *keyValueList)
 	receiveHandshake(*peer, keyValueMap) error
 }
 
-/*type messageHandler interface {
-	peerConnected(*peer)
-	peerDisconnected(*peer)
-}*/
+type connectionModule interface {
+	peerConnected(*peer) (func(), error)
+}
+
+type messageHandler interface {
+	handleMessage(*peer, p2p.Msg) error
+}
+
+type codeAndVersion struct {
+	code, version uint32
+}
 
 type handler struct {
+	handshakeModules  []handshakeModule
+	connectionModules []connectionModule
+	messageHandlers   map[codeAndVersion]messageHandler
+
+	closeCh chan struct{}
+	wg      sync.WaitGroup
 }
 
 func newHandler() *handler {
+	return &handler{
+		closeCh:         make(chan struct{}),
+		messageHandlers: make(map[codeAndVersion]messageHandler),
+	}
+}
 
+// stop stops the protocol handler.
+func (h *handler) stop() {
+	close(h.closeCh)
+	h.wg.Wait()
+}
+
+func (h *handler) registerMessageHandler(code, firstVersion, lastVersion uint32, handler messageHandler) {
+	for version := firstVersion; version <= lastVersion; version++ {
+		h.messageHandlers[codeAndVersion{code: code, version: version}] = handler
+	}
 }
 
 // runPeer is the p2p protocol run function for the given version.
@@ -123,5 +147,16 @@ func (h *handler) handleMsg(p *peer) error {
 	if err != nil {
 		return err
 	}
+	defer msg.Discard()
 	p.Log().Trace("Light Ethereum message arrived", "code", msg.Code, "bytes", msg.Size)
+	if msg.Size > ProtocolMaxMsgSize {
+		return errResp(ErrMsgTooLarge, "%v > %v", msg.Size, ProtocolMaxMsgSize)
+	}
+
+	if handler, ok := h.messageHandlers[codeAndVersion{code: msg.Code, version: p.version}]; ok {
+		return handler(p, msg)
+	} else {
+		p.Log().Trace("Received invalid message", "code", msg.Code, "protocolVersion", p.version)
+		return errResp(ErrInvalidMsgCode, "code: %v  protocolVersion: &v", msg.Code, p.version)
+	}
 }
