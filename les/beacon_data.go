@@ -728,12 +728,11 @@ type odrDataSource LightEthereum
 
 func (od *odrDataSource) GetBlocks(ctx context.Context, head beacon.Header, lastSlot, amount uint64) (blocks []*beacon.BlockData, err error) {
 	req := &light.BeaconDataRequest{
-		Header:   head,
 		LastSlot: lastSlot,
 		Length:   amount,
 		//TODO TailShortTerm
 	}
-	if err := od.odr.Retrieve(ctx, req); err != nil {
+	if err := od.odr.RetrieveWithBeaconHeader(ctx, head, req); err != nil {
 		return nil, err
 	}
 	return req.Blocks, nil
@@ -741,12 +740,11 @@ func (od *odrDataSource) GetBlocks(ctx context.Context, head beacon.Header, last
 
 func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head beacon.Header, amount uint64) (blocks []*beacon.BlockData, err error) {
 	req := &light.BeaconDataRequest{
-		Header:   head,
 		LastSlot: uint64(head.Slot),
 		Length:   amount,
 		//TODO TailShortTerm
 	}
-	if err := od.odr.Retrieve(ctx, req); err != nil {
+	if err := od.odr.RetrieveWithBeaconHeader(ctx, head, req); err != nil {
 		return nil, err
 	}
 	return req.Blocks, nil

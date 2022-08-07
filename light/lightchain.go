@@ -68,7 +68,6 @@ type LightChain struct {
 
 	chainmu                        sync.RWMutex // protects header inserts
 	currentHeader, finalizedHeader *types.Header
-	beaconHeader                   beacon.Header
 
 	quit chan struct{}
 	wg   sync.WaitGroup
@@ -242,6 +241,7 @@ func (lc *LightChain) GetBody(ctx context.Context, hash common.Hash) (*types.Bod
 		body := cached.(*types.Body)
 		return body, nil
 	}
+
 	number := lc.hc.GetBlockNumber(hash)
 	if number == nil {
 		return nil, errors.New("unknown block")
@@ -317,12 +317,8 @@ func (lc *LightChain) GetBlockByHash(ctx context.Context, hash common.Hash) (*ty
 // GetBlockByNumber retrieves a block from the database or ODR service by
 // number, caching it (associated with its hash) if found.
 func (lc *LightChain) GetBlockByNumber(ctx context.Context, number uint64) (*types.Block, error) {
-	lc.chainmu.RLock()
-	beaconHeader := lc.beaconHeader
-	lc.chainmu.RUnlock()
-
 	// Retrieve the block header and body contents
-	header, err := GetHeaderByNumber(ctx, lc.odr, beaconHeader, number)
+	header, err := GetHeaderByNumber(ctx, lc.odr, number)
 	if err != nil {
 		return nil, err
 	}
@@ -466,7 +462,6 @@ func (lc *LightChain) InsertHeaderChain(chain []*types.Header, checkFreq int) (i
 func (lc *LightChain) SetBeaconHead(head beacon.Header) {
 	lc.chainmu.Lock()
 	lc.currentHeader, lc.finalizedHeader = nil, nil
-	lc.beaconHeader = head
 	lc.chainmu.Unlock()
 	log.Info("Received new beacon head", "slot", head.Slot, "blockRoot", head.Hash())
 }
@@ -475,65 +470,47 @@ func (lc *LightChain) SetBeaconHead(head beacon.Header) {
 // header is retrieved from the HeaderChain's internal cache.
 func (lc *LightChain) CurrentHeader(ctx context.Context) (*types.Header, error) {
 	lc.chainmu.RLock()
-	currentHeader, beaconHeader := lc.currentHeader, lc.beaconHeader
+	currentHeader := lc.currentHeader
 	lc.chainmu.RUnlock()
 
 	if currentHeader != nil {
 		return currentHeader, nil
 	}
 
-	for {
-		if headers, err := GetExecHeaders(ctx, lc.odr, beaconHeader, HeadMode, 0, 1); err == nil && len(headers) == 1 {
-			currentHeader = headers[0]
-			lc.chainmu.Lock()
-			if lc.beaconHeader == beaconHeader {
-				lc.currentHeader = currentHeader
-			} else {
-				currentHeader, beaconHeader = nil, lc.beaconHeader
-			}
-			lc.chainmu.Unlock()
-			if currentHeader != nil {
-				return currentHeader, nil
-			}
-		} else {
-			if err == nil {
-				return nil, errors.New("Invalid number of headers retrieved") //TODO can this ever happen?
-			}
-			return nil, err
+	if headers, err := GetExecHeaders(ctx, lc.odr, HeadMode, 0, 1); err == nil && len(headers) == 1 {
+		currentHeader = headers[0]
+		lc.chainmu.Lock()
+		lc.currentHeader = currentHeader
+		lc.chainmu.Unlock()
+		return currentHeader, nil
+	} else {
+		if err == nil {
+			return nil, errors.New("Invalid number of headers retrieved") //TODO can this ever happen?
 		}
+		return nil, err
 	}
-
-	//	return lc.hc.CurrentHeader()
 }
 
 func (lc *LightChain) FinalizedHeader(ctx context.Context) (*types.Header, error) {
 	lc.chainmu.RLock()
-	finalizedHeader, beaconHeader := lc.finalizedHeader, lc.beaconHeader
+	finalizedHeader := lc.finalizedHeader
 	lc.chainmu.RUnlock()
 
 	if finalizedHeader != nil {
 		return finalizedHeader, nil
 	}
 
-	for {
-		if headers, err := GetExecHeaders(ctx, lc.odr, beaconHeader, FinalizedMode, 0, 1); err == nil && len(headers) == 1 {
-			finalizedHeader = headers[0]
-			lc.chainmu.Lock()
-			if lc.beaconHeader == beaconHeader {
-				lc.finalizedHeader = finalizedHeader
-			} else {
-				finalizedHeader, beaconHeader = nil, lc.beaconHeader
-			}
-			lc.chainmu.Unlock()
-			if finalizedHeader != nil {
-				return finalizedHeader, nil
-			}
-		} else {
-			if err == nil {
-				return nil, errors.New("Invalid number of headers retrieved") //TODO can this ever happen?
-			}
-			return nil, err
+	if headers, err := GetExecHeaders(ctx, lc.odr, FinalizedMode, 0, 1); err == nil && len(headers) == 1 {
+		finalizedHeader = headers[0]
+		lc.chainmu.Lock()
+		lc.finalizedHeader = finalizedHeader
+		lc.chainmu.Unlock()
+		return finalizedHeader, nil
+	} else {
+		if err == nil {
+			return nil, errors.New("Invalid number of headers retrieved") //TODO can this ever happen?
 		}
+		return nil, err
 	}
 }
 
@@ -609,12 +586,8 @@ func (lc *LightChain) GetAncestor(hash common.Hash, number, ancestor uint64, max
 }*/
 
 func (lc *LightChain) GetHeaderByNumber(ctx context.Context, number uint64) (*types.Header, error) {
-	lc.chainmu.RLock()
-	beaconHeader := lc.beaconHeader
-	lc.chainmu.RUnlock()
-
 	//TODO cache header by number (clear cache when beacon head is updated)
-	return GetHeaderByNumber(ctx, lc.odr, beaconHeader, number)
+	return GetHeaderByNumber(ctx, lc.odr, number)
 }
 
 // Config retrieves the header chain's chain configuration.

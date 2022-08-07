@@ -48,9 +48,9 @@ var (
 
 type LesOdrRequest interface {
 	GetCost(*serverPeer) uint64
-	CanSend(*serverPeer) bool
-	Request(uint64, *serverPeer) error
-	Validate(ethdb.Database, *Msg) error
+	CanSend(beacon.Header, *serverPeer) bool
+	Request(uint64, beacon.Header, *serverPeer) error
+	Validate(ethdb.Database, beacon.Header, *Msg) error
 }
 
 func LesRequest(req light.OdrRequest) LesOdrRequest {
@@ -92,12 +92,15 @@ func (r *BlockRequest) GetCost(peer *serverPeer) uint64 {
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *BlockRequest) CanSend(peer *serverPeer) bool {
+func (r *BlockRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+	if peer.version >= lpv5 {
+		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+	}
 	return peer.HasBlock(r.Hash, r.Number, false)
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *BlockRequest) Request(reqID uint64, peer *serverPeer) error {
+func (r *BlockRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
 	peer.Log().Debug("Requesting block body", "hash", r.Hash)
 	return peer.requestBodies(reqID, []common.Hash{r.Hash})
 }
@@ -105,7 +108,7 @@ func (r *BlockRequest) Request(reqID uint64, peer *serverPeer) error {
 // Valid processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (r *BlockRequest) Validate(db ethdb.Database, msg *Msg) error {
+func (r *BlockRequest) Validate(db ethdb.Database, beaconHeader beacon.Header, msg *Msg) error {
 	log.Debug("Validating block body", "hash", r.Hash)
 
 	// Ensure we have a correct message with a single block body
@@ -150,12 +153,15 @@ func (r *ReceiptsRequest) GetCost(peer *serverPeer) uint64 {
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *ReceiptsRequest) CanSend(peer *serverPeer) bool {
+func (r *ReceiptsRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+	if peer.version >= lpv5 {
+		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+	}
 	return peer.HasBlock(r.Hash, r.Number, false)
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *ReceiptsRequest) Request(reqID uint64, peer *serverPeer) error {
+func (r *ReceiptsRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
 	peer.Log().Debug("Requesting block receipts", "hash", r.Hash)
 	return peer.requestReceipts(reqID, []common.Hash{r.Hash})
 }
@@ -163,7 +169,7 @@ func (r *ReceiptsRequest) Request(reqID uint64, peer *serverPeer) error {
 // Valid processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (r *ReceiptsRequest) Validate(db ethdb.Database, msg *Msg) error {
+func (r *ReceiptsRequest) Validate(db ethdb.Database, beaconHeader beacon.Header, msg *Msg) error {
 	log.Debug("Validating block receipts", "hash", r.Hash)
 
 	// Ensure we have a correct message with a single block receipt
@@ -207,12 +213,15 @@ func (r *TrieRequest) GetCost(peer *serverPeer) uint64 {
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *TrieRequest) CanSend(peer *serverPeer) bool {
+func (r *TrieRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+	if peer.version >= lpv5 {
+		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+	}
 	return peer.HasBlock(r.Id.BlockHash, r.Id.BlockNumber, true)
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *TrieRequest) Request(reqID uint64, peer *serverPeer) error {
+func (r *TrieRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
 	peer.Log().Debug("Requesting trie proof", "root", r.Id.Root, "key", r.Key)
 	req := ProofReq{
 		BHash:  r.Id.BlockHash,
@@ -225,7 +234,7 @@ func (r *TrieRequest) Request(reqID uint64, peer *serverPeer) error {
 // Valid processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (r *TrieRequest) Validate(db ethdb.Database, msg *Msg) error {
+func (r *TrieRequest) Validate(db ethdb.Database, beaconHeader beacon.Header, msg *Msg) error {
 	log.Debug("Validating trie proof", "root", r.Id.Root, "key", r.Key)
 
 	if msg.MsgType != MsgProofsV2 {
@@ -261,12 +270,15 @@ func (r *CodeRequest) GetCost(peer *serverPeer) uint64 {
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *CodeRequest) CanSend(peer *serverPeer) bool {
+func (r *CodeRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+	if peer.version >= lpv5 {
+		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+	}
 	return peer.HasBlock(r.Id.BlockHash, r.Id.BlockNumber, true)
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *CodeRequest) Request(reqID uint64, peer *serverPeer) error {
+func (r *CodeRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
 	peer.Log().Debug("Requesting code data", "hash", r.Hash)
 	req := CodeReq{
 		BHash:  r.Id.BlockHash,
@@ -278,7 +290,7 @@ func (r *CodeRequest) Request(reqID uint64, peer *serverPeer) error {
 // Valid processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (r *CodeRequest) Validate(db ethdb.Database, msg *Msg) error {
+func (r *CodeRequest) Validate(db ethdb.Database, beaconHeader beacon.Header, msg *Msg) error {
 	log.Debug("Validating code data", "hash", r.Hash)
 
 	// Ensure we have a correct message with a single code element
@@ -331,7 +343,7 @@ func (r *ChtRequest) GetCost(peer *serverPeer) uint64 {
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *ChtRequest) CanSend(peer *serverPeer) bool {
+func (r *ChtRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
 	peer.lock.RLock()
 	defer peer.lock.RUnlock()
 
@@ -339,7 +351,7 @@ func (r *ChtRequest) CanSend(peer *serverPeer) bool {
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *ChtRequest) Request(reqID uint64, peer *serverPeer) error {
+func (r *ChtRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
 	peer.Log().Debug("Requesting CHT", "cht", r.ChtNum, "block", r.BlockNum)
 	var encNum [8]byte
 	binary.BigEndian.PutUint64(encNum[:], r.BlockNum)
@@ -355,7 +367,7 @@ func (r *ChtRequest) Request(reqID uint64, peer *serverPeer) error {
 // Valid processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (r *ChtRequest) Validate(db ethdb.Database, msg *Msg) error {
+func (r *ChtRequest) Validate(db ethdb.Database, beaconHeader beacon.Header, msg *Msg) error {
 	log.Debug("Validating CHT", "cht", r.ChtNum, "block", r.BlockNum)
 
 	if msg.MsgType != MsgHelperTrieProofs {
@@ -419,7 +431,7 @@ func (r *BloomRequest) GetCost(peer *serverPeer) uint64 {
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *BloomRequest) CanSend(peer *serverPeer) bool {
+func (r *BloomRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
 	peer.lock.RLock()
 	defer peer.lock.RUnlock()
 
@@ -430,7 +442,7 @@ func (r *BloomRequest) CanSend(peer *serverPeer) bool {
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *BloomRequest) Request(reqID uint64, peer *serverPeer) error {
+func (r *BloomRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
 	peer.Log().Debug("Requesting BloomBits", "bloomTrie", r.BloomTrieNum, "bitIdx", r.BitIdx, "sections", r.SectionIndexList)
 	reqs := make([]HelperTrieReq, len(r.SectionIndexList))
 
@@ -451,7 +463,7 @@ func (r *BloomRequest) Request(reqID uint64, peer *serverPeer) error {
 // Valid processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (r *BloomRequest) Validate(db ethdb.Database, msg *Msg) error {
+func (r *BloomRequest) Validate(db ethdb.Database, beaconHeader beacon.Header, msg *Msg) error {
 	log.Debug("Validating BloomBits", "bloomTrie", r.BloomTrieNum, "bitIdx", r.BitIdx, "sections", r.SectionIndexList)
 
 	// Ensure we have a correct message with a single proof element
@@ -495,12 +507,12 @@ func (r *TxStatusRequest) GetCost(peer *serverPeer) uint64 {
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *TxStatusRequest) CanSend(peer *serverPeer) bool {
+func (r *TxStatusRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
 	return peer.txHistory != txIndexDisabled
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *TxStatusRequest) Request(reqID uint64, peer *serverPeer) error {
+func (r *TxStatusRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
 	peer.Log().Debug("Requesting transaction status", "count", len(r.Hashes))
 	return peer.requestTxStatus(reqID, r.Hashes)
 }
@@ -508,7 +520,7 @@ func (r *TxStatusRequest) Request(reqID uint64, peer *serverPeer) error {
 // Validate processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (r *TxStatusRequest) Validate(db ethdb.Database, msg *Msg) error {
+func (r *TxStatusRequest) Validate(db ethdb.Database, beaconHeader beacon.Header, msg *Msg) error {
 	log.Debug("Validating transaction status", "count", len(r.Hashes))
 
 	if msg.MsgType != MsgTxStatus {
@@ -553,12 +565,12 @@ func (r *BeaconInitRequest) GetCost(peer *serverPeer) uint64 {
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *BeaconInitRequest) CanSend(peer *serverPeer) bool {
+func (r *BeaconInitRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
 	return peer.version >= lpv5
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *BeaconInitRequest) Request(reqID uint64, peer *serverPeer) error {
+func (r *BeaconInitRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
 	peer.Log().Debug("Requesting beacon init data", "checkpoint root", r.Checkpoint)
 	return peer.requestBeaconInit(reqID, r.Checkpoint)
 }
@@ -566,7 +578,7 @@ func (r *BeaconInitRequest) Request(reqID uint64, peer *serverPeer) error {
 // Validate processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (request *BeaconInitRequest) Validate(db ethdb.Database, msg *Msg) error {
+func (request *BeaconInitRequest) Validate(db ethdb.Database, beaconHeader beacon.Header, msg *Msg) error {
 	log.Debug("Validating beacon init data", "checkpoint root", request.Checkpoint)
 	// Ensure we have a correct message with a single proof element
 	if msg.MsgType != MsgBeaconInit {
@@ -602,16 +614,16 @@ func (r *BeaconDataRequest) GetCost(peer *serverPeer) uint64 {
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *BeaconDataRequest) CanSend(peer *serverPeer) bool {
-	return peer.version >= lpv5
+func (r *BeaconDataRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+	return peer.version >= lpv5 && peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *BeaconDataRequest) Request(reqID uint64, peer *serverPeer) error {
-	peer.Log().Debug("Requesting beacon block data", "reference block root", r.Header.Hash(), "last slot", r.LastSlot, "length", r.Length)
+func (r *BeaconDataRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+	peer.Log().Debug("Requesting beacon block data", "reference block root", beaconHeader.Hash(), "last slot", r.LastSlot, "length", r.Length)
 	return peer.requestBeaconData(GetBeaconDataPacket{
 		ReqID:     reqID,
-		BlockRoot: r.Header.Hash(),
+		BlockRoot: beaconHeader.Hash(),
 		LastSlot:  r.LastSlot,
 		Length:    r.Length,
 	})
@@ -620,8 +632,8 @@ func (r *BeaconDataRequest) Request(reqID uint64, peer *serverPeer) error {
 // Validate processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (request *BeaconDataRequest) Validate(db ethdb.Database, msg *Msg) error {
-	log.Debug("Validating beacon block data", "reference block root", request.Header.Hash(), "last slot", request.LastSlot, "length", request.Length)
+func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beacon.Header, msg *Msg) error {
+	log.Debug("Validating beacon block data", "reference block root", beaconHeader.Hash(), "last slot", request.LastSlot, "length", request.Length)
 	// Ensure we have a correct message with a single proof element
 	if msg.MsgType != MsgBeaconData {
 		return errInvalidMessageType
@@ -640,10 +652,10 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, msg *Msg) error {
 
 	var reqFirstSlot, reqLastSlot uint64 // first and last slot of requested range
 
-	if request.LastSlot < uint64(request.Header.Slot) {
+	if request.LastSlot < uint64(beaconHeader.Slot) {
 		reqLastSlot = request.LastSlot
 	} else {
-		reqLastSlot = uint64(request.Header.Slot)
+		reqLastSlot = uint64(beaconHeader.Slot)
 	}
 
 	if reqLastSlot >= request.Length {
@@ -697,7 +709,7 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, msg *Msg) error {
 		return errors.New("Number of returned headers do not match non-empty state proofs")
 	}
 
-	format := beacon.SlotRangeFormat(uint64(request.Header.Slot), firstSlot, reply.StateProofFormats)
+	format := beacon.SlotRangeFormat(uint64(beaconHeader.Slot), firstSlot, reply.StateProofFormats)
 	reader := beacon.MultiProof{Format: format, Values: reply.ProofValues}.Reader(nil)
 	target := make([]*beacon.MerkleValues, len(reply.StateProofFormats))
 	targetMap := make(map[uint64]beacon.ProofWriter)
@@ -707,7 +719,7 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, msg *Msg) error {
 
 	for i := range target {
 		target[i] = new(beacon.MerkleValues)
-		index := beacon.SlotProofIndex(uint64(request.Header.Slot), firstSlot+uint64(i))
+		index := beacon.SlotProofIndex(uint64(beaconHeader.Slot), firstSlot+uint64(i))
 		subWriter := beacon.NewMultiProofWriter(beacon.StateProofFormats[reply.StateProofFormats[i]], target[i], nil)
 		if index == 1 {
 			// adding it to MultiProofWriter as a subtree at index 1 would prevent traversing the other beacon states that are children of the head block state
@@ -719,7 +731,7 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, msg *Msg) error {
 
 	proofRoot, ok := beacon.TraverseProof(reader, writer)
 	if ok && reader.Finished() {
-		if proofRoot != request.Header.StateRoot {
+		if proofRoot != beaconHeader.StateRoot {
 			return errors.New("Multiproof root hash does not match")
 		}
 	} else {
@@ -782,18 +794,17 @@ func (r *ExecHeadersRequest) GetCost(peer *serverPeer) uint64 {
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *ExecHeadersRequest) CanSend(peer *serverPeer) bool {
-	return peer.version >= lpv5
+func (r *ExecHeadersRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+	return peer.version >= lpv5 && peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *ExecHeadersRequest) Request(reqID uint64, peer *serverPeer) error {
-	blockRoot := r.Header.Hash()
-	peer.Log().Debug("Requesting exec headers", "mode", r.ReqMode, "reference block root", blockRoot, "historic number", r.HistoricNumber, "amount", r.Amount)
+func (r *ExecHeadersRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+	peer.Log().Debug("Requesting exec headers", "mode", r.ReqMode, "reference block root", beaconHeader.Hash(), "historic number", r.HistoricNumber, "amount", r.Amount)
 	return peer.requestExecHeaders(GetExecHeadersPacket{
 		ReqID:          reqID,
 		ReqMode:        r.ReqMode,
-		BlockRoot:      blockRoot,
+		BlockRoot:      beaconHeader.Hash(),
 		HistoricNumber: r.HistoricNumber,
 		Amount:         r.Amount,
 	})
@@ -802,15 +813,15 @@ func (r *ExecHeadersRequest) Request(reqID uint64, peer *serverPeer) error {
 // Validate processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (request *ExecHeadersRequest) Validate(db ethdb.Database, msg *Msg) error {
-	log.Debug("Validating exec headers", "mode", request.ReqMode, "reference block root", request.Header.Hash(), "historic number", request.HistoricNumber, "amount", request.Amount)
+func (request *ExecHeadersRequest) Validate(db ethdb.Database, beaconHeader beacon.Header, msg *Msg) error {
+	log.Debug("Validating exec headers", "mode", request.ReqMode, "reference block root", beaconHeader.Hash(), "historic number", request.HistoricNumber, "amount", request.Amount)
 	// Ensure we have a correct message with a single proof element
 	if msg.MsgType != MsgExecHeaders {
 		return errInvalidMessageType
 	}
 	reply := msg.Obj.(ExecHeadersResponse)
 
-	if reply.HistoricSlot > uint64(request.Header.Slot) {
+	if reply.HistoricSlot > uint64(beaconHeader.Slot) {
 		return errors.New("Invalid historic slot")
 	}
 
@@ -824,7 +835,7 @@ func (request *ExecHeadersRequest) Validate(db ethdb.Database, msg *Msg) error {
 	case light.HeadMode:
 		leafIndex = beacon.BsiExecHead
 	case light.HistoricMode:
-		leafIndex = beacon.ChildIndex(beacon.SlotProofIndex(uint64(request.Header.Slot), reply.HistoricSlot), beacon.BsiExecHead)
+		leafIndex = beacon.ChildIndex(beacon.SlotProofIndex(uint64(beaconHeader.Slot), reply.HistoricSlot), beacon.BsiExecHead)
 	case light.FinalizedMode:
 		leafIndex = beacon.BsiFinalExecHash
 	default:
@@ -842,7 +853,7 @@ func (request *ExecHeadersRequest) Validate(db ethdb.Database, msg *Msg) error {
 	})
 	proofRoot, ok := beacon.TraverseProof(reader, writer)
 	if ok && reader.Finished() {
-		if proofRoot != request.Header.StateRoot {
+		if proofRoot != beaconHeader.StateRoot {
 			return errors.New("Multiproof root hash does not match")
 		}
 	} else {
@@ -871,12 +882,12 @@ func (r *HeadersByHashRequest) GetCost(peer *serverPeer) uint64 {
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *HeadersByHashRequest) CanSend(peer *serverPeer) bool {
-	return true
+func (r *HeadersByHashRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+	return peer.version < lpv5 || peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *HeadersByHashRequest) Request(reqID uint64, peer *serverPeer) error {
+func (r *HeadersByHashRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
 	peer.Log().Debug("Requesting headers by hash", "last block hash", r.BlockHash, "amount", r.Amount)
 	return peer.requestHeadersByHash(reqID, r.BlockHash, r.Amount, 0, true)
 }
@@ -884,7 +895,7 @@ func (r *HeadersByHashRequest) Request(reqID uint64, peer *serverPeer) error {
 // Validate processes an ODR request reply message from the LES network
 // returns true and stores results in memory if the message was a valid reply
 // to the request (implementation of LesOdrRequest)
-func (request *HeadersByHashRequest) Validate(db ethdb.Database, msg *Msg) error {
+func (request *HeadersByHashRequest) Validate(db ethdb.Database, beaconHeader beacon.Header, msg *Msg) error {
 	log.Debug("Validating headers by hash", "last block hash", request.BlockHash, "amount", request.Amount)
 	// Ensure we have a correct message with a single proof element
 	if msg.MsgType != MsgBlockHeaders {

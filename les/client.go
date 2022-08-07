@@ -179,6 +179,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 			}
 			leth.syncCommitteeTracker = beacon.NewSyncCommitteeTracker(chainDb, forks, leth.syncCommitteeCheckpoint, &mclock.System{})
 			leth.syncCommitteeTracker.SubscribeToNewHeads(leth.blockchain.SetBeaconHead)
+			leth.syncCommitteeTracker.SubscribeToNewHeads(leth.odr.SetBeaconHead)
 		} else {
 			log.Error("Could not load beacon chain config file", "error", err)
 			return nil, fmt.Errorf("Could not load beacon chain config file: %v", err)

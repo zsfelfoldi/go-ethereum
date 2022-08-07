@@ -363,10 +363,54 @@ type serverPeer struct {
 	// Test callback hooks
 	hasBlockHook func(common.Hash, uint64, bool) bool // Used to determine whether the server has the specified block.
 
-	updateInfo              *beacon.UpdateInfo
-	announcedBeaconBlocks   [4]common.Hash
-	announcedBeaconBlockPtr int
+	updateInfo             *beacon.UpdateInfo
+	announcedBeaconHeads   [4]common.Hash
+	announcedBeaconHeadPtr int
+
+	/*bestBeaconHeaderLock sync.RWMutex
+	bestBeaconHeader     beacon.Header // updated by setBestBeaconHeader during odr CanSend*/
 }
+
+func (p *serverPeer) addAnnouncedBeaconHead(beaconHead common.Hash) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	for _, h := range p.announcedBeaconHeads {
+		if h == beaconHead {
+			return
+		}
+	}
+	p.announcedBeaconHeads[p.announcedBeaconHeadPtr] = beaconHead
+	p.announcedBeaconHeadPtr++
+	if p.announcedBeaconHeadPtr == len(p.announcedBeaconHeads) {
+		p.announcedBeaconHeadPtr = 0
+	}
+}
+
+func (p *serverPeer) hasAnnouncedBeaconHead(head common.Hash) bool {
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+
+	for _, bh := range p.announcedBeaconHeads {
+		if bh == head {
+			return true
+		}
+	}
+	return false
+}
+
+/*func (p *serverPeer) setBestBeaconHeader(header beacon.Header) common.Hash {
+	p.bestBeaconHeaderLock.Lock()
+	p.bestBeaconHeader = header
+	p.bestBeaconHeaderLock.Unlock()
+}
+
+func (p *serverPeer) gerBestBeaconHeader() common.Hash {
+	p.bestBeaconHeaderLock.RLock()
+	defer p.bestBeaconHeaderLock.RUnlock()
+
+	return p.bestBeaconHeader
+}*/
 
 func newServerPeer(version int, network uint64, trusted bool, p *p2p.Peer, rw p2p.MsgReadWriter) *serverPeer {
 	return &serverPeer{
@@ -592,19 +636,19 @@ func (p *serverPeer) HasBlock(hash common.Hash, number uint64, hasState bool) bo
 	return head >= number && number >= since && (recent == 0 || number+recent+4 > head)
 }
 
-func (p *serverPeer) HasBeaconBlock(hash common.Hash) bool {
+/*func (p *serverPeer) HasBeaconBlock(hash common.Hash) bool {
 	p.lock.RLock()
 	defer p.lock.RUnlock()
 
-	for _, h := range p.announcedBeaconBlocks {
+	for _, h := range p.announcedBeaconHeads {
 		if h == hash {
 			return true
 		}
 	}
 	return false
-}
+}*/
 
-func (p *serverPeer) updateHeadInfo(execNumber uint64, execHash common.Hash) {
+/*func (p *serverPeer) updateHeadInfo(execNumber uint64, execHash common.Hash) {
 	if execNumber > p.headInfo.Number {
 		p.headInfo = blockInfo{
 			Number: execNumber,
@@ -618,20 +662,20 @@ func (p *serverPeer) AnnouncedBeaconHead(beaconHead common.Hash, execHeader *typ
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
-	for _, h := range p.announcedBeaconBlocks {
+	for _, h := range p.announcedBeaconHeads {
 		if h == beaconHead {
 			return
 		}
 	}
-	p.announcedBeaconBlocks[p.announcedBeaconBlockPtr] = beaconHead
+	p.announcedBeaconHeads[p.announcedBeaconBlockPtr] = beaconHead
 	p.announcedBeaconBlockPtr++
-	if p.announcedBeaconBlockPtr == len(p.announcedBeaconBlocks) {
+	if p.announcedBeaconBlockPtr == len(p.announcedBeaconHeads) {
 		p.announcedBeaconBlockPtr = 0
 	}
 	if execHeader != nil {
 		p.updateHeadInfo(execHeader.Number.Uint64(), execHeader.Hash())
 	}
-}
+}*/
 
 // updateFlowControl updates the flow control parameters belonging to the server
 // node if the announced key/value set contains relevant fields

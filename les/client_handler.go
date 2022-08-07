@@ -463,7 +463,7 @@ func (h *clientHandler) handleMsg(p *serverPeer) error {
 		}
 		for _, head := range heads {
 			hash := head.Header.Hash()
-			p.AnnouncedBeaconHead(hash, h.backend.odr.getExecHeader(hash))
+			p.addAnnouncedBeaconHead(hash)
 		}
 		h.backend.syncCommitteeTracker.AddSignedHeads(sctServerPeer{peer: p, retriever: h.backend.retriever}, heads)
 

@@ -27,7 +27,6 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -38,8 +37,8 @@ var errNonCanonicalHash = errors.New("hash is not currently canonical")
 
 // GetHeaderByNumber retrieves the canonical block header corresponding to the
 // given number. The returned header is proven by local CHT.
-func GetHeaderByNumber(ctx context.Context, odr OdrBackend, beaconHeader beacon.Header, number uint64) (*types.Header, error) {
-	if headers, err := GetExecHeaders(ctx, odr, beaconHeader, HistoricMode, number, 1); err == nil && len(headers) == 1 {
+func GetHeaderByNumber(ctx context.Context, odr OdrBackend, number uint64) (*types.Header, error) {
+	if headers, err := GetExecHeaders(ctx, odr, HistoricMode, number, 1); err == nil && len(headers) == 1 {
 		return headers[0], nil
 	} else {
 		if err == nil {
@@ -64,12 +63,12 @@ func GetHeaderByHash(ctx context.Context, odr OdrBackend, hash common.Hash) (*ty
 }
 
 // GetCanonicalHash retrieves the canonical block hash corresponding to the number.
-func GetCanonicalHash(ctx context.Context, odr OdrBackend, beaconHeader beacon.Header, number uint64) (common.Hash, error) {
+func GetCanonicalHash(ctx context.Context, odr OdrBackend, number uint64) (common.Hash, error) {
 	hash := rawdb.ReadCanonicalHash(odr.Database(), number)
 	if hash != (common.Hash{}) {
 		return hash, nil
 	}
-	header, err := GetHeaderByNumber(ctx, odr, beaconHeader, number) //TODO do it with zero length header request?
+	header, err := GetHeaderByNumber(ctx, odr, number) //TODO do it with zero length header request?
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -289,13 +288,9 @@ func GetTransaction(ctx context.Context, odr OdrBackend, txHash common.Hash) (*t
 	return body.Transactions[pos.Index], pos.BlockHash, pos.BlockIndex, pos.Index, nil
 }
 
-func GetExecHeaders(ctx context.Context, odr OdrBackend, head beacon.Header, mode uint, historicNumber, amount uint64) ([]*types.Header, error) {
-	if head.StateRoot == (common.Hash{}) { //TODO find a better place for this check?
-		return nil, ErrNoPeers
-	}
+func GetExecHeaders(ctx context.Context, odr OdrBackend, mode uint, historicNumber, amount uint64) ([]*types.Header, error) {
 	r := &ExecHeadersRequest{
 		ReqMode:        mode,
-		Header:         head,
 		HistoricNumber: historicNumber,
 		Amount:         amount,
 	}

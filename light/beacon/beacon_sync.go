@@ -568,7 +568,7 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 		}
 		lastCommon--
 	}
-	bc.storedSection.headCounter = cs.headCounter
+	//bc.storedSection.headCounter = cs.headCounter   qwerty
 	if lastCommon < bc.storedSection.headSlot {
 		bc.rollback(lastCommon)
 	}

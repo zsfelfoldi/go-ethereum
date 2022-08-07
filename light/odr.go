@@ -205,12 +205,11 @@ func (req *BeaconInitRequest) StoreResult(db ethdb.Database) {}
 
 type BeaconDataRequest struct {
 	OdrRequest
-	Header   beacon.Header // recent beacon head header used as a reference to the canonical chain state
-	LastSlot uint64        // last slot of requested range (reference block is used if LastSlot is higher than its slot number)
-	Length   uint64        // number of requested slots
+	LastSlot uint64 // last slot of requested range (reference block is used if LastSlot is higher than its slot number)
+	Length   uint64 // number of requested slots
 
+	RefBeaconHead beacon.Header
 	TailShortTerm uint64 // HspShortTerm state data is expected to be available and returned in Blocks starting from this slot
-
 	// Note that for the first block ParentSlotDiff and StateRootDiffs are not proven; retrieving the
 	// range ending with the previous slot will update it if necessary, therefore they are guaranteed valid
 	// for each but the first block of any continuous range.
@@ -227,12 +226,12 @@ const (
 
 type ExecHeadersRequest struct {
 	OdrRequest
-	ReqMode        uint          // 0: head  1: historic  2: finalized
-	Header         beacon.Header // recent beacon head header used as a reference to the canonical chain state
-	HistoricNumber uint64        // highest requested exec header number (for historic mode only)
-	Amount         uint64        // number of requested exec headers
+	ReqMode        uint   // 0: head  1: historic  2: finalized
+	HistoricNumber uint64 // highest requested exec header number (for historic mode only)
+	Amount         uint64 // number of requested exec headers
 
-	ExecHeaders []*types.Header
+	RefBeaconHead beacon.Header
+	ExecHeaders   []*types.Header
 }
 
 func (req *ExecHeadersRequest) StoreResult(db ethdb.Database) {}

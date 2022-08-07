@@ -1580,6 +1580,7 @@ func NewWeakSubjectivityCheckpoint(db ethdb.Database, backend sctInitBackend, ch
 	if enc, err := db.Get(initDataKey); err == nil {
 		var initData lightClientInitData
 		if err := rlp.DecodeBytes(enc, &initData); err == nil {
+			fmt.Println("Found stored initData", initData.Checkpoint, checkpoint)
 			if initData.Checkpoint == checkpoint {
 				wsc.initData = initData
 				haveInitData = true
@@ -1612,6 +1613,8 @@ func NewWeakSubjectivityCheckpoint(db ethdb.Database, backend sctInitBackend, ch
 							fmt.Println("wsc 1xx")
 							log.Error("Init data not found in checkpoint block")
 						}
+					} else {
+						fmt.Println(" failed to fetch init block", err)
 					}
 				}
 			}

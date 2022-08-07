@@ -24,15 +24,39 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/light"
-	//"github.com/ethereum/go-ethereum/light/beacon"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	//"github.com/ethereum/go-ethereum/log"
 )
+
+/*type beaconHeadInfo struct {
+	lock         sync.RWMutex
+	beaconHeader beacon.Header
+	//execHead   *types.Header
+	execRoots map[common.Hash]struct{}
+}
+
+func NewBeaconHeadInfo(beaconHead common.Hash) *beaconHeadInfo {
+	return *beaconHeadInfo{beaconHead: beaconHead, execRoots: make(map[common.Hash]struct{})}
+}
+
+func (bh *beaconHeadInfo) addExecRoots(headers []*types.Header) {
+	bh.lock.Lock()
+	for _, h := range headers {
+		bh.execRoots[h.Hash()] = struct{}{}
+	}
+	bh.lock.Unlock()
+}
+
+func (bh *beaconHeadInfo) hasExecRoot(execRoot common.Hash) bool {
+	bh.lock.RLock()
+	_, ok := bh.execRoots[execRoot]
+	bh.lock.RUnlock()
+	return ok
+}*/
 
 // LesOdr implements light.OdrBackend
 type LesOdr struct {
@@ -43,8 +67,8 @@ type LesOdr struct {
 	retriever                                  *retrieveManager
 	stop                                       chan struct{}
 
-	beaconHeadLock sync.RWMutex
-	beaconHeadMap  map[common.Hash]*types.Header
+	beaconHeaderLock sync.RWMutex
+	beaconHeader     beacon.Header
 }
 
 func NewLesOdr(db ethdb.Database, config *light.IndexerConfig, peers *serverPeerSet, retriever *retrieveManager) *LesOdr {
@@ -54,7 +78,7 @@ func NewLesOdr(db ethdb.Database, config *light.IndexerConfig, peers *serverPeer
 		peers:         peers,
 		retriever:     retriever,
 		stop:          make(chan struct{}),
-		beaconHeadMap: make(map[common.Hash]*types.Header),
+		//beaconHeadMap: make(map[common.Hash]*beaconHeadInfo),
 	}
 }
 
@@ -193,11 +217,11 @@ func (odr *LesOdr) RetrieveTxStatus(ctx context.Context, req *light.TxStatusRequ
 					p := dp.(*serverPeer)
 					p.fcServer.QueuedRequest(id, req.GetCost(p))
 					delete(canSend, p.id)
-					return func() { req.Request(id, p) }
+					return func() { req.Request(id, beacon.Header{}, p) }
 				},
 			}
 		)
-		if err := odr.retriever.retrieve(ctx, id, distreq, func(p distPeer, msg *Msg) error { return req.Validate(odr.db, msg) }, odr.stop); err != nil {
+		if err := odr.retriever.retrieve(ctx, id, distreq, func(p distPeer, msg *Msg) error { return req.Validate(odr.db, beacon.Header{}, msg) }, odr.stop); err != nil {
 			return err
 		}
 		// Collect the response and assemble them to the final result.
@@ -222,13 +246,28 @@ func (odr *LesOdr) RetrieveTxStatus(ctx context.Context, req *light.TxStatusRequ
 	return nil
 }
 
+func (odr *LesOdr) SetBeaconHead(head beacon.Header) {
+	odr.beaconHeaderLock.Lock()
+	odr.beaconHeader = head
+	odr.beaconHeaderLock.Unlock()
+}
+
 // Retrieve tries to fetch an object from the LES network. It's a common API
 // for most of the LES requests except for the TxStatusRequest which needs
 // the additional retry mechanism.
 // If the network retrieval was successful, it stores the object in local db.
 func (odr *LesOdr) Retrieve(ctx context.Context, req light.OdrRequest) (err error) {
-	lreq := LesRequest(req)
+	return odr.RetrieveWithBeaconHeader(ctx, beacon.Header{}, req)
+}
 
+func (odr *LesOdr) RetrieveWithBeaconHeader(ctx context.Context, beaconHeader beacon.Header, req light.OdrRequest) (err error) {
+	if beaconHeader == (beacon.Header{}) {
+		odr.beaconHeaderLock.RLock()
+		beaconHeader = odr.beaconHeader
+		odr.beaconHeaderLock.RUnlock()
+	}
+
+	lreq := LesRequest(req)
 	reqID := rand.Uint64()
 	rq := &distReq{
 		getCost: func(dp distPeer) uint64 {
@@ -236,16 +275,17 @@ func (odr *LesOdr) Retrieve(ctx context.Context, req light.OdrRequest) (err erro
 		},
 		canSend: func(dp distPeer) bool {
 			p := dp.(*serverPeer)
-			if !p.onlyAnnounce {
-				return lreq.CanSend(p)
+			if p.onlyAnnounce {
+				return false
 			}
-			return false
+			//p.setBestBeaconHeader(beaconHeader)
+			return lreq.CanSend(beaconHeader, p)
 		},
 		request: func(dp distPeer) func() {
 			p := dp.(*serverPeer)
 			cost := lreq.GetCost(p)
 			p.fcServer.QueuedRequest(reqID, cost)
-			return func() { lreq.Request(reqID, p) }
+			return func() { lreq.Request(reqID, beaconHeader, p) }
 		},
 	}
 
@@ -256,51 +296,48 @@ func (odr *LesOdr) Retrieve(ctx context.Context, req light.OdrRequest) (err erro
 		requestRTT.Update(time.Duration(mclock.Now() - sent))
 	}(mclock.Now())
 
-	if err := odr.retriever.retrieve(ctx, reqID, rq, func(p distPeer, msg *Msg) error { return lreq.Validate(odr.db, msg) }, odr.stop); err != nil {
+	if err := odr.retriever.retrieve(ctx, reqID, rq, func(p distPeer, msg *Msg) error { return lreq.Validate(odr.db, beaconHeader, msg) }, odr.stop); err != nil {
 		return err
 	}
-	if r, ok := req.(*light.ExecHeadersRequest); ok {
-		if r.ReqMode == light.HeadMode && len(r.ExecHeaders) >= 1 {
-			odr.beaconHeadRetrieved(r.Header.Hash(), r.ExecHeaders[len(r.ExecHeaders)-1])
-		}
-	}
+	/*switch r := req.(type) {
+	case *light.ExecHeadersRequest:
+		odr.execHeadersRetrieved(r.Header, r.ExecHeaders)
+	case *light.HeadersByHashRequest:
+		odr.execHeadersRetrieved(r.BeaconHeader, r.Headers)
+	default:
+	}*/
 	req.StoreResult(odr.db)
 	return nil
 }
 
-func (odr *LesOdr) beaconHeadRetrieved(beaconHead common.Hash, header *types.Header) {
-	execNumber, execHash := header.Number.Uint64(), header.Hash()
+/*func (odr *LesOdr) execHeadersRetrieved(beaconHeader beacon.Header, execHeaders []*types.Header) {
+	//execNumber, execHash := header.Number.Uint64(), header.Hash()
+	beaconRoot := beaconHeader.Hash()
 	odr.beaconHeadLock.Lock()
-	var bestNumber uint64
-	for _, header := range odr.beaconHeadMap {
-		number := header.Number.Uint64()
-		if number > bestNumber {
-			bestNumber = number
-		}
-	}
-	if execNumber+16 >= bestNumber {
-		for beaconHash, header := range odr.beaconHeadMap {
-			number := header.Number.Uint64()
-			if number+16 < bestNumber {
-				delete(odr.beaconHeadMap, beaconHash)
+	headInfo := odr.beaconHeadMap[beaconRoot]
+	if headInfo == nil {
+		var bestSlot uint64
+		for _, bh := range odr.beaconHeadMap {
+			if bh.beaconHeader.Slot > bestSlot {
+				bestSlot = bh.beaconHeader.Slot
 			}
 		}
-		odr.beaconHeadMap[execHash] = header
-	}
-	odr.beaconHeadLock.Unlock()
-
-	for _, peer := range odr.peers.allPeers() {
-		if peer.HasBeaconBlock(beaconHead) {
-			peer.lock.Lock()
-			peer.updateHeadInfo(execNumber, execHash)
-			peer.lock.Unlock()
+		// if current beacon header is not very old then add new headInfo and remove old entries
+		if beaconHeader.Slot+16 >= bestSlot {
+			headInfo = newBeaconHeadInfo(beaconHeader)
+			for br, bh := range odr.beaconHeadMap {
+				if bh.beaconHeader.Slot+16 < bestSlot {
+					delete(odr.beaconHeadMap, br)
+				}
+			}
+			odr.beaconHeadMap[beaconRoot] = headInfo
 		}
 	}
-}
+}*/
 
-func (odr *LesOdr) getExecHeader(beaconHead common.Hash) *types.Header {
+/*func (odr *LesOdr) getExecHeader(beaconHead common.Hash) *types.Header {
 	odr.beaconHeadLock.RLock()
 	header := odr.beaconHeadMap[beaconHead]
 	odr.beaconHeadLock.RUnlock()
 	return header
-}
+}*/
