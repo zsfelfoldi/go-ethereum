@@ -44,6 +44,27 @@ type beaconClientHandler struct {
 	odr                  *LesOdr
 }
 
+func (bc *beaconClientHandler) registerMessageHandlers(h *handler) {
+	h.registerMessageHandler(BeaconInitMsg, lpv5, lpvLatest)
+	h.registerMessageHandler(BeaconDataMsg, lpv5, lpvLatest)
+	h.registerMessageHandler(ExecHeadersMsg, lpv5, lpvLatest)
+	h.registerMessageHandler(CommitteeProofsMsg, lpv5, lpvLatest)
+	h.registerMessageHandler(AdvertiseCommitteeProofsMsg, lpv5, lpvLatest)
+	h.registerMessageHandler(SignedBeaconHeadsMsg, lpv5, lpvLatest)
+}
+
+func (bc *beaconClientHandler) sendHandshake(*peer, *keyValueList) {}
+
+func (bc *beaconClientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
+	fmt.Println("Handshake with peer", p.id, "version", p.version)
+	updateInfo := new(beacon.UpdateInfo)
+	if err := recv.get("beacon/updateInfo", updateInfo); err == nil {
+		fmt.Println("Received update info", *updateInfo)
+		p.updateInfo = updateInfo
+	}
+	return nil
+}
+
 func (bc *beaconClientHandler) handleMessage(p *peer, msg p2p.Msg) error {
 	var deliverMsg *Msg
 
@@ -287,13 +308,6 @@ func (h *clientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 			}
 		}
 	}
-
-	fmt.Println("Handshake with peer", p.id, "version", p.version)
-	updateInfo := new(beacon.UpdateInfo)
-	if err := recv.get("beacon/updateInfo", updateInfo); err == nil {
-		fmt.Println("Received update info", *updateInfo)
-		p.updateInfo = updateInfo
-	}
 	return nil
 }
 
@@ -368,26 +382,24 @@ func (h *clientHandler) handle(p *peer, noInitAnnounce bool) error {
 	}
 }
 
-// handleMsg is invoked whenever an inbound message is received from a remote
-// peer. The remote connection is torn down upon returning any error.
-func (h *clientHandler) handleMsg(p *peer) error {
-	// Read the next message from the remote peer, and ensure it's fully consumed
-	msg, err := p.rw.ReadMsg()
-	if err != nil {
-		return err
-	}
-	p.Log().Trace("Light Ethereum message arrived", "code", msg.Code, "bytes", msg.Size)
+func (bc *beaconClientHandler) registerMessageHandlers(h *handler) {
+	h.registerMessageHandler(AnnounceMsg, lpv1, lpv4)
+	h.registerMessageHandler(BlockHeadersMsg, lpv1, lpvLatest)
+	h.registerMessageHandler(BlockBodiesMsg, lpv1, lpvLatest)
+	h.registerMessageHandler(CodeMsg, lpv1, lpvLatest)
+	h.registerMessageHandler(ReceiptsMsg, lpv1, lpvLatest)
+	h.registerMessageHandler(ProofsV2Msg, lpv2, lpvLatest)
+	h.registerMessageHandler(HelperTrieProofsMsg, lpv2, lpv4)
+	h.registerMessageHandler(TxStatusMsg, lpv2, lpvLatest)
+	h.registerMessageHandler(StopMsg, lpv3, lpvLatest)
+	h.registerMessageHandler(Resume, lpv3, lpvLatest)
+}
 
-	if msg.Size > ProtocolMaxMsgSize {
-		return errResp(ErrMsgTooLarge, "%v > %v", msg.Size, ProtocolMaxMsgSize)
-	}
-	defer msg.Discard()
-
+func (h *clientHandler) handleMessage(p *peer, msg p2p.Msg) error {
 	var deliverMsg *Msg
 
-	// Handle the message depending on its contents
-	switch {
-	case msg.Code == AnnounceMsg:
+	switch msg.Code {
+	case AnnounceMsg:
 		p.Log().Trace("Received announce message")
 		var req announceData
 		if err := msg.Decode(&req); err != nil {
@@ -424,7 +436,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 				h.fetcher.announce(p, &req)
 			}*/
 		}
-	case msg.Code == BlockHeadersMsg:
+	case BlockHeadersMsg:
 		p.Log().Trace("Received block header response message")
 		var resp struct {
 			ReqID, BV uint64
@@ -456,7 +468,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 				}
 			}
 		}*/
-	case msg.Code == BlockBodiesMsg:
+	case BlockBodiesMsg:
 		p.Log().Trace("Received block bodies response")
 		var resp struct {
 			ReqID, BV uint64
@@ -472,7 +484,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			ReqID:   resp.ReqID,
 			Obj:     resp.Data,
 		}
-	case msg.Code == CodeMsg:
+	case CodeMsg:
 		p.Log().Trace("Received code response")
 		var resp struct {
 			ReqID, BV uint64
@@ -488,7 +500,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			ReqID:   resp.ReqID,
 			Obj:     resp.Data,
 		}
-	case msg.Code == ReceiptsMsg:
+	case ReceiptsMsg:
 		p.Log().Trace("Received receipts response")
 		var resp struct {
 			ReqID, BV uint64
@@ -504,7 +516,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			ReqID:   resp.ReqID,
 			Obj:     resp.Receipts,
 		}
-	case msg.Code == ProofsV2Msg:
+	case ProofsV2Msg:
 		p.Log().Trace("Received les/2 proofs response")
 		var resp struct {
 			ReqID, BV uint64
@@ -520,7 +532,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			ReqID:   resp.ReqID,
 			Obj:     resp.Data,
 		}
-	case msg.Code == HelperTrieProofsMsg:
+	case HelperTrieProofsMsg:
 		p.Log().Trace("Received helper trie proof response")
 		var resp struct {
 			ReqID, BV uint64
@@ -536,7 +548,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			ReqID:   resp.ReqID,
 			Obj:     resp.Data,
 		}
-	case msg.Code == TxStatusMsg:
+	case TxStatusMsg:
 		p.Log().Trace("Received tx status response")
 		var resp struct {
 			ReqID, BV uint64
@@ -552,11 +564,11 @@ func (h *clientHandler) handleMsg(p *peer) error {
 			ReqID:   resp.ReqID,
 			Obj:     resp.Status,
 		}
-	case msg.Code == StopMsg && p.version >= lpv3:
+	case StopMsg:
 		p.freezeServer()
 		h.backend.retriever.frozen(p)
 		p.Log().Debug("Service stopped")
-	case msg.Code == ResumeMsg && p.version >= lpv3:
+	case ResumeMsg:
 		var bv uint64
 		if err := msg.Decode(&bv); err != nil {
 			return errResp(ErrDecode, "msg %v: %v", msg, err)
@@ -566,8 +578,7 @@ func (h *clientHandler) handleMsg(p *peer) error {
 		p.Log().Debug("Service resumed")
 
 	default:
-		p.Log().Trace("Received invalid message", "code", msg.Code)
-		return errResp(ErrInvalidMsgCode, "%v", msg.Code)
+		panic(nil)
 	}
 	// Deliver the received response to retriever.
 	if deliverMsg != nil {
