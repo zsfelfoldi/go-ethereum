@@ -944,11 +944,13 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 		}
 	}
 
+	fmt.Println(" committees processed; nextPeriod ==", s.nextPeriod)
 	if s.nextPeriod == 0 {
 		fmt.Println(" init chain", lastStoredCommittee)
 		// chain not initialized
 		if lastStoredCommittee > 0 && s.getSyncCommitteeLocked(lastStoredCommittee-1) != nil {
 			s.firstPeriod, s.nextPeriod = lastStoredCommittee, lastStoredCommittee
+			s.updateInfoChanged()
 		} else {
 			fmt.Println("  can not init")
 			return false

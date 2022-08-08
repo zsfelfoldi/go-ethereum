@@ -461,6 +461,7 @@ func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData, setHead bool, tai
 		}
 		headTree.HeadBlock = bc.storedHead
 	}
+	headTree.verifyRoots()
 	if afterLastSlot > firstSlot {
 		bc.updateConstraints(firstSlot, afterLastSlot-1)
 	}

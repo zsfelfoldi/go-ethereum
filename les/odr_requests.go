@@ -821,12 +821,15 @@ func (request *ExecHeadersRequest) Validate(db ethdb.Database, beaconHeader beac
 	}
 	reply := msg.Obj.(ExecHeadersResponse)
 
+	fmt.Println(" ref slot", beaconHeader.Slot, " historic slot", reply.HistoricSlot)
 	if reply.HistoricSlot > uint64(beaconHeader.Slot) {
+		fmt.Println(" validate err 1")
 		return errors.New("Invalid historic slot")
 	}
 
 	hc := uint64(len(reply.ExecHeaders))
 	if hc > request.Amount || hc == 0 || (hc < request.Amount && hc != reply.ExecHeaders[int(hc)-1].Number.Uint64()) {
+		fmt.Println(" validate err 2")
 		return errors.New("Invalid number of exec headers returned")
 	}
 
@@ -854,14 +857,17 @@ func (request *ExecHeadersRequest) Validate(db ethdb.Database, beaconHeader beac
 	proofRoot, ok := beacon.TraverseProof(reader, writer)
 	if ok && reader.Finished() {
 		if proofRoot != beaconHeader.StateRoot {
+			fmt.Println(" validate err 3")
 			return errors.New("Multiproof root hash does not match")
 		}
 	} else {
+		fmt.Println(" validate err 4")
 		return errors.New("Multiproof format error")
 	}
 	expRoot := common.Hash(target[0])
 	for i := len(reply.ExecHeaders) - 1; i >= 0; i-- {
 		if reply.ExecHeaders[i].Hash() != expRoot {
+			fmt.Println(" validate err 5")
 			return errors.New("Exec header root hash does not match")
 		}
 		expRoot = reply.ExecHeaders[i].ParentHash
@@ -870,6 +876,7 @@ func (request *ExecHeadersRequest) Validate(db ethdb.Database, beaconHeader beac
 	/*for _, h := range reply.ExecHeaders {
 		fmt.Println(" header", h)
 	}*/
+	fmt.Println(" validate success")
 	return nil
 }
 

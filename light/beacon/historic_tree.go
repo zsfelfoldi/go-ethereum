@@ -102,7 +102,7 @@ func (ht *HistoricTree) addRoots(firstSlot uint64, blockRoots, stateRoots Merkle
 	}
 
 	oldTailPeriod := ht.tailPeriod
-	tailProofPeriod := firstSlot >> 13
+	tailProofPeriod := (firstSlot >> 13) // - 1 // tail proof is not expected when firstSlot is in period 0
 	if (ht.nextPeriod == 0 || tailProofPeriod < ht.tailPeriod) && tailProof.Format != nil {
 		if verifyTailProof(tailProof, tailProofPeriod) {
 			ht.historic.addMultiProof(0, tailProof, limitLeft, 0x2000000+tailProofPeriod)
@@ -131,7 +131,34 @@ func (ht *HistoricTree) addRoots(firstSlot uint64, blockRoots, stateRoots Merkle
 	for period := ht.nextPeriod; period < newNextPeriod; period++ {
 		ht.setHistoricRoots(period)
 	}
+	ht.block.get(newNextPeriod, 1)
+	ht.state.get(newNextPeriod, 1)
 	ht.nextPeriod = newNextPeriod
+	var listLength MerkleValue
+	binary.LittleEndian.PutUint64(listLength[:8], newNextPeriod)
+	ht.historic.put(0, 3, listLength) //TODO akkor is, ha az altair fork kesobb tortent?
+	ht.historic.get(0, 1)
+}
+
+func (ht *HistoricTree) verifyRoots() {
+	if stateRootsRoot, ok := ht.HeadBlock.GetStateValue(BsiStateRoots); ok {
+		if ht.state.get(ht.HeadBlock.Header.Slot>>13, 1) != stateRootsRoot {
+			log.Error("Historic roots root hash does not match", "local tree root", common.Hash(ht.state.get(ht.HeadBlock.Header.Slot>>13, 1)), "head block historicRoots", common.Hash(stateRootsRoot))
+		} else {
+			fmt.Println("*** state root match ***")
+		}
+	} else {
+		log.Error("State roots not found in historic tree head block's state proof")
+	}
+	if historicRootsRoot, ok := ht.HeadBlock.GetStateValue(BsiHistoricRoots); ok {
+		if ht.historic.get(0, 1) != historicRootsRoot {
+			log.Error("Historic roots root hash does not match", "local tree root", common.Hash(ht.historic.get(0, 1)), "head block historicRoots", common.Hash(historicRootsRoot))
+		} else {
+			fmt.Println("*** historic root match ***")
+		}
+	} else {
+		log.Error("Historic roots not found in historic tree head block's state proof")
+	}
 }
 
 func verifyTailProof(proof MultiProof, tailPeriod uint64) bool {
