@@ -118,6 +118,9 @@ func (bc *BeaconChain) syncWorker() {
 	bc.chainMu.Lock()
 	for {
 		bc.debugPrint("before nextRequest")
+		if bc.storedSection != nil && bc.storedSection.headSlot < bc.storedSection.tailSlot+10 {
+			panic(nil)
+		}
 		if cs := bc.nextRequest(); cs != nil && bc.syncHeader.StateRoot != (common.Hash{}) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 			bc.newHeadReqCancel = append(bc.newHeadReqCancel, cancel)
@@ -223,28 +226,30 @@ func (bc *BeaconChain) cancelRequests(dt time.Duration) {
 }
 
 func (bc *BeaconChain) rollback(slot uint64) {
+	fmt.Println("bc.rollback", slot)
 	if slot >= uint64(bc.storedHead.Header.Slot) {
 		log.Error("Cannot roll back beacon chain", "slot", slot, "head", uint64(bc.storedHead.Header.Slot))
 	}
 	var block *BlockData
 	for {
-		block = bc.GetBlockData(slot, bc.headTree.GetStateRoot(slot), false)
-		if block != nil {
-			return
+		if block = bc.GetBlockData(slot, bc.headTree.GetStateRoot(slot), false); block != nil {
+			break
 		}
 		slot--
 		if slot < bc.tailLongTerm {
+			fmt.Println(" tail reached, reset")
 			bc.reset()
 			return
 		}
 	}
-
+	fmt.Println(" found last non-empty slot", slot, block.Header.Slot)
 	headTree := bc.makeChildTree()
 	headTree.addRoots(slot, nil, nil, true, MultiProof{})
 	headTree.HeadBlock = block
 	batch := bc.db.NewBatch()
 	bc.commitHistoricTree(batch, headTree)
 	bc.storedHead = block
+	bc.storedSection.headSlot = slot
 	bc.storeHeadTail(batch)
 	batch.Write()
 	bc.updateTreeMap()
@@ -568,7 +573,7 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 		}
 		lastCommon--
 	}
-	//bc.storedSection.headCounter = cs.headCounter   qwerty
+	bc.storedSection.headCounter = cs.headCounter
 	if lastCommon < bc.storedSection.headSlot {
 		bc.rollback(lastCommon)
 	}
