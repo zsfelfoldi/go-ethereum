@@ -44,7 +44,7 @@ type beaconClientHandler struct {
 	odr                  *LesOdr
 }
 
-func (bc *beaconClientHandler) registerMessageHandlers(h *handler) {
+func (h *beaconClientHandler) registerMessageHandlers(h *handler) {
 	h.registerMessageHandler(BeaconInitMsg, lpv5, lpvLatest)
 	h.registerMessageHandler(BeaconDataMsg, lpv5, lpvLatest)
 	h.registerMessageHandler(ExecHeadersMsg, lpv5, lpvLatest)
@@ -56,7 +56,6 @@ func (bc *beaconClientHandler) registerMessageHandlers(h *handler) {
 func (bc *beaconClientHandler) sendHandshake(*peer, *keyValueList) {}
 
 func (bc *beaconClientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
-	fmt.Println("Handshake with peer", p.id, "version", p.version)
 	updateInfo := new(beacon.UpdateInfo)
 	if err := recv.get("beacon/updateInfo", updateInfo); err == nil {
 		fmt.Println("Received update info", *updateInfo)
@@ -311,7 +310,55 @@ func (h *clientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 	return nil
 }
 
-func (h *clientHandler) peerConnected(*peer) (func(), error) {}
+func (h *clientHandler) peerConnected(*peer) (func(), error) {
+	// Register the peer locally
+	if err := h.backend.peers.register(p); err != nil {
+		p.Log().Error("Light Ethereum peer registration failed", "err", err)
+		return nil, err
+	}
+	serverConnectionGauge.Update(int64(h.backend.peers.len()))
+	// Discard all the announces after the transition
+	// Also discarding initial signal to prevent syncing during testing.
+	/*if !(noInitAnnounce || h.backend.merger.TDDReached()) {
+		h.fetcher.announce(p, &announceData{Hash: p.headInfo.Hash, Number: p.headInfo.Number, Td: p.headInfo.Td})
+	}*/
+
+	return func() {
+		p.fcServer.DumpLogs()
+		h.backend.peers.unregister(p.id)
+		serverConnectionGauge.Update(int64(h.backend.peers.len()))
+	}, nil
+}
+
+func (h *beaconClientHandler) peerConnected(*peer) (func(), error) {
+	if p.updateInfo == nil {
+		return nil, nil
+	}
+	h.backend.syncCommitteeCheckpoint.TriggerFetch()
+	sctPeer := sctServerPeer{peer: p, retriever: h.backend.retriever}
+	h.backend.syncCommitteeTracker.SyncWithPeer(sctPeer, p.updateInfo)
+
+	return func() {
+		h.backend.syncCommitteeTracker.Disconnect(sctPeer)
+	}, nil
+}
+
+func (h *vfxClientHandler) peerConnected(*peer) (func(), error) {
+	// Register peer with the server pool
+	if h.backend.serverPool != nil {
+		if nvt, err := h.backend.serverPool.RegisterNode(p.Node()); err == nil {
+			p.setValueTracker(nvt)
+			p.updateVtParams()
+		} else {
+			return nil, err
+		}
+	}
+
+	return func() {
+		p.setValueTracker(nil)
+		h.backend.serverPool.UnregisterNode(p.Node())
+	}, nil
+}
 
 func (h *clientHandler) handle(p *peer, noInitAnnounce bool) error {
 	fmt.Println("handle", p.id)
@@ -328,61 +375,9 @@ func (h *clientHandler) handle(p *peer, noInitAnnounce bool) error {
 		return err
 	}
 	fmt.Println(" handshake ok")
-	// Register peer with the server pool
-	if h.backend.serverPool != nil {
-		if nvt, err := h.backend.serverPool.RegisterNode(p.Node()); err == nil {
-			p.setValueTracker(nvt)
-			p.updateVtParams()
-			defer func() {
-				p.setValueTracker(nil)
-				h.backend.serverPool.UnregisterNode(p.Node())
-			}()
-		} else {
-			return err
-		}
-	}
-	// Register the peer locally
-	if err := h.backend.peers.register(p); err != nil {
-		p.Log().Error("Light Ethereum peer registration failed", "err", err)
-		return err
-	}
-
-	serverConnectionGauge.Update(int64(h.backend.peers.len()))
-
-	connectedAt := mclock.Now()
-	defer func() {
-		h.backend.peers.unregister(p.id)
-		connectionTimer.Update(time.Duration(mclock.Now() - connectedAt))
-		serverConnectionGauge.Update(int64(h.backend.peers.len()))
-	}()
-
-	// Discard all the announces after the transition
-	// Also discarding initial signal to prevent syncing during testing.
-	/*if !(noInitAnnounce || h.backend.merger.TDDReached()) {
-		h.fetcher.announce(p, &announceData{Hash: p.headInfo.Hash, Number: p.headInfo.Number, Td: p.headInfo.Td})
-	}*/
-	if p.updateInfo != nil {
-		h.backend.syncCommitteeCheckpoint.TriggerFetch()
-		sctPeer := sctServerPeer{peer: p, retriever: h.backend.retriever}
-		h.backend.syncCommitteeTracker.SyncWithPeer(sctPeer, p.updateInfo)
-		defer h.backend.syncCommitteeTracker.Disconnect(sctPeer)
-	}
-
-	// Mark the peer starts to be served.
-	atomic.StoreUint32(&p.serving, 1)
-	defer atomic.StoreUint32(&p.serving, 0)
-
-	// Spawn a main loop to handle all incoming messages.
-	for {
-		if err := h.handleMsg(p); err != nil {
-			p.Log().Debug("Light Ethereum message handling failed", "err", err)
-			p.fcServer.DumpLogs()
-			return err
-		}
-	}
 }
 
-func (bc *beaconClientHandler) registerMessageHandlers(h *handler) {
+func (h *clientHandler) registerMessageHandlers(h *handler) {
 	h.registerMessageHandler(AnnounceMsg, lpv1, lpv4)
 	h.registerMessageHandler(BlockHeadersMsg, lpv1, lpvLatest)
 	h.registerMessageHandler(BlockBodiesMsg, lpv1, lpvLatest)

@@ -163,3 +163,4 @@ func (c *lesCommons) setupOracle(node *node.Node, genesis common.Hash, ethconfig
 type commonHandshakeModule {
 td *big.Int, head common.Hash, headNum uint64, genesis common.Hash, forkID forkid.ID, forkFilter forkid.Filter
 }
+

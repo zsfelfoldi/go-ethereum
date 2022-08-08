@@ -331,6 +331,8 @@ func (p *peer) handshake(modules []handshakeModule) error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
+	fmt.Println("Handshake with peer", p.id, "version", p.version)
+
 	var send keyValueList
 
 	/*
