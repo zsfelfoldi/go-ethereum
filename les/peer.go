@@ -84,7 +84,7 @@ type keyValueEntry struct {
 type keyValueList []keyValueEntry
 type keyValueMap map[string]rlp.RawValue
 
-func (l keyValueList) add(key string, val interface{}) keyValueList {
+func (l *keyValueList) add(key string, val interface{}) {
 	var entry keyValueEntry
 	entry.Key = key
 	if val == nil {
@@ -94,7 +94,7 @@ func (l keyValueList) add(key string, val interface{}) keyValueList {
 	if err == nil {
 		entry.Value = enc
 	}
-	return append(l, entry)
+	*l = append(*l, entry)
 }
 
 func (l keyValueList) decode() (keyValueMap, uint64) {
@@ -365,20 +365,20 @@ func (p *peer) handshake(modules []handshakeModule) error {
 
 	/*
 		// Add some basic handshake fields
-		send = send.add("protocolVersion", uint64(p.version))
-		send = send.add("networkId", p.network)
+		send.add("protocolVersion", uint64(p.version))
+		send.add("networkId", p.network)
 		// Note: the head info announced at handshake is only used in case of server peers
 		// but dummy values are still announced by clients for compatibility with older servers
-		send = send.add("headTd", td)
-		send = send.add("headHash", head)
-		send = send.add("headNum", headNum)
-		send = send.add("genesisHash", genesis)
+		send.add("headTd", td)
+		send.add("headHash", head)
+		send.add("headNum", headNum)
+		send.add("genesisHash", genesis)
 
 		// If the protocol version is beyond les4, then pass the forkID
 		// as well. Check http://eips.ethereum.org/EIPS/eip-2124 for more
 		// spec detail.
 		if p.version >= lpv4 {
-			send = send.add("forkID", forkID)
+			send.add("forkID", forkID)
 		}
 		// Add client-specified or server-specified fields
 		if sendCallback != nil {
@@ -1087,12 +1087,6 @@ func (p *peer) HandshakeWithClient(td *big.Int, head common.Hash, headNum uint64
 			}
 		}
 
-		fmt.Println("Handshake with peer", p.id, "version", p.version)
-		if p.version >= lpv5 {
-			updateInfo := server.syncCommitteeTracker.GetUpdateInfo()
-			fmt.Println("Adding update info", updateInfo)
-			*lists = (*lists).add("beacon/updateInfo", updateInfo)
-		}
 	}, func(recv keyValueMap) error {
 		p.server = recv.get("flowControl/MRR", nil) == nil
 		if p.server {

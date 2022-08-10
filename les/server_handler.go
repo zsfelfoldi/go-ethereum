@@ -60,6 +60,33 @@ var (
 	errTooManyInvalidRequest = errors.New("too many invalid requests made")
 )
 
+type beaconServerHandler struct {
+	syncCommitteeTracker *beacon.SyncCommitteeTracker
+}
+
+func (h *beaconServerHandler) registerMessageHandlers(h *handler) {
+	h.registerMessageHandler(GetBeaconInitMsg, lpv5, lpvLatest)
+	h.registerMessageHandler(GetBeaconDataMsg, lpv5, lpvLatest)
+	h.registerMessageHandler(GetExecHeadersMsg, lpv5, lpvLatest)
+	h.registerMessageHandler(GetCommitteeProofsMsg, lpv5, lpvLatest)
+}
+
+func (h *beaconServerHandler) sendHandshake(p *peer, send *keyValueList) {
+	if p.version < lpv5 {
+		return
+	}
+	updateInfo := h.syncCommitteeTracker.GetUpdateInfo()
+	fmt.Println("Adding update info", updateInfo)
+	*lists = (*lists).add("beacon/updateInfo", updateInfo)
+}
+
+func (h *beaconServerHandler) receiveHandshake(p *peer, recv keyValueMap) error {
+	return nil
+}
+
+func (h *beaconServerHandler) handleMessage(p *peer, msg p2p.Msg) error {
+}
+
 // serverHandler is responsible for serving light client and process
 // all incoming light requests.
 type serverHandler struct {
@@ -90,6 +117,35 @@ func newServerHandler(server *LesServer, blockchain *core.BlockChain, chainDb et
 	return handler
 }
 
+func (h *serverHandler) registerMessageHandlers(h *handler) {
+	h.registerMessageHandler(GetBlockHeadersMsg, lpv1, lpvLatest)
+	h.registerMessageHandler(GetBlockBodiesMsg, lpv1, lpvLatest)
+	h.registerMessageHandler(GetCodeMsg, lpv1, lpvLatest)
+	h.registerMessageHandler(GetReceiptsMsg, lpv1, lpvLatest)
+	h.registerMessageHandler(GetProofsV2Msg, lpv2, lpvLatest)
+	h.registerMessageHandler(GetHelperTrieProofsMsg, lpv2, lpv4)
+	h.registerMessageHandler(SendTxV2Msg, lpv2, lpvLatest)
+	h.registerMessageHandler(GetTxStatusMsg, lpv2, lpvLatest)
+}
+
+func (h *serverHandler) sendHandshake(p *peer, send *keyValueList) {
+	sendGeneralInfo(p, send, forkid.NewID(h.blockchain.Config(), h.blockchain.Genesis().Hash(), h.blockchain.CurrentBlock().NumberU64()))
+	sendHeadInfo(send, p.headInfo)
+}
+
+func (h *serverHandler) receiveHandshake(p *peer, recv keyValueMap) error {
+	if err := receiveGeneralInfo(p, recv, h.forkFilter); err != nil {
+		return err
+	}
+
+	//
+
+	return nil
+}
+
+func (h *serverHandler) handleMessage(p *peer, msg p2p.Msg) error {
+}
+
 //func (h *serverHandler)
 
 // start starts the server handler.
@@ -102,15 +158,6 @@ func (h *serverHandler) start() {
 func (h *serverHandler) stop() {
 	close(h.closeCh)
 	h.wg.Wait()
-}
-
-// runPeer is the p2p protocol run function for the given version.
-func (h *serverHandler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter) error {
-	peer := newClientPeer(int(version), h.server.config.NetworkId, p, newMeteredMsgWriter(rw, int(version)))
-	defer peer.close()
-	h.wg.Add(1)
-	defer h.wg.Done()
-	return h.handle(peer)
 }
 
 func (h *serverHandler) handle(p *clientPeer) error {

@@ -53,14 +53,19 @@ func (h *beaconClientHandler) registerMessageHandlers(h *handler) {
 	h.registerMessageHandler(SignedBeaconHeadsMsg, lpv5, lpvLatest)
 }
 
-func (bc *beaconClientHandler) sendHandshake(*peer, *keyValueList) {}
+func (h *beaconClientHandler) sendHandshake(p *peer, send *keyValueList) {
+}
 
-func (bc *beaconClientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
-	updateInfo := new(beacon.UpdateInfo)
-	if err := recv.get("beacon/updateInfo", updateInfo); err == nil {
-		fmt.Println("Received update info", *updateInfo)
-		p.updateInfo = updateInfo
+func (h *beaconClientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
+	if p.version < lpv5 {
+		return nil
 	}
+	updateInfo := new(beacon.UpdateInfo)
+	if err := recv.get("beacon/updateInfo", updateInfo); err != nil {
+		return err
+	}
+	fmt.Println("Received update info", *updateInfo)
+	p.updateInfo = updateInfo
 	return nil
 }
 
@@ -230,12 +235,20 @@ func (d *dummyChain) Genesis() *types.Block { return (*light.LightChain)(d).Gene
 
 func (d *dummyChain) CurrentHeader() *types.Header { return d.Genesis().Header() }
 
-func (h *clientHandler) sendHandshake(*peer, *keyValueList) {
-	p.announceType = announceTypeSimple
-	*lists = (*lists).add("announceType", p.announceType)
+func (h *clientHandler) sendHandshake(p *peer, send *keyValueList) {
+	sendGeneralInfo(p, send, forkid.NewID(h.backend.blockchain.Config(), h.backend.genesis, h.backend.blockchain.LastKnownHeader().Number.Uint64()))
+	if p.version < lpv5 {
+		p.announceType = announceTypeSimple
+		*lists = (*lists).add("announceType", p.announceType)
+		sendHeadInfo(send, blockInfo{})
+	}
 }
 
 func (h *clientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
+	if err := receiveGeneralInfo(p, recv, h.forkFilter); err != nil {
+		return err
+	}
+
 	var (
 		rHash common.Hash
 		rNum  uint64
@@ -311,6 +324,9 @@ func (h *clientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 }
 
 func (h *clientHandler) peerConnected(*peer) (func(), error) {
+	if h.backend.peers.len() >= h.backend.config.LightPeers && !p.Peer.Info().Network.Trusted {
+		return p2p.DiscTooManyPeers
+	}
 	// Register the peer locally
 	if err := h.backend.peers.register(p); err != nil {
 		p.Log().Error("Light Ethereum peer registration failed", "err", err)
@@ -358,23 +374,6 @@ func (h *vfxClientHandler) peerConnected(*peer) (func(), error) {
 		p.setValueTracker(nil)
 		h.backend.serverPool.UnregisterNode(p.Node())
 	}, nil
-}
-
-func (h *clientHandler) handle(p *peer, noInitAnnounce bool) error {
-	fmt.Println("handle", p.id)
-	if h.backend.peers.len() >= h.backend.config.LightPeers && !p.Peer.Info().Network.Trusted {
-		return p2p.DiscTooManyPeers
-	}
-	p.Log().Debug("Light Ethereum peer connected", "name", p.Name())
-
-	// Execute the LES handshake
-	forkid := forkid.NewID(h.backend.blockchain.Config(), h.backend.genesis, 0 /*h.backend.blockchain.CurrentHeader().Number.Uint64()*/)
-	if err := p.HandshakeWithServer(h.backend.blockchain.Genesis().Hash(), forkid, h.forkFilter); err != nil {
-		fmt.Println(" handshake err", err)
-		p.Log().Debug("Light Ethereum handshake failed", "err", err)
-		return err
-	}
-	fmt.Println(" handshake ok")
 }
 
 func (h *clientHandler) registerMessageHandlers(h *handler) {
