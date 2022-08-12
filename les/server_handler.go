@@ -68,6 +68,7 @@ type serverHandler struct {
 	chainDb    ethdb.Database
 	txpool     *core.TxPool
 	server     *LesServer
+	fcWrapper  *fcRequestWrapper
 
 	closeCh chan struct{}  // Channel used to exit all background routines of handler.
 	wg      sync.WaitGroup // WaitGroup used to track all background routines of handler.
@@ -91,8 +92,65 @@ func newServerHandler(server *LesServer, blockchain *core.BlockChain, chainDb et
 }
 
 func (h *serverHandler) sendHandshake(p *peer, send *keyValueList) {
-	sendGeneralInfo(p, send, forkid.NewID(h.blockchain.Config(), h.blockchain.Genesis().Hash(), h.blockchain.CurrentBlock().NumberU64()))
+	// Note: peer.headInfo should contain the last head announced to the client by us.
+	// The values announced by the client in the handshake are dummy values for compatibility reasons and should be ignored.
+	head := h.blockchain.CurrentHeader()
+	hash := head.Hash()
+	number := head.Number.Uint64()
+	p.headInfo = blockInfo{Hash: hash, Number: number, Td: h.blockchain.GetTd(hash, number)}
 	sendHeadInfo(send, p.headInfo)
+	sendGeneralInfo(p, send, forkid.NewID(h.blockchain.Config(), h.blockchain.Genesis().Hash(), number))
+
+	recentTx := server.handler.blockchain.TxLookupLimit()
+	if recentTx != txIndexUnlimited {
+		if recentTx < blockSafetyMargin {
+			recentTx = txIndexDisabled
+		} else {
+			recentTx -= blockSafetyMargin - txIndexRecentOffset
+		}
+	}
+	if recentTx != txIndexUnlimited && p.version < lpv4 {
+		return errors.New("Cannot serve old clients without a complete tx index")
+	}
+
+	// Add some information which services server can offer.
+	send.add("serveHeaders", nil)
+	send.add("serveChainSince", uint64(0))
+	send.add("serveStateSince", uint64(0))
+
+	// If local ethereum node is running in archive mode, advertise ourselves we have
+	// all version state data. Otherwise only recent state is available.
+	stateRecent := uint64(core.TriesInMemory - blockSafetyMargin)
+	if server.archiveMode {
+		stateRecent = 0
+	}
+	send.add("serveRecentState", stateRecent)
+	send.add("txRelay", nil)
+	if p.version >= lpv4 {
+		send.add("recentTxLookup", recentTx)
+	}
+	send.add("flowControl/BL", server.defParams.BufLimit)
+	send.add("flowControl/MRR", server.defParams.MinRecharge)
+
+	var costList RequestCostList
+	if server.costTracker.testCostList != nil {
+		costList = server.costTracker.testCostList
+	} else {
+		costList = server.costTracker.makeCostList(server.costTracker.globalFactor())
+	}
+	send.add("flowControl/MRC", costList)
+	p.fcCosts = costList.decode(ProtocolLengths[uint(p.version)])
+	p.fcParams = server.defParams
+
+	// Add advertised checkpoint and register block height which
+	// client can verify the checkpoint validity.
+	if server.oracle != nil && server.oracle.IsRunning() {
+		cp, height := server.oracle.StableCheckpoint()
+		if cp != nil {
+			send.add("checkpoint/value", cp)
+			send.add("checkpoint/registerHeight", height)
+		}
+	}
 }
 
 func (h *serverHandler) receiveHandshake(p *peer, recv keyValueMap) error {
@@ -100,23 +158,52 @@ func (h *serverHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 		return err
 	}
 
-	//
-
+	p.server = recv.get("flowControl/MRR", nil) == nil
+	if p.server {
+		p.announceType = announceTypeNone // connected to another server, send no messages
+	} else {
+		if recv.get("announceType", &p.announceType) != nil {
+			// set default announceType on server side
+			p.announceType = announceTypeSimple
+		}
+	}
 	return nil
 }
 
 func (h *serverHandler) peerConnected(*peer) (func(), error) {
+	// Reject light clients if server is not synced. Put this checking here, so
+	// that "non-synced" les-server peers are still allowed to keep the connection.
+	if !h.synced() { //TODO synced status after merge
+		p.Log().Debug("Light server not synced, rejecting peer")
+		return nil, p2p.DiscRequested
+	}
+
+	// Setup flow control mechanism for the peer
+	p.fcClient = flowcontrol.NewClientNode(h.server.fcManager, p.fcParams)
+
+	// Register the peer into the peerset and clientpool
+	if err := h.server.peers.register(p); err != nil {
+		p.fcClient.Disconnect()
+		p.fcClient = nil
+		return nil, err
+	}
+
+	// Mark the peer as being served.
+	atomic.StoreUint32(&p.serving, 1) //TODO ???
+
+	return func() {
+		atomic.StoreUint32(&p.serving, 0)
+
+		//wg.Wait() // Ensure all background task routines have exited. //TODO ???
+		h.server.peers.unregister(p.ID())
+
+		p.fcClient.Disconnect()
+		p.fcClient = nil
+	}, nil
 }
 
-func (h *serverHandler) registerMessageHandlers(h *handler) {
-	h.registerMessageHandler(GetBlockHeadersMsg, lpv1, lpvLatest)
-	h.registerMessageHandler(GetBlockBodiesMsg, lpv1, lpvLatest)
-	h.registerMessageHandler(GetCodeMsg, lpv1, lpvLatest)
-	h.registerMessageHandler(GetReceiptsMsg, lpv1, lpvLatest)
-	h.registerMessageHandler(GetProofsV2Msg, lpv2, lpvLatest)
-	h.registerMessageHandler(GetHelperTrieProofsMsg, lpv2, lpv4)
-	h.registerMessageHandler(SendTxV2Msg, lpv2, lpvLatest)
-	h.registerMessageHandler(GetTxStatusMsg, lpv2, lpvLatest)
+func (h *serverHandler) messageHandlers() messageHandlers {
+	return h.fcWrapper.wrapMessageHandlers(RequestServer{BlockChain: h.blockchain, TxPool: h.txpool}.MessageHandlers())
 }
 
 func (h *serverHandler) handleMessage(p *peer, msg p2p.Msg) error {
@@ -134,278 +221,6 @@ func (h *serverHandler) start() {
 func (h *serverHandler) stop() {
 	close(h.closeCh)
 	h.wg.Wait()
-}
-
-func (h *serverHandler) handle(p *clientPeer) error {
-	p.Log().Debug("Light Ethereum peer connected", "name", p.Name())
-
-	// Execute the LES handshake
-	var (
-		head   = h.blockchain.CurrentHeader()
-		hash   = head.Hash()
-		number = head.Number.Uint64()
-		td     = h.blockchain.GetTd(hash, number)
-		forkID = forkid.NewID(h.blockchain.Config(), h.blockchain.Genesis().Hash(), h.blockchain.CurrentBlock().NumberU64())
-	)
-	if err := p.Handshake(td, hash, number, h.blockchain.Genesis().Hash(), forkID, h.forkFilter, h.server); err != nil {
-		p.Log().Debug("Light Ethereum handshake failed", "err", err)
-		return err
-	}
-	// Connected to another server, no messages expected, just wait for disconnection
-	if p.server {
-		if err := h.server.serverset.register(p); err != nil {
-			return err
-		}
-		_, err := p.rw.ReadMsg()
-		h.server.serverset.unregister(p)
-		return err
-	}
-	// Setup flow control mechanism for the peer
-	p.fcClient = flowcontrol.NewClientNode(h.server.fcManager, p.fcParams)
-	defer p.fcClient.Disconnect()
-
-	// Reject light clients if server is not synced. Put this checking here, so
-	// that "non-synced" les-server peers are still allowed to keep the connection.
-	/*if !h.synced() {		//TODO synced status after merge
-		p.Log().Debug("Light server not synced, rejecting peer")
-		return p2p.DiscRequested
-	}*/
-
-	// Register the peer into the peerset and clientpool
-	if err := h.server.peers.register(p); err != nil {
-		return err
-	}
-	if p.balance = h.server.clientPool.Register(p); p.balance == nil {
-		h.server.peers.unregister(p.ID())
-		p.Log().Debug("Client pool already closed")
-		return p2p.DiscRequested
-	}
-	if h.server.syncCommitteeTracker != nil {
-		h.server.syncCommitteeTracker.Activate(p)
-	}
-	p.connectedAt = mclock.Now()
-
-	var wg sync.WaitGroup // Wait group used to track all in-flight task routines.
-	defer func() {
-		wg.Wait() // Ensure all background task routines have exited.
-		if h.server.syncCommitteeTracker != nil {
-			h.server.syncCommitteeTracker.Deactivate(p, true)
-		}
-		h.server.clientPool.Unregister(p)
-		h.server.peers.unregister(p.ID())
-		p.balance = nil
-		connectionTimer.Update(time.Duration(mclock.Now() - p.connectedAt))
-	}()
-
-	// Mark the peer as being served.
-	atomic.StoreUint32(&p.serving, 1)
-	defer atomic.StoreUint32(&p.serving, 0)
-
-	// Spawn a main loop to handle all incoming messages.
-	for {
-		select {
-		case err := <-p.errCh:
-			p.Log().Debug("Failed to send light ethereum response", "err", err)
-			return err
-		default:
-		}
-		if err := h.handleMsg(p, &wg); err != nil {
-			p.Log().Debug("Light Ethereum message handling failed", "err", err)
-			return err
-		}
-	}
-}
-
-// beforeHandle will do a series of prechecks before handling message.
-func (h *serverHandler) beforeHandle(p *clientPeer, reqID, responseCount uint64, msg p2p.Msg, reqCnt uint64, maxCount uint64) (*servingTask, uint64) {
-	// Ensure that the request sent by client peer is valid
-	inSizeCost := h.server.costTracker.realCost(0, msg.Size, 0)
-	if reqCnt == 0 || reqCnt > maxCount {
-		p.fcClient.OneTimeCost(inSizeCost)
-		return nil, 0
-	}
-	// Ensure that the client peer complies with the flow control
-	// rules agreed by both sides.
-	if p.isFrozen() {
-		p.fcClient.OneTimeCost(inSizeCost)
-		return nil, 0
-	}
-	maxCost := p.fcCosts.getMaxCost(msg.Code, reqCnt)
-	accepted, bufShort, priority := p.fcClient.AcceptRequest(reqID, responseCount, maxCost)
-	if !accepted {
-		p.freeze()
-		p.Log().Error("Request came too early", "remaining", common.PrettyDuration(time.Duration(bufShort*1000000/p.fcParams.MinRecharge)))
-		p.fcClient.OneTimeCost(inSizeCost)
-		return nil, 0
-	}
-	// Create a multi-stage task, estimate the time it takes for the task to
-	// execute, and cache it in the request service queue.
-	factor := h.server.costTracker.globalFactor()
-	if factor < 0.001 {
-		factor = 1
-		p.Log().Error("Invalid global cost factor", "factor", factor)
-	}
-	maxTime := uint64(float64(maxCost) / factor)
-	task := h.server.servingQueue.newTask(p, maxTime, priority)
-	if !task.start() {
-		p.fcClient.RequestProcessed(reqID, responseCount, maxCost, inSizeCost)
-		return nil, 0
-	}
-	return task, maxCost
-}
-
-// Afterhandle will perform a series of operations after message handling,
-// such as updating flow control data, sending reply, etc.
-func (h *serverHandler) afterHandle(p *clientPeer, reqID, responseCount uint64, msg p2p.Msg, maxCost uint64, reqCnt uint64, task *servingTask, reply *reply) {
-	//if reply != nil {
-	task.done()
-	//}
-	p.responseLock.Lock()
-	defer p.responseLock.Unlock()
-
-	// Short circuit if the client is already frozen.
-	if p.isFrozen() {
-		realCost := h.server.costTracker.realCost(task.servingTime, msg.Size, 0)
-		p.fcClient.RequestProcessed(reqID, responseCount, maxCost, realCost)
-		return
-	}
-	// Positive correction buffer value with real cost.
-	var replySize uint32
-	if reply != nil {
-		replySize = reply.size()
-	}
-	var realCost uint64
-	if h.server.costTracker.testing {
-		realCost = maxCost // Assign a fake cost for testing purpose
-	} else {
-		realCost = h.server.costTracker.realCost(task.servingTime, msg.Size, replySize)
-		if realCost > maxCost {
-			realCost = maxCost
-		}
-	}
-	bv := p.fcClient.RequestProcessed(reqID, responseCount, maxCost, realCost)
-	if reply != nil {
-		// Feed cost tracker request serving statistic.
-		h.server.costTracker.updateStats(msg.Code, reqCnt, task.servingTime, realCost)
-		// Reduce priority "balance" for the specific peer.
-		p.balance.RequestServed(realCost)
-		p.queueSend(func() {
-			if err := reply.send(bv); err != nil {
-				select {
-				case p.errCh <- err:
-				default:
-				}
-			}
-		})
-	}
-}
-
-// handleMsg is invoked whenever an inbound message is received from a remote
-// peer. The remote connection is torn down upon returning any error.
-func (h *serverHandler) handleMsg(p *clientPeer, wg *sync.WaitGroup) error {
-	// Read the next message from the remote peer, and ensure it's fully consumed
-	msg, err := p.rw.ReadMsg()
-	if err != nil {
-		return err
-	}
-	p.Log().Trace("Light Ethereum message arrived", "code", msg.Code, "bytes", msg.Size)
-
-	// Discard large message which exceeds the limitation.
-	if msg.Size > ProtocolMaxMsgSize {
-		clientErrorMeter.Mark(1)
-		return errResp(ErrMsgTooLarge, "%v > %v", msg.Size, ProtocolMaxMsgSize)
-	}
-	defer msg.Discard()
-
-	// Lookup the request handler table, ensure it's supported
-	// message type by the protocol.
-	req, ok := Les3[msg.Code]
-	if !ok && p.version >= lpv5 {
-		req, ok = Les5[msg.Code] //TODO do this in a nicer way
-	}
-	fmt.Println("*** received msg", msg.Code, ok)
-	if !ok {
-		p.Log().Trace("Received invalid message", "code", msg.Code)
-		clientErrorMeter.Mark(1)
-		return errResp(ErrInvalidMsgCode, "%v", msg.Code)
-	}
-	p.Log().Trace("Received " + req.Name)
-
-	// Decode the p2p message, resolve the concrete handler for it.
-	serve, reqID, reqCnt, err := req.Handle(msg)
-	if err != nil {
-		fmt.Println("*** decode error", err)
-		clientErrorMeter.Mark(1)
-		return errResp(ErrDecode, "%v: %v", msg, err)
-	}
-	if metrics.EnabledExpensive {
-		req.InPacketsMeter.Mark(1)
-		req.InTrafficMeter.Mark(int64(msg.Size))
-	}
-	p.responseCount++
-	responseCount := p.responseCount
-
-	// First check this client message complies all rules before
-	// handling it and return a processor if all checks are passed.
-	task, maxCost := h.beforeHandle(p, reqID, responseCount, msg, reqCnt, req.MaxCount)
-	if task == nil {
-		fmt.Println("*** no task")
-		return nil
-	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-
-		reply := serve(h, p, task.waitOrStop)
-		h.afterHandle(p, reqID, responseCount, msg, maxCost, reqCnt, task, reply)
-
-		if metrics.EnabledExpensive {
-			size := uint32(0)
-			if reply != nil {
-				size = reply.size()
-			}
-			req.OutPacketsMeter.Mark(1)
-			req.OutTrafficMeter.Mark(int64(size))
-			req.ServingTimeMeter.Update(time.Duration(task.servingTime))
-		}
-	}()
-	// If the client has made too much invalid request(e.g. request a non-existent data),
-	// reject them to prevent SPAM attack.
-	if p.getInvalid() > maxRequestErrors {
-		clientErrorMeter.Mark(1)
-		return errTooManyInvalidRequest
-	}
-	return nil
-}
-
-// BlockChain implements serverBackend
-func (h *serverHandler) BlockChain() *core.BlockChain {
-	return h.blockchain
-}
-
-// BeaconChain implements serverBackend
-func (h *serverHandler) BeaconChain() *beacon.BeaconChain {
-	return h.server.beaconChain
-}
-
-// SyncCommitteeTracker implements serverBackend
-func (h *serverHandler) SyncCommitteeTracker() *beacon.SyncCommitteeTracker {
-	return h.server.syncCommitteeTracker
-}
-
-// TxPool implements serverBackend
-func (h *serverHandler) TxPool() *core.TxPool {
-	return h.txpool
-}
-
-// ArchiveMode implements serverBackend
-func (h *serverHandler) ArchiveMode() bool {
-	return h.server.archiveMode
-}
-
-// AddTxsSync implements serverBackend
-func (h *serverHandler) AddTxsSync() bool {
-	return h.addTxsSync
 }
 
 // getAccount retrieves an account from the state based on root.
@@ -494,6 +309,7 @@ func (h *serverHandler) broadcastLoop() {
 
 type beaconServerHandler struct {
 	syncCommitteeTracker *beacon.SyncCommitteeTracker
+	beaconChain          *beacon.BeaconChain
 }
 
 func (h *beaconServerHandler) sendHandshake(p *peer, send *keyValueList) {
@@ -502,7 +318,7 @@ func (h *beaconServerHandler) sendHandshake(p *peer, send *keyValueList) {
 	}
 	updateInfo := h.syncCommitteeTracker.GetUpdateInfo()
 	fmt.Println("Adding update info", updateInfo)
-	*lists = (*lists).add("beacon/updateInfo", updateInfo)
+	send.add("beacon/updateInfo", updateInfo)
 }
 
 func (h *beaconServerHandler) receiveHandshake(p *peer, recv keyValueMap) error {
@@ -510,14 +326,32 @@ func (h *beaconServerHandler) receiveHandshake(p *peer, recv keyValueMap) error 
 }
 
 func (h *beaconServerHandler) peerConnected(*peer) (func(), error) {
+	if h.server.syncCommitteeTracker == nil {
+		return nil, nil
+	}
+	h.server.syncCommitteeTracker.Activate(p)
+
+	return func() {
+		h.server.syncCommitteeTracker.Deactivate(p, true)
+	}, nil
 }
 
-func (h *beaconServerHandler) registerMessageHandlers(h *handler) {
-	h.registerMessageHandler(GetBeaconInitMsg, lpv5, lpvLatest)
-	h.registerMessageHandler(GetBeaconDataMsg, lpv5, lpvLatest)
-	h.registerMessageHandler(GetExecHeadersMsg, lpv5, lpvLatest)
-	h.registerMessageHandler(GetCommitteeProofsMsg, lpv5, lpvLatest)
+func (h *beaconServerHandler) messageHandlers() messageHandlers {
+	return h.fcWrapper.wrapMessageHandlers(BeaconRequestServer{SyncCommitteeTracker: h.syncCommitteeTracker, BeaconChain: h.beaconChain}.MessageHandlers())
 }
 
-func (h *beaconServerHandler) handleMessage(p *peer, msg p2p.Msg) error {
+type vfxServerHandler struct {
+}
+
+func (h *vfxServerHandler) peerConnected(*peer) (func(), error) {
+	if p.balance = h.server.clientPool.Register(p); p.balance == nil {
+		h.server.peers.unregister(p.ID())
+		p.Log().Debug("Client pool already closed")
+		return nil, p2p.DiscRequested
+	}
+
+	return func() {
+		h.server.clientPool.Unregister(p)
+		p.balance = nil
+	}, nil
 }

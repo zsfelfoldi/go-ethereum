@@ -90,7 +90,7 @@ func (h *clientHandler) sendHandshake(p *peer, send *keyValueList) {
 	sendGeneralInfo(p, send, forkid.NewID(h.backend.blockchain.Config(), h.backend.genesis, h.backend.blockchain.LastKnownHeader().Number.Uint64()))
 	if p.version < lpv5 {
 		p.announceType = announceTypeSimple
-		*lists = (*lists).add("announceType", p.announceType)
+		send.add("announceType", p.announceType)
 		sendHeadInfo(send, blockInfo{})
 	}
 }

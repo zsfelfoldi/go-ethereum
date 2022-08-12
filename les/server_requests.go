@@ -33,15 +33,147 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 )
 
-// serverBackend defines the backend functions needed for serving LES requests
-type serverBackend interface {
-	ArchiveMode() bool
-	AddTxsSync() bool
-	BlockChain() *core.BlockChain
-	TxPool() *core.TxPool
-	GetHelperTrie(typ uint, index uint64) *trie.Trie
-	BeaconChain() *beacon.BeaconChain
-	SyncCommitteeTracker() *beacon.SyncCommitteeTracker
+type fcRequestWrapper struct {
+	costTracker  *costTracker
+	servingQueue *servingQueue
+}
+
+func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandler) messageHandlers {
+	wrappedHandlers := make(messageHandlers, len(fcHandlers))
+	for i, req := range fcHandlers {
+		wrappedHandlers[i] = messageHandlerWithCodeAndVersion{
+			code:         req.Code,
+			firstVersion: req.FirstVersion,
+			lastVersion:  req.LastVersion,
+			handler: func(p *peer, msg *p2p.Msg) error {
+				// Decode the p2p message, resolve the concrete handler for it.
+				serve, reqID, reqCnt, err := req.Handle(msg)
+				if err != nil {
+					fmt.Println("*** decode error", err)
+					clientErrorMeter.Mark(1)
+					return errResp(ErrDecode, "%v: %v", msg, err)
+				}
+				if metrics.EnabledExpensive {
+					req.InPacketsMeter.Mark(1)
+					req.InTrafficMeter.Mark(int64(msg.Size))
+				}
+				p.responseCount++
+				responseCount := p.responseCount
+
+				// Ensure that the request sent by client peer is valid
+				inSizeCost := f.costTracker.realCost(0, msg.Size, 0)
+				if reqCnt == 0 || reqCnt > maxCount {
+					p.fcClient.OneTimeCost(inSizeCost)
+					return nil
+				}
+				// Ensure that the client peer complies with the flow control
+				// rules agreed by both sides.
+				if p.isFrozen() {
+					p.fcClient.OneTimeCost(inSizeCost)
+					return nil
+				}
+				maxCost := p.fcCosts.getMaxCost(msg.Code, reqCnt)
+				accepted, bufShort, priority := p.fcClient.AcceptRequest(reqID, responseCount, maxCost)
+				if !accepted {
+					p.freeze()
+					p.Log().Error("Flow control buffer too low", "time until sufficiently recharged", common.PrettyDuration(time.Duration(bufShort*1000000/p.fcParams.MinRecharge)))
+					p.fcClient.OneTimeCost(inSizeCost)
+					return nil
+				}
+				// Create a multi-stage task, estimate the time it takes for the task to
+				// execute, and cache it in the request service queue.
+				factor := f.costTracker.globalFactor()
+				if factor < 0.001 {
+					factor = 1
+					p.Log().Error("Invalid global cost factor", "factor", factor)
+				}
+				maxTime := uint64(float64(maxCost) / factor)
+				task := f.servingQueue.newTask(p, maxTime, priority)
+				if !task.start() {
+					p.fcClient.RequestProcessed(reqID, responseCount, maxCost, inSizeCost)
+					return nil, 0
+				}
+				wg.Add(1) //TODO ???
+				go func() {
+					defer wg.Done()
+
+					reply := serve(p, task.waitOrStop)
+					//if reply != nil {
+					task.done()
+					//}
+					p.responseLock.Lock()
+					defer p.responseLock.Unlock()
+
+					// Short circuit if the client is already frozen.
+					if p.isFrozen() {
+						realCost := f.costTracker.realCost(task.servingTime, msg.Size, 0)
+						p.fcClient.RequestProcessed(reqID, responseCount, maxCost, realCost)
+						return
+					}
+					// Positive correction buffer value with real cost.
+					var replySize uint32
+					if reply != nil {
+						replySize = reply.size()
+					}
+					var realCost uint64
+					if f.costTracker.testing {
+						realCost = maxCost // Assign a fake cost for testing purpose
+					} else {
+						realCost = f.costTracker.realCost(task.servingTime, msg.Size, replySize)
+						if realCost > maxCost {
+							realCost = maxCost
+						}
+					}
+					bv := p.fcClient.RequestProcessed(reqID, responseCount, maxCost, realCost)
+					if reply != nil {
+						// Feed cost tracker request serving statistic.
+						f.costTracker.updateStats(msg.Code, reqCnt, task.servingTime, realCost)
+						// Reduce priority "balance" for the specific peer.
+						p.balance.RequestServed(realCost)
+						p.queueSend(func() {
+							if err := reply.send(bv); err != nil {
+								select {
+								case p.errCh <- err:
+								default:
+								}
+							}
+						})
+					}
+
+					if metrics.EnabledExpensive {
+						size := uint32(0)
+						if reply != nil {
+							size = reply.size()
+						}
+						req.OutPacketsMeter.Mark(1)
+						req.OutTrafficMeter.Mark(int64(size))
+						req.ServingTimeMeter.Update(time.Duration(task.servingTime))
+					}
+				}()
+				// If the client has made too much invalid request(e.g. request a non-existent data),
+				// reject them to prevent SPAM attack.
+				if p.getInvalid() > maxRequestErrors {
+					clientErrorMeter.Mark(1)
+					return errTooManyInvalidRequest
+				}
+				return nil
+			},
+		}
+	}
+	return wrapped
+}
+
+type RequestServer struct {
+	ArchiveMode   bool
+	AddTxsSync    bool
+	BlockChain    *core.BlockChain
+	TxPool        *core.TxPool
+	GetHelperTrie func(typ uint, index uint64) *trie.Trie
+}
+
+type BeaconRequestServer struct {
+	BeaconChain          *beacon.BeaconChain
+	SyncCommitteeTracker *beacon.SyncCommitteeTracker
 }
 
 // Decoder is implemented by the messages passed to the handler functions
@@ -49,11 +181,12 @@ type Decoder interface {
 	Decode(val interface{}) error
 }
 
-// RequestType is a static struct that describes an LES request type and references
+// FlowControlledRequest is a static struct that describes an LES request type and references
 // its handler function.
-type RequestType struct {
+type FlowControlledHandler struct {
 	Name                                                             string
-	MaxCount                                                         uint64
+	Code, FirstVersion, LastVersion                                  uint
+	MaxCount                                                         uin
 	InPacketsMeter, InTrafficMeter, OutPacketsMeter, OutTrafficMeter metrics.Meter
 	ServingTimeMeter                                                 metrics.Timer
 	Handle                                                           func(msg Decoder) (serve serveRequestFn, reqID, amount uint64, err error)
@@ -65,143 +198,181 @@ type RequestType struct {
 // needs to be throttled. If it returns false then the process is terminated.
 // The reply is not sent by this function yet. The flow control feedback value is supplied
 // by the protocol handler when calling the send function of the returned reply struct.
-type serveRequestFn func(backend serverBackend, peer *clientPeer, waitOrStop func() bool) *reply
+type serveRequestFn func(peer *clientPeer, waitOrStop func() bool) *reply
 
-// Les3 contains the request types supported by les/2 and les/3
-var Les3 = map[uint64]RequestType{
-	GetBlockHeadersMsg: {
-		Name:             "block header request",
-		MaxCount:         MaxHeaderFetch,
-		InPacketsMeter:   miscInHeaderPacketsMeter,
-		InTrafficMeter:   miscInHeaderTrafficMeter,
-		OutPacketsMeter:  miscOutHeaderPacketsMeter,
-		OutTrafficMeter:  miscOutHeaderTrafficMeter,
-		ServingTimeMeter: miscServingTimeHeaderTimer,
-		Handle:           handleGetBlockHeaders,
-	},
-	GetBlockBodiesMsg: {
-		Name:             "block bodies request",
-		MaxCount:         MaxBodyFetch,
-		InPacketsMeter:   miscInBodyPacketsMeter,
-		InTrafficMeter:   miscInBodyTrafficMeter,
-		OutPacketsMeter:  miscOutBodyPacketsMeter,
-		OutTrafficMeter:  miscOutBodyTrafficMeter,
-		ServingTimeMeter: miscServingTimeBodyTimer,
-		Handle:           handleGetBlockBodies,
-	},
-	GetCodeMsg: {
-		Name:             "code request",
-		MaxCount:         MaxCodeFetch,
-		InPacketsMeter:   miscInCodePacketsMeter,
-		InTrafficMeter:   miscInCodeTrafficMeter,
-		OutPacketsMeter:  miscOutCodePacketsMeter,
-		OutTrafficMeter:  miscOutCodeTrafficMeter,
-		ServingTimeMeter: miscServingTimeCodeTimer,
-		Handle:           handleGetCode,
-	},
-	GetReceiptsMsg: {
-		Name:             "receipts request",
-		MaxCount:         MaxReceiptFetch,
-		InPacketsMeter:   miscInReceiptPacketsMeter,
-		InTrafficMeter:   miscInReceiptTrafficMeter,
-		OutPacketsMeter:  miscOutReceiptPacketsMeter,
-		OutTrafficMeter:  miscOutReceiptTrafficMeter,
-		ServingTimeMeter: miscServingTimeReceiptTimer,
-		Handle:           handleGetReceipts,
-	},
-	GetProofsV2Msg: {
-		Name:             "les/2 proofs request",
-		MaxCount:         MaxProofsFetch,
-		InPacketsMeter:   miscInTrieProofPacketsMeter,
-		InTrafficMeter:   miscInTrieProofTrafficMeter,
-		OutPacketsMeter:  miscOutTrieProofPacketsMeter,
-		OutTrafficMeter:  miscOutTrieProofTrafficMeter,
-		ServingTimeMeter: miscServingTimeTrieProofTimer,
-		Handle:           handleGetProofs,
-	},
-	GetHelperTrieProofsMsg: {
-		Name:             "helper trie proof request",
-		MaxCount:         MaxHelperTrieProofsFetch,
-		InPacketsMeter:   miscInHelperTriePacketsMeter,
-		InTrafficMeter:   miscInHelperTrieTrafficMeter,
-		OutPacketsMeter:  miscOutHelperTriePacketsMeter,
-		OutTrafficMeter:  miscOutHelperTrieTrafficMeter,
-		ServingTimeMeter: miscServingTimeHelperTrieTimer,
-		Handle:           handleGetHelperTrieProofs,
-	},
-	SendTxV2Msg: {
-		Name:             "new transactions",
-		MaxCount:         MaxTxSend,
-		InPacketsMeter:   miscInTxsPacketsMeter,
-		InTrafficMeter:   miscInTxsTrafficMeter,
-		OutPacketsMeter:  miscOutTxsPacketsMeter,
-		OutTrafficMeter:  miscOutTxsTrafficMeter,
-		ServingTimeMeter: miscServingTimeTxTimer,
-		Handle:           handleSendTx,
-	},
-	GetTxStatusMsg: {
-		Name:             "transaction status query request",
-		MaxCount:         MaxTxStatus,
-		InPacketsMeter:   miscInTxStatusPacketsMeter,
-		InTrafficMeter:   miscInTxStatusTrafficMeter,
-		OutPacketsMeter:  miscOutTxStatusPacketsMeter,
-		OutTrafficMeter:  miscOutTxStatusTrafficMeter,
-		ServingTimeMeter: miscServingTimeTxStatusTimer,
-		Handle:           handleGetTxStatus,
-	},
+func (s *RequestServer) MessageHandlers() []FlowControlledHandler {
+	return []FlowControlledHandler{
+		{
+			Code:             GetBlockHeadersMsg,
+			Name:             "block header request",
+			FirstVersion:     lpv1,
+			LastVersion:      lpvLatest,
+			MaxCount:         MaxHeaderFetch,
+			InPacketsMeter:   miscInHeaderPacketsMeter,
+			InTrafficMeter:   miscInHeaderTrafficMeter,
+			OutPacketsMeter:  miscOutHeaderPacketsMeter,
+			OutTrafficMeter:  miscOutHeaderTrafficMeter,
+			ServingTimeMeter: miscServingTimeHeaderTimer,
+			Handle:           s.handleGetBlockHeaders,
+		},
+		{
+			Code:             GetBlockBodiesMsg,
+			Name:             "block bodies request",
+			FirstVersion:     lpv1,
+			LastVersion:      lpvLatest,
+			MaxCount:         MaxBodyFetch,
+			InPacketsMeter:   miscInBodyPacketsMeter,
+			InTrafficMeter:   miscInBodyTrafficMeter,
+			OutPacketsMeter:  miscOutBodyPacketsMeter,
+			OutTrafficMeter:  miscOutBodyTrafficMeter,
+			ServingTimeMeter: miscServingTimeBodyTimer,
+			Handle:           s.handleGetBlockBodies,
+		},
+		{
+			Code:             GetCodeMsg,
+			Name:             "code request",
+			FirstVersion:     lpv1,
+			LastVersion:      lpvLatest,
+			MaxCount:         MaxCodeFetch,
+			InPacketsMeter:   miscInCodePacketsMeter,
+			InTrafficMeter:   miscInCodeTrafficMeter,
+			OutPacketsMeter:  miscOutCodePacketsMeter,
+			OutTrafficMeter:  miscOutCodeTrafficMeter,
+			ServingTimeMeter: miscServingTimeCodeTimer,
+			Handle:           s.handleGetCode,
+		},
+		{
+			Code:             GetReceiptsMsg,
+			Name:             "receipts request",
+			FirstVersion:     lpv1,
+			LastVersion:      lpvLatest,
+			MaxCount:         MaxReceiptFetch,
+			InPacketsMeter:   miscInReceiptPacketsMeter,
+			InTrafficMeter:   miscInReceiptTrafficMeter,
+			OutPacketsMeter:  miscOutReceiptPacketsMeter,
+			OutTrafficMeter:  miscOutReceiptTrafficMeter,
+			ServingTimeMeter: miscServingTimeReceiptTimer,
+			Handle:           s.handleGetReceipts,
+		},
+		{
+			Code:             GetProofsV2Msg,
+			Name:             "les/2 proofs request",
+			FirstVersion:     lpv2,
+			LastVersion:      lpvLatest,
+			MaxCount:         MaxProofsFetch,
+			InPacketsMeter:   miscInTrieProofPacketsMeter,
+			InTrafficMeter:   miscInTrieProofTrafficMeter,
+			OutPacketsMeter:  miscOutTrieProofPacketsMeter,
+			OutTrafficMeter:  miscOutTrieProofTrafficMeter,
+			ServingTimeMeter: miscServingTimeTrieProofTimer,
+			Handle:           s.handleGetProofs,
+		},
+		{
+			Code:             GetHelperTrieProofsMsg,
+			Name:             "helper trie proof request",
+			FirstVersion:     lpv2,
+			LastVersion:      lpv4,
+			MaxCount:         MaxHelperTrieProofsFetch,
+			InPacketsMeter:   miscInHelperTriePacketsMeter,
+			InTrafficMeter:   miscInHelperTrieTrafficMeter,
+			OutPacketsMeter:  miscOutHelperTriePacketsMeter,
+			OutTrafficMeter:  miscOutHelperTrieTrafficMeter,
+			ServingTimeMeter: miscServingTimeHelperTrieTimer,
+			Handle:           s.handleGetHelperTrieProofs,
+		},
+		{
+			Code:             SendTxV2Msg,
+			Name:             "new transactions",
+			FirstVersion:     lpv2,
+			LastVersion:      lpvLatest,
+			MaxCount:         MaxTxSend,
+			InPacketsMeter:   miscInTxsPacketsMeter,
+			InTrafficMeter:   miscInTxsTrafficMeter,
+			OutPacketsMeter:  miscOutTxsPacketsMeter,
+			OutTrafficMeter:  miscOutTxsTrafficMeter,
+			ServingTimeMeter: miscServingTimeTxTimer,
+			Handle:           s.handleSendTx,
+		},
+		{
+			Code:             GetTxStatusMsg,
+			Name:             "transaction status query request",
+			FirstVersion:     lpv2,
+			LastVersion:      lpvLatest,
+			MaxCount:         MaxTxStatus,
+			InPacketsMeter:   miscInTxStatusPacketsMeter,
+			InTrafficMeter:   miscInTxStatusTrafficMeter,
+			OutPacketsMeter:  miscOutTxStatusPacketsMeter,
+			OutTrafficMeter:  miscOutTxStatusTrafficMeter,
+			ServingTimeMeter: miscServingTimeTxStatusTimer,
+			Handle:           s.handleGetTxStatus,
+		},
+	}
 }
 
-// Les5 contains the request types supported by les/5     //TODO
-var Les5 = map[uint64]RequestType{
-	GetCommitteeProofsMsg: {
-		Name:             "sync committee proof request",
-		MaxCount:         MaxCommitteeUpdateFetch,
-		InPacketsMeter:   miscInCommitteeProofPacketsMeter,
-		InTrafficMeter:   miscInCommitteeProofTrafficMeter,
-		OutPacketsMeter:  miscOutCommitteeProofPacketsMeter,
-		OutTrafficMeter:  miscOutCommitteeProofTrafficMeter,
-		ServingTimeMeter: miscServingTimeCommitteeProofTimer,
-		Handle:           handleGetCommitteeProofs,
-	},
-	GetBeaconInitMsg: {
-		Name:             "beacon init request",
-		MaxCount:         1,
-		InPacketsMeter:   miscInBeaconInitPacketsMeter,
-		InTrafficMeter:   miscInBeaconInitTrafficMeter,
-		OutPacketsMeter:  miscOutBeaconInitPacketsMeter,
-		OutTrafficMeter:  miscOutBeaconInitTrafficMeter,
-		ServingTimeMeter: miscServingTimeBeaconInitTimer,
-		Handle:           handleGetBeaconInit,
-	},
-	GetBeaconDataMsg: {
-		Name:             "beacon slots request",
-		MaxCount:         MaxHeaderFetch,
-		InPacketsMeter:   miscInBeaconHeaderPacketsMeter,
-		InTrafficMeter:   miscInBeaconHeaderTrafficMeter,
-		OutPacketsMeter:  miscOutBeaconHeaderPacketsMeter,
-		OutTrafficMeter:  miscOutBeaconHeaderTrafficMeter,
-		ServingTimeMeter: miscServingTimeBeaconHeaderTimer,
-		Handle:           handleGetBeaconData,
-	},
-	GetExecHeadersMsg: {
-		Name:             "exec header request",
-		MaxCount:         MaxHeaderFetch,
-		InPacketsMeter:   miscInExecHeaderPacketsMeter,
-		InTrafficMeter:   miscInExecHeaderTrafficMeter,
-		OutPacketsMeter:  miscOutExecHeaderPacketsMeter,
-		OutTrafficMeter:  miscOutExecHeaderTrafficMeter,
-		ServingTimeMeter: miscServingTimeExecHeaderTimer,
-		Handle:           handleGetExecHeaders,
-	},
+func (s *BeaconRequestServer) MessageHandlers() []FlowControlledHandler {
+	return []FlowControlledHandler{
+		{
+			Code:             GetCommitteeProofsMsg,
+			Name:             "sync committee proof request",
+			FirstVersion:     lpv5,
+			LastVersion:      lpvLatest,
+			MaxCount:         MaxCommitteeUpdateFetch,
+			InPacketsMeter:   miscInCommitteeProofPacketsMeter,
+			InTrafficMeter:   miscInCommitteeProofTrafficMeter,
+			OutPacketsMeter:  miscOutCommitteeProofPacketsMeter,
+			OutTrafficMeter:  miscOutCommitteeProofTrafficMeter,
+			ServingTimeMeter: miscServingTimeCommitteeProofTimer,
+			Handle:           s.handleGetCommitteeProofs,
+		},
+		{
+			Code:             GetBeaconInitMsg,
+			Name:             "beacon init request",
+			FirstVersion:     lpv5,
+			LastVersion:      lpvLatest,
+			MaxCount:         1,
+			InPacketsMeter:   miscInBeaconInitPacketsMeter,
+			InTrafficMeter:   miscInBeaconInitTrafficMeter,
+			OutPacketsMeter:  miscOutBeaconInitPacketsMeter,
+			OutTrafficMeter:  miscOutBeaconInitTrafficMeter,
+			ServingTimeMeter: miscServingTimeBeaconInitTimer,
+			Handle:           s.handleGetBeaconInit,
+		},
+		{
+			Code:             GetBeaconDataMsg,
+			Name:             "beacon slots request",
+			FirstVersion:     lpv5,
+			LastVersion:      lpvLatest,
+			MaxCount:         MaxHeaderFetch,
+			InPacketsMeter:   miscInBeaconHeaderPacketsMeter,
+			InTrafficMeter:   miscInBeaconHeaderTrafficMeter,
+			OutPacketsMeter:  miscOutBeaconHeaderPacketsMeter,
+			OutTrafficMeter:  miscOutBeaconHeaderTrafficMeter,
+			ServingTimeMeter: miscServingTimeBeaconHeaderTimer,
+			Handle:           s.handleGetBeaconData,
+		},
+		{
+			Code:             GetExecHeadersMsg,
+			Name:             "exec header request",
+			FirstVersion:     lpv5,
+			LastVersion:      lpvLatest,
+			MaxCount:         MaxHeaderFetch,
+			InPacketsMeter:   miscInExecHeaderPacketsMeter,
+			InTrafficMeter:   miscInExecHeaderTrafficMeter,
+			OutPacketsMeter:  miscOutExecHeaderPacketsMeter,
+			OutTrafficMeter:  miscOutExecHeaderTrafficMeter,
+			ServingTimeMeter: miscServingTimeExecHeaderTimer,
+			Handle:           s.handleGetExecHeaders,
+		},
+	}
 }
 
 // handleGetBlockHeaders handles a block header request
-func handleGetBlockHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *RequestServer) handleGetBlockHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r GetBlockHeadersPacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *clientPeer, waitOrStop func() bool) *reply {
 		// Gather headers until the fetch or network limits is reached
 		var (
 			bc              = backend.BlockChain()
@@ -289,12 +460,12 @@ func handleGetBlockHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) 
 }
 
 // handleGetBlockBodies handles a block body request
-func handleGetBlockBodies(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *RequestServer) handleGetBlockBodies(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r GetBlockBodiesPacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *clientPeer, waitOrStop func() bool) *reply {
 		var (
 			bytes  int
 			bodies []rlp.RawValue
@@ -320,12 +491,12 @@ func handleGetBlockBodies(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 }
 
 // handleGetCode handles a contract code request
-func handleGetCode(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *RequestServer) handleGetCode(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r GetCodePacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *clientPeer, waitOrStop func() bool) *reply {
 		var (
 			bytes int
 			data  [][]byte
@@ -374,12 +545,12 @@ func handleGetCode(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 }
 
 // handleGetReceipts handles a block receipts request
-func handleGetReceipts(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *RequestServer) handleGetReceipts(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r GetReceiptsPacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *clientPeer, waitOrStop func() bool) *reply {
 		var (
 			bytes    int
 			receipts []rlp.RawValue
@@ -413,12 +584,12 @@ func handleGetReceipts(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 }
 
 // handleGetProofs handles a proof request
-func handleGetProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *RequestServer) handleGetProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r GetProofsPacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *clientPeer, waitOrStop func() bool) *reply {
 		var (
 			lastBHash common.Hash
 			root      common.Hash
@@ -496,12 +667,12 @@ func handleGetProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 }
 
 // handleGetHelperTrieProofs handles a helper trie proof request
-func handleGetHelperTrieProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *RequestServer) handleGetHelperTrieProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r GetHelperTrieProofsPacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *clientPeer, waitOrStop func() bool) *reply {
 		var (
 			lastIdx  uint64
 			lastType uint
@@ -550,13 +721,13 @@ func handleGetHelperTrieProofs(msg Decoder) (serveRequestFn, uint64, uint64, err
 }
 
 // handleSendTx handles a transaction propagation request
-func handleSendTx(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *RequestServer) handleSendTx(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r SendTxPacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
 	amount := uint64(len(r.Txs))
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *clientPeer, waitOrStop func() bool) *reply {
 		stats := make([]light.TxStatus, len(r.Txs))
 		for i, tx := range r.Txs {
 			if i != 0 && !waitOrStop() {
@@ -582,12 +753,12 @@ func handleSendTx(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 }
 
 // handleGetTxStatus handles a transaction status query
-func handleGetTxStatus(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *RequestServer) handleGetTxStatus(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r GetTxStatusPacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *clientPeer, waitOrStop func() bool) *reply {
 		stats := make([]light.TxStatus, len(r.Hashes))
 		for i, hash := range r.Hashes {
 			if i != 0 && !waitOrStop() {
@@ -616,7 +787,7 @@ func txStatus(b serverBackend, hash common.Hash) light.TxStatus {
 	return stat
 }
 
-func handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *BeaconRequestServer) handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	fmt.Println("*** Handling GetCommitteeProofsMsg")
 	var r GetCommitteeProofsPacket
 	if err := msg.Decode(&r); err != nil {
@@ -624,7 +795,7 @@ func handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, erro
 		return nil, 0, 0, err
 	}
 	fmt.Println("*** decode ok", r)
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+	return func(p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		sct := backend.SyncCommitteeTracker()
 		updates := make([]beacon.LightClientUpdate, len(r.UpdatePeriods))
 		for i, period := range r.UpdatePeriods {
@@ -644,12 +815,12 @@ func handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, erro
 	}, r.ReqID, uint64(len(r.UpdatePeriods) + len(r.CommitteePeriods)*CommitteeCostFactor), nil
 }
 
-func handleGetBeaconInit(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *BeaconRequestServer) handleGetBeaconInit(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r GetBeaconInitPacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+	return func(p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		bc := backend.BeaconChain()
 		block := bc.GetBlockDataByBlockRoot(r.Checkpoint)
 		if block == nil || block.ProofFormat&beacon.HspInitData == 0 {
@@ -673,12 +844,12 @@ func handleGetBeaconInit(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	}, r.ReqID, 1, nil
 }
 
-func handleGetBeaconData(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *BeaconRequestServer) handleGetBeaconData(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r GetBeaconDataPacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+	return func(p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		bc := backend.BeaconChain()
 		ht := bc.GetHistoricTree(r.BlockRoot) // specified reference block needs to be close to the current head
 		if ht == nil {
@@ -752,12 +923,12 @@ func handleGetBeaconData(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	}, r.ReqID, r.Length, nil
 }
 
-func handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
+func (s *BeaconRequestServer) handleGetExecHeaders(msg Decoder) (serveRequestFn, uint64, uint64, error) {
 	var r GetExecHeadersPacket
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(backend serverBackend, p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+	return func(p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		fmt.Println("*** Handling GetExecHeaders", r.ReqMode)
 		bc := backend.BeaconChain()
 		ec := backend.BlockChain()

@@ -49,9 +49,18 @@ type connectionModule interface {
 	peerConnected(*peer) (func(), error)
 }
 
-type messageHandler interface {
-	handleMessage(*peer, p2p.Msg) error
+type messageHandlerModule interface {
+	messageHandlers() messageHandlers
 }
+
+type messageHandler func(*peer, *p2p.Msg) error
+
+type messageHandlerWithCodeAndVersion struct {
+	code, firstVersion, lastVersion uint
+	handler                         messageHandler
+}
+
+type messageHandlers []messageHandlerWithCodeAndVersion
 
 type codeAndVersion struct {
 	code, version uint32
@@ -79,9 +88,11 @@ func (h *handler) stop() {
 	h.wg.Wait()
 }
 
-func (h *handler) registerMessageHandler(code, firstVersion, lastVersion uint32, handler messageHandler) {
-	for version := firstVersion; version <= lastVersion; version++ {
-		h.messageHandlers[codeAndVersion{code: code, version: version}] = handler
+func (h *handler) registerMessageHandlers(handlers messageHandlers) {
+	for _, h := range handlers {
+		for version := h.firstVersion; version <= h.lastVersion; version++ {
+			h.messageHandlers[codeAndVersion{code: h.code, version: version}] = h.handler
+		}
 	}
 }
 
