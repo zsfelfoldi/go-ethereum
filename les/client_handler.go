@@ -21,9 +21,6 @@ import (
 	"fmt"
 	"math/big"
 	"math/rand"
-	"sync"
-	"sync/atomic"
-	"time"
 
 	// "github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/common"
@@ -175,7 +172,7 @@ func (h *clientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 }
 
 func (h *clientHandler) peerConnected(*peer) (func(), error) {
-	if h.backend.peers.len() >= h.backend.config.LightPeers && !p.Peer.Info().Network.Trusted {
+	if h.backend.peers.len() >= h.backend.config.LightPeers && !p.Peer.Info().Network.Trusted { //TODO ???
 		return p2p.DiscTooManyPeers
 	}
 	// Register the peer locally
@@ -197,210 +194,272 @@ func (h *clientHandler) peerConnected(*peer) (func(), error) {
 	}, nil
 }
 
-func (h *clientHandler) registerMessageHandlers(h *handler) {
-	h.registerMessageHandler(AnnounceMsg, lpv1, lpv4)
-	h.registerMessageHandler(BlockHeadersMsg, lpv1, lpvLatest)
-	h.registerMessageHandler(BlockBodiesMsg, lpv1, lpvLatest)
-	h.registerMessageHandler(CodeMsg, lpv1, lpvLatest)
-	h.registerMessageHandler(ReceiptsMsg, lpv1, lpvLatest)
-	h.registerMessageHandler(ProofsV2Msg, lpv2, lpvLatest)
-	h.registerMessageHandler(HelperTrieProofsMsg, lpv2, lpv4)
-	h.registerMessageHandler(TxStatusMsg, lpv2, lpvLatest)
-	h.registerMessageHandler(StopMsg, lpv3, lpvLatest)
-	h.registerMessageHandler(Resume, lpv3, lpvLatest)
+func (h *clientHandler) messageHandlers() messageHandlers {
+	return messageHandlers{
+		messageHandlerWithCodeAndVersion{
+			code:         AnnounceMsg,
+			firstVersion: lpv1,
+			lastVersion:  lpv4,
+			handler:      h.handleAnnounce,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         BlockHeadersMsg,
+			firstVersion: lpv1,
+			lastVersion:  lpvLatest,
+			handler:      h.handleBlockHeaders,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         BlockBodiesMsg,
+			firstVersion: lpv1,
+			lastVersion:  lpvLatest,
+			handler:      h.handleBlockBodies,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         CodeMsg,
+			firstVersion: lpv1,
+			lastVersion:  lpvLatest,
+			handler:      h.handleCode,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         ReceiptsMsg,
+			firstVersion: lpv1,
+			lastVersion:  lpvLatest,
+			handler:      h.handleReceipts,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         ProofsV2Msg,
+			firstVersion: lpv2,
+			lastVersion:  lpvLatest,
+			handler:      h.handleProofsV2,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         HelperTrieProofsMsg,
+			firstVersion: lpv2,
+			lastVersion:  lpv4,
+			handler:      h.handleHelperTrieProofs,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         TxStatusMsg,
+			firstVersion: lpv2,
+			lastVersion:  lpvLatest,
+			handler:      h.handleTxStatus,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         StopMsg,
+			firstVersion: lpv3,
+			lastVersion:  lpvLatest,
+			handler:      h.handleStop,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         Resume,
+			firstVersion: lpv3,
+			lastVersion:  lpvLatest,
+			handler:      h.handleResume,
+		},
+	}
 }
 
-func (h *clientHandler) handleMessage(p *peer, msg p2p.Msg) error {
-	var deliverMsg *Msg
-
-	switch msg.Code {
-	case AnnounceMsg:
-		p.Log().Trace("Received announce message")
-		var req announceData
-		if err := msg.Decode(&req); err != nil {
-			return errResp(ErrDecode, "%v: %v", msg, err)
-		}
-		if err := req.sanityCheck(); err != nil {
-			return err
-		}
-		update, size := req.Update.decode()
-		if p.rejectUpdate(size) {
-			return errResp(ErrRequestRejected, "")
-		}
-		p.updateFlowControl(update)
-		p.updateVtParams()
-
-		if req.Hash != (common.Hash{}) {
-			if p.announceType == announceTypeNone {
-				return errResp(ErrUnexpectedResponse, "")
-			}
-			if p.announceType == announceTypeSigned {
-				if err := req.checkSignature(p.ID(), update); err != nil {
-					p.Log().Trace("Invalid announcement signature", "err", err)
-					return err
-				}
-				p.Log().Trace("Valid announcement signature")
-			}
-			p.Log().Trace("Announce message content", "number", req.Number, "hash", req.Hash, "td", req.Td, "reorg", req.ReorgDepth)
-
-			// Update peer head information first and then notify the announcement
-			p.updateHead(req.Hash, req.Number, req.Td)
-
-			// Discard all the announces after the transition
-			/*if !h.backend.merger.TDDReached() {
-				h.fetcher.announce(p, &req)
-			}*/
-		}
-	case BlockHeadersMsg:
-		p.Log().Trace("Received block header response message")
-		var resp struct {
-			ReqID, BV uint64
-			Headers   []*types.Header
-		}
-		if err := msg.Decode(&resp); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		//headers := resp.Headers
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		p.answeredRequest(resp.ReqID)
-
-		// Filter out the explicitly requested header by the retriever
-		//if h.backend.retriever.requested(resp.ReqID) {
-		deliverMsg = &Msg{
-			MsgType: MsgBlockHeaders,
-			ReqID:   resp.ReqID,
-			Obj:     resp.Headers,
-		}
-		//} else {
-		// Filter out any explicitly requested headers, deliver the rest to the downloader
-		/*filter := len(headers) == 1
-			if filter {
-				headers = h.fetcher.deliverHeaders(p, resp.ReqID, resp.Headers)
-			}
-			if len(headers) != 0 || !filter {
-				if err := h.downloader.DeliverHeaders(p.id, headers); err != nil {
-					log.Debug("Failed to deliver headers", "err", err)
-				}
-			}
-		}*/
-	case BlockBodiesMsg:
-		p.Log().Trace("Received block bodies response")
-		var resp struct {
-			ReqID, BV uint64
-			Data      []*types.Body
-		}
-		if err := msg.Decode(&resp); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		p.answeredRequest(resp.ReqID)
-		deliverMsg = &Msg{
-			MsgType: MsgBlockBodies,
-			ReqID:   resp.ReqID,
-			Obj:     resp.Data,
-		}
-	case CodeMsg:
-		p.Log().Trace("Received code response")
-		var resp struct {
-			ReqID, BV uint64
-			Data      [][]byte
-		}
-		if err := msg.Decode(&resp); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		p.answeredRequest(resp.ReqID)
-		deliverMsg = &Msg{
-			MsgType: MsgCode,
-			ReqID:   resp.ReqID,
-			Obj:     resp.Data,
-		}
-	case ReceiptsMsg:
-		p.Log().Trace("Received receipts response")
-		var resp struct {
-			ReqID, BV uint64
-			Receipts  []types.Receipts
-		}
-		if err := msg.Decode(&resp); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		p.answeredRequest(resp.ReqID)
-		deliverMsg = &Msg{
-			MsgType: MsgReceipts,
-			ReqID:   resp.ReqID,
-			Obj:     resp.Receipts,
-		}
-	case ProofsV2Msg:
-		p.Log().Trace("Received les/2 proofs response")
-		var resp struct {
-			ReqID, BV uint64
-			Data      light.NodeList
-		}
-		if err := msg.Decode(&resp); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		p.answeredRequest(resp.ReqID)
-		deliverMsg = &Msg{
-			MsgType: MsgProofsV2,
-			ReqID:   resp.ReqID,
-			Obj:     resp.Data,
-		}
-	case HelperTrieProofsMsg:
-		p.Log().Trace("Received helper trie proof response")
-		var resp struct {
-			ReqID, BV uint64
-			Data      HelperTrieResps
-		}
-		if err := msg.Decode(&resp); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		p.answeredRequest(resp.ReqID)
-		deliverMsg = &Msg{
-			MsgType: MsgHelperTrieProofs,
-			ReqID:   resp.ReqID,
-			Obj:     resp.Data,
-		}
-	case TxStatusMsg:
-		p.Log().Trace("Received tx status response")
-		var resp struct {
-			ReqID, BV uint64
-			Status    []light.TxStatus
-		}
-		if err := msg.Decode(&resp); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		p.answeredRequest(resp.ReqID)
-		deliverMsg = &Msg{
-			MsgType: MsgTxStatus,
-			ReqID:   resp.ReqID,
-			Obj:     resp.Status,
-		}
-	case StopMsg:
-		p.freezeServer()
-		h.backend.retriever.frozen(p)
-		p.Log().Debug("Service stopped")
-	case ResumeMsg:
-		var bv uint64
-		if err := msg.Decode(&bv); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		p.fcServer.ResumeFreeze(bv)
-		p.unfreezeServer()
-		p.Log().Debug("Service resumed")
-
-	default:
-		panic(nil)
+func (h *clientHandler) handleAnnounce(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received announce message")
+	var req announceData
+	if err := msg.Decode(&req); err != nil {
+		return errResp(ErrDecode, "%v: %v", msg, err)
 	}
-	// Deliver the received response to retriever.
-	if deliverMsg != nil {
-		if err := h.backend.retriever.deliver(p, deliverMsg); err != nil {
-			if val := p.bumpInvalid(); val > maxResponseErrors {
+	if err := req.sanityCheck(); err != nil {
+		return err
+	}
+	update, size := req.Update.decode()
+	if p.rejectUpdate(size) {
+		return errResp(ErrRequestRejected, "")
+	}
+	p.updateFlowControl(update)
+	p.updateVtParams()
+
+	if req.Hash != (common.Hash{}) {
+		if p.announceType == announceTypeNone {
+			return errResp(ErrUnexpectedResponse, "")
+		}
+		if p.announceType == announceTypeSigned {
+			if err := req.checkSignature(p.ID(), update); err != nil {
+				p.Log().Trace("Invalid announcement signature", "err", err)
 				return err
 			}
+			p.Log().Trace("Valid announcement signature")
+		}
+		p.Log().Trace("Announce message content", "number", req.Number, "hash", req.Hash, "td", req.Td, "reorg", req.ReorgDepth)
+
+		// Update peer head information first and then notify the announcement
+		p.updateHead(req.Hash, req.Number, req.Td)
+
+		// Discard all the announces after the transition
+		/*if !h.backend.merger.TDDReached() {
+			h.fetcher.announce(p, &req)
+		}*/
+	}
+}
+
+func (h *clientHandler) handleBlockHeaders(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received block header response message")
+	var resp struct {
+		ReqID, BV uint64
+		Headers   []*types.Header
+	}
+	if err := msg.Decode(&resp); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	//headers := resp.Headers
+	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+	p.answeredRequest(resp.ReqID)
+
+	// Filter out the explicitly requested header by the retriever
+	//if h.backend.retriever.requested(resp.ReqID) {
+	return deliverResponse(h.backend.retriever, p, &Msg{
+		MsgType: MsgBlockHeaders,
+		ReqID:   resp.ReqID,
+		Obj:     resp.Headers,
+	})
+	//} else {
+	// Filter out any explicitly requested headers, deliver the rest to the downloader
+	/*filter := len(headers) == 1
+		if filter {
+			headers = h.fetcher.deliverHeaders(p, resp.ReqID, resp.Headers)
+		}
+		if len(headers) != 0 || !filter {
+			if err := h.downloader.DeliverHeaders(p.id, headers); err != nil {
+				log.Debug("Failed to deliver headers", "err", err)
+			}
+		}
+	}*/
+}
+
+func (h *clientHandler) handleBlockBodies(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received block bodies response")
+	var resp struct {
+		ReqID, BV uint64
+		Data      []*types.Body
+	}
+	if err := msg.Decode(&resp); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+	p.answeredRequest(resp.ReqID)
+	return deliverResponse(h.backend.retriever, p, &Msg{
+		MsgType: MsgBlockBodies,
+		ReqID:   resp.ReqID,
+		Obj:     resp.Data,
+	})
+}
+
+func (h *clientHandler) handleCode(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received code response")
+	var resp struct {
+		ReqID, BV uint64
+		Data      [][]byte
+	}
+	if err := msg.Decode(&resp); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+	p.answeredRequest(resp.ReqID)
+	return deliverResponse(h.backend.retriever, p, &Msg{
+		MsgType: MsgCode,
+		ReqID:   resp.ReqID,
+		Obj:     resp.Data,
+	})
+}
+
+func (h *clientHandler) handleReceipts(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received receipts response")
+	var resp struct {
+		ReqID, BV uint64
+		Receipts  []types.Receipts
+	}
+	if err := msg.Decode(&resp); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+	p.answeredRequest(resp.ReqID)
+	return deliverResponse(h.backend.retriever, p, &Msg{
+		MsgType: MsgReceipts,
+		ReqID:   resp.ReqID,
+		Obj:     resp.Receipts,
+	})
+}
+
+func (h *clientHandler) handleProofsV2(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received les/2 proofs response")
+	var resp struct {
+		ReqID, BV uint64
+		Data      light.NodeList
+	}
+	if err := msg.Decode(&resp); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+	p.answeredRequest(resp.ReqID)
+	return deliverResponse(h.backend.retriever, p, &Msg{
+		MsgType: MsgProofsV2,
+		ReqID:   resp.ReqID,
+		Obj:     resp.Data,
+	})
+}
+
+func (h *clientHandler) handleHelperTrieProofs(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received helper trie proof response")
+	var resp struct {
+		ReqID, BV uint64
+		Data      HelperTrieResps
+	}
+	if err := msg.Decode(&resp); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+	p.answeredRequest(resp.ReqID)
+	return deliverResponse(h.backend.retriever, p, &Msg{
+		MsgType: MsgHelperTrieProofs,
+		ReqID:   resp.ReqID,
+		Obj:     resp.Data,
+	})
+}
+
+func (h *clientHandler) handleTxStatus(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received tx status response")
+	var resp struct {
+		ReqID, BV uint64
+		Status    []light.TxStatus
+	}
+	if err := msg.Decode(&resp); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+	p.answeredRequest(resp.ReqID)
+	return deliverResponse(h.backend.retriever, p, &Msg{
+		MsgType: MsgTxStatus,
+		ReqID:   resp.ReqID,
+		Obj:     resp.Status,
+	})
+}
+
+func (h *clientHandler) handleStop(p *peer, msg p2p.Msg) error {
+	p.freezeServer()
+	h.backend.retriever.frozen(p)
+	p.Log().Debug("Service stopped")
+}
+
+func (h *clientHandler) handleResume(p *peer, msg p2p.Msg) error {
+	var bv uint64
+	if err := msg.Decode(&bv); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	p.fcServer.ResumeFreeze(bv)
+	p.unfreezeServer()
+	p.Log().Debug("Service resumed")
+}
+
+func deliverResponse(retriever *retrieveManager, p *peer, deliverMsg *Msg) error {
+	if err := retriever.deliver(p, deliverMsg); err != nil {
+		if val := p.bumpInvalid(); val > maxResponseErrors {
+			return err
 		}
 	}
 	return nil
@@ -447,7 +506,7 @@ func (h *beaconClientHandler) receiveHandshake(p *peer, recv keyValueMap) error 
 }
 
 func (h *beaconClientHandler) peerConnected(*peer) (func(), error) {
-	if p.updateInfo == nil {
+	if p.updateInfo == nil || h.syncCommitteeTracker == nil {
 		return nil, nil
 	}
 	h.syncCommitteeCheckpoint.TriggerFetch()
@@ -459,119 +518,144 @@ func (h *beaconClientHandler) peerConnected(*peer) (func(), error) {
 	}, nil
 }
 
-func (h *beaconClientHandler) registerMessageHandlers(h *handler) {
-	h.registerMessageHandler(BeaconInitMsg, lpv5, lpvLatest)
-	h.registerMessageHandler(BeaconDataMsg, lpv5, lpvLatest)
-	h.registerMessageHandler(ExecHeadersMsg, lpv5, lpvLatest)
-	h.registerMessageHandler(CommitteeProofsMsg, lpv5, lpvLatest)
-	h.registerMessageHandler(AdvertiseCommitteeProofsMsg, lpv5, lpvLatest)
-	h.registerMessageHandler(SignedBeaconHeadsMsg, lpv5, lpvLatest)
+func (h *beaconClientHandler) messageHandlers() messageHandlers {
+	return messageHandlers{
+		messageHandlerWithCodeAndVersion{
+			code:         BeaconInitMsg,
+			firstVersion: lpv5,
+			lastVersion:  lpvLatest,
+			handler:      h.handleBeaconInit,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         BeaconDataMsg,
+			firstVersion: lpv5,
+			lastVersion:  lpvLatest,
+			handler:      h.handleBeaconData,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         ExecHeadersMsg,
+			firstVersion: lpv5,
+			lastVersion:  lpvLatest,
+			handler:      h.handleExecHeaders,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         CommitteeProofsMsg,
+			firstVersion: lpv5,
+			lastVersion:  lpvLatest,
+			handler:      h.handleCommitteeProofs,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         AdvertiseCommitteeProofsMsg,
+			firstVersion: lpv5,
+			lastVersion:  lpvLatest,
+			handler:      h.handleAdvertiseCommitteeProofs,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         SignedBeaconHeadsMsg,
+			firstVersion: lpv5,
+			lastVersion:  lpvLatest,
+			handler:      h.handleSignedBeaconHeaders,
+		},
+	}
 }
 
-func (bc *beaconClientHandler) handleMessage(p *peer, msg p2p.Msg) error {
-	var deliverMsg *Msg
-
-	switch msg.Code {
-	case BeaconInitMsg:
-		p.Log().Trace("Received beacon init response")
-		var resp struct {
-			ReqID, BV          uint64
-			BeaconInitResponse //TODO check RLP encoding
-		}
-		if err := msg.Decode(&resp); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		p.answeredRequest(resp.ReqID)
-		deliverMsg = &Msg{
-			MsgType: MsgBeaconInit,
-			ReqID:   resp.ReqID,
-			Obj:     resp.BeaconInitResponse,
-		}
-	case BeaconDataMsg:
-		p.Log().Trace("Received beacon data response")
-		var resp struct {
-			ReqID, BV          uint64
-			BeaconDataResponse //TODO check RLP encoding
-		}
-		if err := msg.Decode(&resp); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		p.answeredRequest(resp.ReqID)
-		deliverMsg = &Msg{
-			MsgType: MsgBeaconData,
-			ReqID:   resp.ReqID,
-			Obj:     resp.BeaconDataResponse,
-		}
-	case ExecHeadersMsg:
-		p.Log().Trace("Received exec headers response")
-		var resp struct {
-			ReqID, BV           uint64
-			ExecHeadersResponse //TODO check RLP encoding
-		}
-		if err := msg.Decode(&resp); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		p.answeredRequest(resp.ReqID)
-		deliverMsg = &Msg{
-			MsgType: MsgExecHeaders,
-			ReqID:   resp.ReqID,
-			Obj:     resp.ExecHeadersResponse,
-		}
-	case CommitteeProofsMsg:
-		p.Log().Trace("Received committee proofs response")
-		var resp struct {
-			ReqID, BV             uint64
-			beacon.CommitteeReply //TODO check RLP encoding
-		}
-		fmt.Println("Received CommitteeProofsMsg")
-		if err := msg.Decode(&resp); err != nil {
-			fmt.Println(" decode err", err)
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		fmt.Println(" decode ok")
-		p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
-		p.answeredRequest(resp.ReqID)
-		deliverMsg = &Msg{
-			MsgType: MsgCommitteeProofs,
-			ReqID:   resp.ReqID,
-			Obj:     resp.CommitteeReply,
-		}
-	case AdvertiseCommitteeProofsMsg:
-		p.Log().Trace("Received committee proofs advertisement")
-		var resp beacon.UpdateInfo
-		if err := msg.Decode(&resp); err != nil {
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		h.syncCommitteeTracker.SyncWithPeer(sctServerPeer{peer: p, retriever: bc.retriever}, &resp)
-	case SignedBeaconHeadsMsg:
-		p.Log().Trace("Received beacon chain head update")
-		fmt.Println("*** Received beacon chain head update")
-		var heads []beacon.SignedHead
-		if err := msg.Decode(&heads); err != nil {
-			fmt.Println(" decode error", err)
-			return errResp(ErrDecode, "msg %v: %v", msg, err)
-		}
-		for _, head := range heads {
-			hash := head.Header.Hash()
-			p.addAnnouncedBeaconHead(hash)
-		}
-		bc.syncCommitteeTracker.AddSignedHeads(sctServerPeer{peer: p, retriever: bc.retriever}, heads)
-	default:
-		panic(nil)
+func (h *beaconClientHandler) handleBeaconInit(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received beacon init response")
+	var resp struct {
+		ReqID, BV          uint64
+		BeaconInitResponse //TODO check RLP encoding
 	}
-
-	// Deliver the received response to retriever.
-	if deliverMsg != nil {
-		if err := bc.retriever.deliver(p, deliverMsg); err != nil {
-			if val := p.bumpInvalid(); val > maxResponseErrors {
-				return err
-			}
-		}
+	if err := msg.Decode(&resp); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
 	}
-	return nil
+	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+	p.answeredRequest(resp.ReqID)
+	return deliverResponse(h.backend.retriever, p, &Msg{
+		MsgType: MsgBeaconInit,
+		ReqID:   resp.ReqID,
+		Obj:     resp.BeaconInitResponse,
+	})
+}
+
+func (h *beaconClientHandler) handleBeaconData(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received beacon data response")
+	var resp struct {
+		ReqID, BV          uint64
+		BeaconDataResponse //TODO check RLP encoding
+	}
+	if err := msg.Decode(&resp); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+	p.answeredRequest(resp.ReqID)
+	return deliverResponse(h.backend.retriever, p, &Msg{
+		MsgType: MsgBeaconData,
+		ReqID:   resp.ReqID,
+		Obj:     resp.BeaconDataResponse,
+	})
+}
+
+func (h *beaconClientHandler) handleExecHeaders(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received exec headers response")
+	var resp struct {
+		ReqID, BV           uint64
+		ExecHeadersResponse //TODO check RLP encoding
+	}
+	if err := msg.Decode(&resp); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+	p.answeredRequest(resp.ReqID)
+	return deliverResponse(h.backend.retriever, p, &Msg{
+		MsgType: MsgExecHeaders,
+		ReqID:   resp.ReqID,
+		Obj:     resp.ExecHeadersResponse,
+	})
+}
+
+func (h *beaconClientHandler) handleCommitteeProofs(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received committee proofs response")
+	var resp struct {
+		ReqID, BV             uint64
+		beacon.CommitteeReply //TODO check RLP encoding
+	}
+	fmt.Println("Received CommitteeProofsMsg")
+	if err := msg.Decode(&resp); err != nil {
+		fmt.Println(" decode err", err)
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	fmt.Println(" decode ok")
+	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
+	p.answeredRequest(resp.ReqID)
+	return deliverResponse(h.backend.retriever, p, &Msg{
+		MsgType: MsgCommitteeProofs,
+		ReqID:   resp.ReqID,
+		Obj:     resp.CommitteeReply,
+	})
+}
+
+func (h *beaconClientHandler) handleAdvertiseCommitteeProofs(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received committee proofs advertisement")
+	var resp beacon.UpdateInfo
+	if err := msg.Decode(&resp); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	h.syncCommitteeTracker.SyncWithPeer(sctServerPeer{peer: p, retriever: bc.retriever}, &resp)
+}
+
+func (h *beaconClientHandler) handleSignedHeaders(p *peer, msg p2p.Msg) error {
+	p.Log().Trace("Received beacon chain head update")
+	fmt.Println("*** Received beacon chain head update")
+	var heads []beacon.SignedHead
+	if err := msg.Decode(&heads); err != nil {
+		fmt.Println(" decode error", err)
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	for _, head := range heads {
+		hash := head.Header.Hash()
+		p.addAnnouncedBeaconHead(hash)
+	}
+	bc.syncCommitteeTracker.AddSignedHeads(sctServerPeer{peer: p, retriever: bc.retriever}, heads)
 }
 
 type vfxClientHandler struct {

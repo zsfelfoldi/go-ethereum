@@ -159,7 +159,7 @@ func testTrustedAnnouncement(t *testing.T, protocol int) {
 		teardowns []func()
 		nodes     []*enode.Node
 		ids       []string
-		cpeers    []*clientPeer
+		cpeers    []*peer
 
 		config       = light.TestServerIndexerConfig
 		waitIndexers = func(cIndexer, bIndexer, btIndexer *core.ChainIndexer) {

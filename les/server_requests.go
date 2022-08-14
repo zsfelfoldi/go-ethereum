@@ -198,7 +198,7 @@ type FlowControlledHandler struct {
 // needs to be throttled. If it returns false then the process is terminated.
 // The reply is not sent by this function yet. The flow control feedback value is supplied
 // by the protocol handler when calling the send function of the returned reply struct.
-type serveRequestFn func(peer *clientPeer, waitOrStop func() bool) *reply
+type serveRequestFn func(peer *peer, waitOrStop func() bool) *reply
 
 func (s *RequestServer) MessageHandlers() []FlowControlledHandler {
 	return []FlowControlledHandler{
@@ -372,7 +372,7 @@ func (s *RequestServer) handleGetBlockHeaders(msg Decoder) (serveRequestFn, uint
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *peer, waitOrStop func() bool) *reply {
 		// Gather headers until the fetch or network limits is reached
 		var (
 			bc              = backend.BlockChain()
@@ -465,7 +465,7 @@ func (s *RequestServer) handleGetBlockBodies(msg Decoder) (serveRequestFn, uint6
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *peer, waitOrStop func() bool) *reply {
 		var (
 			bytes  int
 			bodies []rlp.RawValue
@@ -496,7 +496,7 @@ func (s *RequestServer) handleGetCode(msg Decoder) (serveRequestFn, uint64, uint
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *peer, waitOrStop func() bool) *reply {
 		var (
 			bytes int
 			data  [][]byte
@@ -550,7 +550,7 @@ func (s *RequestServer) handleGetReceipts(msg Decoder) (serveRequestFn, uint64, 
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *peer, waitOrStop func() bool) *reply {
 		var (
 			bytes    int
 			receipts []rlp.RawValue
@@ -589,7 +589,7 @@ func (s *RequestServer) handleGetProofs(msg Decoder) (serveRequestFn, uint64, ui
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *peer, waitOrStop func() bool) *reply {
 		var (
 			lastBHash common.Hash
 			root      common.Hash
@@ -672,7 +672,7 @@ func (s *RequestServer) handleGetHelperTrieProofs(msg Decoder) (serveRequestFn, 
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *peer, waitOrStop func() bool) *reply {
 		var (
 			lastIdx  uint64
 			lastType uint
@@ -727,7 +727,7 @@ func (s *RequestServer) handleSendTx(msg Decoder) (serveRequestFn, uint64, uint6
 		return nil, 0, 0, err
 	}
 	amount := uint64(len(r.Txs))
-	return func(p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *peer, waitOrStop func() bool) *reply {
 		stats := make([]light.TxStatus, len(r.Txs))
 		for i, tx := range r.Txs {
 			if i != 0 && !waitOrStop() {
@@ -758,7 +758,7 @@ func (s *RequestServer) handleGetTxStatus(msg Decoder) (serveRequestFn, uint64, 
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(p *clientPeer, waitOrStop func() bool) *reply {
+	return func(p *peer, waitOrStop func() bool) *reply {
 		stats := make([]light.TxStatus, len(r.Hashes))
 		for i, hash := range r.Hashes {
 			if i != 0 && !waitOrStop() {
@@ -795,7 +795,7 @@ func (s *BeaconRequestServer) handleGetCommitteeProofs(msg Decoder) (serveReques
 		return nil, 0, 0, err
 	}
 	fmt.Println("*** decode ok", r)
-	return func(p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+	return func(p *peer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		sct := backend.SyncCommitteeTracker()
 		updates := make([]beacon.LightClientUpdate, len(r.UpdatePeriods))
 		for i, period := range r.UpdatePeriods {
@@ -820,7 +820,7 @@ func (s *BeaconRequestServer) handleGetBeaconInit(msg Decoder) (serveRequestFn, 
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+	return func(p *peer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		bc := backend.BeaconChain()
 		block := bc.GetBlockDataByBlockRoot(r.Checkpoint)
 		if block == nil || block.ProofFormat&beacon.HspInitData == 0 {
@@ -849,7 +849,7 @@ func (s *BeaconRequestServer) handleGetBeaconData(msg Decoder) (serveRequestFn, 
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+	return func(p *peer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		bc := backend.BeaconChain()
 		ht := bc.GetHistoricTree(r.BlockRoot) // specified reference block needs to be close to the current head
 		if ht == nil {
@@ -928,7 +928,7 @@ func (s *BeaconRequestServer) handleGetExecHeaders(msg Decoder) (serveRequestFn,
 	if err := msg.Decode(&r); err != nil {
 		return nil, 0, 0, err
 	}
-	return func(p *clientPeer, waitOrStop func() bool) *reply { //TODO waitOrStop
+	return func(p *peer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		fmt.Println("*** Handling GetExecHeaders", r.ReqMode)
 		bc := backend.BeaconChain()
 		ec := backend.BlockChain()

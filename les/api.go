@@ -122,7 +122,7 @@ func (api *LightServerAPI) PriorityClientInfo(start, stop enode.ID, maxCount int
 }
 
 // clientInfo creates a client info data structure
-func (api *LightServerAPI) clientInfo(peer *clientPeer, balance vfs.ReadOnlyBalance) map[string]interface{} {
+func (api *LightServerAPI) clientInfo(peer *peer, balance vfs.ReadOnlyBalance) map[string]interface{} {
 	info := make(map[string]interface{})
 	pb, nb := balance.GetBalance()
 	info["isConnected"] = peer != nil
@@ -140,7 +140,7 @@ func (api *LightServerAPI) clientInfo(peer *clientPeer, balance vfs.ReadOnlyBala
 
 // setParams either sets the given parameters for a single connected client (if specified)
 // or the default parameters applicable to clients connected in the future
-func (api *LightServerAPI) setParams(params map[string]interface{}, client *clientPeer, posFactors, negFactors *vfs.PriceFactors) (updateFactors bool, err error) {
+func (api *LightServerAPI) setParams(params map[string]interface{}, client *peer, posFactors, negFactors *vfs.PriceFactors) (updateFactors bool, err error) {
 	defParams := client == nil
 	for name, value := range params {
 		errValue := func() error {

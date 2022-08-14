@@ -47,9 +47,9 @@ var (
 )
 
 type LesOdrRequest interface {
-	GetCost(*serverPeer) uint64
-	CanSend(beacon.Header, *serverPeer) bool
-	Request(uint64, beacon.Header, *serverPeer) error
+	GetCost(*peer) uint64
+	CanSend(beacon.Header, *peer) bool
+	Request(uint64, beacon.Header, *peer) error
 	Validate(ethdb.Database, beacon.Header, *Msg) error
 }
 
@@ -87,12 +87,12 @@ type BlockRequest light.BlockRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *BlockRequest) GetCost(peer *serverPeer) uint64 {
+func (r *BlockRequest) GetCost(peer *peer) uint64 {
 	return peer.getRequestCost(GetBlockBodiesMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *BlockRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+func (r *BlockRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	if peer.version >= lpv5 {
 		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
 	}
@@ -100,7 +100,7 @@ func (r *BlockRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) boo
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *BlockRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+func (r *BlockRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *peer) error {
 	peer.Log().Debug("Requesting block body", "hash", r.Hash)
 	return peer.requestBodies(reqID, []common.Hash{r.Hash})
 }
@@ -148,12 +148,12 @@ type ReceiptsRequest light.ReceiptsRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *ReceiptsRequest) GetCost(peer *serverPeer) uint64 {
+func (r *ReceiptsRequest) GetCost(peer *peer) uint64 {
 	return peer.getRequestCost(GetReceiptsMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *ReceiptsRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+func (r *ReceiptsRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	if peer.version >= lpv5 {
 		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
 	}
@@ -161,7 +161,7 @@ func (r *ReceiptsRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) 
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *ReceiptsRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+func (r *ReceiptsRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *peer) error {
 	peer.Log().Debug("Requesting block receipts", "hash", r.Hash)
 	return peer.requestReceipts(reqID, []common.Hash{r.Hash})
 }
@@ -208,12 +208,12 @@ type TrieRequest light.TrieRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *TrieRequest) GetCost(peer *serverPeer) uint64 {
+func (r *TrieRequest) GetCost(peer *peer) uint64 {
 	return peer.getRequestCost(GetProofsV2Msg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *TrieRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+func (r *TrieRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	if peer.version >= lpv5 {
 		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
 	}
@@ -221,7 +221,7 @@ func (r *TrieRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *TrieRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+func (r *TrieRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *peer) error {
 	peer.Log().Debug("Requesting trie proof", "root", r.Id.Root, "key", r.Key)
 	req := ProofReq{
 		BHash:  r.Id.BlockHash,
@@ -265,12 +265,12 @@ type CodeRequest light.CodeRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *CodeRequest) GetCost(peer *serverPeer) uint64 {
+func (r *CodeRequest) GetCost(peer *peer) uint64 {
 	return peer.getRequestCost(GetCodeMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *CodeRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+func (r *CodeRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	if peer.version >= lpv5 {
 		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
 	}
@@ -278,7 +278,7 @@ func (r *CodeRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *CodeRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+func (r *CodeRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *peer) error {
 	peer.Log().Debug("Requesting code data", "hash", r.Hash)
 	req := CodeReq{
 		BHash:  r.Id.BlockHash,
@@ -338,12 +338,12 @@ type ChtRequest light.ChtRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *ChtRequest) GetCost(peer *serverPeer) uint64 {
+func (r *ChtRequest) GetCost(peer *peer) uint64 {
 	return peer.getRequestCost(GetHelperTrieProofsMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *ChtRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+func (r *ChtRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	peer.lock.RLock()
 	defer peer.lock.RUnlock()
 
@@ -351,7 +351,7 @@ func (r *ChtRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool 
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *ChtRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+func (r *ChtRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *peer) error {
 	peer.Log().Debug("Requesting CHT", "cht", r.ChtNum, "block", r.BlockNum)
 	var encNum [8]byte
 	binary.BigEndian.PutUint64(encNum[:], r.BlockNum)
@@ -426,12 +426,12 @@ type BloomRequest light.BloomRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *BloomRequest) GetCost(peer *serverPeer) uint64 {
+func (r *BloomRequest) GetCost(peer *peer) uint64 {
 	return peer.getRequestCost(GetHelperTrieProofsMsg, len(r.SectionIndexList))
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *BloomRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+func (r *BloomRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	peer.lock.RLock()
 	defer peer.lock.RUnlock()
 
@@ -442,7 +442,7 @@ func (r *BloomRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) boo
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *BloomRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+func (r *BloomRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *peer) error {
 	peer.Log().Debug("Requesting BloomBits", "bloomTrie", r.BloomTrieNum, "bitIdx", r.BitIdx, "sections", r.SectionIndexList)
 	reqs := make([]HelperTrieReq, len(r.SectionIndexList))
 
@@ -502,17 +502,17 @@ type TxStatusRequest light.TxStatusRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *TxStatusRequest) GetCost(peer *serverPeer) uint64 {
+func (r *TxStatusRequest) GetCost(peer *peer) uint64 {
 	return peer.getRequestCost(GetTxStatusMsg, len(r.Hashes))
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *TxStatusRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+func (r *TxStatusRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	return peer.txHistory != txIndexDisabled
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *TxStatusRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+func (r *TxStatusRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *peer) error {
 	peer.Log().Debug("Requesting transaction status", "count", len(r.Hashes))
 	return peer.requestTxStatus(reqID, r.Hashes)
 }
@@ -560,17 +560,17 @@ type BeaconInitRequest light.BeaconInitRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *BeaconInitRequest) GetCost(peer *serverPeer) uint64 {
+func (r *BeaconInitRequest) GetCost(peer *peer) uint64 {
 	return peer.getRequestCost(GetBeaconInitMsg, 1)
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *BeaconInitRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+func (r *BeaconInitRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	return peer.version >= lpv5
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *BeaconInitRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+func (r *BeaconInitRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *peer) error {
 	peer.Log().Debug("Requesting beacon init data", "checkpoint root", r.Checkpoint)
 	return peer.requestBeaconInit(reqID, r.Checkpoint)
 }
@@ -609,17 +609,17 @@ type BeaconDataRequest light.BeaconDataRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *BeaconDataRequest) GetCost(peer *serverPeer) uint64 {
+func (r *BeaconDataRequest) GetCost(peer *peer) uint64 {
 	return peer.getRequestCost(GetBeaconDataMsg, int(r.Length))
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *BeaconDataRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+func (r *BeaconDataRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	return peer.version >= lpv5 && peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *BeaconDataRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+func (r *BeaconDataRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *peer) error {
 	peer.Log().Debug("Requesting beacon block data", "reference block root", beaconHeader.Hash(), "last slot", r.LastSlot, "length", r.Length)
 	return peer.requestBeaconData(GetBeaconDataPacket{
 		ReqID:     reqID,
@@ -789,17 +789,17 @@ type ExecHeadersRequest light.ExecHeadersRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *ExecHeadersRequest) GetCost(peer *serverPeer) uint64 {
+func (r *ExecHeadersRequest) GetCost(peer *peer) uint64 {
 	return peer.getRequestCost(GetExecHeadersMsg, int(r.Amount))
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *ExecHeadersRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+func (r *ExecHeadersRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	return peer.version >= lpv5 && peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *ExecHeadersRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+func (r *ExecHeadersRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *peer) error {
 	peer.Log().Debug("Requesting exec headers", "mode", r.ReqMode, "reference block root", beaconHeader.Hash(), "historic number", r.HistoricNumber, "amount", r.Amount)
 	return peer.requestExecHeaders(GetExecHeadersPacket{
 		ReqID:          reqID,
@@ -884,17 +884,17 @@ type HeadersByHashRequest light.HeadersByHashRequest
 
 // GetCost returns the cost of the given ODR request according to the serving
 // peer's cost table (implementation of LesOdrRequest)
-func (r *HeadersByHashRequest) GetCost(peer *serverPeer) uint64 {
+func (r *HeadersByHashRequest) GetCost(peer *peer) uint64 {
 	return peer.getRequestCost(GetBlockHeadersMsg, int(r.Amount))
 }
 
 // CanSend tells if a certain peer is suitable for serving the given request
-func (r *HeadersByHashRequest) CanSend(beaconHeader beacon.Header, peer *serverPeer) bool {
+func (r *HeadersByHashRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	return peer.version < lpv5 || peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
-func (r *HeadersByHashRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *serverPeer) error {
+func (r *HeadersByHashRequest) Request(reqID uint64, beaconHeader beacon.Header, peer *peer) error {
 	peer.Log().Debug("Requesting headers by hash", "last block hash", r.BlockHash, "amount", r.Amount)
 	return peer.requestHeadersByHash(reqID, r.BlockHash, r.Amount, 0, true)
 }
