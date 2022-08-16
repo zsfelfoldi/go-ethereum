@@ -31,7 +31,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/common/mclock"
 
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/light/beacon"
@@ -808,7 +807,7 @@ func (sp sctServerPeer) ClosedChannel() chan struct{} {
 }
 
 func (sp sctServerPeer) WrongReply(description string) {
-	if val := sp.peer.errCount.Add(1, mclock.Now()); val > maxResponseErrors {
-		sp.peer.Disconnect(p2p.DiscProtocolError)
+	if val := sp.peer.bumpInvalid(); val > maxResponseErrors {
+		sp.peer.Peer.Disconnect(p2p.DiscProtocolError)
 	}
 }

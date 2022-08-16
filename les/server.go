@@ -96,13 +96,13 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 
 	srv := &LesServer{
 		lesCommons: lesCommons{
-			genesis:     e.BlockChain().Genesis().Hash(),
-			config:      config,
-			chainConfig: e.BlockChain().Config(),
-			iConfig:     light.DefaultServerIndexerConfig,
-			chainDb:     e.ChainDb(),
-			lesDb:       lesDb,
-			//chainReader:      e.BlockChain(),
+			genesis:          e.BlockChain().Genesis().Hash(),
+			config:           config,
+			chainConfig:      e.BlockChain().Config(),
+			iConfig:          light.DefaultServerIndexerConfig,
+			chainDb:          e.ChainDb(),
+			lesDb:            lesDb,
+			chainReader:      e.BlockChain(),
 			chtIndexer:       light.NewChtIndexer(e.ChainDb(), nil, params.CHTFrequency, params.HelperTrieProcessConfirmations, true),
 			bloomTrieIndexer: light.NewBloomTrieIndexer(e.ChainDb(), nil, params.BloomBitsBlocks, params.BloomTrieFrequency, true),
 			closeCh:          make(chan struct{}),

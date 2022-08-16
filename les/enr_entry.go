@@ -59,7 +59,7 @@ func (eth *LightEthereum) setupDiscovery() (enode.Iterator, error) {
 		it.AddSource(eth.p2pServer.DiscV5.RandomNodes())
 	}
 
-	forkFilter := forkid.NewFilter((*dummyChain)(eth.blockchain))
+	forkFilter := forkid.NewFilter(eth.blockchain)
 	iterator := enode.Filter(it, func(n *enode.Node) bool { return nodeIsServer(forkFilter, n) })
 	return iterator, nil
 }

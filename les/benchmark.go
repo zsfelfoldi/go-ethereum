@@ -280,8 +280,8 @@ func (h *serverHandler) measure(setup *benchmarkSetup, count int) error {
 	var id enode.ID
 	rand.Read(id[:])
 
-	peer1 := newServerPeer(lpv2, NetworkId, false, p2p.NewPeer(id, "client", nil), clientMeteredPipe)
-	peer2 := newClientPeer(lpv2, NetworkId, p2p.NewPeer(id, "server", nil), serverMeteredPipe)
+	peer1 := newPeer(lpv2, NetworkId, p2p.NewPeer(id, "client", nil), clientMeteredPipe) // server peer
+	peer2 := newPeer(lpv2, NetworkId, p2p.NewPeer(id, "server", nil), serverMeteredPipe) // client peer
 	peer2.announceType = announceTypeNone
 	peer2.fcCosts = make(requestCostTable)
 	c := &requestCosts{}

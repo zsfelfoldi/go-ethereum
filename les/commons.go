@@ -48,12 +48,12 @@ type chainReader interface {
 
 // lesCommons contains fields needed by both server and client.
 type lesCommons struct {
-	genesis        common.Hash
-	config         *ethconfig.Config
-	chainConfig    *params.ChainConfig
-	iConfig        *light.IndexerConfig
-	chainDb, lesDb ethdb.Database
-	//chainReader                  chainReader
+	genesis                      common.Hash
+	config                       *ethconfig.Config
+	chainConfig                  *params.ChainConfig
+	iConfig                      *light.IndexerConfig
+	chainDb, lesDb               ethdb.Database
+	chainReader                  chainReader
 	chtIndexer, bloomTrieIndexer *core.ChainIndexer
 	oracle                       *checkpointoracle.CheckpointOracle
 
@@ -94,14 +94,14 @@ func (c *lesCommons) makeProtocols(versions []uint, runPeer func(version uint, p
 
 // nodeInfo retrieves some protocol metadata about the running host node.
 func (c *lesCommons) nodeInfo() interface{} {
-	/*head := c.chainReader.CurrentHeader()
-	hash := head.Hash()*/
+	head := c.chainReader.CurrentHeader() //TODO odr?
+	hash := head.Hash()
 	return &NodeInfo{
 		Network:    c.config.NetworkId,
-		Difficulty: common.Big0, // rawdb.ReadTd(c.chainDb, hash, head.Number.Uint64()),
+		Difficulty: rawdb.ReadTd(c.chainDb, hash, head.Number.Uint64()), //TODO disable in PoS mode
 		Genesis:    c.genesis,
 		Config:     c.chainConfig,
-		Head:       common.Hash{}, //hash,
+		Head:       hash,
 		CHT:        c.latestLocalCheckpoint(),
 	}
 }
@@ -161,13 +161,13 @@ func (c *lesCommons) setupOracle(node *node.Node, genesis common.Hash, ethconfig
 	return oracle
 }
 
-func (h *serverHandler) sendHeadInfo(send *keyValueList, head blockInfo) {
+func sendHeadInfo(send *keyValueList, head blockInfo) {
 	send.add("headTd", head.Td)
 	send.add("headHash", head.Hash)
 	send.add("headNum", head.Number)
 }
 
-func (h *serverHandler) sendGeneralInfo(p *peer, send *keyValueList, forkID forkid.ID) {
+func sendGeneralInfo(p *peer, send *keyValueList, forkID forkid.ID) {
 	send.add("protocolVersion", uint64(p.version))
 	send.add("networkId", p.network)
 	send.add("genesisHash", genesis)
@@ -179,7 +179,7 @@ func (h *serverHandler) sendGeneralInfo(p *peer, send *keyValueList, forkID fork
 	}
 }
 
-func (h *serverHandler) receiveGeneralInfo(p *peer, recv keyValueMap, forkFilter forkid.Filter) error {
+func receiveGeneralInfo(p *peer, recv keyValueMap, forkFilter forkid.Filter) error {
 	if err := recv.get("protocolVersion", &rVersion); err != nil {
 		return err
 	}

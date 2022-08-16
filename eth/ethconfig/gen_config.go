@@ -34,9 +34,6 @@ func (c Config) MarshalTOML() (interface{}, error) {
 		LightNoPrune                          bool                   `toml:",omitempty"`
 		LightNoSyncServe                      bool                   `toml:",omitempty"`
 		SyncFromCheckpoint                    bool                   `toml:",omitempty"`
-		UltraLightServers                     []string               `toml:",omitempty"`
-		UltraLightFraction                    int                    `toml:",omitempty"`
-		UltraLightOnlyAnnounce                bool                   `toml:",omitempty"`
 		BeaconConfig                          string                 `toml:",omitempty"`
 		BeaconCheckpoint                      string                 `toml:",omitempty"`
 		BeaconApi                             string                 `toml:",omitempty"`
@@ -82,9 +79,6 @@ func (c Config) MarshalTOML() (interface{}, error) {
 	enc.LightNoPrune = c.LightNoPrune
 	enc.LightNoSyncServe = c.LightNoSyncServe
 	enc.SyncFromCheckpoint = c.SyncFromCheckpoint
-	enc.UltraLightServers = c.UltraLightServers
-	enc.UltraLightFraction = c.UltraLightFraction
-	enc.UltraLightOnlyAnnounce = c.UltraLightOnlyAnnounce
 	enc.BeaconConfig = c.BeaconConfig
 	enc.BeaconCheckpoint = c.BeaconCheckpoint
 	enc.BeaconApi = c.BeaconApi
@@ -134,9 +128,6 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 		LightNoPrune                          *bool                  `toml:",omitempty"`
 		LightNoSyncServe                      *bool                  `toml:",omitempty"`
 		SyncFromCheckpoint                    *bool                  `toml:",omitempty"`
-		UltraLightServers                     []string               `toml:",omitempty"`
-		UltraLightFraction                    *int                   `toml:",omitempty"`
-		UltraLightOnlyAnnounce                *bool                  `toml:",omitempty"`
 		BeaconConfig                          *string                `toml:",omitempty"`
 		BeaconCheckpoint                      *string                `toml:",omitempty"`
 		BeaconApi                             *string                `toml:",omitempty"`
@@ -216,15 +207,6 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 	}
 	if dec.SyncFromCheckpoint != nil {
 		c.SyncFromCheckpoint = *dec.SyncFromCheckpoint
-	}
-	if dec.UltraLightServers != nil {
-		c.UltraLightServers = dec.UltraLightServers
-	}
-	if dec.UltraLightFraction != nil {
-		c.UltraLightFraction = *dec.UltraLightFraction
-	}
-	if dec.UltraLightOnlyAnnounce != nil {
-		c.UltraLightOnlyAnnounce = *dec.UltraLightOnlyAnnounce
 	}
 	if dec.BeaconConfig != nil {
 		c.BeaconConfig = *dec.BeaconConfig

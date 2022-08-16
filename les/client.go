@@ -139,7 +139,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	if leth.udpEnabled {
 		prenegQuery = leth.prenegQuery
 	}
-	leth.serverPool, leth.serverPoolIterator = vfc.NewServerPool(lesDb, []byte("serverpool:"), time.Second, prenegQuery, &mclock.System{}, config.UltraLightServers, requestList)
+	leth.serverPool, leth.serverPoolIterator = vfc.NewServerPool(lesDb, []byte("serverpool:"), time.Second, prenegQuery, &mclock.System{}, []string{}, requestList) //TODO ul server list
 	leth.serverPool.AddMetrics(suggestedTimeoutGauge, totalValueGauge, serverSelectableGauge, serverConnectedGauge, sessionValueMeter, serverDialedMeter)
 
 	leth.retriever = newRetrieveManager(peers, leth.reqDist, leth.serverPool.GetTimeout)
@@ -159,7 +159,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	if leth.blockchain, err = light.NewLightChain(leth.odr, leth.chainConfig, leth.engine, checkpoint); err != nil {
 		return nil, err
 	}
-	//leth.chainReader = leth.blockchain
+	leth.chainReader = leth.blockchain
 	leth.txPool = light.NewTxPool(leth.chainConfig, leth.blockchain, leth.relay)
 
 	if config.BeaconConfig != "" {
@@ -190,9 +190,9 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	leth.oracle = leth.setupOracle(stack, genesisHash, config)
 
 	// Note: AddChildIndexer starts the update process for the child
-	/*leth.bloomIndexer.AddChildIndexer(leth.bloomTrieIndexer)
+	leth.bloomIndexer.AddChildIndexer(leth.bloomTrieIndexer)
 	leth.chtIndexer.Start(leth.blockchain)
-	leth.bloomIndexer.Start(leth.blockchain)*/
+	leth.bloomIndexer.Start(leth.blockchain)
 
 	// Start a light chain pruner to delete useless historical data.
 	leth.pruner = newPruner(chainDb, leth.chtIndexer, leth.bloomTrieIndexer)
@@ -211,11 +211,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	}
 	leth.ApiBackend.gpo = gasprice.NewOracle(leth.ApiBackend, gpoParams)
 
-	leth.handler = newClientHandler(config.UltraLightServers, config.UltraLightFraction, checkpoint, leth)
-	if leth.handler.ulc != nil {
-		log.Warn("Ultra light client is enabled", "trustedNodes", len(leth.handler.ulc.keys), "minTrustedFraction", leth.handler.ulc.fraction)
-		leth.blockchain.DisableCheckFreq()
-	}
+	leth.handler = newClientHandler(checkpoint, leth)
 
 	leth.netRPCService = ethapi.NewNetAPI(leth.p2pServer, leth.config.NetworkId)
 
@@ -323,9 +319,9 @@ func (s *LightEthereum) APIs() []rpc.API {
 		{
 			Namespace: "eth",
 			Service:   &LightDummyAPI{},
-			/*		}, {
-					Namespace: "eth",
-					Service:   downloader.NewDownloaderAPI(s.handler.downloader, s.eventMux),*/
+		}, {
+			Namespace: "eth",
+			Service:   downloader.NewDownloaderAPI(s.handler.downloader, s.eventMux),
 		}, {
 			Namespace: "eth",
 			Service:   filters.NewFilterAPI(s.ApiBackend, true, 5*time.Minute),

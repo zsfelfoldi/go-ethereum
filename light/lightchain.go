@@ -66,8 +66,8 @@ type LightChain struct {
 	bodyRLPCache *lru.Cache // Cache for the most recent block bodies in RLP encoded format
 	blockCache   *lru.Cache // Cache for the most recent entire blocks
 
-	chainmu                        sync.RWMutex // protects header inserts
-	currentHeader, finalizedHeader *types.Header
+	chainmu                                    sync.RWMutex // protects header inserts
+	lastHeader, currentHeader, finalizedHeader *types.Header
 
 	quit chan struct{}
 	wg   sync.WaitGroup
@@ -466,9 +466,18 @@ func (lc *LightChain) SetBeaconHead(head beacon.Header) {
 	log.Info("Received new beacon head", "slot", head.Slot, "blockRoot", head.Hash())
 }
 
+// returns the last retrieved header or the genesis header
+func (lc *LightChain) CurrentHeader() *types.Header {
+	lc.chainmu.RLock()
+	currentHeader := lc.lastHeader
+	lc.chainmu.RUnlock()
+
+	return currentHeader
+}
+
 // CurrentHeader retrieves the current head header of the canonical chain. The
 // header is retrieved from the HeaderChain's internal cache.
-func (lc *LightChain) CurrentHeader(ctx context.Context) (*types.Header, error) {
+func (lc *LightChain) CurrentHeaderOdr(ctx context.Context) (*types.Header, error) {
 	lc.chainmu.RLock()
 	currentHeader := lc.currentHeader
 	lc.chainmu.RUnlock()
@@ -481,6 +490,7 @@ func (lc *LightChain) CurrentHeader(ctx context.Context) (*types.Header, error) 
 		currentHeader = headers[0]
 		lc.chainmu.Lock()
 		lc.currentHeader = currentHeader
+		lc.lastHeader = currentHeader
 		lc.chainmu.Unlock()
 		return currentHeader, nil
 	} else {
@@ -664,9 +674,9 @@ func (lc *LightChain) SubscribeRemovedLogsEvent(ch chan<- core.RemovedLogsEvent)
 }
 
 // DisableCheckFreq disables header validation. This is used for ultralight mode.
-func (lc *LightChain) DisableCheckFreq() {
+/*func (lc *LightChain) DisableCheckFreq() {
 	atomic.StoreInt32(&lc.disableCheckFreq, 1)
-}
+}*/
 
 // EnableCheckFreq enables header validation.
 func (lc *LightChain) EnableCheckFreq() {

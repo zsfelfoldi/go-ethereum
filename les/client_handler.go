@@ -40,51 +40,18 @@ import (
 // responses.
 type clientHandler struct {
 	forkFilter forkid.Filter
-	checkpoint *params.TrustedCheckpoint
-	//fetcher    *lightFetcher
+	blockchain *light.LightChain
+	peers      *serverPeerSet
+	fetcher    *lightFetcher
 	downloader *downloader.Downloader
-	backend    *LightEthereum
 
 	// Hooks used in the testing
 	syncStart func(header *types.Header) // Hook called when the syncing is started
 	syncEnd   func(header *types.Header) // Hook called when the syncing is done
 }
 
-type dummyChain light.LightChain
-
-func (d *dummyChain) Config() *params.ChainConfig { return (*light.LightChain)(d).Config() }
-
-func (d *dummyChain) Genesis() *types.Block { return (*light.LightChain)(d).Genesis() }
-
-func (d *dummyChain) CurrentHeader() *types.Header { return d.Genesis().Header() }
-
-func newClientHandler(ulcServers []string, ulcFraction int, checkpoint *params.TrustedCheckpoint, backend *LightEthereum) *clientHandler {
-	handler := &clientHandler{
-		forkFilter: forkid.NewFilter((*dummyChain)(backend.blockchain)),
-		checkpoint: checkpoint,
-		backend:    backend,
-		closeCh:    make(chan struct{}),
-	}
-	if ulcServers != nil {
-		ulc, err := newULC(ulcServers, ulcFraction)
-		if err != nil {
-			log.Error("Failed to initialize ultra light client")
-		}
-		handler.ulc = ulc
-		log.Info("Enable ultra light client mode")
-	}
-	/*var height uint64
-	if checkpoint != nil {
-		height = (checkpoint.SectionIndex+1)*params.CHTFrequency - 1
-	}
-	handler.fetcher = newLightFetcher(backend.blockchain, backend.engine, backend.peers, handler.ulc, backend.chainDb, backend.reqDist, handler.synchronise)
-	handler.downloader = downloader.New(height, backend.chainDb, backend.eventMux, nil, backend.blockchain, handler.removePeer)
-	handler.backend.peers.subscribe((*downloaderPeerNotify)(handler))*/
-	return handler
-}
-
 func (h *clientHandler) sendHandshake(p *peer, send *keyValueList) {
-	sendGeneralInfo(p, send, forkid.NewID(h.backend.blockchain.Config(), h.backend.genesis, h.backend.blockchain.LastKnownHeader().Number.Uint64()))
+	sendGeneralInfo(p, send, forkid.NewID(h.backend.blockchain.Config(), h.backend.genesis, h.backend.blockchain.CurrentHeader().Number.Uint64()))
 	if p.version < lpv5 {
 		p.announceType = announceTypeSimple
 		send.add("announceType", p.announceType)
@@ -183,9 +150,9 @@ func (h *clientHandler) peerConnected(*peer) (func(), error) {
 	serverConnectionGauge.Update(int64(h.backend.peers.len()))
 	// Discard all the announces after the transition
 	// Also discarding initial signal to prevent syncing during testing.
-	/*if !(noInitAnnounce || h.backend.merger.TDDReached()) {
+	if !(noInitAnnounce || h.backend.merger.TDDReached()) {
 		h.fetcher.announce(p, &announceData{Hash: p.headInfo.Hash, Number: p.headInfo.Number, Td: p.headInfo.Td})
-	}*/
+	}
 
 	return func() {
 		p.fcServer.DumpLogs()
@@ -292,9 +259,9 @@ func (h *clientHandler) handleAnnounce(p *peer, msg p2p.Msg) error {
 		p.updateHead(req.Hash, req.Number, req.Td)
 
 		// Discard all the announces after the transition
-		/*if !h.backend.merger.TDDReached() {
+		if !h.backend.merger.TDDReached() {
 			h.fetcher.announce(p, &req)
-		}*/
+		}
 	}
 }
 
@@ -307,20 +274,20 @@ func (h *clientHandler) handleBlockHeaders(p *peer, msg p2p.Msg) error {
 	if err := msg.Decode(&resp); err != nil {
 		return errResp(ErrDecode, "msg %v: %v", msg, err)
 	}
-	//headers := resp.Headers
 	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 	p.answeredRequest(resp.ReqID)
 
 	// Filter out the explicitly requested header by the retriever
-	//if h.backend.retriever.requested(resp.ReqID) {
-	return deliverResponse(h.backend.retriever, p, &Msg{
-		MsgType: MsgBlockHeaders,
-		ReqID:   resp.ReqID,
-		Obj:     resp.Headers,
-	})
-	//} else {
-	// Filter out any explicitly requested headers, deliver the rest to the downloader
-	/*filter := len(headers) == 1
+	if h.backend.retriever.requested(resp.ReqID) {
+		return deliverResponse(h.backend.retriever, p, &Msg{
+			MsgType: MsgBlockHeaders,
+			ReqID:   resp.ReqID,
+			Obj:     resp.Headers,
+		})
+	} else {
+		// Filter out any explicitly requested headers, deliver the rest to the downloader
+		headers := resp.Headers
+		filter := len(headers) == 1
 		if filter {
 			headers = h.fetcher.deliverHeaders(p, resp.ReqID, resp.Headers)
 		}
@@ -329,7 +296,7 @@ func (h *clientHandler) handleBlockHeaders(p *peer, msg p2p.Msg) error {
 				log.Debug("Failed to deliver headers", "err", err)
 			}
 		}
-	}*/
+	}
 }
 
 func (h *clientHandler) handleBlockBodies(p *peer, msg p2p.Msg) error {
@@ -465,22 +432,9 @@ func deliverResponse(retriever *retrieveManager, p *peer, deliverMsg *Msg) error
 	return nil
 }
 
-func (h *clientHandler) removePeer(id string) {
+/*func (h *clientHandler) removePeer(id string) {	//TODO mikor eleg inaktivalni?
 	h.backend.peers.unregister(id)
-}
-
-/*
-func (h *clientHandler) start() {
-	//h.fetcher.start()
-}
-
-func (h *clientHandler) stop() {
-	close(h.closeCh)
-	//h.downloader.Terminate()
-	//h.fetcher.stop()
-	h.wg.Wait()
-}
-*/
+}*/
 
 type beaconClientHandler struct {
 	syncCommitteeTracker    *beacon.SyncCommitteeTracker

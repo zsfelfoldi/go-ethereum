@@ -52,7 +52,7 @@ func (b *LesApiBackend) ChainConfig() *params.ChainConfig {
 }
 
 func (b *LesApiBackend) CurrentBlock(ctx context.Context) (*types.Block, error) {
-	header, err := b.eth.BlockChain().CurrentHeader(ctx)
+	header, err := b.eth.BlockChain().CurrentHeaderOdr(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -68,14 +68,10 @@ func (b *LesApiBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumb
 	// Return the latest current as the pending one since there
 	// is no pending notion in the light client. TODO(rjl493456442)
 	// unify the behavior of `HeaderByNumber` and `PendingBlockAndReceipts`.
-	//if number == rpc.LatestBlockNumber {
-	//	if number == rpc.PendingBlockNumber || number == rpc.LatestBlockNumber {
-	if number == rpc.LatestBlockNumber {
-		return b.eth.blockchain.CurrentHeader(ctx)
+	if number == rpc.PendingBlockNumber || number == rpc.LatestBlockNumber {
+		return b.eth.blockchain.CurrentHeaderOdr(ctx)
 	}
-	//if number == rpc.FinalizedBlockNumber || number == rpc.PendingBlockNumber {
-	//	if number == rpc.FinalizedBlockNumber {
-	if number == rpc.PendingBlockNumber {
+	if number == rpc.FinalizedBlockNumber || number == rpc.SafeBlockNumber { //TODO ??? safe
 		return b.eth.blockchain.FinalizedHeader(ctx)
 	}
 	return b.eth.blockchain.GetHeaderByNumber(ctx, uint64(number))
@@ -112,16 +108,14 @@ func (b *LesApiBackend) HeaderByHash(ctx context.Context, hash common.Hash) (*ty
 }
 
 func (b *LesApiBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Block, error) {
-	//	if number == rpc.PendingBlockNumber || number == rpc.LatestBlockNumber {
-	if number == rpc.LatestBlockNumber {
-		header, err := b.eth.blockchain.CurrentHeader(ctx)
+	if number == rpc.PendingBlockNumber || number == rpc.LatestBlockNumber {
+		header, err := b.eth.blockchain.CurrentHeaderOdr(ctx)
 		if err != nil {
 			return nil, err
 		}
 		return b.eth.blockchain.GetBlockByHash(ctx, header.Hash())
 	}
-	//	if number == rpc.FinalizedBlockNumber {
-	if number == rpc.PendingBlockNumber {
+	if number == rpc.FinalizedBlockNumber {
 		header, err := b.eth.blockchain.FinalizedHeader(ctx)
 		if err != nil {
 			return nil, err
@@ -221,13 +215,12 @@ func (b *LesApiBackend) GetTd(ctx context.Context, hash common.Hash) *big.Int {
 }
 
 func (b *LesApiBackend) GetEVM(ctx context.Context, msg core.Message, state *state.StateDB, header *types.Header, vmConfig *vm.Config) (*vm.EVM, func() error, error) {
-	/*if vmConfig == nil {
+	if vmConfig == nil {
 		vmConfig = new(vm.Config)
 	}
 	txContext := core.NewEVMTxContext(msg)
 	context := core.NewEVMBlockContext(header, b.eth.blockchain, nil)
-	return vm.NewEVM(context, txContext, state, b.eth.chainConfig, *vmConfig), state.Error, nil*/
-	return nil, nil, errors.New("Temporarily not supported")
+	return vm.NewEVM(context, txContext, state, b.eth.chainConfig, *vmConfig), state.Error, nil
 }
 
 func (b *LesApiBackend) SendTx(ctx context.Context, signedTx *types.Transaction) error {
@@ -298,7 +291,7 @@ func (b *LesApiBackend) SubscribeRemovedLogsEvent(ch chan<- core.RemovedLogsEven
 }
 
 func (b *LesApiBackend) SyncProgress() ethereum.SyncProgress {
-	return ethereum.SyncProgress{} //b.eth.Downloader().Progress()
+	return b.eth.Downloader().Progress() //TODO nil?
 }
 
 func (b *LesApiBackend) ProtocolVersion() int {
@@ -360,7 +353,7 @@ func (b *LesApiBackend) Engine() consensus.Engine {
 }
 
 func (b *LesApiBackend) CurrentHeader(ctx context.Context) (*types.Header, error) {
-	return b.eth.blockchain.CurrentHeader(ctx)
+	return b.eth.blockchain.CurrentHeaderOdr(ctx)
 }
 
 func (b *LesApiBackend) StateAtBlock(ctx context.Context, block *types.Block, reexec uint64, base *state.StateDB, checkLive bool, preferDisk bool) (*state.StateDB, error) {

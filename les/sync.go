@@ -88,7 +88,7 @@ func (h *clientHandler) validateCheckpoint(peer *peer) error {
 }
 
 // synchronise tries to sync up our local chain with a remote peer.
-/*func (h *clientHandler) synchronise(peer *peer) {
+func (h *clientHandler) synchronise(peer *peer) {
 	// Short circuit if the peer is nil.
 	if peer == nil {
 		return
@@ -201,4 +201,4 @@ func (h *clientHandler) validateCheckpoint(peer *peer) error {
 		return
 	}
 	log.Debug("Synchronise finished", "elapsed", common.PrettyDuration(time.Since(start)))
-}*/
+}

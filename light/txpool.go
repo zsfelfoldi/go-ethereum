@@ -112,7 +112,7 @@ func NewTxPool(config *params.ChainConfig, chain *LightChain, relay TxRelayBacke
 
 // currentState returns the light state of the current head header
 func (pool *TxPool) currentState(ctx context.Context) *state.StateDB {
-	header, err := pool.chain.CurrentHeader(ctx)
+	header, err := pool.chain.CurrentHeaderOdr(ctx)
 	if err != nil {
 		return nil
 	}

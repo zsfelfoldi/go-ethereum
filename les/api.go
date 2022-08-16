@@ -346,7 +346,7 @@ func (api *DebugAPI) FreezeClient(node string) error {
 		return err
 	}
 	if peer := api.server.peers.peer(id); peer != nil {
-		peer.freeze()
+		peer.freezeClient()
 		return nil
 	} else {
 		return fmt.Errorf("client %064x is not connected", id[:])
