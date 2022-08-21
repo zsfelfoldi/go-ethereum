@@ -35,6 +35,8 @@ import (
 	"github.com/ethereum/go-ethereum/eth/gasprice"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
+
+	//"github.com/ethereum/go-ethereum/les/downloader"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -43,25 +45,27 @@ import (
 type LesApiBackend struct {
 	extRPCEnabled       bool
 	allowUnprotectedTxs bool
-	eth                 *LightEthereum
-	gpo                 *gasprice.Oracle
+	//blockchain          apiChain
+	//downloader          *downloader.Downloader
+	eth *LightEthereum
+	gpo *gasprice.Oracle
 }
 
 func (b *LesApiBackend) ChainConfig() *params.ChainConfig {
-	return b.eth.chainConfig
+	return b.eth.chainconfig
 }
 
 func (b *LesApiBackend) CurrentBlock(ctx context.Context) (*types.Block, error) {
-	header, err := b.eth.BlockChain().CurrentHeaderOdr(ctx)
+	header, err := b.blockchain.CurrentHeaderOdr(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return types.NewBlockWithHeader(header), nil
 }
 
-func (b *LesApiBackend) SetHead(number uint64) {
+func (b *LesApiBackend) SetHead(number uint64) error {
 	b.eth.handler.downloader.Cancel()
-	b.eth.blockchain.SetHead(number)
+	return b.eth.blockchain.SetHead(number)
 }
 
 func (b *LesApiBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Header, error) {
@@ -90,7 +94,7 @@ func (b *LesApiBackend) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash 
 			return nil, errors.New("header for hash not found")
 		}
 		if blockNrOrHash.RequireCanonical {
-			canonical, err := b.eth.blockchain.GetCanonicalHash(ctx, header.Number.Uint64())
+			canonical, err := b.eth.blockchain.GetCanonicalHashOdr(ctx, header.Number.Uint64())
 			if err != nil {
 				return nil, err
 			}
@@ -142,7 +146,7 @@ func (b *LesApiBackend) BlockByNumberOrHash(ctx context.Context, blockNrOrHash r
 			return nil, errors.New("header found, but block body is missing")
 		}
 		if blockNrOrHash.RequireCanonical {
-			canonical, err := b.eth.blockchain.GetCanonicalHash(ctx, block.NumberU64())
+			canonical, err := b.eth.blockchain.GetCanonicalHashOdr(ctx, block.NumberU64())
 			if err != nil {
 				return nil, err
 			}
@@ -180,7 +184,7 @@ func (b *LesApiBackend) StateAndHeaderByNumberOrHash(ctx context.Context, blockN
 			return nil, nil, err
 		}
 		if blockNrOrHash.RequireCanonical {
-			canonical, err := b.eth.blockchain.GetCanonicalHash(ctx, header.Number.Uint64())
+			canonical, err := b.eth.blockchain.GetCanonicalHashOdr(ctx, header.Number.Uint64())
 			if err != nil {
 				return nil, nil, err
 			}

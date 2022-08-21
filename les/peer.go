@@ -168,9 +168,8 @@ type peer struct {
 	// Test callback hooks
 	hasBlockHook func(common.Hash, uint64, bool) bool // Used to determine whether the server has the specified block.
 
-	updateInfo             *beacon.UpdateInfo
-	announcedBeaconHeads   [4]common.Hash
-	announcedBeaconHeadPtr int
+	updateInfo *beacon.UpdateInfo
+	ulcInfo    light.UlcPeerInfo
 
 	// fields related to received service
 
@@ -206,34 +205,6 @@ func newPeer(version int, network uint64, p *p2p.Peer, rw p2p.MsgReadWriter) *pe
 		errCh:        make(chan error, 1),
 	}
 
-}
-
-func (p *peer) addAnnouncedBeaconHead(beaconHead common.Hash) {
-	p.lock.Lock()
-	defer p.lock.Unlock()
-
-	for _, h := range p.announcedBeaconHeads {
-		if h == beaconHead {
-			return
-		}
-	}
-	p.announcedBeaconHeads[p.announcedBeaconHeadPtr] = beaconHead
-	p.announcedBeaconHeadPtr++
-	if p.announcedBeaconHeadPtr == len(p.announcedBeaconHeads) {
-		p.announcedBeaconHeadPtr = 0
-	}
-}
-
-func (p *peer) hasAnnouncedBeaconHead(head common.Hash) bool {
-	p.lock.RLock()
-	defer p.lock.RUnlock()
-
-	for _, bh := range p.announcedBeaconHeads {
-		if bh == head {
-			return true
-		}
-	}
-	return false
 }
 
 // peer contains fields needed by both server peer and client peer.

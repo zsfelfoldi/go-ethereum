@@ -72,6 +72,14 @@ func (h *handler) stop() {
 	h.wg.Wait()
 }
 
+func (h *handler) registerHandshakeModule(m handshakeModule) {
+	h.handshakeModules = append(h.handshakeModules, m)
+}
+
+func (h *handler) registerConnectionModule(m connectionModule) {
+	h.connectionModules = append(h.connectionModules, m)
+}
+
 func (h *handler) registerMessageHandlers(handlers messageHandlers) {
 	for _, h := range handlers {
 		for version := h.firstVersion; version <= h.lastVersion; version++ {

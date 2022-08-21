@@ -508,7 +508,7 @@ func (r *TxStatusRequest) GetCost(peer *peer) uint64 {
 
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *TxStatusRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
-	return peer.txHistory != txIndexDisabled
+	return peer.txHistory != txIndexDisabled && peer.version < lpv5 || peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)

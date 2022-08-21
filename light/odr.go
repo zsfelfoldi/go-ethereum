@@ -44,6 +44,7 @@ type OdrBackend interface {
 	BloomIndexer() *core.ChainIndexer
 	Retrieve(ctx context.Context, req OdrRequest) error
 	RetrieveTxStatus(ctx context.Context, req *TxStatusRequest) error
+	RetrieveWithBeaconHeader(ctx context.Context, beaconHead beacon.Header, req OdrRequest) error
 	IndexerConfig() *IndexerConfig
 	//GetBeaconHead() beacon.Header
 }

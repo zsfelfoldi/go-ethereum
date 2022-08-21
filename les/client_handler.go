@@ -40,7 +40,7 @@ import (
 // responses.
 type clientHandler struct {
 	forkFilter forkid.Filter
-	blockchain *light.LightChain
+	blockchain clientHandlerChain
 	peers      *serverPeerSet
 	fetcher    *lightFetcher
 	downloader *downloader.Downloader
@@ -50,8 +50,13 @@ type clientHandler struct {
 	syncEnd   func(header *types.Header) // Hook called when the syncing is done
 }
 
+type clientHandlerChain interface {
+	Config() *params.ChainConfig
+	CurrentHeader() *types.Header
+}
+
 func (h *clientHandler) sendHandshake(p *peer, send *keyValueList) {
-	sendGeneralInfo(p, send, forkid.NewID(h.backend.blockchain.Config(), h.backend.genesis, h.backend.blockchain.CurrentHeader().Number.Uint64()))
+	sendGeneralInfo(p, send, forkid.NewID(h.blockchain.Config(), h.backend.genesis, h.backend.CurrentHeader().Number.Uint64()))
 	if p.version < lpv5 {
 		p.announceType = announceTypeSimple
 		send.add("announceType", p.announceType)

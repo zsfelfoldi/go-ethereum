@@ -172,7 +172,11 @@ func (pool *TxPool) checkMinedTxs(ctx context.Context, hash common.Hash, number 
 	if len(pool.pending) == 0 {
 		return nil
 	}
-	block, err := GetBlock(ctx, pool.odr, hash, number)
+	header := pool.chain.GetHeader(hash, number)
+	if header == nil {
+		return errNoHeader
+	}
+	block, err := GetBlock(ctx, pool.odr, header)
 	if err != nil {
 		return err
 	}
@@ -186,7 +190,7 @@ func (pool *TxPool) checkMinedTxs(ctx context.Context, hash common.Hash, number 
 	// If some transactions have been mined, write the needed data to disk and update
 	if list != nil {
 		// Retrieve all the receipts belonging to this block and write the loopup table
-		if _, err := GetBlockReceipts(ctx, pool.odr, hash, number); err != nil { // ODR caches, ignore results
+		if _, err := GetBlockReceipts(ctx, pool.odr, header); err != nil { // ODR caches, ignore results
 			return err
 		}
 		rawdb.WriteTxLookupEntriesByBlock(pool.chainDb, block)
@@ -225,27 +229,18 @@ func (pool *TxPool) rollbackTxs(hash common.Hash, txc txStateChanges) {
 // possible to continue checking the missing blocks at the next chain head event
 func (pool *TxPool) reorgOnNewHead(ctx context.Context, newHeader *types.Header) (txStateChanges, error) {
 	txc := make(txStateChanges)
-	oldh, err := pool.chain.GetHeaderByHash(ctx, pool.head)
-	if err != nil {
-		return txc, err
-	}
+	oldh := pool.chain.GetHeaderByHash(pool.head)
 	newh := newHeader
 	// find common ancestor, create list of rolled back and new block hashes
 	var oldHashes, newHashes []common.Hash
 	for oldh.Hash() != newh.Hash() {
 		if oldh.Number.Uint64() >= newh.Number.Uint64() {
 			oldHashes = append(oldHashes, oldh.Hash())
-			oldh, err = pool.chain.GetHeader(ctx, oldh.ParentHash, oldh.Number.Uint64()-1)
-			if err != nil {
-				return txc, err
-			}
+			oldh = pool.chain.GetHeader(oldh.ParentHash, oldh.Number.Uint64()-1)
 		}
 		if oldh.Number.Uint64() < newh.Number.Uint64() {
 			newHashes = append(newHashes, newh.Hash())
-			newh, err = pool.chain.GetHeader(ctx, newh.ParentHash, newh.Number.Uint64()-1)
-			if err != nil {
-				return txc, err
-			}
+			newh = pool.chain.GetHeader(newh.ParentHash, newh.Number.Uint64()-1)
 			if newh == nil {
 				// happens when CHT syncing, nothing to do
 				newh = oldh
@@ -376,10 +371,7 @@ func (pool *TxPool) validateTx(ctx context.Context, tx *types.Transaction) error
 
 	// Check the transaction doesn't exceed the current
 	// block limit gas.
-	header, err := pool.chain.GetHeaderByHash(ctx, pool.head)
-	if err != nil {
-		return err
-	}
+	header := pool.chain.GetHeaderByHash(pool.head)
 	if header.GasLimit < tx.Gas() {
 		return core.ErrGasLimit
 	}

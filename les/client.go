@@ -60,9 +60,9 @@ type LightEthereum struct {
 	retriever          *retrieveManager
 	odr                *LesOdr
 	relay              *lesTxRelay
-	handler            *clientHandler
+	handler            *handler
 	txPool             *light.TxPool
-	blockchain         *light.LightChain
+	blockchain         lightChain
 	serverPool         *vfc.ServerPool
 	serverPoolIterator enode.Iterator
 	pruner             *pruner
@@ -85,6 +85,25 @@ type LightEthereum struct {
 	udpEnabled bool
 
 	shutdownTracker *shutdowncheck.ShutdownTracker // Tracks if and when the node has shutdown ungracefully
+}
+
+type lightChain interface {
+	Config() *params.ChainConfig
+	Genesis() *types.Block
+	CurrentHeader() *types.Header
+	CurrentHeaderOdr(ctx context.Context) (*types.Header, error)
+	FinalizedHeader(ctx context.Context) (*types.Header, error)
+	SetHead(head uint64) error
+	GetCanonicalHashOdr(ctx context.Context, number uint64) (common.Hash, error)
+	GetHeaderByNumberOdr(ctx context.Context, number uint64) (*types.Header, error)
+	GetHeaderByHashOdr(ctx context.Context, hash common.Hash) (*types.Header, error)
+	GetBlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error)
+	GetTdOdr(ctx context.Context, hash common.Hash, number uint64) *big.Int
+	SubscribeChainEvent(ch chan<- core.ChainEvent) event.Subscription
+	SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) event.Subscription
+	SubscribeChainSideEvent(ch chan<- core.ChainSideEvent) event.Subscription
+	SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscription
+	SubscribeRemovedLogsEvent(ch chan<- core.RemovedLogsEvent) event.Subscription
 }
 
 // New creates an instance of the light client.
@@ -211,7 +230,16 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	}
 	leth.ApiBackend.gpo = gasprice.NewOracle(leth.ApiBackend, gpoParams)
 
-	leth.handler = newClientHandler(checkpoint, leth)
+	//leth.handler = newClientHandler(checkpoint, leth)
+	leth.handler = newHandler()
+	clientHandler := &clientHandler{
+		forkFilter: forkid.NewFilter(blockchain),
+		blockchain: blockchain,
+		peers:      leth.peers,
+	}
+	leth.handler.registerHandshakeModule(clientHandler)
+	leth.handler.registerConnectionModule(clientHandler)
+	leth.handler.registerMessageHandlers(clientHandler)
 
 	leth.netRPCService = ethapi.NewNetAPI(leth.p2pServer, leth.config.NetworkId)
 
