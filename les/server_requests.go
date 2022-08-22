@@ -205,7 +205,7 @@ func (s *RequestServer) MessageHandlers() []FlowControlledHandler {
 		{
 			Code:             GetBlockHeadersMsg,
 			Name:             "block header request",
-			FirstVersion:     lpv1,
+			FirstVersion:     lpv2,
 			LastVersion:      lpvLatest,
 			MaxCount:         MaxHeaderFetch,
 			InPacketsMeter:   miscInHeaderPacketsMeter,
@@ -218,7 +218,7 @@ func (s *RequestServer) MessageHandlers() []FlowControlledHandler {
 		{
 			Code:             GetBlockBodiesMsg,
 			Name:             "block bodies request",
-			FirstVersion:     lpv1,
+			FirstVersion:     lpv2,
 			LastVersion:      lpvLatest,
 			MaxCount:         MaxBodyFetch,
 			InPacketsMeter:   miscInBodyPacketsMeter,
@@ -231,7 +231,7 @@ func (s *RequestServer) MessageHandlers() []FlowControlledHandler {
 		{
 			Code:             GetCodeMsg,
 			Name:             "code request",
-			FirstVersion:     lpv1,
+			FirstVersion:     lpv2,
 			LastVersion:      lpvLatest,
 			MaxCount:         MaxCodeFetch,
 			InPacketsMeter:   miscInCodePacketsMeter,
@@ -244,7 +244,7 @@ func (s *RequestServer) MessageHandlers() []FlowControlledHandler {
 		{
 			Code:             GetReceiptsMsg,
 			Name:             "receipts request",
-			FirstVersion:     lpv1,
+			FirstVersion:     lpv2,
 			LastVersion:      lpvLatest,
 			MaxCount:         MaxReceiptFetch,
 			InPacketsMeter:   miscInReceiptPacketsMeter,

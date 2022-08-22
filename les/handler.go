@@ -37,7 +37,7 @@ type messageHandlerModule interface {
 	messageHandlers() messageHandlers
 }
 
-type messageHandler func(*peer, *p2p.Msg) error
+type messageHandler func(*peer, p2p.Msg) error
 
 type messageHandlerWithCodeAndVersion struct {
 	code, firstVersion, lastVersion uint

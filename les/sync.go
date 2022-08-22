@@ -57,7 +57,10 @@ func (h *clientHandler) validateCheckpoint(peer *peer) error {
 	defer cancel()
 
 	// Fetch the block header corresponding to the checkpoint registration.
-	wrapPeer := &downloaderPeer{handler: h, peer: peer}
+	wrapPeer := &downloaderPeer{
+		peer:                 peer,
+		downloaderPeerNotify: downloaderPeerNotify{retriever: h.retriever},
+	}
 	header, err := wrapPeer.RetrieveSingleHeaderByNumber(ctx, peer.checkpointNumber)
 	if err != nil {
 		return err

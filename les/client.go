@@ -261,6 +261,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		forkFilter: forkid.NewFilter(leth.blockchain),
 		blockchain: leth.blockchain,
 		peers:      leth.peers,
+		retriever:  leth.retriever,
 	}
 	if !leth.v5 {
 		var height uint64
@@ -269,7 +270,10 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		}
 		leth.fetcher = newLightFetcher(leth.blockchain.(*light.LightChain), leth.engine, leth.peers, chainDb, leth.reqDist, clientHandler.synchronise)
 		leth.downloader = downloader.New(height, chainDb, leth.eventMux, nil, leth.blockchain.(*light.LightChain), clientHandler.removePeer)
-		leth.peers.subscribe((*downloaderPeerNotify)(clientHandler))
+		leth.peers.subscribe(&downloaderPeerNotify{
+			downloader: leth.downloader,
+			retriever:  leth.retriever,
+		})
 		clientHandler.fetcher, clientHandler.downloader = leth.fetcher, leth.downloader
 	}
 	leth.handler.registerHandshakeModule(clientHandler)
