@@ -129,7 +129,6 @@ func (fp *fetcherPeer) forwardAnno(td *big.Int) []*announce {
 // rules: e.g. evict "timeout" peers.
 type lightFetcher struct {
 	// Various handlers
-	ulc     *ulc
 	chaindb ethdb.Database
 	reqDist *requestDistributor
 	peerset *serverPeerSet        // The global peerset of light client which shared by all components
@@ -150,14 +149,14 @@ type lightFetcher struct {
 	wg      sync.WaitGroup
 
 	// Callback
-	synchronise func(peer *serverPeer)
+	synchronise func(peer *peer)
 
 	// Test fields or hooks
 	newHeadHook func(*types.Header)
 }
 
 // newLightFetcher creates a light fetcher instance.
-func newLightFetcher(chain *light.LightChain, engine consensus.Engine, peers *serverPeerSet, ulc *ulc, chaindb ethdb.Database, reqDist *requestDistributor, syncFn func(p *serverPeer)) *lightFetcher {
+func newLightFetcher(chain *light.LightChain, engine consensus.Engine, peers *serverPeerSet, chaindb ethdb.Database, reqDist *requestDistributor, syncFn func(p *peer)) *lightFetcher {
 	// Construct the fetcher by offering all necessary APIs
 	validator := func(header *types.Header) error {
 		// Disable seal verification explicitly if we are running in ulc mode.
@@ -205,7 +204,7 @@ func (f *lightFetcher) stop() {
 }
 
 // registerPeer adds an new peer to the fetcher's peer set
-func (f *lightFetcher) registerPeer(p *serverPeer) {
+func (f *lightFetcher) registerPeer(p *peer) {
 	f.plock.Lock()
 	defer f.plock.Unlock()
 
@@ -213,7 +212,7 @@ func (f *lightFetcher) registerPeer(p *serverPeer) {
 }
 
 // unregisterPeer removes the specified peer from the fetcher's peer set
-func (f *lightFetcher) unregisterPeer(p *serverPeer) {
+func (f *lightFetcher) unregisterPeer(p *peer) {
 	f.plock.Lock()
 	defer f.plock.Unlock()
 
@@ -482,7 +481,7 @@ func (f *lightFetcher) mainloop() {
 }
 
 // announce processes a new announcement message received from a peer.
-func (f *lightFetcher) announce(p *serverPeer, head *announceData) {
+func (f *lightFetcher) announce(p *peer, head *announceData) {
 	select {
 	case f.announceCh <- &announce{peerid: p.ID(), trust: p.trusted, data: head}:
 	case <-f.closeCh:
@@ -507,10 +506,10 @@ func (f *lightFetcher) trackRequest(peerid enode.ID, reqid uint64, hash common.H
 func (f *lightFetcher) requestHeaderByHash(peerid enode.ID) func(common.Hash) error {
 	return func(hash common.Hash) error {
 		req := &distReq{
-			getCost: func(dp distPeer) uint64 { return dp.(*serverPeer).getRequestCost(GetBlockHeadersMsg, 1) },
-			canSend: func(dp distPeer) bool { return dp.(*serverPeer).ID() == peerid },
+			getCost: func(dp distPeer) uint64 { return dp.(*peer).getRequestCost(GetBlockHeadersMsg, 1) },
+			canSend: func(dp distPeer) bool { return dp.(*peer).ID() == peerid },
 			request: func(dp distPeer) func() {
-				peer, id := dp.(*serverPeer), rand.Uint64()
+				peer, id := dp.(*peer), rand.Uint64()
 				cost := peer.getRequestCost(GetBlockHeadersMsg, 1)
 				peer.fcServer.QueuedRequest(id, cost)
 
@@ -539,7 +538,7 @@ func (f *lightFetcher) startSync(id enode.ID) {
 }
 
 // deliverHeaders delivers header download request responses for processing
-func (f *lightFetcher) deliverHeaders(peer *serverPeer, reqid uint64, headers []*types.Header) []*types.Header {
+func (f *lightFetcher) deliverHeaders(peer *peer, reqid uint64, headers []*types.Header) []*types.Header {
 	remain := make(chan []*types.Header, 1)
 	select {
 	case f.deliverCh <- &response{reqid: reqid, headers: headers, peerid: peer.ID(), remain: remain}:

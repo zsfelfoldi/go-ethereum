@@ -40,7 +40,7 @@ import (
 // responses.
 type clientHandler struct {
 	forkFilter forkid.Filter
-	blockchain clientHandlerChain
+	blockchain lightChain //clientHandlerChain
 	peers      *serverPeerSet
 	fetcher    *lightFetcher
 	downloader *downloader.Downloader
@@ -50,10 +50,10 @@ type clientHandler struct {
 	syncEnd   func(header *types.Header) // Hook called when the syncing is done
 }
 
-type clientHandlerChain interface {
+/*type clientHandlerChain interface {
 	Config() *params.ChainConfig
 	CurrentHeader() *types.Header
-}
+}*/
 
 func (h *clientHandler) sendHandshake(p *peer, send *keyValueList) {
 	sendGeneralInfo(p, send, forkid.NewID(h.blockchain.Config(), h.backend.genesis, h.backend.CurrentHeader().Number.Uint64()))
@@ -437,9 +437,9 @@ func deliverResponse(retriever *retrieveManager, p *peer, deliverMsg *Msg) error
 	return nil
 }
 
-/*func (h *clientHandler) removePeer(id string) {	//TODO mikor eleg inaktivalni?
-	h.backend.peers.unregister(id)
-}*/
+func (h *clientHandler) removePeer(id string) { //TODO mikor eleg inaktivalni?
+	h.peers.unregister(id)
+}
 
 type beaconClientHandler struct {
 	syncCommitteeTracker    *beacon.SyncCommitteeTracker
@@ -732,7 +732,7 @@ func (pc *downloaderPeer) RetrieveSingleHeaderByNumber(context context.Context, 
 }
 
 // downloaderPeerNotify implements peerSetNotify
-/*type downloaderPeerNotify clientHandler
+type downloaderPeerNotify clientHandler
 
 func (d *downloaderPeerNotify) registerPeer(p *peer) {
 	h := (*clientHandler)(d)
@@ -747,4 +747,3 @@ func (d *downloaderPeerNotify) unregisterPeer(p *peer) {
 	h := (*clientHandler)(d)
 	h.downloader.UnregisterPeer(p.id)
 }
-*/

@@ -456,6 +456,10 @@ func (lc *LightChain) CurrentHeaderOdr(ctx context.Context) (*types.Header, erro
 	return lc.hc.CurrentHeader(), nil
 }
 
+func (lc *LightChain) FinalizedHeaderOdr(ctx context.Context) (*types.Header, error) {
+	return nil, errors.New("No finalized header in PoW mode")
+}
+
 // GetTd retrieves a block's total difficulty in the canonical chain from the
 // database by hash and number, caching it if found.
 func (lc *LightChain) GetTd(hash common.Hash, number uint64) *big.Int {

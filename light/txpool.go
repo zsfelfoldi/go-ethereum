@@ -57,7 +57,7 @@ type TxPool struct {
 	chainHeadCh  chan core.ChainHeadEvent
 	chainHeadSub event.Subscription
 	mu           sync.RWMutex
-	chain        *LightChain
+	chain        poolChain
 	odr          OdrBackend
 	chainDb      ethdb.Database
 	relay        TxRelayBackend
@@ -69,6 +69,14 @@ type TxPool struct {
 
 	istanbul bool // Fork indicator whether we are in the istanbul stage.
 	eip2718  bool // Fork indicator whether we are in the eip2718 stage.
+}
+
+type poolChain interface {
+	Odr() OdrBackend
+	CurrentHeaderOdr(ctx context.Context) (*types.Header, error)
+	GetHeaderByHashOdr(ctx context.Context, hash common.Hash) (*types.Header, error)
+	GetBlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error)
+	SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) event.Subscription
 }
 
 // TxRelayBackend provides an interface to the mechanism that forwards transacions
@@ -87,7 +95,7 @@ type TxRelayBackend interface {
 }
 
 // NewTxPool creates a new light transaction pool
-func NewTxPool(config *params.ChainConfig, chain *LightChain, relay TxRelayBackend) *TxPool {
+func NewTxPool(config *params.ChainConfig, chain poolChain, relay TxRelayBackend) *TxPool {
 	pool := &TxPool{
 		config:      config,
 		signer:      types.LatestSigner(config),
@@ -100,7 +108,7 @@ func NewTxPool(config *params.ChainConfig, chain *LightChain, relay TxRelayBacke
 		relay:       relay,
 		odr:         chain.Odr(),
 		chainDb:     chain.Odr().Database(),
-		head:        common.Hash{}, //chain.CurrentHeader().Hash(),
+		head:        common.Hash{}, //chain.CurrentHeader().Hash(),	//TODO ???
 		clearIdx:    0,             //chain.CurrentHeader().Number.Uint64(),
 	}
 	// Subscribe events from blockchain
@@ -172,11 +180,7 @@ func (pool *TxPool) checkMinedTxs(ctx context.Context, hash common.Hash, number 
 	if len(pool.pending) == 0 {
 		return nil
 	}
-	header := pool.chain.GetHeader(hash, number)
-	if header == nil {
-		return errNoHeader
-	}
-	block, err := GetBlock(ctx, pool.odr, header)
+	block, err := pool.chain.GetBlockByHash(ctx, hash)
 	if err != nil {
 		return err
 	}
@@ -190,7 +194,7 @@ func (pool *TxPool) checkMinedTxs(ctx context.Context, hash common.Hash, number 
 	// If some transactions have been mined, write the needed data to disk and update
 	if list != nil {
 		// Retrieve all the receipts belonging to this block and write the loopup table
-		if _, err := GetBlockReceipts(ctx, pool.odr, header); err != nil { // ODR caches, ignore results
+		if _, err := GetBlockReceipts(ctx, pool.odr, block.Header()); err != nil { // ODR caches, ignore results
 			return err
 		}
 		rawdb.WriteTxLookupEntriesByBlock(pool.chainDb, block)
@@ -229,21 +233,26 @@ func (pool *TxPool) rollbackTxs(hash common.Hash, txc txStateChanges) {
 // possible to continue checking the missing blocks at the next chain head event
 func (pool *TxPool) reorgOnNewHead(ctx context.Context, newHeader *types.Header) (txStateChanges, error) {
 	txc := make(txStateChanges)
-	oldh := pool.chain.GetHeaderByHash(pool.head)
+	oldh, err := pool.chain.GetHeaderByHashOdr(ctx, pool.head)
+	if err != nil {
+		return nil, err
+	}
 	newh := newHeader
 	// find common ancestor, create list of rolled back and new block hashes
 	var oldHashes, newHashes []common.Hash
 	for oldh.Hash() != newh.Hash() {
 		if oldh.Number.Uint64() >= newh.Number.Uint64() {
 			oldHashes = append(oldHashes, oldh.Hash())
-			oldh = pool.chain.GetHeader(oldh.ParentHash, oldh.Number.Uint64()-1)
+			oldh, err = pool.chain.GetHeaderByHashOdr(ctx, oldh.ParentHash)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if oldh.Number.Uint64() < newh.Number.Uint64() {
 			newHashes = append(newHashes, newh.Hash())
-			newh = pool.chain.GetHeader(newh.ParentHash, newh.Number.Uint64()-1)
-			if newh == nil {
-				// happens when CHT syncing, nothing to do
-				newh = oldh
+			newh, err = pool.chain.GetHeaderByHashOdr(ctx, newh.ParentHash)
+			if err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -371,7 +380,10 @@ func (pool *TxPool) validateTx(ctx context.Context, tx *types.Transaction) error
 
 	// Check the transaction doesn't exceed the current
 	// block limit gas.
-	header := pool.chain.GetHeaderByHash(pool.head)
+	header, err := pool.chain.GetHeaderByHashOdr(ctx, pool.head)
+	if err != nil {
+		return err
+	}
 	if header.GasLimit < tx.Gas() {
 		return core.ErrGasLimit
 	}

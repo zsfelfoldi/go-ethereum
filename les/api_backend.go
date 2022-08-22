@@ -52,11 +52,11 @@ type LesApiBackend struct {
 }
 
 func (b *LesApiBackend) ChainConfig() *params.ChainConfig {
-	return b.eth.chainconfig
+	return b.eth.chainConfig
 }
 
 func (b *LesApiBackend) CurrentBlock(ctx context.Context) (*types.Block, error) {
-	header, err := b.blockchain.CurrentHeaderOdr(ctx)
+	header, err := b.eth.blockchain.CurrentHeaderOdr(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,9 @@ func (b *LesApiBackend) CurrentBlock(ctx context.Context) (*types.Block, error) 
 }
 
 func (b *LesApiBackend) SetHead(number uint64) error {
-	b.eth.handler.downloader.Cancel()
+	if b.eth.downloader != nil {
+		b.eth.downloader.Cancel()
+	}
 	return b.eth.blockchain.SetHead(number)
 }
 
@@ -76,9 +78,9 @@ func (b *LesApiBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumb
 		return b.eth.blockchain.CurrentHeaderOdr(ctx)
 	}
 	if number == rpc.FinalizedBlockNumber || number == rpc.SafeBlockNumber { //TODO ??? safe
-		return b.eth.blockchain.FinalizedHeader(ctx)
+		return b.eth.blockchain.FinalizedHeaderOdr(ctx)
 	}
-	return b.eth.blockchain.GetHeaderByNumber(ctx, uint64(number))
+	return b.eth.blockchain.GetHeaderByNumberOdr(ctx, uint64(number))
 }
 
 func (b *LesApiBackend) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*types.Header, error) {
@@ -108,7 +110,7 @@ func (b *LesApiBackend) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash 
 }
 
 func (b *LesApiBackend) HeaderByHash(ctx context.Context, hash common.Hash) (*types.Header, error) {
-	return b.eth.blockchain.GetHeaderByHash(ctx, hash)
+	return b.eth.blockchain.GetHeaderByHashOdr(ctx, hash)
 }
 
 func (b *LesApiBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Block, error) {
@@ -120,7 +122,7 @@ func (b *LesApiBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumbe
 		return b.eth.blockchain.GetBlockByHash(ctx, header.Hash())
 	}
 	if number == rpc.FinalizedBlockNumber {
-		header, err := b.eth.blockchain.FinalizedHeader(ctx)
+		header, err := b.eth.blockchain.FinalizedHeaderOdr(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -179,7 +181,7 @@ func (b *LesApiBackend) StateAndHeaderByNumberOrHash(ctx context.Context, blockN
 		return b.StateAndHeaderByNumber(ctx, blockNr)
 	}
 	if hash, ok := blockNrOrHash.Hash(); ok {
-		header, err := b.eth.blockchain.GetHeaderByHash(ctx, hash)
+		header, err := b.eth.blockchain.GetHeaderByHashOdr(ctx, hash)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -198,17 +200,19 @@ func (b *LesApiBackend) StateAndHeaderByNumberOrHash(ctx context.Context, blockN
 }
 
 func (b *LesApiBackend) GetReceipts(ctx context.Context, hash common.Hash) (types.Receipts, error) {
-	if number := rawdb.ReadHeaderNumber(b.eth.chainDb, hash); number != nil {
-		return light.GetBlockReceipts(ctx, b.eth.odr, hash, *number)
+	if header, err := b.eth.blockchain.GetHeaderByHashOdr(ctx, hash); header != nil {
+		return light.GetBlockReceipts(ctx, b.eth.odr, header)
+	} else {
+		return nil, err
 	}
-	return nil, nil
 }
 
 func (b *LesApiBackend) GetLogs(ctx context.Context, hash common.Hash) ([][]*types.Log, error) {
-	if number := rawdb.ReadHeaderNumber(b.eth.chainDb, hash); number != nil {
-		return light.GetBlockLogs(ctx, b.eth.odr, hash, *number)
+	if header, err := b.eth.blockchain.GetHeaderByHashOdr(ctx, hash); header != nil {
+		return light.GetBlockLogs(ctx, b.eth.odr, header)
+	} else {
+		return nil, err
 	}
-	return nil, nil
 }
 
 func (b *LesApiBackend) GetTd(ctx context.Context, hash common.Hash) *big.Int {
