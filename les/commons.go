@@ -24,8 +24,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 
-	//	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/forkid"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -168,7 +168,7 @@ func sendHeadInfo(send *keyValueList, head blockInfo) {
 	send.add("headNum", head.Number)
 }
 
-func sendGeneralInfo(p *peer, send *keyValueList, forkID forkid.ID) {
+func sendGeneralInfo(p *peer, send *keyValueList, genesis common.Hash, forkID forkid.ID) {
 	send.add("protocolVersion", uint64(p.version))
 	send.add("networkId", p.network)
 	send.add("genesisHash", genesis)
@@ -180,7 +180,10 @@ func sendGeneralInfo(p *peer, send *keyValueList, forkID forkid.ID) {
 	}
 }
 
-func receiveGeneralInfo(p *peer, recv keyValueMap, forkFilter forkid.Filter) error {
+func receiveGeneralInfo(p *peer, recv keyValueMap, genesis common.Hash, forkFilter forkid.Filter) error {
+	var rGenesis common.Hash
+	var rVersion, rNetwork uint64
+
 	if err := recv.get("protocolVersion", &rVersion); err != nil {
 		return err
 	}
@@ -210,4 +213,5 @@ func receiveGeneralInfo(p *peer, recv keyValueMap, forkFilter forkid.Filter) err
 			return errResp(ErrForkIDRejected, "%v", err)
 		}
 	}
+	return nil
 }

@@ -60,7 +60,7 @@ type clientHandler struct {
 }*/
 
 func (h *clientHandler) sendHandshake(p *peer, send *keyValueList) {
-	sendGeneralInfo(p, send, forkid.NewID(h.blockchain.Config(), h.blockchain.Genesis().Hash(), h.blockchain.CurrentHeader().Number.Uint64()))
+	sendGeneralInfo(p, send, h.blockchain.Genesis().Hash(), forkid.NewID(h.blockchain.Config(), h.blockchain.Genesis().Hash(), h.blockchain.CurrentHeader().Number.Uint64()))
 	if p.version < lpv5 {
 		p.announceType = announceTypeSimple
 		send.add("announceType", p.announceType)
@@ -69,7 +69,7 @@ func (h *clientHandler) sendHandshake(p *peer, send *keyValueList) {
 }
 
 func (h *clientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
-	if err := receiveGeneralInfo(p, recv, h.forkFilter); err != nil {
+	if err := receiveGeneralInfo(p, recv, h.blockchain.Genesis().Hash(), h.forkFilter); err != nil {
 		return err
 	}
 
