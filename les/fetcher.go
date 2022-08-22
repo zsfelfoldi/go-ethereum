@@ -25,7 +25,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/fetcher"
@@ -159,21 +158,14 @@ type lightFetcher struct {
 func newLightFetcher(chain *light.LightChain, engine consensus.Engine, peers *serverPeerSet, chaindb ethdb.Database, reqDist *requestDistributor, syncFn func(p *peer)) *lightFetcher {
 	// Construct the fetcher by offering all necessary APIs
 	validator := func(header *types.Header) error {
-		// Disable seal verification explicitly if we are running in ulc mode.
-		return engine.VerifyHeader(chain, header, ulc == nil)
+		return engine.VerifyHeader(chain, header, true)
 	}
 	heighter := func() uint64 { return chain.CurrentHeader().Number.Uint64() }
 	dropper := func(id string) { peers.unregister(id) }
 	inserter := func(headers []*types.Header) (int, error) {
-		// Disable PoW checking explicitly if we are running in ulc mode.
-		checkFreq := 1
-		if ulc != nil {
-			checkFreq = 0
-		}
-		return chain.InsertHeaderChain(headers, checkFreq)
+		return chain.InsertHeaderChain(headers, 1)
 	}
 	f := &lightFetcher{
-		ulc:         ulc,
 		peerset:     peers,
 		chaindb:     chaindb,
 		chain:       chain,
@@ -260,7 +252,6 @@ func (f *lightFetcher) mainloop() {
 		syncInterval = uint64(1) // Interval used to trigger a light resync.
 		syncing      bool        // Indicator whether the client is syncing
 
-		ulc          = f.ulc != nil
 		headCh       = make(chan core.ChainHeadEvent, 100)
 		fetching     = make(map[uint64]*request)
 		requestTimer = time.NewTimer(0)
@@ -276,26 +267,6 @@ func (f *lightFetcher) mainloop() {
 	reset := func(header *types.Header) {
 		localHead = header
 		localTd = f.chain.GetTd(header.Hash(), header.Number.Uint64())
-	}
-	// trustedHeader returns an indicator whether the header is regarded as
-	// trusted. If we are running in the ulc mode, only when we receive enough
-	// same announcement from trusted server, the header will be trusted.
-	trustedHeader := func(hash common.Hash, number uint64) (bool, []enode.ID) {
-		var (
-			agreed  []enode.ID
-			trusted bool
-		)
-		f.forEachPeer(func(id enode.ID, p *fetcherPeer) bool {
-			if anno := p.announces[hash]; anno != nil && anno.trust && anno.data.Number == number {
-				agreed = append(agreed, id)
-				if 100*len(agreed)/len(f.ulc.keys) >= f.ulc.fraction {
-					trusted = true
-					return false // abort iteration
-				}
-			}
-			return true
-		})
-		return trusted, agreed
 	}
 	for {
 		select {
@@ -324,7 +295,7 @@ func (f *lightFetcher) mainloop() {
 			peer.addAnno(anno)
 
 			// If we are not syncing, try to trigger a single retrieval or re-sync
-			if !ulc && !syncing {
+			if !syncing {
 				// Two scenarios lead to re-sync:
 				// - reorg happens
 				// - local chain lags
@@ -340,22 +311,6 @@ func (f *lightFetcher) mainloop() {
 				log.Debug("Trigger header retrieval", "peer", peerid, "number", data.Number, "hash", data.Hash)
 			}
 			// Keep collecting announces from trusted server even we are syncing.
-			if ulc && anno.trust {
-				// Notify underlying fetcher to retrieve header or trigger a resync if
-				// we have receive enough announcements from trusted server.
-				trusted, agreed := trustedHeader(data.Hash, data.Number)
-				if trusted && !syncing {
-					if data.Number > localHead.Number.Uint64()+syncInterval || data.ReorgDepth > 0 {
-						syncing = true
-						go f.startSync(peerid)
-						log.Debug("Trigger trusted light sync", "local", localHead.Number, "localhash", localHead.Hash(), "remote", data.Number, "remotehash", data.Hash)
-						continue
-					}
-					p := agreed[rand.Intn(len(agreed))]
-					f.fetcher.Notify(p.String(), data.Hash, data.Number, time.Now(), f.requestHeaderByHash(p), nil)
-					log.Debug("Trigger trusted header retrieval", "number", data.Number, "hash", data.Hash)
-				}
-			}
 
 		case req := <-f.requestCh:
 			fetching[req.reqid] = req // Tracking all in-flight requests for response latency statistic.
@@ -435,38 +390,6 @@ func (f *lightFetcher) mainloop() {
 
 		case origin := <-f.syncDone:
 			syncing = false // Reset the status
-
-			// Rewind all untrusted headers for ulc mode.
-			if ulc {
-				head := f.chain.CurrentHeader()
-				ancestor := rawdb.FindCommonAncestor(f.chaindb, origin, head)
-
-				// Recap the ancestor with genesis header in case the ancestor
-				// is not found. It can happen the original head is before the
-				// checkpoint while the synced headers are after it. In this
-				// case there is no ancestor between them.
-				if ancestor == nil {
-					ancestor = f.chain.Genesis().Header()
-				}
-				var untrusted []common.Hash
-				for head.Number.Cmp(ancestor.Number) > 0 {
-					hash, number := head.Hash(), head.Number.Uint64()
-					if trusted, _ := trustedHeader(hash, number); trusted {
-						break
-					}
-					untrusted = append(untrusted, hash)
-					head = f.chain.GetHeader(head.ParentHash, number-1)
-					if head == nil {
-						break // all the synced headers will be dropped
-					}
-				}
-				if len(untrusted) > 0 {
-					for i, j := 0, len(untrusted)-1; i < j; i, j = i+1, j-1 {
-						untrusted[i], untrusted[j] = untrusted[j], untrusted[i]
-					}
-					f.chain.Rollback(untrusted)
-				}
-			}
 			// Reset local status.
 			reset(f.chain.CurrentHeader())
 			if f.newHeadHook != nil {
@@ -483,7 +406,7 @@ func (f *lightFetcher) mainloop() {
 // announce processes a new announcement message received from a peer.
 func (f *lightFetcher) announce(p *peer, head *announceData) {
 	select {
-	case f.announceCh <- &announce{peerid: p.ID(), trust: p.trusted, data: head}:
+	case f.announceCh <- &announce{peerid: p.ID(), trust: false, data: head}:
 	case <-f.closeCh:
 		return
 	}
@@ -531,7 +454,7 @@ func (f *lightFetcher) startSync(id enode.ID) {
 	}(f.chain.CurrentHeader())
 
 	peer := f.peerset.peer(id.String())
-	if peer == nil || peer.onlyAnnounce {
+	if peer == nil {
 		return
 	}
 	f.synchronise(peer)
