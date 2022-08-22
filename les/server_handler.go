@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
+	vfs "github.com/ethereum/go-ethereum/les/vflux/server"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
@@ -96,18 +97,15 @@ func (h *serverHandler) sendHandshake(p *peer, send *keyValueList) {
 	number := head.Number.Uint64()
 	p.headInfo = blockInfo{Hash: hash, Number: number, Td: h.blockchain.GetTd(hash, number)}
 	sendHeadInfo(send, p.headInfo)
-	sendGeneralInfo(p, send, forkid.NewID(h.blockchain.Config(), h.blockchain.Genesis().Hash(), number))
+	sendGeneralInfo(p, send, h.blockchain.Genesis().Hash(), forkid.NewID(h.blockchain.Config(), h.blockchain.Genesis().Hash(), number))
 
-	recentTx := server.handler.blockchain.TxLookupLimit()
+	recentTx := h.server.handler.blockchain.TxLookupLimit()
 	if recentTx != txIndexUnlimited {
 		if recentTx < blockSafetyMargin {
 			recentTx = txIndexDisabled
 		} else {
 			recentTx -= blockSafetyMargin - txIndexRecentOffset
 		}
-	}
-	if recentTx != txIndexUnlimited && p.version < lpv4 {
-		return errors.New("Cannot serve old clients without a complete tx index")
 	}
 
 	// Add some information which services server can offer.
@@ -118,7 +116,7 @@ func (h *serverHandler) sendHandshake(p *peer, send *keyValueList) {
 	// If local ethereum node is running in archive mode, advertise ourselves we have
 	// all version state data. Otherwise only recent state is available.
 	stateRecent := uint64(core.TriesInMemory - blockSafetyMargin)
-	if server.archiveMode {
+	if h.server.archiveMode {
 		stateRecent = 0
 	}
 	send.add("serveRecentState", stateRecent)
@@ -126,23 +124,23 @@ func (h *serverHandler) sendHandshake(p *peer, send *keyValueList) {
 	if p.version >= lpv4 {
 		send.add("recentTxLookup", recentTx)
 	}
-	send.add("flowControl/BL", server.defParams.BufLimit)
-	send.add("flowControl/MRR", server.defParams.MinRecharge)
+	send.add("flowControl/BL", h.server.defParams.BufLimit)
+	send.add("flowControl/MRR", h.server.defParams.MinRecharge)
 
 	var costList RequestCostList
-	if server.costTracker.testCostList != nil {
-		costList = server.costTracker.testCostList
+	if h.server.costTracker.testCostList != nil {
+		costList = h.server.costTracker.testCostList
 	} else {
-		costList = server.costTracker.makeCostList(server.costTracker.globalFactor())
+		costList = h.server.costTracker.makeCostList(h.server.costTracker.globalFactor())
 	}
 	send.add("flowControl/MRC", costList)
 	p.fcCosts = costList.decode(ProtocolLengths[uint(p.version)])
-	p.fcParams = server.defParams
+	p.fcParams = h.server.defParams
 
 	// Add advertised checkpoint and register block height which
 	// client can verify the checkpoint validity.
-	if server.oracle != nil && server.oracle.IsRunning() {
-		cp, height := server.oracle.StableCheckpoint()
+	if h.server.oracle != nil && server.oracle.IsRunning() {
+		cp, height := h.server.oracle.StableCheckpoint()
 		if cp != nil {
 			send.add("checkpoint/value", cp)
 			send.add("checkpoint/registerHeight", height)
@@ -151,7 +149,7 @@ func (h *serverHandler) sendHandshake(p *peer, send *keyValueList) {
 }
 
 func (h *serverHandler) receiveHandshake(p *peer, recv keyValueMap) error {
-	if err := receiveGeneralInfo(p, recv, h.forkFilter); err != nil {
+	if err := receiveGeneralInfo(p, recv, h.blockchain.Genesis().Hash(), h.forkFilter); err != nil {
 		return err
 	}
 
@@ -167,7 +165,11 @@ func (h *serverHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 	return nil
 }
 
-func (h *serverHandler) peerConnected(*peer) (func(), error) {
+func (h *serverHandler) peerConnected(p *peer) (func(), error) {
+	if h.server.handler.blockchain.TxLookupLimit() != txIndexUnlimited && p.version < lpv4 {
+		return nil, errors.New("Cannot serve old clients without a complete tx index")
+	}
+
 	// Reject light clients if server is not synced. Put this checking here, so
 	// that "non-synced" les-server peers are still allowed to keep the connection.
 	if !h.synced() { //TODO synced status after merge
@@ -322,7 +324,7 @@ func (h *beaconServerHandler) receiveHandshake(p *peer, recv keyValueMap) error 
 	return nil
 }
 
-func (h *beaconServerHandler) peerConnected(*peer) (func(), error) {
+func (h *beaconServerHandler) peerConnected(p *peer) (func(), error) {
 	if h.server.syncCommitteeTracker == nil {
 		return nil, nil
 	}
@@ -338,17 +340,17 @@ func (h *beaconServerHandler) messageHandlers() messageHandlers {
 }
 
 type vfxServerHandler struct {
+	clientPool *vfs.ClientPool
 }
 
-func (h *vfxServerHandler) peerConnected(*peer) (func(), error) {
-	if p.balance = h.server.clientPool.Register(p); p.balance == nil {
-		h.server.peers.unregister(p.ID())
+func (h *vfxServerHandler) peerConnected(p *peer) (func(), error) {
+	if p.balance = h.clientPool.Register(p); p.balance == nil {
 		p.Log().Debug("Client pool already closed")
 		return nil, p2p.DiscRequested
 	}
 
 	return func() {
-		h.server.clientPool.Unregister(p)
+		h.clientPool.Unregister(p)
 		p.balance = nil
 	}, nil
 }

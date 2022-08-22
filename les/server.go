@@ -58,7 +58,7 @@ type LesServer struct {
 	lesCommons
 
 	archiveMode bool // Flag whether the ethereum node runs in archive mode.
-	handler     *serverHandler
+	handler     *handler
 	peers       *clientPeerSet
 	serverset   *serverSet
 	vfluxServer *vfs.Server
@@ -142,7 +142,25 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 	if config.LightNoSyncServe {
 		issync = func() bool { return true }
 	}
-	srv.handler = newServerHandler(srv, e.BlockChain(), e.ChainDb(), e.TxPool(), issync)
+	srv.handler = newHandler(srv.config.NetworkId)
+
+	serverHandler := newServerHandler(srv, e.BlockChain(), e.ChainDb(), e.TxPool(), issync)
+	srv.handler.registerHandshakeModule(serverHandler)
+	srv.handler.registerConnectionModule(serverHandler)
+	srv.handler.registerMessageHandlers(serverHandler.messageHandlers())
+
+	beaconServerHandler := &beaconServerHandler{
+		syncCommitteeTracker: srv.syncCommitteeTracker,
+	}
+	srv.handler.registerHandshakeModule(beaconServerHandler)
+	srv.handler.registerConnectionModule(beaconServerHandler)
+	srv.handler.registerMessageHandlers(beaconServerHandler.messageHandlers())
+
+	vfxServerHandler := &vfxServerHandler{
+		clientPool: srv.clientPool,
+	}
+	srv.handler.registerConnectionModule(vfxServerHandler)
+
 	srv.costTracker, srv.minCapacity = newCostTracker(e.ChainDb(), config)
 	srv.oracle = srv.setupOracle(node, e.BlockChain().Genesis().Hash(), config)
 

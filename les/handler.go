@@ -128,7 +128,6 @@ func (h *handler) handle(p *peer) error {
 	}
 
 	defer func() {
-		//wg.Wait() // Ensure all background task routines have exited. //TODO ???
 		connectionTimer.Update(time.Duration(mclock.Now() - p.connectedAt))
 	}()
 

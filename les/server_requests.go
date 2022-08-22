@@ -186,7 +186,7 @@ type Decoder interface {
 type FlowControlledHandler struct {
 	Name                                                             string
 	Code, FirstVersion, LastVersion                                  uint
-	MaxCount                                                         uin
+	MaxCount                                                         uint
 	InPacketsMeter, InTrafficMeter, OutPacketsMeter, OutTrafficMeter metrics.Meter
 	ServingTimeMeter                                                 metrics.Timer
 	Handle                                                           func(msg Decoder) (serve serveRequestFn, reqID, amount uint64, err error)
@@ -745,7 +745,7 @@ func (s *RequestServer) handleSendTx(msg Decoder) (serveRequestFn, uint64, uint6
 					stats[i].Error = errs[0].Error()
 					continue
 				}
-				stats[i] = txStatus(backend, hash)
+				stats[i] = s.txStatus(hash)
 			}
 		}
 		return p.replyTxStatus(r.ReqID, stats)
@@ -764,21 +764,21 @@ func (s *RequestServer) handleGetTxStatus(msg Decoder) (serveRequestFn, uint64, 
 			if i != 0 && !waitOrStop() {
 				return nil
 			}
-			stats[i] = txStatus(backend, hash)
+			stats[i] = s.txStatus(hash)
 		}
 		return p.replyTxStatus(r.ReqID, stats)
 	}, r.ReqID, uint64(len(r.Hashes)), nil
 }
 
 // txStatus returns the status of a specified transaction.
-func txStatus(b serverBackend, hash common.Hash) light.TxStatus {
+func (s *RequestServer) txStatus(hash common.Hash) light.TxStatus {
 	var stat light.TxStatus
 	// Looking the transaction in txpool first.
-	stat.Status = b.TxPool().Status([]common.Hash{hash})[0]
+	stat.Status = s.TxPool.Status([]common.Hash{hash})[0]
 
 	// If the transaction is unknown to the pool, try looking it up locally.
 	if stat.Status == core.TxStatusUnknown {
-		lookup := b.BlockChain().GetTransactionLookup(hash)
+		lookup := s.BlockChain.GetTransactionLookup(hash)
 		if lookup != nil {
 			stat.Status = core.TxStatusIncluded
 			stat.Lookup = lookup

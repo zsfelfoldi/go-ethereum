@@ -280,6 +280,22 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	leth.handler.registerConnectionModule(clientHandler)
 	leth.handler.registerMessageHandlers(clientHandler.messageHandlers())
 
+	if leth.v5 {
+		beaconClientHandler := &beaconClientHandler{
+			syncCommitteeTracker:    leth.syncCommitteeTracker,
+			syncCommitteeCheckpoint: leth.syncCommitteeCheckpoint,
+			retriever:               leth.retriever,
+		}
+		leth.handler.registerHandshakeModule(beaconClientHandler)
+		leth.handler.registerConnectionModule(beaconClientHandler)
+		leth.handler.registerMessageHandlers(beaconClientHandler.messageHandlers())
+	}
+
+	vfxClientHandler := &vfxClientHandler{
+		serverPool: leth.serverPool,
+	}
+	leth.handler.registerConnectionModule(vfxClientHandler)
+
 	leth.netRPCService = ethapi.NewNetAPI(leth.p2pServer, leth.config.NetworkId)
 
 	// Register the backend on the node
