@@ -256,7 +256,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	leth.ApiBackend.gpo = gasprice.NewOracle(leth.ApiBackend, gpoParams)
 
 	//leth.handler = newClientHandler(checkpoint, leth)
-	leth.handler = newHandler()
+	leth.handler = newHandler(leth.config.NetworkId)
 	clientHandler := &clientHandler{
 		forkFilter: forkid.NewFilter(leth.blockchain),
 		blockchain: leth.blockchain,

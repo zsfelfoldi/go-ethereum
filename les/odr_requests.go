@@ -94,7 +94,7 @@ func (r *BlockRequest) GetCost(peer *peer) uint64 {
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *BlockRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	if peer.version >= lpv5 {
-		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+		return peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
 	}
 	return peer.HasBlock(r.Hash, r.Number, false)
 }
@@ -155,7 +155,7 @@ func (r *ReceiptsRequest) GetCost(peer *peer) uint64 {
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *ReceiptsRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	if peer.version >= lpv5 {
-		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+		return peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
 	}
 	return peer.HasBlock(r.Hash, r.Number, false)
 }
@@ -215,7 +215,7 @@ func (r *TrieRequest) GetCost(peer *peer) uint64 {
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *TrieRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	if peer.version >= lpv5 {
-		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+		return peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
 	}
 	return peer.HasBlock(r.Id.BlockHash, r.Id.BlockNumber, true)
 }
@@ -272,7 +272,7 @@ func (r *CodeRequest) GetCost(peer *peer) uint64 {
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *CodeRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
 	if peer.version >= lpv5 {
-		return peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+		return peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
 	}
 	return peer.HasBlock(r.Id.BlockHash, r.Id.BlockNumber, true)
 }
@@ -508,7 +508,7 @@ func (r *TxStatusRequest) GetCost(peer *peer) uint64 {
 
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *TxStatusRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
-	return peer.txHistory != txIndexDisabled && peer.version < lpv5 || peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+	return peer.txHistory != txIndexDisabled && peer.version < lpv5 || peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
@@ -615,7 +615,7 @@ func (r *BeaconDataRequest) GetCost(peer *peer) uint64 {
 
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *BeaconDataRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
-	return peer.version >= lpv5 && peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+	return peer.version >= lpv5 && peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
@@ -795,7 +795,7 @@ func (r *ExecHeadersRequest) GetCost(peer *peer) uint64 {
 
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *ExecHeadersRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
-	return peer.version >= lpv5 && peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+	return peer.version >= lpv5 && peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
@@ -890,7 +890,7 @@ func (r *HeadersByHashRequest) GetCost(peer *peer) uint64 {
 
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *HeadersByHashRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
-	return peer.version < lpv5 || peer.hasAnnouncedBeaconHead(beaconHeader.Hash())
+	return peer.version < lpv5 || peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)

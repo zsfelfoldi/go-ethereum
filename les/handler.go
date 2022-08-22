@@ -40,27 +40,31 @@ type messageHandlerModule interface {
 type messageHandler func(*peer, p2p.Msg) error
 
 type messageHandlerWithCodeAndVersion struct {
-	code, firstVersion, lastVersion uint
-	handler                         messageHandler
+	code                      uint64
+	firstVersion, lastVersion int
+	handler                   messageHandler
 }
 
 type messageHandlers []messageHandlerWithCodeAndVersion
 
 type codeAndVersion struct {
-	code, version uint32
+	code    uint64
+	version int
 }
 
 type handler struct {
 	handshakeModules  []handshakeModule
 	connectionModules []connectionModule
 	messageHandlers   map[codeAndVersion]messageHandler
+	networkId         uint64
 
 	closeCh chan struct{}
 	wg      sync.WaitGroup
 }
 
-func newHandler() *handler {
+func newHandler(networkId uint64) *handler {
 	return &handler{
+		networkId:       networkId,
 		closeCh:         make(chan struct{}),
 		messageHandlers: make(map[codeAndVersion]messageHandler),
 	}
@@ -81,16 +85,16 @@ func (h *handler) registerConnectionModule(m connectionModule) {
 }
 
 func (h *handler) registerMessageHandlers(handlers messageHandlers) {
-	for _, h := range handlers {
-		for version := h.firstVersion; version <= h.lastVersion; version++ {
-			h.messageHandlers[codeAndVersion{code: h.code, version: version}] = h.handler
+	for _, hh := range handlers {
+		for version := hh.firstVersion; version <= hh.lastVersion; version++ {
+			h.messageHandlers[codeAndVersion{code: hh.code, version: version}] = hh.handler
 		}
 	}
 }
 
 // runPeer is the p2p protocol run function for the given version.
 func (h *handler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter) error {
-	peer := newPeer(int(version), h.server.config.NetworkId, p, newMeteredMsgWriter(rw, int(version)))
+	peer := newPeer(int(version), h.networkId, p, newMeteredMsgWriter(rw, int(version)))
 	defer peer.close()
 	h.wg.Add(1)
 	defer h.wg.Done()

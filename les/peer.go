@@ -954,8 +954,8 @@ func (p *peer) UpdateCapacity(newCap uint64, requested bool) {
 		p.fcParams = flowcontrol.ServerParams{MinRecharge: newCap, BufLimit: newCap * bufLimitRatio}
 		p.fcClient.UpdateParams(p.fcParams)
 		var kvList keyValueList
-		kvList = kvList.add("flowControl/MRR", newCap)
-		kvList = kvList.add("flowControl/BL", newCap*bufLimitRatio)
+		kvList.add("flowControl/MRR", newCap)
+		kvList.add("flowControl/BL", newCap*bufLimitRatio)
 		p.queueSend(func() { p.sendAnnounce(announceData{Update: kvList}) })
 	}
 

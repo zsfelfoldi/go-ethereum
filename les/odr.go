@@ -275,9 +275,6 @@ func (odr *LesOdr) RetrieveWithBeaconHeader(ctx context.Context, beaconHeader be
 		},
 		canSend: func(dp distPeer) bool {
 			p := dp.(*peer)
-			if p.onlyAnnounce {
-				return false
-			}
 			//p.setBestBeaconHeader(beaconHeader)
 			return lreq.CanSend(beaconHeader, p)
 		},
