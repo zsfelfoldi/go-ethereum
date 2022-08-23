@@ -80,6 +80,7 @@ func newServerHandler(server *LesServer, blockchain *core.BlockChain, chainDb et
 		chainDb:    chainDb,
 		txpool:     txpool,
 		synced:     synced,
+		//TODO fcWrapper
 	}
 	return handler
 }
@@ -94,7 +95,7 @@ func (h *serverHandler) sendHandshake(p *peer, send *keyValueList) {
 	sendHeadInfo(send, p.headInfo)
 	sendGeneralInfo(p, send, h.blockchain.Genesis().Hash(), forkid.NewID(h.blockchain.Config(), h.blockchain.Genesis().Hash(), number))
 
-	recentTx := h.server.handler.blockchain.TxLookupLimit()
+	recentTx := h.blockchain.TxLookupLimit()
 	if recentTx != txIndexUnlimited {
 		if recentTx < blockSafetyMargin {
 			recentTx = txIndexDisabled
@@ -134,7 +135,7 @@ func (h *serverHandler) sendHandshake(p *peer, send *keyValueList) {
 
 	// Add advertised checkpoint and register block height which
 	// client can verify the checkpoint validity.
-	if h.server.oracle != nil && server.oracle.IsRunning() {
+	if h.server.oracle != nil && h.server.oracle.IsRunning() {
 		cp, height := h.server.oracle.StableCheckpoint()
 		if cp != nil {
 			send.add("checkpoint/value", cp)
@@ -161,7 +162,7 @@ func (h *serverHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 }
 
 func (h *serverHandler) peerConnected(p *peer) (func(), error) {
-	if h.server.handler.blockchain.TxLookupLimit() != txIndexUnlimited && p.version < lpv4 {
+	if h.blockchain.TxLookupLimit() != txIndexUnlimited && p.version < lpv4 {
 		return nil, errors.New("Cannot serve old clients without a complete tx index")
 	}
 
@@ -192,7 +193,7 @@ func (h *serverHandler) peerConnected(p *peer) (func(), error) {
 }
 
 func (h *serverHandler) messageHandlers() messageHandlers {
-	return h.fcWrapper.wrapMessageHandlers(RequestServer{BlockChain: h.blockchain, TxPool: h.txpool}.MessageHandlers())
+	return h.fcWrapper.wrapMessageHandlers((&RequestServer{BlockChain: h.blockchain, TxPool: h.txpool}).MessageHandlers())
 }
 
 // getAccount retrieves an account from the state based on root.
@@ -236,6 +237,7 @@ func (h *serverHandler) GetHelperTrie(typ uint, index uint64) *trie.Trie {
 type beaconServerHandler struct {
 	syncCommitteeTracker *beacon.SyncCommitteeTracker
 	beaconChain          *beacon.BeaconChain
+	fcWrapper            *fcRequestWrapper
 }
 
 func (h *beaconServerHandler) sendHandshake(p *peer, send *keyValueList) {
@@ -252,18 +254,18 @@ func (h *beaconServerHandler) receiveHandshake(p *peer, recv keyValueMap) error 
 }
 
 func (h *beaconServerHandler) peerConnected(p *peer) (func(), error) {
-	if h.server.syncCommitteeTracker == nil {
+	if h.syncCommitteeTracker == nil {
 		return nil, nil
 	}
-	h.server.syncCommitteeTracker.Activate(p)
+	h.syncCommitteeTracker.Activate(p)
 
 	return func() {
-		h.server.syncCommitteeTracker.Deactivate(p, true)
+		h.syncCommitteeTracker.Deactivate(p, true)
 	}, nil
 }
 
 func (h *beaconServerHandler) messageHandlers() messageHandlers {
-	return h.fcWrapper.wrapMessageHandlers(BeaconRequestServer{SyncCommitteeTracker: h.syncCommitteeTracker, BeaconChain: h.beaconChain}.MessageHandlers())
+	return h.fcWrapper.wrapMessageHandlers((&BeaconRequestServer{SyncCommitteeTracker: h.syncCommitteeTracker, BeaconChain: h.beaconChain}).MessageHandlers())
 }
 
 type vfxServerHandler struct {

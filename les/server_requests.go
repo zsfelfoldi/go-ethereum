@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 )
@@ -45,7 +46,7 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 			code:         req.Code,
 			firstVersion: req.FirstVersion,
 			lastVersion:  req.LastVersion,
-			handler: func(p *peer, msg *p2p.Msg) error {
+			handler: func(p *peer, msg p2p.Msg) error {
 				// Decode the p2p message, resolve the concrete handler for it.
 				serve, reqID, reqCnt, err := req.Handle(msg)
 				if err != nil {
@@ -185,7 +186,8 @@ type Decoder interface {
 // its handler function.
 type FlowControlledHandler struct {
 	Name                                                             string
-	Code, FirstVersion, LastVersion                                  uint
+	Code                                                             uint64
+	FirstVersion, LastVersion                                        int
 	MaxCount                                                         uint
 	InPacketsMeter, InTrafficMeter, OutPacketsMeter, OutTrafficMeter metrics.Meter
 	ServingTimeMeter                                                 metrics.Timer
