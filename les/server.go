@@ -143,36 +143,16 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		}
 	}
 
-	issync := e.Synced
-	if config.LightNoSyncServe {
-		issync = func() bool { return true }
-	}
-	srv.handler = newHandler(srv.peers, srv.config.NetworkId)
-
-	serverHandler := newServerHandler(srv, e.BlockChain(), e.ChainDb(), e.TxPool(), issync)
-	srv.handler.registerHandshakeModule(serverHandler)
-	srv.handler.registerConnectionModule(serverHandler)
-	srv.handler.registerMessageHandlers(serverHandler.messageHandlers())
-
-	beaconServerHandler := &beaconServerHandler{
-		syncCommitteeTracker: srv.syncCommitteeTracker,
-		beaconChain:          srv.beaconChain,
-		blockChain:           srv.blockchain,
-	}
-	srv.handler.registerHandshakeModule(beaconServerHandler)
-	srv.handler.registerConnectionModule(beaconServerHandler)
-	srv.handler.registerMessageHandlers(beaconServerHandler.messageHandlers())
-
-	vfxServerHandler := &vfxServerHandler{
-		clientPool: srv.clientPool,
-	}
-	srv.handler.registerConnectionModule(vfxServerHandler)
-
 	srv.costTracker, srv.minCapacity = newCostTracker(e.ChainDb(), config)
 	srv.oracle = srv.setupOracle(node, e.BlockChain().Genesis().Hash(), config)
 
 	// Initialize the bloom trie indexer.
 	e.BloomIndexer().AddChildIndexer(srv.bloomTrieIndexer)
+
+	issync := e.Synced
+	if config.LightNoSyncServe {
+		issync = func() bool { return true }
+	}
 
 	// Initialize server capacity management fields.
 	srv.defParams = flowcontrol.ServerParams{
@@ -194,6 +174,27 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 	srv.clientPool.Start()
 	srv.clientPool.SetDefaultFactors(defaultPosFactors, defaultNegFactors)
 	srv.vfluxServer.Register(srv.clientPool, "les", "Ethereum light client service")
+
+	srv.handler = newHandler(srv.peers, srv.config.NetworkId)
+
+	serverHandler := newServerHandler(srv, e.BlockChain(), e.ChainDb(), e.TxPool(), issync)
+	srv.handler.registerHandshakeModule(serverHandler)
+	srv.handler.registerConnectionModule(serverHandler)
+	srv.handler.registerMessageHandlers(serverHandler.messageHandlers())
+
+	beaconServerHandler := &beaconServerHandler{
+		syncCommitteeTracker: srv.syncCommitteeTracker,
+		beaconChain:          srv.beaconChain,
+		blockChain:           srv.blockchain,
+	}
+	srv.handler.registerHandshakeModule(beaconServerHandler)
+	srv.handler.registerConnectionModule(beaconServerHandler)
+	srv.handler.registerMessageHandlers(beaconServerHandler.messageHandlers())
+
+	vfxServerHandler := &vfxServerHandler{
+		clientPool: srv.clientPool,
+	}
+	srv.handler.registerConnectionModule(vfxServerHandler)
 
 	checkpoint := srv.latestLocalCheckpoint()
 	if !checkpoint.Empty() {
