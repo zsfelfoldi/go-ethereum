@@ -335,10 +335,10 @@ func (h *serverHandler) measure(setup *benchmarkSetup, count int) error {
 		if err != nil {
 			return err
 		}
-	case <-h.closeCh:
+		/*case <-h.closeCh:		//TODO benchmark
 		clientPipe.Close()
 		serverPipe.Close()
-		return fmt.Errorf("Benchmark cancelled")
+		return fmt.Errorf("Benchmark cancelled")*/
 	}
 
 	setup.totalTime += time.Duration(mclock.Now() - start)

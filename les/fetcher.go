@@ -388,7 +388,7 @@ func (f *lightFetcher) mainloop() {
 				f.newHeadHook(localHead)
 			}
 
-		case origin := <-f.syncDone:
+		case /*origin :=*/ <-f.syncDone:
 			syncing = false // Reset the status
 			// Reset local status.
 			reset(f.chain.CurrentHeader())

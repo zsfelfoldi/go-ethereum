@@ -307,9 +307,9 @@ func (api *LightServerAPI) Benchmark(setups []map[string]interface{}, passCount,
 			return nil, errUnknownBenchmarkType
 		}
 	}
-	rs := api.server.handler.runBenchmark(benchmarks, passCount, time.Millisecond*time.Duration(length))
+	//rs := api.server.handler.runBenchmark(benchmarks, passCount, time.Millisecond*time.Duration(length))	//TODO benchmark
 	result := make([]map[string]interface{}, len(setups))
-	for i, r := range rs {
+	/*for i, r := range rs {
 		res := make(map[string]interface{})
 		if r.err == nil {
 			res["totalCount"] = r.totalCount
@@ -320,7 +320,7 @@ func (api *LightServerAPI) Benchmark(setups []map[string]interface{}, passCount,
 			res["error"] = r.err.Error()
 		}
 		result[i] = res
-	}
+	}*/
 	return result, nil
 }
 
