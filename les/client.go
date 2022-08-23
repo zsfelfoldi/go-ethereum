@@ -498,7 +498,9 @@ func (s *LightEthereum) Stop() error {
 	//s.handler.stop()
 	s.txPool.Stop()
 	s.engine.Close()
-	s.pruner.close()
+	if s.pruner != nil {
+		s.pruner.close()
+	}
 	s.eventMux.Stop()
 	// Clean shutdown marker as the last thing before closing db
 	s.shutdownTracker.Stop()
