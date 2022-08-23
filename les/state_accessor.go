@@ -20,7 +20,7 @@ import (
 	"context"
 	"errors"
 
-	//	"fmt"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -45,9 +45,9 @@ func (leth *LightEthereum) stateAtTransaction(ctx context.Context, block *types.
 	if err != nil {
 		return nil, vm.BlockContext{}, nil, err
 	}
-	statedb, err := leth.stateAtBlock(ctx, parent, reexec)
-	if err != nil {
-		return nil, vm.BlockContext{}, nil, err
+	statedb, err2 := leth.stateAtBlock(ctx, parent, reexec)
+	if err2 != nil {
+		return nil, vm.BlockContext{}, nil, err2
 	}
 	if txIndex == 0 && len(block.Transactions()) == 0 {
 		return nil, vm.BlockContext{}, statedb, nil

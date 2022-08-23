@@ -202,23 +202,9 @@ func (lc *UltraLightChain) HasBlock(hash common.Hash, number uint64) bool {
 
 // GetBlock retrieves a block from the database or ODR service by hash and number,
 // caching it if found.
-/*func (lc *UltraLightChain) GetBlock(ctx context.Context, hash common.Hash, number uint64) (*types.Block, error) {
-	// Short circuit if the block's already in the cache, retrieve otherwise
-	if block, ok := lc.blockCache.Get(hash); ok {
-		return block.(*types.Block), nil
-	}
-	header, err := lc.GetHeaderOdr(ctx, lc.odr, hash, number)
-	if err != nil {
-		return nil, err
-	}
-	block, err := GetBlock(ctx, lc.odr, header)
-	if err != nil {
-		return nil, err
-	}
-	// Cache the found block for next time and return
-	lc.blockCache.Add(hash, block)
-	return block, nil
-}*/
+func (lc *UltraLightChain) GetBlock(ctx context.Context, hash common.Hash, number uint64) (*types.Block, error) {
+	return lc.GetBlockByHash(ctx, hash)
+}
 
 // GetBlockByHash retrieves a block from the database or ODR service by hash,
 // caching it if found.

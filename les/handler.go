@@ -111,6 +111,7 @@ func (h *handler) handle(p *peer) error {
 
 	h.wg.Add(1)
 	defer func() {
+		p.wg.Wait()
 		h.peers.unregister(p.ID())
 		h.wg.Done()
 	}()

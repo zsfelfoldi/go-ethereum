@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -63,7 +64,7 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 
 				// Ensure that the request sent by client peer is valid
 				inSizeCost := f.costTracker.realCost(0, msg.Size, 0)
-				if reqCnt == 0 || reqCnt > maxCount {
+				if reqCnt == 0 || reqCnt > req.MaxCount {
 					p.fcClient.OneTimeCost(inSizeCost)
 					return nil
 				}
@@ -76,7 +77,7 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 				maxCost := p.fcCosts.getMaxCost(msg.Code, reqCnt)
 				accepted, bufShort, priority := p.fcClient.AcceptRequest(reqID, responseCount, maxCost)
 				if !accepted {
-					p.freeze()
+					p.freezeClient()
 					p.Log().Error("Flow control buffer too low", "time until sufficiently recharged", common.PrettyDuration(time.Duration(bufShort*1000000/p.fcParams.MinRecharge)))
 					p.fcClient.OneTimeCost(inSizeCost)
 					return nil
@@ -92,11 +93,11 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 				task := f.servingQueue.newTask(p, maxTime, priority)
 				if !task.start() {
 					p.fcClient.RequestProcessed(reqID, responseCount, maxCost, inSizeCost)
-					return nil, 0
+					return nil
 				}
-				wg.Add(1) //TODO ???
+				p.wg.Add(1) //TODO ???
 				go func() {
-					defer wg.Done()
+					defer p.wg.Done()
 
 					reply := serve(p, task.waitOrStop)
 					//if reply != nil {
@@ -161,7 +162,7 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 			},
 		}
 	}
-	return wrapped
+	return wrappedHandlers
 }
 
 type RequestServer struct {
@@ -174,6 +175,7 @@ type RequestServer struct {
 
 type BeaconRequestServer struct {
 	BeaconChain          *beacon.BeaconChain
+	BlockChain           *core.BlockChain
 	SyncCommitteeTracker *beacon.SyncCommitteeTracker
 }
 
@@ -188,14 +190,14 @@ type FlowControlledHandler struct {
 	Name                                                             string
 	Code                                                             uint64
 	FirstVersion, LastVersion                                        int
-	MaxCount                                                         uint
+	MaxCount                                                         uint64
 	InPacketsMeter, InTrafficMeter, OutPacketsMeter, OutTrafficMeter metrics.Meter
 	ServingTimeMeter                                                 metrics.Timer
 	Handle                                                           func(msg Decoder) (serve serveRequestFn, reqID, amount uint64, err error)
 }
 
 // serveRequestFn is returned by the request handler functions after decoding the request.
-// This function does the actual request serving using the supplied backend. waitOrStop is
+// This function does the actual request serving using the supplied s waitOrStop is
 // called between serving individual request items and may block if the serving process
 // needs to be throttled. If it returns false then the process is terminated.
 // The reply is not sent by this function yet. The flow control feedback value is supplied
@@ -377,7 +379,7 @@ func (s *RequestServer) handleGetBlockHeaders(msg Decoder) (serveRequestFn, uint
 	return func(p *peer, waitOrStop func() bool) *reply {
 		// Gather headers until the fetch or network limits is reached
 		var (
-			bc              = backend.BlockChain()
+			bc              = s.BlockChain
 			hashMode        = r.Query.Origin.Hash != (common.Hash{})
 			first           = true
 			maxNonCanonical = uint64(100)
@@ -472,7 +474,7 @@ func (s *RequestServer) handleGetBlockBodies(msg Decoder) (serveRequestFn, uint6
 			bytes  int
 			bodies []rlp.RawValue
 		)
-		bc := backend.BlockChain()
+		bc := s.BlockChain
 		for i, hash := range r.Hashes {
 			if i != 0 && !waitOrStop() {
 				return nil
@@ -503,7 +505,7 @@ func (s *RequestServer) handleGetCode(msg Decoder) (serveRequestFn, uint64, uint
 			bytes int
 			data  [][]byte
 		)
-		bc := backend.BlockChain()
+		bc := s.BlockChain
 		for i, request := range r.Reqs {
 			if i != 0 && !waitOrStop() {
 				return nil
@@ -518,7 +520,7 @@ func (s *RequestServer) handleGetCode(msg Decoder) (serveRequestFn, uint64, uint
 			// Refuse to search stale state data in the database since looking for
 			// a non-exist key is kind of expensive.
 			local := bc.CurrentHeader().Number.Uint64()
-			if !backend.ArchiveMode() && header.Number.Uint64()+core.TriesInMemory <= local {
+			if !s.ArchiveMode && header.Number.Uint64()+core.TriesInMemory <= local {
 				p.Log().Debug("Reject stale code request", "number", header.Number.Uint64(), "head", local)
 				p.bumpInvalid()
 				continue
@@ -557,7 +559,7 @@ func (s *RequestServer) handleGetReceipts(msg Decoder) (serveRequestFn, uint64, 
 			bytes    int
 			receipts []rlp.RawValue
 		)
-		bc := backend.BlockChain()
+		bc := s.BlockChain
 		for i, hash := range r.Hashes {
 			if i != 0 && !waitOrStop() {
 				return nil
@@ -598,7 +600,7 @@ func (s *RequestServer) handleGetProofs(msg Decoder) (serveRequestFn, uint64, ui
 			header    *types.Header
 			err       error
 		)
-		bc := backend.BlockChain()
+		bc := s.BlockChain
 		nodes := light.NewNodeSet()
 
 		for i, request := range r.Reqs {
@@ -617,7 +619,7 @@ func (s *RequestServer) handleGetProofs(msg Decoder) (serveRequestFn, uint64, ui
 				// Refuse to search stale state data in the database since looking for
 				// a non-exist key is kind of expensive.
 				local := bc.CurrentHeader().Number.Uint64()
-				if !backend.ArchiveMode() && header.Number.Uint64()+core.TriesInMemory <= local {
+				if !s.ArchiveMode && header.Number.Uint64()+core.TriesInMemory <= local {
 					p.Log().Debug("Reject stale trie request", "number", header.Number.Uint64(), "head", local)
 					p.bumpInvalid()
 					continue
@@ -682,7 +684,7 @@ func (s *RequestServer) handleGetHelperTrieProofs(msg Decoder) (serveRequestFn, 
 			auxBytes int
 			auxData  [][]byte
 		)
-		bc := backend.BlockChain()
+		bc := s.BlockChain
 		nodes := light.NewNodeSet()
 		for i, request := range r.Reqs {
 			if i != 0 && !waitOrStop() {
@@ -690,7 +692,7 @@ func (s *RequestServer) handleGetHelperTrieProofs(msg Decoder) (serveRequestFn, 
 			}
 			if auxTrie == nil || request.Type != lastType || request.TrieIdx != lastIdx {
 				lastType, lastIdx = request.Type, request.TrieIdx
-				auxTrie = backend.GetHelperTrie(request.Type, request.TrieIdx)
+				auxTrie = s.GetHelperTrie(request.Type, request.TrieIdx)
 			}
 			if auxTrie == nil {
 				return nil
@@ -736,12 +738,12 @@ func (s *RequestServer) handleSendTx(msg Decoder) (serveRequestFn, uint64, uint6
 				return nil
 			}
 			hash := tx.Hash()
-			stats[i] = txStatus(backend, hash)
+			stats[i] = s.txStatus(hash)
 			if stats[i].Status == core.TxStatusUnknown {
-				addFn := backend.TxPool().AddRemotes
+				addFn := s.TxPool.AddRemotes
 				// Add txs synchronously for testing purpose
-				if backend.AddTxsSync() {
-					addFn = backend.TxPool().AddRemotesSync
+				if s.AddTxsSync {
+					addFn = s.TxPool.AddRemotesSync
 				}
 				if errs := addFn([]*types.Transaction{tx}); errs[0] != nil {
 					stats[i].Error = errs[0].Error()
@@ -798,7 +800,7 @@ func (s *BeaconRequestServer) handleGetCommitteeProofs(msg Decoder) (serveReques
 	}
 	fmt.Println("*** decode ok", r)
 	return func(p *peer, waitOrStop func() bool) *reply { //TODO waitOrStop
-		sct := backend.SyncCommitteeTracker()
+		sct := s.SyncCommitteeTracker
 		updates := make([]beacon.LightClientUpdate, len(r.UpdatePeriods))
 		for i, period := range r.UpdatePeriods {
 			if u := sct.GetBestUpdate(period); u != nil {
@@ -823,7 +825,7 @@ func (s *BeaconRequestServer) handleGetBeaconInit(msg Decoder) (serveRequestFn, 
 		return nil, 0, 0, err
 	}
 	return func(p *peer, waitOrStop func() bool) *reply { //TODO waitOrStop
-		bc := backend.BeaconChain()
+		bc := s.BeaconChain
 		block := bc.GetBlockDataByBlockRoot(r.Checkpoint)
 		if block == nil || block.ProofFormat&beacon.HspInitData == 0 {
 			return nil
@@ -852,7 +854,7 @@ func (s *BeaconRequestServer) handleGetBeaconData(msg Decoder) (serveRequestFn, 
 		return nil, 0, 0, err
 	}
 	return func(p *peer, waitOrStop func() bool) *reply { //TODO waitOrStop
-		bc := backend.BeaconChain()
+		bc := s.BeaconChain
 		ht := bc.GetHistoricTree(r.BlockRoot) // specified reference block needs to be close to the current head
 		if ht == nil {
 			return nil
@@ -932,8 +934,8 @@ func (s *BeaconRequestServer) handleGetExecHeaders(msg Decoder) (serveRequestFn,
 	}
 	return func(p *peer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		fmt.Println("*** Handling GetExecHeaders", r.ReqMode)
-		bc := backend.BeaconChain()
-		ec := backend.BlockChain()
+		bc := s.BeaconChain
+		ec := s.BlockChain
 		var (
 			execHash     common.Hash
 			reader       beacon.ProofReader

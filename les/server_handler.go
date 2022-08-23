@@ -237,6 +237,7 @@ func (h *serverHandler) GetHelperTrie(typ uint, index uint64) *trie.Trie {
 type beaconServerHandler struct {
 	syncCommitteeTracker *beacon.SyncCommitteeTracker
 	beaconChain          *beacon.BeaconChain
+	blockChain           *core.BlockChain
 	fcWrapper            *fcRequestWrapper
 }
 
@@ -265,7 +266,7 @@ func (h *beaconServerHandler) peerConnected(p *peer) (func(), error) {
 }
 
 func (h *beaconServerHandler) messageHandlers() messageHandlers {
-	return h.fcWrapper.wrapMessageHandlers((&BeaconRequestServer{SyncCommitteeTracker: h.syncCommitteeTracker, BeaconChain: h.beaconChain}).MessageHandlers())
+	return h.fcWrapper.wrapMessageHandlers((&BeaconRequestServer{SyncCommitteeTracker: h.syncCommitteeTracker, BeaconChain: h.beaconChain, BlockChain: h.blockChain}).MessageHandlers())
 }
 
 type vfxServerHandler struct {

@@ -111,6 +111,7 @@ type lightChain interface {
 	GetHeaderByNumberOdr(ctx context.Context, number uint64) (*types.Header, error)
 	GetHeaderByHash(hash common.Hash) *types.Header //returns cached headers only in ultralight mode
 	GetHeaderByHashOdr(ctx context.Context, hash common.Hash) (*types.Header, error)
+	GetBlock(ctx context.Context, hash common.Hash, number uint64) (*types.Block, error)
 	GetBlockByNumber(ctx context.Context, number uint64) (*types.Block, error) //returns cached headers only in ultralight mode
 	GetBlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error)
 	GetTd(hash common.Hash, number uint64) *big.Int                         // returns zero in ultralight (PoS) mode

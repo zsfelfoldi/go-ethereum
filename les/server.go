@@ -156,6 +156,8 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 
 	beaconServerHandler := &beaconServerHandler{
 		syncCommitteeTracker: srv.syncCommitteeTracker,
+		beaconChain:          srv.beaconChain,
+		blockChain:           srv.blockchain,
 	}
 	srv.handler.registerHandshakeModule(beaconServerHandler)
 	srv.handler.registerConnectionModule(beaconServerHandler)
