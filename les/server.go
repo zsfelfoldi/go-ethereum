@@ -246,6 +246,8 @@ func (s *LesServer) Start() error {
 	s.privateKey = s.p2pSrv.PrivateKey
 	s.wg.Add(2)
 	go s.capacityManagement()
+	go s.broadcastLoop()
+
 	if s.p2pSrv.DiscV5 != nil {
 		s.p2pSrv.DiscV5.RegisterTalkHandler("vfx", s.vfluxServer.ServeEncoded)
 	}

@@ -65,6 +65,7 @@ type handler struct {
 
 func newHandler(peers *peerSet, networkId uint64) *handler {
 	return &handler{
+		peers:     peers,
 		networkId: networkId,
 		//closeCh:         make(chan struct{}),
 		messageHandlers: make(map[codeAndVersion]messageHandler),
