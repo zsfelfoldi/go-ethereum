@@ -75,7 +75,11 @@ type LightEthereum struct {
 
 	fetcher    *lightFetcher
 	downloader *downloader.Downloader
+	// Hooks used in the testing
+	syncStart func(header *types.Header) // Hook called when the syncing is started
+	syncEnd   func(header *types.Header) // Hook called when the syncing is done
 
+	checkpoint    *params.TrustedCheckpoint
 	bloomRequests chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bloomIndexer  *core.ChainIndexer             // Bloom indexer operating during block imports
 
@@ -183,8 +187,6 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	leth.relay = newLesTxRelay(peers, leth.retriever)
 	leth.odr = NewLesOdr(chainDb, light.DefaultClientIndexerConfig, leth.peers, leth.retriever)
 
-	var checkpoint *params.TrustedCheckpoint
-
 	if leth.v5 {
 		if forks, err := beacon.LoadForks(config.BeaconConfig); err == nil {
 			fmt.Println("Forks", forks)
@@ -217,13 +219,13 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		leth.bloomTrieIndexer = light.NewBloomTrieIndexer(chainDb, leth.odr, params.BloomBitsBlocksClient, params.BloomTrieFrequency, config.LightNoPrune)
 		leth.odr.SetIndexers(leth.chtIndexer, leth.bloomTrieIndexer, leth.bloomIndexer)
 
-		checkpoint = config.Checkpoint
-		if checkpoint == nil {
-			checkpoint = params.TrustedCheckpoints[genesisHash]
+		leth.checkpoint = config.Checkpoint
+		if leth.checkpoint == nil {
+			leth.checkpoint = params.TrustedCheckpoints[genesisHash]
 		}
 		// Note: NewLightChain adds the trusted checkpoint so it needs an ODR with
 		// indexers already set but not started yet
-		if chain, err := light.NewLightChain(leth.odr, leth.chainConfig, leth.engine, checkpoint); err == nil {
+		if chain, err := light.NewLightChain(leth.odr, leth.chainConfig, leth.engine, leth.checkpoint); err == nil {
 			leth.blockchain = chain
 			leth.chainReader = chain
 		} else {
@@ -266,10 +268,10 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	}
 	if !leth.v5 {
 		var height uint64
-		if checkpoint != nil {
-			height = (checkpoint.SectionIndex+1)*params.CHTFrequency - 1
+		if leth.checkpoint != nil {
+			height = (leth.checkpoint.SectionIndex+1)*params.CHTFrequency - 1
 		}
-		leth.fetcher = newLightFetcher(leth.blockchain.(*light.LightChain), leth.engine, leth.peers, chainDb, leth.reqDist, clientHandler.synchronise)
+		leth.fetcher = newLightFetcher(leth.blockchain.(*light.LightChain), leth.engine, leth.peers, chainDb, leth.reqDist, leth.synchronise)
 		leth.downloader = downloader.New(height, chainDb, leth.eventMux, nil, leth.blockchain.(*light.LightChain), leth.peers.unregisterStringId)
 		leth.peers.subscribe(&downloaderPeerNotify{
 			downloader: leth.downloader,

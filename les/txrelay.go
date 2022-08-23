@@ -56,10 +56,6 @@ func (ltrx *lesTxRelay) registerPeer(p *peer) {
 	ltrx.lock.Lock()
 	defer ltrx.lock.Unlock()
 
-	// Short circuit if the peer is announce only.
-	if p.onlyAnnounce {
-		return
-	}
 	ltrx.peerList = append(ltrx.peerList, p)
 }
 
@@ -125,7 +121,7 @@ func (ltrx *lesTxRelay) send(txs types.Transactions, count int) {
 				return peer.getTxRelayCost(len(ll), len(enc))
 			},
 			canSend: func(dp distPeer) bool {
-				return !dp.(*peer).onlyAnnounce && dp.(*peer) == pp
+				return dp.(*peer) == pp
 			},
 			request: func(dp distPeer) func() {
 				peer := dp.(*peer)

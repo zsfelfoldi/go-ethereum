@@ -48,10 +48,6 @@ type clientHandler struct {
 	fetcher        *lightFetcher
 	downloader     *downloader.Downloader
 	noInitAnnounce bool
-
-	// Hooks used in the testing
-	syncStart func(header *types.Header) // Hook called when the syncing is started
-	syncEnd   func(header *types.Header) // Hook called when the syncing is done
 }
 
 /*type clientHandlerChain interface {

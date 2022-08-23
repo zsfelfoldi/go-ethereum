@@ -21,12 +21,12 @@ import (
 	"errors"
 	"time"
 
-	//	"github.com/ethereum/go-ethereum/common"
-	//	"github.com/ethereum/go-ethereum/core/rawdb"
-	//	"github.com/ethereum/go-ethereum/les/downloader"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/les/downloader"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
-	//	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/params"
 )
 
 var errInvalidCheckpoint = errors.New("invalid advertised checkpoint")
@@ -52,25 +52,25 @@ const (
 // In addition to the checkpoint registered in the registrar contract, there are
 // several legacy hardcoded checkpoints in our codebase. These checkpoints are
 // also considered as valid.
-func (h *clientHandler) validateCheckpoint(peer *peer) error {
+func (s *LightEthereum) validateCheckpoint(peer *peer) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
 	// Fetch the block header corresponding to the checkpoint registration.
 	wrapPeer := &downloaderPeer{
 		peer:                 peer,
-		downloaderPeerNotify: downloaderPeerNotify{retriever: h.retriever},
+		downloaderPeerNotify: &downloaderPeerNotify{retriever: s.retriever},
 	}
 	header, err := wrapPeer.RetrieveSingleHeaderByNumber(ctx, peer.checkpointNumber)
 	if err != nil {
 		return err
 	}
 	// Fetch block logs associated with the block header.
-	logs, err := light.GetUntrustedBlockLogs(ctx, h.backend.odr, header)
+	logs, err := light.GetUntrustedBlockLogs(ctx, s.odr, header)
 	if err != nil {
 		return err
 	}
-	events := h.backend.oracle.Contract().LookupCheckpointEvents(logs, peer.checkpoint.SectionIndex, peer.checkpoint.Hash())
+	events := s.oracle.Contract().LookupCheckpointEvents(logs, peer.checkpoint.SectionIndex, peer.checkpoint.Hash())
 	if len(events) == 0 {
 		return errInvalidCheckpoint
 	}
@@ -82,7 +82,7 @@ func (h *clientHandler) validateCheckpoint(peer *peer) error {
 	for _, event := range events {
 		signatures = append(signatures, append(event.R[:], append(event.S[:], event.V)...))
 	}
-	valid, signers := h.backend.oracle.VerifySigners(index, hash, signatures)
+	valid, signers := s.oracle.VerifySigners(index, hash, signatures)
 	if !valid {
 		return errInvalidCheckpoint
 	}
@@ -91,14 +91,14 @@ func (h *clientHandler) validateCheckpoint(peer *peer) error {
 }
 
 // synchronise tries to sync up our local chain with a remote peer.
-func (h *clientHandler) synchronise(peer *peer) {
+func (s *LightEthereum) synchronise(peer *peer) {
 	// Short circuit if the peer is nil.
 	if peer == nil {
 		return
 	}
 	// Make sure the peer's TD is higher than our own.
-	latest := h.backend.blockchain.CurrentHeader()
-	currentTd := rawdb.ReadTd(h.backend.chainDb, latest.Hash(), latest.Number.Uint64())
+	latest := s.blockchain.CurrentHeader()
+	currentTd := rawdb.ReadTd(s.chainDb, latest.Hash(), latest.Number.Uint64())
 	if currentTd != nil && peer.Td().Cmp(currentTd) < 0 {
 		return
 	}
@@ -119,14 +119,14 @@ func (h *clientHandler) synchronise(peer *peer) {
 		local      bool
 		checkpoint = &peer.checkpoint
 	)
-	if h.checkpoint != nil && h.checkpoint.SectionIndex >= peer.checkpoint.SectionIndex {
-		local, checkpoint = true, h.checkpoint
+	if s.checkpoint != nil && s.checkpoint.SectionIndex >= peer.checkpoint.SectionIndex {
+		local, checkpoint = true, s.checkpoint
 	}
 	// Replace the checkpoint with locally configured one If it's required by
 	// users. Nil checkpoint means synchronization from the scratch.
-	if h.backend.config.SyncFromCheckpoint {
-		local, checkpoint = true, h.backend.config.Checkpoint
-		if h.backend.config.Checkpoint == nil {
+	if s.config.SyncFromCheckpoint {
+		local, checkpoint = true, s.config.Checkpoint
+		if s.config.Checkpoint == nil {
 			checkpoint = &params.TrustedCheckpoint{}
 		}
 	}
@@ -143,17 +143,17 @@ func (h *clientHandler) synchronise(peer *peer) {
 	case checkpoint.Empty():
 		mode = lightSync
 		log.Debug("Disable checkpoint syncing", "reason", "empty checkpoint")
-	case latest.Number.Uint64() >= (checkpoint.SectionIndex+1)*h.backend.iConfig.ChtSize-1:
+	case latest.Number.Uint64() >= (checkpoint.SectionIndex+1)*s.iConfig.ChtSize-1:
 		mode = lightSync
 		log.Debug("Disable checkpoint syncing", "reason", "local chain beyond the checkpoint")
 	case local:
 		mode = legacyCheckpointSync
 		log.Debug("Disable checkpoint syncing", "reason", "checkpoint is hardcoded")
-	case h.backend.oracle == nil || !h.backend.oracle.IsRunning():
-		if h.checkpoint == nil {
+	case s.oracle == nil || !s.oracle.IsRunning():
+		if s.checkpoint == nil {
 			mode = lightSync // Downgrade to light sync unfortunately.
 		} else {
-			checkpoint = h.checkpoint
+			checkpoint = s.checkpoint
 			mode = legacyCheckpointSync
 		}
 		log.Debug("Disable checkpoint syncing", "reason", "checkpoint syncing is not activated")
@@ -161,8 +161,8 @@ func (h *clientHandler) synchronise(peer *peer) {
 
 	// Notify testing framework if syncing has completed(for testing purpose).
 	defer func() {
-		if h.syncEnd != nil {
-			h.syncEnd(h.backend.blockchain.CurrentHeader())
+		if s.syncEnd != nil {
+			s.syncEnd(s.blockchain.CurrentHeader())
 		}
 	}()
 
@@ -170,12 +170,12 @@ func (h *clientHandler) synchronise(peer *peer) {
 	if mode == checkpointSync || mode == legacyCheckpointSync {
 		// Validate the advertised checkpoint
 		if mode == checkpointSync {
-			if err := h.validateCheckpoint(peer); err != nil {
+			if err := s.validateCheckpoint(peer); err != nil {
 				log.Debug("Failed to validate checkpoint", "reason", err)
-				h.peers.unregisterStringId(peer.id)
+				s.peers.unregisterStringId(peer.id)
 				return
 			}
-			h.backend.blockchain.AddTrustedCheckpoint(checkpoint)
+			s.blockchain.(*light.LightChain).AddTrustedCheckpoint(checkpoint)
 		}
 		log.Debug("Checkpoint syncing start", "peer", peer.id, "checkpoint", checkpoint.SectionIndex)
 
@@ -188,18 +188,18 @@ func (h *clientHandler) synchronise(peer *peer) {
 		// of the latest epoch covered by checkpoint.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		defer cancel()
-		if !checkpoint.Empty() && !h.backend.blockchain.SyncCheckpoint(ctx, checkpoint) {
+		if !checkpoint.Empty() && !s.blockchain.(*light.LightChain).SyncCheckpoint(ctx, checkpoint) {
 			log.Debug("Sync checkpoint failed")
-			h.peers.unregisterStringId(peer.id)
+			s.peers.unregisterStringId(peer.id)
 			return
 		}
 	}
 
-	if h.syncStart != nil {
-		h.syncStart(h.backend.blockchain.CurrentHeader())
+	if s.syncStart != nil {
+		s.syncStart(s.blockchain.CurrentHeader())
 	}
 	// Fetch the remaining block headers based on the current chain header.
-	if err := h.downloader.Synchronise(peer.id, peer.Head(), peer.Td(), downloader.LightSync); err != nil {
+	if err := s.downloader.Synchronise(peer.id, peer.Head(), peer.Td(), downloader.LightSync); err != nil {
 		log.Debug("Synchronise failed", "reason", err)
 		return
 	}
