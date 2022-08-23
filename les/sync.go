@@ -172,7 +172,7 @@ func (h *clientHandler) synchronise(peer *peer) {
 		if mode == checkpointSync {
 			if err := h.validateCheckpoint(peer); err != nil {
 				log.Debug("Failed to validate checkpoint", "reason", err)
-				h.removePeer(peer.id)
+				h.peers.unregisterStringId(peer.id)
 				return
 			}
 			h.backend.blockchain.AddTrustedCheckpoint(checkpoint)
@@ -190,7 +190,7 @@ func (h *clientHandler) synchronise(peer *peer) {
 		defer cancel()
 		if !checkpoint.Empty() && !h.backend.blockchain.SyncCheckpoint(ctx, checkpoint) {
 			log.Debug("Sync checkpoint failed")
-			h.removePeer(peer.id)
+			h.peers.unregisterStringId(peer.id)
 			return
 		}
 	}

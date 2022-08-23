@@ -17,7 +17,6 @@
 package les
 
 import (
-	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"math/big"
@@ -36,6 +35,7 @@ import (
 	vfs "github.com/ethereum/go-ethereum/les/vflux/server"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/light/beacon"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/params"
@@ -1027,33 +1027,31 @@ func (p *peer) SendUpdateInfo(updateInfo *beacon.UpdateInfo) {
 	p2p.Send(p.rw, AdvertiseCommitteeProofsMsg, updateInfo) //TODO ?exec queue
 }
 
-// serverPeerSubscriber is an interface to notify services about added or
-// removed server peers
-type serverPeerSubscriber interface {
+// peerSubscriber is an interface to notify services about added or removed peers
+type peerSubscriber interface {
 	registerPeer(*peer)
 	unregisterPeer(*peer)
 }
 
-// serverPeerSet represents the set of active server peers currently
-// participating in the Light Ethereum sub-protocol.
-type serverPeerSet struct {
-	peers map[string]*peer
+// peerSet represents the set of active peers currently participating
+// in the Light Ethereum sub-protocol.
+type peerSet struct {
+	peers  map[enode.ID]*peer
+	lock   sync.RWMutex
+	closed bool
 	// subscribers is a batch of subscribers and peerset will notify
-	// these subscribers when the peerset changes(new server peer is
-	// added or removed)
-	subscribers []serverPeerSubscriber
-	closed      bool
-	lock        sync.RWMutex
+	// these subscribers when the peerset changes(new peer is added or removed)
+	subscribers []peerSubscriber
 }
 
-// newServerPeerSet creates a new peer set to track the active server peers.
-func newServerPeerSet() *serverPeerSet {
-	return &serverPeerSet{peers: make(map[string]*peer)}
+// newPeerSet creates a new peer set to track the active server peers.
+func newPeerSet() *peerSet {
+	return &peerSet{peers: make(map[enode.ID]*peer)}
 }
 
 // subscribe adds a service to be notified about added or removed
 // peers and also register all active peers into the given service.
-func (ps *serverPeerSet) subscribe(sub serverPeerSubscriber) {
+func (ps *peerSet) subscribe(sub peerSubscriber) {
 	ps.lock.Lock()
 	defer ps.lock.Unlock()
 
@@ -1063,29 +1061,29 @@ func (ps *serverPeerSet) subscribe(sub serverPeerSubscriber) {
 	}
 }
 
-// register adds a new server peer into the set, or returns an error if the
+// register adds a new peer into the peer set, or returns an error if the
 // peer is already known.
-func (ps *serverPeerSet) register(peer *peer) error {
+func (ps *peerSet) register(peer *peer) error {
 	ps.lock.Lock()
 	defer ps.lock.Unlock()
 
 	if ps.closed {
 		return errClosed
 	}
-	if _, exist := ps.peers[peer.id]; exist {
+	if _, exist := ps.peers[peer.ID()]; exist {
 		return errAlreadyRegistered
 	}
-	ps.peers[peer.id] = peer
+	ps.peers[peer.ID()] = peer
 	for _, sub := range ps.subscribers {
 		sub.registerPeer(peer)
 	}
 	return nil
 }
 
-// unregister removes a remote peer from the active set, disabling any further
-// actions to/from that particular entity. It also initiates disconnection at
-// the networking layer.
-func (ps *serverPeerSet) unregister(id string) error {
+// unregister removes a remote peer from the peer set, disabling any further
+// actions to/from that particular entity. It also initiates disconnection
+// at the networking layer.
+func (ps *peerSet) unregister(id enode.ID) error {
 	ps.lock.Lock()
 	defer ps.lock.Unlock()
 
@@ -1101,12 +1099,20 @@ func (ps *serverPeerSet) unregister(id string) error {
 	return nil
 }
 
+func (ps *peerSet) unregisterStringId(node string) {
+	if id, err := enode.ParseID(node); err == nil {
+		ps.unregister(id)
+	} else {
+		log.Error("Cannot unregister invalid string id", "id", node)
+	}
+}
+
 // ids returns a list of all registered peer IDs
-func (ps *serverPeerSet) ids() []string {
+func (ps *peerSet) ids() []enode.ID {
 	ps.lock.RLock()
 	defer ps.lock.RUnlock()
 
-	var ids []string
+	var ids []enode.ID
 	for id := range ps.peers {
 		ids = append(ids, id)
 	}
@@ -1114,15 +1120,24 @@ func (ps *serverPeerSet) ids() []string {
 }
 
 // peer retrieves the registered peer with the given id.
-func (ps *serverPeerSet) peer(id string) *peer {
+func (ps *peerSet) peer(id enode.ID) *peer {
 	ps.lock.RLock()
 	defer ps.lock.RUnlock()
 
 	return ps.peers[id]
 }
 
+func (ps *peerSet) peerByStringId(node string) *peer {
+	if id, err := enode.ParseID(node); err == nil {
+		return ps.peer(id)
+	} else {
+		log.Error("Cannot find invalid string id", "id", node)
+		return nil
+	}
+}
+
 // len returns if the current number of peers in the set.
-func (ps *serverPeerSet) len() int {
+func (ps *peerSet) len() int {
 	ps.lock.RLock()
 	defer ps.lock.RUnlock()
 
@@ -1130,7 +1145,7 @@ func (ps *serverPeerSet) len() int {
 }
 
 // allServerPeers returns all server peers in a list.
-func (ps *serverPeerSet) allPeers() []*peer {
+func (ps *peerSet) allPeers() []*peer {
 	ps.lock.RLock()
 	defer ps.lock.RUnlock()
 
@@ -1143,7 +1158,7 @@ func (ps *serverPeerSet) allPeers() []*peer {
 
 // close disconnects all peers. No new peers can be registered
 // after close has returned.
-func (ps *serverPeerSet) close() {
+func (ps *peerSet) close() {
 	ps.lock.Lock()
 	defer ps.lock.Unlock()
 
@@ -1151,174 +1166,4 @@ func (ps *serverPeerSet) close() {
 		p.Peer.Disconnect(p2p.DiscQuitting)
 	}
 	ps.closed = true
-}
-
-// clientPeerSet represents the set of active client peers currently
-// participating in the Light Ethereum sub-protocol.
-type clientPeerSet struct {
-	peers  map[enode.ID]*peer
-	lock   sync.RWMutex
-	closed bool
-
-	privateKey                   *ecdsa.PrivateKey
-	lastAnnounce, signedAnnounce announceData
-}
-
-// newClientPeerSet creates a new peer set to track the client peers.
-func newClientPeerSet() *clientPeerSet {
-	return &clientPeerSet{peers: make(map[enode.ID]*peer)}
-}
-
-// register adds a new peer into the peer set, or returns an error if the
-// peer is already known.
-func (ps *clientPeerSet) register(peer *peer) error {
-	ps.lock.Lock()
-	defer ps.lock.Unlock()
-
-	if ps.closed {
-		return errClosed
-	}
-	if _, exist := ps.peers[peer.ID()]; exist {
-		return errAlreadyRegistered
-	}
-	ps.peers[peer.ID()] = peer
-	ps.announceOrStore(peer)
-	return nil
-}
-
-// unregister removes a remote peer from the peer set, disabling any further
-// actions to/from that particular entity. It also initiates disconnection
-// at the networking layer.
-func (ps *clientPeerSet) unregister(id enode.ID) error {
-	ps.lock.Lock()
-	defer ps.lock.Unlock()
-
-	p, ok := ps.peers[id]
-	if !ok {
-		return errNotRegistered
-	}
-	delete(ps.peers, id)
-	p.Peer.Disconnect(p2p.DiscRequested)
-	return nil
-}
-
-// ids returns a list of all registered peer IDs
-func (ps *clientPeerSet) ids() []enode.ID {
-	ps.lock.RLock()
-	defer ps.lock.RUnlock()
-
-	var ids []enode.ID
-	for id := range ps.peers {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-// peer retrieves the registered peer with the given id.
-func (ps *clientPeerSet) peer(id enode.ID) *peer {
-	ps.lock.RLock()
-	defer ps.lock.RUnlock()
-
-	return ps.peers[id]
-}
-
-// setSignerKey sets the signer key for signed announcements. Should be called before
-// starting the protocol handler.
-func (ps *clientPeerSet) setSignerKey(privateKey *ecdsa.PrivateKey) {
-	ps.privateKey = privateKey
-}
-
-// broadcast sends the given announcements to all active peers
-func (ps *clientPeerSet) broadcast(announce announceData) {
-	ps.lock.Lock()
-	defer ps.lock.Unlock()
-
-	ps.lastAnnounce = announce
-	for _, peer := range ps.peers {
-		ps.announceOrStore(peer)
-	}
-}
-
-// announceOrStore sends the requested type of announcement to the given peer or stores
-// it for later if the peer is inactive (capacity == 0).
-func (ps *clientPeerSet) announceOrStore(p *peer) {
-	if ps.lastAnnounce.Td == nil {
-		return
-	}
-	switch p.announceType {
-	case announceTypeSimple:
-		p.announceOrStore(ps.lastAnnounce)
-	case announceTypeSigned:
-		if ps.signedAnnounce.Hash != ps.lastAnnounce.Hash {
-			ps.signedAnnounce = ps.lastAnnounce
-			ps.signedAnnounce.sign(ps.privateKey)
-		}
-		p.announceOrStore(ps.signedAnnounce)
-	}
-}
-
-// close disconnects all peers. No new peers can be registered
-// after close has returned.
-func (ps *clientPeerSet) close() {
-	ps.lock.Lock()
-	defer ps.lock.Unlock()
-
-	for _, p := range ps.peers {
-		p.Peer.Disconnect(p2p.DiscQuitting)
-	}
-	ps.closed = true
-}
-
-// serverSet is a special set which contains all connected les servers.
-// Les servers will also be discovered by discovery protocol because they
-// also run the LES protocol. We can't drop them although they are useless
-// for us(server) but for other protocols(e.g. ETH) upon the devp2p they
-// may be useful.
-type serverSet struct {
-	lock   sync.Mutex
-	set    map[string]*peer
-	closed bool
-}
-
-func newServerSet() *serverSet {
-	return &serverSet{set: make(map[string]*peer)}
-}
-
-func (s *serverSet) register(peer *peer) error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	if s.closed {
-		return errClosed
-	}
-	if _, exist := s.set[peer.id]; exist {
-		return errAlreadyRegistered
-	}
-	s.set[peer.id] = peer
-	return nil
-}
-
-func (s *serverSet) unregister(peer *peer) error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	if s.closed {
-		return errClosed
-	}
-	if _, exist := s.set[peer.id]; !exist {
-		return errNotRegistered
-	}
-	delete(s.set, peer.id)
-	peer.Peer.Disconnect(p2p.DiscQuitting)
-	return nil
-}
-
-func (s *serverSet) close() {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	for _, p := range s.set {
-		p.Peer.Disconnect(p2p.DiscQuitting)
-	}
-	s.closed = true
 }

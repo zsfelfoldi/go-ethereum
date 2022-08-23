@@ -19,7 +19,6 @@ package les
 import (
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -32,7 +31,6 @@ import (
 	vfs "github.com/ethereum/go-ethereum/les/vflux/server"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/light/beacon"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -68,9 +66,7 @@ type serverHandler struct {
 	server     *LesServer
 	fcWrapper  *fcRequestWrapper
 
-	closeCh chan struct{}  // Channel used to exit all background routines of handler.
-	wg      sync.WaitGroup // WaitGroup used to track all background routines of handler.
-	synced  func() bool    // Callback function used to determine whether local node is synced.
+	synced func() bool // Callback function used to determine whether local node is synced.
 
 	// Testing fields
 	addTxsSync bool
@@ -83,7 +79,6 @@ func newServerHandler(server *LesServer, blockchain *core.BlockChain, chainDb et
 		blockchain: blockchain,
 		chainDb:    chainDb,
 		txpool:     txpool,
-		closeCh:    make(chan struct{}),
 		synced:     synced,
 	}
 	return handler
@@ -180,11 +175,8 @@ func (h *serverHandler) peerConnected(p *peer) (func(), error) {
 	// Setup flow control mechanism for the peer
 	p.fcClient = flowcontrol.NewClientNode(h.server.fcManager, p.fcParams)
 
-	// Register the peer into the peerset and clientpool
-	if err := h.server.peers.register(p); err != nil {
-		p.fcClient.Disconnect()
-		p.fcClient = nil
-		return nil, err
+	if p.version <= lpv4 {
+		h.server.announceOrStore(p)
 	}
 
 	// Mark the peer as being served.
@@ -194,8 +186,6 @@ func (h *serverHandler) peerConnected(p *peer) (func(), error) {
 		atomic.StoreUint32(&p.serving, 0)
 
 		//wg.Wait() // Ensure all background task routines have exited. //TODO ???
-		h.server.peers.unregister(p.ID())
-
 		p.fcClient.Disconnect()
 		p.fcClient = nil
 	}, nil
@@ -203,23 +193,6 @@ func (h *serverHandler) peerConnected(p *peer) (func(), error) {
 
 func (h *serverHandler) messageHandlers() messageHandlers {
 	return h.fcWrapper.wrapMessageHandlers(RequestServer{BlockChain: h.blockchain, TxPool: h.txpool}.MessageHandlers())
-}
-
-func (h *serverHandler) handleMessage(p *peer, msg p2p.Msg) error {
-}
-
-//func (h *serverHandler)
-
-// start starts the server handler.
-func (h *serverHandler) start() {
-	h.wg.Add(1)
-	go h.broadcastLoop()
-}
-
-// stop stops the server handler.
-func (h *serverHandler) stop() {
-	close(h.closeCh)
-	h.wg.Wait()
 }
 
 // getAccount retrieves an account from the state based on root.
@@ -258,52 +231,6 @@ func (h *serverHandler) GetHelperTrie(typ uint, index uint64) *trie.Trie {
 	}
 	trie, _ := trie.New(common.Hash{}, root, trie.NewDatabase(rawdb.NewTable(h.chainDb, prefix)))
 	return trie
-}
-
-// broadcastLoop broadcasts new block information to all connected light
-// clients. According to the agreement between client and server, server should
-// only broadcast new announcement if the total difficulty is higher than the
-// last one. Besides server will add the signature if client requires.
-func (h *serverHandler) broadcastLoop() {
-	defer h.wg.Done()
-
-	headCh := make(chan core.ChainHeadEvent, 10)
-	headSub := h.blockchain.SubscribeChainHeadEvent(headCh)
-	defer headSub.Unsubscribe()
-
-	var (
-		lastHead = h.blockchain.CurrentHeader()
-		lastTd   = common.Big0
-	)
-	for {
-		select {
-		case ev := <-headCh:
-			header := ev.Block.Header()
-			hash, number := header.Hash(), header.Number.Uint64()
-			if h.server.beaconChain != nil {
-				h.server.beaconChain.ProcessedExecHead(hash)
-			}
-			if h.server.beaconNodeApi != nil {
-				h.server.beaconNodeApi.newHead()
-			}
-			td := h.blockchain.GetTd(hash, number)
-			if td == nil || td.Cmp(lastTd) <= 0 {
-				continue
-			}
-			var reorg uint64
-			if lastHead != nil {
-				// If a setHead has been performed, the common ancestor can be nil.
-				if ancestor := rawdb.FindCommonAncestor(h.chainDb, header, lastHead); ancestor != nil {
-					reorg = lastHead.Number.Uint64() - ancestor.Number.Uint64()
-				}
-			}
-			lastHead, lastTd = header, td
-			log.Debug("Announcing block to peers", "number", number, "hash", hash, "td", td, "reorg", reorg)
-			h.server.peers.broadcast(announceData{Hash: hash, Number: number, Td: td, ReorgDepth: reorg})
-		case <-h.closeCh:
-			return
-		}
-	}
 }
 
 type beaconServerHandler struct {

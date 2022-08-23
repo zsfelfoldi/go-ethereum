@@ -58,21 +58,23 @@ type handler struct {
 	messageHandlers   map[codeAndVersion]messageHandler
 	networkId         uint64
 
-	closeCh chan struct{}
-	wg      sync.WaitGroup
+	peers *peerSet
+	//closeCh chan struct{}
+	wg sync.WaitGroup
 }
 
-func newHandler(networkId uint64) *handler {
+func newHandler(peers *peerSet, networkId uint64) *handler {
 	return &handler{
-		networkId:       networkId,
-		closeCh:         make(chan struct{}),
+		networkId: networkId,
+		//closeCh:         make(chan struct{}),
 		messageHandlers: make(map[codeAndVersion]messageHandler),
 	}
 }
 
 // stop stops the protocol handler.
 func (h *handler) stop() {
-	close(h.closeCh)
+	//close(h.closeCh)
+	h.peers.close() // h.wg.Add is called after successful h.peers.register so it cannot happen after this line
 	h.wg.Wait()
 }
 
@@ -96,13 +98,22 @@ func (h *handler) registerMessageHandlers(handlers messageHandlers) {
 func (h *handler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter) error {
 	peer := newPeer(int(version), h.networkId, p, newMeteredMsgWriter(rw, int(version)))
 	defer peer.close()
-	h.wg.Add(1)
-	defer h.wg.Done()
 	return h.handle(peer)
 }
 
 func (h *handler) handle(p *peer) error {
 	p.Log().Debug("Light Ethereum peer connected", "name", p.Name())
+	// Register the peer locally
+	if err := h.peers.register(p); err != nil {
+		p.Log().Error("Light Ethereum peer registration failed", "err", err)
+		return err
+	}
+
+	h.wg.Add(1)
+	defer func() {
+		h.peers.unregister(p.ID())
+		h.wg.Done()
+	}()
 
 	p.connectedAt = mclock.Now()
 	if err := p.handshake(h.handshakeModules); err != nil {

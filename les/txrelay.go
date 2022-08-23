@@ -37,7 +37,7 @@ type lesTxRelay struct {
 	retriever *retrieveManager
 }
 
-func newLesTxRelay(ps *serverPeerSet, retriever *retrieveManager) *lesTxRelay {
+func newLesTxRelay(ps *peerSet, retriever *retrieveManager) *lesTxRelay {
 	r := &lesTxRelay{
 		txSent:    make(map[common.Hash]*types.Transaction),
 		txPending: make(map[common.Hash]struct{}),

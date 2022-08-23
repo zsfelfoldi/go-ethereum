@@ -57,12 +57,13 @@ type ethBackend interface {
 type LesServer struct {
 	lesCommons
 
-	archiveMode bool // Flag whether the ethereum node runs in archive mode.
-	handler     *handler
-	peers       *clientPeerSet
-	serverset   *serverSet
-	vfluxServer *vfs.Server
-	privateKey  *ecdsa.PrivateKey
+	archiveMode      bool // Flag whether the ethereum node runs in archive mode.
+	handler          *handler
+	peers, serverset *peerSet
+	vfluxServer      *vfs.Server
+
+	privateKey                   *ecdsa.PrivateKey
+	lastAnnounce, signedAnnounce announceData
 
 	// Flow control and capacity management
 	fcManager    *flowcontrol.ClientManager
@@ -108,8 +109,8 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 			closeCh:          make(chan struct{}),
 		},
 		archiveMode:  e.ArchiveMode(),
-		peers:        newClientPeerSet(),
-		serverset:    newServerSet(),
+		peers:        newPeerSet(),
+		serverset:    newPeerSet(),
 		vfluxServer:  vfs.NewServer(time.Millisecond * 10),
 		fcManager:    flowcontrol.NewClientManager(nil, &mclock.System{}),
 		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
@@ -142,7 +143,7 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 	if config.LightNoSyncServe {
 		issync = func() bool { return true }
 	}
-	srv.handler = newHandler(srv.config.NetworkId)
+	srv.handler = newHandler(srv.peers, srv.config.NetworkId)
 
 	serverHandler := newServerHandler(srv, e.BlockChain(), e.ChainDb(), e.TxPool(), issync)
 	srv.handler.registerHandshakeModule(serverHandler)
@@ -237,9 +238,7 @@ func (s *LesServer) Protocols() []p2p.Protocol {
 // Start starts the LES server
 func (s *LesServer) Start() error {
 	s.privateKey = s.p2pSrv.PrivateKey
-	s.peers.setSignerKey(s.privateKey)
-	s.handler.start()
-	s.wg.Add(1)
+	s.wg.Add(2)
 	go s.capacityManagement()
 	if s.p2pSrv.DiscV5 != nil {
 		s.p2pSrv.DiscV5.RegisterTalkHandler("vfx", s.vfluxServer.ServeEncoded)
@@ -268,10 +267,9 @@ func (s *LesServer) Stop() error {
 	if s.serverset != nil {
 		s.serverset.close()
 	}
-	s.peers.close()
+	s.handler.stop()
 	s.fcManager.Stop()
 	s.costTracker.stop()
-	s.handler.stop()
 	s.servingQueue.stop()
 	if s.vfluxServer != nil {
 		s.vfluxServer.Stop()
@@ -297,7 +295,7 @@ func (s *LesServer) capacityManagement() {
 	defer s.wg.Done()
 
 	processCh := make(chan bool, 100)
-	sub := s.handler.blockchain.SubscribeBlockProcessingEvent(processCh)
+	sub := s.blockchain.SubscribeBlockProcessingEvent(processCh)
 	defer sub.Unsubscribe()
 
 	totalRechargeCh := make(chan uint64, 100)
@@ -346,5 +344,80 @@ func (s *LesServer) capacityManagement() {
 		case <-s.closeCh:
 			return
 		}
+	}
+}
+
+// broadcastLoop broadcasts new block information to all connected light
+// clients. According to the agreement between client and server, server should
+// only broadcast new announcement if the total difficulty is higher than the
+// last one. Besides server will add the signature if client requires.
+func (s *LesServer) broadcastLoop() {
+	defer s.wg.Done()
+
+	headCh := make(chan core.ChainHeadEvent, 10)
+	headSub := h.blockchain.SubscribeChainHeadEvent(headCh)
+	defer headSub.Unsubscribe()
+
+	var (
+		lastHead = h.blockchain.CurrentHeader()
+		lastTd   = common.Big0
+	)
+	for {
+		select {
+		case ev := <-headCh:
+			header := ev.Block.Header()
+			hash, number := header.Hash(), header.Number.Uint64()
+			if s.beaconChain != nil {
+				s.beaconChain.ProcessedExecHead(hash)
+			}
+			if s.beaconNodeApi != nil {
+				s.beaconNodeApi.newHead()
+			}
+			td := h.blockchain.GetTd(hash, number)
+			if td == nil || td.Cmp(lastTd) <= 0 {
+				continue
+			}
+			var reorg uint64
+			if lastHead != nil {
+				// If a setHead has been performed, the common ancestor can be nil.
+				if ancestor := rawdb.FindCommonAncestor(h.chainDb, header, lastHead); ancestor != nil {
+					reorg = lastHead.Number.Uint64() - ancestor.Number.Uint64()
+				}
+			}
+			lastHead, lastTd = header, td
+			log.Debug("Announcing block to peers", "number", number, "hash", hash, "td", td, "reorg", reorg)
+			s.peers.broadcast(announceData{Hash: hash, Number: number, Td: td, ReorgDepth: reorg})
+		case <-h.closeCh:
+			return
+		}
+	}
+}
+
+// broadcast sends the given announcements to all active peers
+func (s *LesServer) broadcast(announce announceData) {
+	ps.lock.Lock()
+	defer ps.lock.Unlock()
+
+	ps.lastAnnounce = announce
+	for _, peer := range ps.peers {
+		ps.announceOrStore(peer)
+	}
+}
+
+// announceOrStore sends the requested type of announcement to the given peer or stores
+// it for later if the peer is inactive (capacity == 0).
+func (s *LesServer) announceOrStore(p *peer) {
+	if ps.lastAnnounce.Td == nil {
+		return
+	}
+	switch p.announceType {
+	case announceTypeSimple:
+		p.announceOrStore(ps.lastAnnounce)
+	case announceTypeSigned:
+		if ps.signedAnnounce.Hash != ps.lastAnnounce.Hash {
+			ps.signedAnnounce = ps.lastAnnounce
+			ps.signedAnnounce.sign(ps.privateKey)
+		}
+		p.announceOrStore(ps.signedAnnounce)
 	}
 }

@@ -63,7 +63,7 @@ type LesOdr struct {
 	db                                         ethdb.Database
 	indexerConfig                              *light.IndexerConfig
 	chtIndexer, bloomTrieIndexer, bloomIndexer *core.ChainIndexer
-	peers                                      *serverPeerSet
+	peers                                      *peerSet
 	retriever                                  *retrieveManager
 	stop                                       chan struct{}
 
@@ -71,7 +71,7 @@ type LesOdr struct {
 	beaconHeader     beacon.Header
 }
 
-func NewLesOdr(db ethdb.Database, config *light.IndexerConfig, peers *serverPeerSet, retriever *retrieveManager) *LesOdr {
+func NewLesOdr(db ethdb.Database, config *light.IndexerConfig, peers *peerSet, retriever *retrieveManager) *LesOdr {
 	return &LesOdr{
 		db:            db,
 		indexerConfig: config,

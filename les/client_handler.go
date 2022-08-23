@@ -41,7 +41,7 @@ import (
 type clientHandler struct {
 	forkFilter forkid.Filter
 	blockchain lightChain //clientHandlerChain
-	peers      *serverPeerSet
+	peers      *peerSet
 	retriever  *retrieveManager
 
 	// only for PoW mode
@@ -146,11 +146,6 @@ func (h *clientHandler) peerConnected(p *peer) (func(), error) {
 	/*if h.peers.len() >= h.blockchain.Config().LightPeers && !p.Peer.Info().Network.Trusted { //TODO ???
 		return nil, p2p.DiscTooManyPeers
 	}*/
-	// Register the peer locally
-	if err := h.peers.register(p); err != nil {
-		p.Log().Error("Light Ethereum peer registration failed", "err", err)
-		return nil, err
-	}
 	serverConnectionGauge.Update(int64(h.peers.len()))
 	// Discard all the announces after the transition
 	// Also discarding initial signal to prevent syncing during testing.
@@ -160,7 +155,6 @@ func (h *clientHandler) peerConnected(p *peer) (func(), error) {
 
 	return func() {
 		p.fcServer.DumpLogs()
-		h.peers.unregister(p.id)
 		serverConnectionGauge.Update(int64(h.peers.len()))
 	}, nil
 }
@@ -438,10 +432,6 @@ func deliverResponse(retriever *retrieveManager, p *peer, deliverMsg *Msg) error
 		}
 	}
 	return nil
-}
-
-func (h *clientHandler) removePeer(id string) { //TODO mikor eleg inaktivalni?
-	h.peers.unregister(id)
 }
 
 type beaconClientHandler struct {

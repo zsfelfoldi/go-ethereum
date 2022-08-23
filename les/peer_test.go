@@ -51,7 +51,7 @@ func (t *testServerPeerSub) registerPeer(p *peer)   { t.regCh <- p }
 func (t *testServerPeerSub) unregisterPeer(p *peer) { t.unregCh <- p }
 
 func TestPeerSubscription(t *testing.T) {
-	peers := newServerPeerSet()
+	peers := newPeerSet()
 	defer peers.close()
 
 	checkIds := func(expect []string) {

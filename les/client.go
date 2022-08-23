@@ -58,7 +58,7 @@ import (
 type LightEthereum struct {
 	lesCommons
 
-	peers              *serverPeerSet
+	peers              *peerSet
 	reqDist            *requestDistributor
 	retriever          *retrieveManager
 	odr                *LesOdr
@@ -144,7 +144,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	log.Info(strings.Repeat("-", 153))
 	log.Info("")
 
-	peers := newServerPeerSet()
+	peers := newPeerSet()
 	merger := consensus.NewMerger(chainDb)
 	leth := &LightEthereum{
 		lesCommons: lesCommons{
@@ -256,7 +256,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	leth.ApiBackend.gpo = gasprice.NewOracle(leth.ApiBackend, gpoParams)
 
 	//leth.handler = newClientHandler(checkpoint, leth)
-	leth.handler = newHandler(leth.config.NetworkId)
+	leth.handler = newHandler(leth.peers, leth.config.NetworkId)
 	clientHandler := &clientHandler{
 		forkFilter: forkid.NewFilter(leth.blockchain),
 		blockchain: leth.blockchain,
@@ -269,7 +269,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 			height = (checkpoint.SectionIndex+1)*params.CHTFrequency - 1
 		}
 		leth.fetcher = newLightFetcher(leth.blockchain.(*light.LightChain), leth.engine, leth.peers, chainDb, leth.reqDist, clientHandler.synchronise)
-		leth.downloader = downloader.New(height, chainDb, leth.eventMux, nil, leth.blockchain.(*light.LightChain), clientHandler.removePeer)
+		leth.downloader = downloader.New(height, chainDb, leth.eventMux, nil, leth.blockchain.(*light.LightChain), leth.peers.unregisterStringId)
 		leth.peers.subscribe(&downloaderPeerNotify{
 			downloader: leth.downloader,
 			retriever:  leth.retriever,
@@ -436,7 +436,7 @@ func (s *LightEthereum) Merger() *consensus.Merger          { return s.merger }
 // Protocols returns all the currently configured network protocols to start.
 func (s *LightEthereum) Protocols() []p2p.Protocol {
 	return s.makeProtocols(ClientProtocolVersions, s.handler.runPeer, func(id enode.ID) interface{} {
-		if p := s.peers.peer(id.String()); p != nil {
+		if p := s.peers.peer(id); p != nil {
 			return p.Info()
 		}
 		return nil
@@ -475,7 +475,7 @@ func (s *LightEthereum) Start() error {
 func (s *LightEthereum) Stop() error {
 	close(s.closeCh)
 	s.serverPool.Stop()
-	s.peers.close()
+	s.handler.stop()
 	s.reqDist.close()
 	s.odr.Stop()
 	s.relay.Stop()
