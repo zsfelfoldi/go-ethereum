@@ -21,8 +21,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
@@ -59,6 +61,7 @@ type LesServer struct {
 
 	archiveMode      bool // Flag whether the ethereum node runs in archive mode.
 	handler          *handler
+	blockchain       *core.BlockChain
 	peers, serverset *peerSet
 	vfluxServer      *vfs.Server
 
@@ -111,6 +114,7 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		archiveMode:  e.ArchiveMode(),
 		peers:        newPeerSet(),
 		serverset:    newPeerSet(),
+		blockchain:   e.BlockChain(),
 		vfluxServer:  vfs.NewServer(time.Millisecond * 10),
 		fcManager:    flowcontrol.NewClientManager(nil, &mclock.System{}),
 		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
@@ -355,11 +359,11 @@ func (s *LesServer) broadcastLoop() {
 	defer s.wg.Done()
 
 	headCh := make(chan core.ChainHeadEvent, 10)
-	headSub := h.blockchain.SubscribeChainHeadEvent(headCh)
+	headSub := s.blockchain.SubscribeChainHeadEvent(headCh)
 	defer headSub.Unsubscribe()
 
 	var (
-		lastHead = h.blockchain.CurrentHeader()
+		lastHead = s.blockchain.CurrentHeader()
 		lastTd   = common.Big0
 	)
 	for {
@@ -373,21 +377,21 @@ func (s *LesServer) broadcastLoop() {
 			if s.beaconNodeApi != nil {
 				s.beaconNodeApi.newHead()
 			}
-			td := h.blockchain.GetTd(hash, number)
+			td := s.blockchain.GetTd(hash, number)
 			if td == nil || td.Cmp(lastTd) <= 0 {
 				continue
 			}
 			var reorg uint64
 			if lastHead != nil {
 				// If a setHead has been performed, the common ancestor can be nil.
-				if ancestor := rawdb.FindCommonAncestor(h.chainDb, header, lastHead); ancestor != nil {
+				if ancestor := rawdb.FindCommonAncestor(s.chainDb, header, lastHead); ancestor != nil {
 					reorg = lastHead.Number.Uint64() - ancestor.Number.Uint64()
 				}
 			}
 			lastHead, lastTd = header, td
 			log.Debug("Announcing block to peers", "number", number, "hash", hash, "td", td, "reorg", reorg)
-			s.peers.broadcast(announceData{Hash: hash, Number: number, Td: td, ReorgDepth: reorg})
-		case <-h.closeCh:
+			s.broadcast(announceData{Hash: hash, Number: number, Td: td, ReorgDepth: reorg})
+		case <-s.closeCh:
 			return
 		}
 	}
@@ -395,29 +399,26 @@ func (s *LesServer) broadcastLoop() {
 
 // broadcast sends the given announcements to all active peers
 func (s *LesServer) broadcast(announce announceData) {
-	ps.lock.Lock()
-	defer ps.lock.Unlock()
-
-	ps.lastAnnounce = announce
-	for _, peer := range ps.peers {
-		ps.announceOrStore(peer)
+	s.lastAnnounce = announce
+	for _, peer := range s.peers.allPeers() {
+		s.announceOrStore(peer)
 	}
 }
 
 // announceOrStore sends the requested type of announcement to the given peer or stores
 // it for later if the peer is inactive (capacity == 0).
 func (s *LesServer) announceOrStore(p *peer) {
-	if ps.lastAnnounce.Td == nil {
+	if s.lastAnnounce.Td == nil {
 		return
 	}
 	switch p.announceType {
 	case announceTypeSimple:
-		p.announceOrStore(ps.lastAnnounce)
+		p.announceOrStore(s.lastAnnounce)
 	case announceTypeSigned:
-		if ps.signedAnnounce.Hash != ps.lastAnnounce.Hash {
-			ps.signedAnnounce = ps.lastAnnounce
-			ps.signedAnnounce.sign(ps.privateKey)
+		if s.signedAnnounce.Hash != s.lastAnnounce.Hash {
+			s.signedAnnounce = s.lastAnnounce
+			s.signedAnnounce.sign(s.privateKey)
 		}
-		p.announceOrStore(ps.signedAnnounce)
+		p.announceOrStore(s.signedAnnounce)
 	}
 }
