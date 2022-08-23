@@ -482,8 +482,12 @@ func (s *LightEthereum) Stop() error {
 	s.reqDist.close()
 	s.odr.Stop()
 	s.relay.Stop()
-	s.bloomIndexer.Close()
-	s.chtIndexer.Close()
+	if s.bloomIndexer != nil {
+		s.bloomIndexer.Close()
+	}
+	if s.chtIndexer != nil {
+		s.chtIndexer.Close()
+	}
 	s.blockchain.Stop()
 	if s.fetcher != nil {
 		s.fetcher.stop()

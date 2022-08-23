@@ -126,6 +126,7 @@ func NewUltraLightChain(odr OdrBackend, config *params.ChainConfig, engine conse
 	if bc.genesisBlock == nil {
 		return nil, core.ErrNoGenesis
 	}
+	bc.lastHeader = bc.genesisBlock.Header()
 	return bc, nil
 }
 
