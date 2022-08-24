@@ -43,6 +43,7 @@ type fcRequestWrapper struct {
 func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandler) messageHandlers {
 	wrappedHandlers := make(messageHandlers, len(fcHandlers))
 	for i, req := range fcHandlers {
+		req := req
 		wrappedHandlers[i] = messageHandlerWithCodeAndVersion{
 			code:         req.Code,
 			firstVersion: req.FirstVersion,
