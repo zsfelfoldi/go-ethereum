@@ -591,8 +591,8 @@ func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) *syncCommittee {
 }
 
 var minimumScore = UpdateScore{
-	signerCount:    257,
-	subPeriodIndex: 0x1000,
+	signerCount:    200, //257,		//TODO server resync utan is ilyen vacakok a score-ok? lodestar a hibas?
+	subPeriodIndex: 10,  //0x1000,
 }
 
 type UpdateScore struct {

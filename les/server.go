@@ -177,7 +177,12 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 
 	srv.handler = newHandler(srv.peers, srv.config.NetworkId)
 
-	serverHandler := newServerHandler(srv, e.BlockChain(), e.ChainDb(), e.TxPool(), issync)
+	fcWrapper := &fcRequestWrapper{
+		costTracker:  srv.costTracker,
+		servingQueue: srv.servingQueue,
+	}
+
+	serverHandler := newServerHandler(srv, e.BlockChain(), e.ChainDb(), e.TxPool(), fcWrapper, issync)
 	srv.handler.registerHandshakeModule(serverHandler)
 	srv.handler.registerConnectionModule(serverHandler)
 	srv.handler.registerMessageHandlers(serverHandler.messageHandlers())
@@ -186,10 +191,7 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		syncCommitteeTracker: srv.syncCommitteeTracker,
 		beaconChain:          srv.beaconChain,
 		blockChain:           srv.blockchain,
-		fcWrapper: &fcRequestWrapper{
-			costTracker:  srv.costTracker,
-			servingQueue: srv.servingQueue,
-		},
+		fcWrapper:            fcWrapper,
 	}
 	srv.handler.registerHandshakeModule(beaconServerHandler)
 	srv.handler.registerConnectionModule(beaconServerHandler)

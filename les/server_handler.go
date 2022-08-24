@@ -72,7 +72,7 @@ type serverHandler struct {
 	addTxsSync bool
 }
 
-func newServerHandler(server *LesServer, blockchain *core.BlockChain, chainDb ethdb.Database, txpool *core.TxPool, synced func() bool) *serverHandler {
+func newServerHandler(server *LesServer, blockchain *core.BlockChain, chainDb ethdb.Database, txpool *core.TxPool, fcWrapper *fcRequestWrapper, synced func() bool) *serverHandler {
 	handler := &serverHandler{
 		forkFilter: forkid.NewFilter(blockchain),
 		server:     server,
@@ -80,7 +80,7 @@ func newServerHandler(server *LesServer, blockchain *core.BlockChain, chainDb et
 		chainDb:    chainDb,
 		txpool:     txpool,
 		synced:     synced,
-		//TODO fcWrapper
+		fcWrapper:  fcWrapper,
 	}
 	return handler
 }
