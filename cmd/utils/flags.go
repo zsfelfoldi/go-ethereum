@@ -321,6 +321,10 @@ var (
 		Name:  "beacon.api",
 		Usage: "Beacon node light client API URL (currently only supports LodeStar)",
 	}
+	BlipFlag = &cli.BoolFlag{
+		Name:  "blip",
+		Usage: "Enable beacon chain access through the BLiP protocol",
+	}
 	// Ethash settings
 	EthashCacheDirFlag = &flags.DirectoryFlag{
 		Name:     "ethash.cachedir",
@@ -1269,6 +1273,9 @@ func setLes(ctx *cli.Context, cfg *ethconfig.Config) {
 	if ctx.IsSet(BeaconApiFlag.Name) {
 		cfg.BeaconApi = ctx.String(BeaconApiFlag.Name)
 	}
+	if ctx.IsSet(BlipFlag.Name) {
+		cfg.Blip = true
+	}
 }
 
 // MakeDatabaseHandles raises out the number of allowed file handles per process
@@ -1986,6 +1993,15 @@ func RegisterEthService(stack *node.Node, cfg *ethconfig.Config) (ethapi.Backend
 	}
 	if cfg.LightServ > 0 {
 		_, err := les.NewLesServer(stack, backend, cfg)
+		if err != nil {
+			Fatalf("Failed to create the LES server: %v", err)
+		}
+	}
+	if cfg.Blip {
+		if cfg.LightServ > 0 {
+			Fatalf("Cannot use LES and BLiP together")
+		}
+		_, err := les.NewBlip(stack, backend, cfg)
 		if err != nil {
 			Fatalf("Failed to create the LES server: %v", err)
 		}
