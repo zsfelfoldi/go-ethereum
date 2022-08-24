@@ -590,12 +590,36 @@ func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) *syncCommittee {
 	return s.getSyncCommitteeLocked(period)
 }
 
+var minimumScore = UpdateScore{
+	signerCount:    257,
+	subPeriodIndex: 0x1000,
+}
+
 type UpdateScore struct {
 	signerCount, subPeriodIndex uint32
 	finalized                   bool
 }
 
 type UpdateScores []UpdateScore //TODO RLP encode to single []byte
+
+func (u *UpdateScore) penalty() uint64 {
+	if u.signerCount == 0 {
+		return math.MaxUint64
+	}
+	a := uint64(512 - u.signerCount)
+	b := a * a
+	c := b * b
+	p := a * b * c // signerCount ^ 7 (between 0 and 2^63)
+	if !u.finalized {
+		//		p += 0x2000000000000000 / uint64(u.subPeriodIndex+1)
+		p += 0x1000000000000000 / uint64(u.subPeriodIndex+1)
+	}
+	return p
+}
+
+func (u UpdateScore) betterThan(w UpdateScore) bool {
+	return u.penalty() < w.penalty()
+}
 
 func (u *UpdateScore) Encode(data []byte) {
 	v := u.signerCount + u.subPeriodIndex<<10
@@ -813,24 +837,24 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	remoteFirstPeriod := sp.remoteInfo.AfterLastPeriod - uint64(len(sp.remoteInfo.Scores)/3)
 
 	constraintsFirst, constraintsAfterFixed, constraintsAfterLast := s.constraints.PeriodRange()
-	fmt.Println(" local range:", localFirstPeriod, localInfo.AfterLastPeriod)
+	fmt.Println(" local range:", s.firstPeriod, s.nextPeriod)
 	fmt.Println(" remote range:", remoteFirstPeriod, sp.remoteInfo.AfterLastPeriod)
 	fmt.Println(" committee constraint range:", constraintsFirst, constraintsAfterFixed, constraintsAfterLast)
 
 	if constraintsAfterLast < constraintsFirst+2 {
 		return CommitteeRequest{}
 	}
-	if localInfo.AfterLastPeriod != 0 && (constraintsAfterFixed <= localFirstPeriod || constraintsFirst >= localInfo.AfterLastPeriod) {
-		log.Error("Gap between local updates and fixed committee constraints, cannot sync", "local first", localFirstPeriod, "local afterLast", localInfo.AfterLastPeriod, "constraints first", constraintsFirst, "constraints afterFixed", constraintsAfterFixed)
+	if s.nextPeriod != 0 && (constraintsAfterFixed <= s.firstPeriod || constraintsFirst >= s.nextPeriod) {
+		log.Error("Gap between local updates and fixed committee constraints, cannot sync", "local first", s.firstPeriod, "local afterLast", s.nextPeriod, "constraints first", constraintsFirst, "constraints afterFixed", constraintsAfterFixed)
 		return CommitteeRequest{}
 	}
 
 	// committee period range -> update period range
 	syncFirst, syncAfterFixed, syncAfterLast := constraintsFirst+1, constraintsAfterFixed-1, constraintsAfterLast-1
 	// find intersection with remote advertised update range
-	if remoteFirstPeriod > syncFirst {
+	/*if remoteFirstPeriod > syncFirst {
 		syncFirst = remoteFirstPeriod
-	}
+	}*/
 	if sp.remoteInfo.AfterLastPeriod < syncAfterFixed {
 		syncAfterFixed = sp.remoteInfo.AfterLastPeriod
 	}
@@ -848,15 +872,32 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	)
 
 	for period := syncAfterFixed - 1; period <= syncAfterFixed; period++ {
-		if localInfo.AfterLastPeriod == 0 || period+1 < localFirstPeriod || period > localInfo.AfterLastPeriod {
+		if s.nextPeriod == 0 || period+1 < s.firstPeriod || period > s.nextPeriod {
 			request.CommitteePeriods = append(request.CommitteePeriods, period)
 			reqCount += CommitteeCostFactor
 		}
 	}
 	addUpdate := func(updatePeriod, committeePeriod uint64) bool {
-		if localInfo.AfterLastPeriod == 0 || updatePeriod < localFirstPeriod || updatePeriod >= localInfo.AfterLastPeriod {
-			// outside already synced range, request update+committee if possible
+		if reqCount >= MaxCommitteeUpdateFetch {
+			return false
+		}
+		// decode remote score
+		var remoteScore UpdateScore
+		if updatePeriod >= remoteFirstPeriod {
+			remotePtr := int(updatePeriod-remoteFirstPeriod) * 3
+			remoteScore.Decode(sp.remoteInfo.Scores[remotePtr : remotePtr+3])
+		} else {
+			// if earlier than advertised range then assume minimum score; fail later if delivered score is too low
+			remoteScore = minimumScore
+		}
+
+		if s.nextPeriod == 0 || updatePeriod < s.firstPeriod || updatePeriod >= s.nextPeriod {
+			// outside already synced range, request update+committee if possible (try even if it is before the remote advertised range)
 			if reqCount+CommitteeCostFactor+1 > MaxCommitteeUpdateFetch {
+				return false
+			}
+			if minimumScore.betterThan(remoteScore) {
+				// do not sync further if advertised score is less than our minimum requirement
 				return false
 			}
 			request.UpdatePeriods = append(request.UpdatePeriods, updatePeriod)
@@ -864,14 +905,14 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 			reqCount += CommitteeCostFactor + 1
 		} else {
 			// inside already synced range, request update only if advertised remote score is better than local
-			if reqCount+1 > MaxCommitteeUpdateFetch {
-				return false
+			if updatePeriod < localFirstPeriod || updatePeriod < remoteFirstPeriod {
+				// do not update already synced range before the remote advertised range
+				return true
 			}
-			var localScore, remoteScore UpdateScore
+			var localScore UpdateScore
 			localPtr := int(updatePeriod-localFirstPeriod) * 3
 			localScore.Decode(localInfo.Scores[localPtr : localPtr+3])
-			remotePtr := int(updatePeriod-remoteFirstPeriod) * 3
-			remoteScore.Decode(sp.remoteInfo.Scores[remotePtr : remotePtr+3])
+			fmt.Println(" known period", updatePeriod, "remoteScore", remoteScore, "localScore", localScore, remoteScore.betterThan(localScore))
 			if remoteScore.betterThan(localScore) {
 				request.UpdatePeriods = append(request.UpdatePeriods, updatePeriod)
 				reqCount++
@@ -881,8 +922,8 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 
 	}
 	origin := syncAfterFixed
-	if localInfo.AfterLastPeriod != 0 && origin > localInfo.AfterLastPeriod {
-		origin = localInfo.AfterLastPeriod
+	if s.nextPeriod != 0 && origin > s.nextPeriod {
+		origin = s.nextPeriod
 	}
 	if syncFirst > origin {
 		return CommitteeRequest{}
@@ -983,9 +1024,13 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 			continue // skip but do not fail because it is not the remote side's fault; retry with new request
 		}
 
-		remoteInfoIndex := int(period - firstPeriod)
 		var remoteInfoScore UpdateScore
-		remoteInfoScore.Decode(sp.remoteInfo.Scores[remoteInfoIndex*3 : remoteInfoIndex*3+3])
+		if period >= firstPeriod {
+			remoteInfoIndex := int(period - firstPeriod)
+			remoteInfoScore.Decode(sp.remoteInfo.Scores[remoteInfoIndex*3 : remoteInfoIndex*3+3])
+		} else {
+			remoteInfoScore = minimumScore
+		}
 		update.CalculateScore()
 		if remoteInfoScore.betterThan(update.score) {
 			fmt.Println(" update has lower score than promised")
@@ -1038,24 +1083,6 @@ func (l *LightClientUpdate) CalculateScore() *UpdateScore {
 	l.score.subPeriodIndex = uint32(l.Header.Slot & 0x1fff)
 	l.score.finalized = l.hasFinality()
 	return &l.score
-}
-
-func (u *UpdateScore) penalty() uint64 {
-	if u.signerCount == 0 {
-		return math.MaxUint64
-	}
-	a := uint64(u.signerCount)
-	b := a * a
-	c := b * b
-	p := a * b * c // signerCount ^ 7 (between 0 and 2^63)
-	if !u.finalized {
-		p += 0x2000000000000000 / uint64(u.subPeriodIndex+1)
-	}
-	return p
-}
-
-func (u UpdateScore) betterThan(w UpdateScore) bool {
-	return u.penalty() < w.penalty()
 }
 
 func trimZeroes(data []byte) []byte {
