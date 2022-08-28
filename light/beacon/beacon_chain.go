@@ -255,7 +255,7 @@ type BeaconChain struct {
 	beaconSyncer
 }
 
-func NewBeaconChain(dataSource beaconData, execChain execChain, db ethdb.Database, forks Forks) *BeaconChain {
+func NewBeaconChain(dataSource beaconData, historicSource historicData, execChain execChain, db ethdb.Database, forks Forks) *BeaconChain {
 	chainDb := rawdb.NewTable(db, "bc-")
 	blockDataCache, _ := lru.New(2000)
 	historicCache, _ := lru.New(20000)
@@ -263,6 +263,7 @@ func NewBeaconChain(dataSource beaconData, execChain execChain, db ethdb.Databas
 	committeeRootCache, _ := lru.New(200)
 	bc := &BeaconChain{
 		dataSource:         dataSource,
+		historicSource:     historicSource,
 		execChain:          execChain,
 		db:                 chainDb,
 		blockDataCache:     blockDataCache,

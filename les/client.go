@@ -202,7 +202,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 					copy(beaconCheckpoint[:len(c)], c)
 				}
 			}
-			leth.syncCommitteeCheckpoint = beacon.NewWeakSubjectivityCheckpoint(chainDb, (*odrDataSource)(leth), beaconCheckpoint, nil)
+			leth.syncCommitteeCheckpoint = beacon.NewWeakSubjectivityCheckpoint(chainDb, (*odrDataSource)(leth.odr), beaconCheckpoint, nil)
 			if leth.syncCommitteeCheckpoint == nil {
 				log.Error("No beacon chain checkpoint")
 				return nil, fmt.Errorf("No beacon chain checkpoint")

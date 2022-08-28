@@ -127,7 +127,7 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		if forks, err := beacon.LoadForks(config.BeaconConfig); err == nil {
 			fmt.Println("Forks", forks)
 			bdata := &beaconNodeApiSource{url: config.BeaconApi}
-			if srv.beaconChain = beacon.NewBeaconChain(bdata, e.BlockChain(), e.ChainDb(), forks); srv.beaconChain == nil {
+			if srv.beaconChain = beacon.NewBeaconChain(bdata, nil, e.BlockChain(), e.ChainDb(), forks); srv.beaconChain == nil {
 				return nil, fmt.Errorf("Could not initialize beacon chain")
 			}
 			sct := beacon.NewSyncCommitteeTracker(e.ChainDb(), forks, srv.beaconChain, &mclock.System{})

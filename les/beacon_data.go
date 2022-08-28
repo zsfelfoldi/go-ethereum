@@ -723,18 +723,18 @@ func (bn *beaconNodeApiSource) GetInitBlock(ctx context.Context, checkpoint comm
 	return blocks[0], committee, nextCommittee, nil*/
 }
 
-type odrDataSource LightEthereum
+type odrDataSource LesOdr
 
-func (od *odrDataSource) GetBlocks(ctx context.Context, head beacon.Header, lastSlot, amount uint64) (blocks []*beacon.BlockData, err error) {
+func (od *odrDataSource) GetHistoricBlocks(ctx context.Context, head beacon.Header, lastSlot, amount uint64) (blocks []*beacon.BlockData, beacon.MultiProof, err error) {
 	req := &light.BeaconDataRequest{
 		LastSlot: lastSlot,
 		Length:   amount,
 		//TODO TailShortTerm
 	}
-	if err := od.odr.RetrieveWithBeaconHeader(ctx, head, req); err != nil {
-		return nil, err
+	if err := (*LesOdr)(od).RetrieveWithBeaconHeader(ctx, head, req); err != nil {
+		return nil, beacon.MultiProof{}, err
 	}
-	return req.Blocks, nil
+	return req.Blocks, req.TailProof, nil
 }
 
 func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head beacon.Header, amount uint64) (blocks []*beacon.BlockData, err error) {
@@ -743,7 +743,7 @@ func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head beacon.Head
 		Length:   amount,
 		//TODO TailShortTerm
 	}
-	if err := od.odr.RetrieveWithBeaconHeader(ctx, head, req); err != nil {
+	if err := (*LesOdr)(od).RetrieveWithBeaconHeader(ctx, head, req); err != nil {
 		return nil, err
 	}
 	return req.Blocks, nil
@@ -753,7 +753,7 @@ func (od *odrDataSource) GetInitBlock(ctx context.Context, checkpoint common.Has
 	req := &light.BeaconInitRequest{
 		Checkpoint: checkpoint,
 	}
-	if err := od.odr.Retrieve(ctx, req); err != nil {
+	if err := (*LesOdr)(od).Retrieve(ctx, req); err != nil {
 		return nil, err
 	}
 	return req.Block, nil

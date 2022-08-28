@@ -20,17 +20,22 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
+	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 )
+
+const blipSoftTimeout = time.Second * 2
 
 type Blip struct {
 	handler      *handler
@@ -57,6 +62,11 @@ type blipBackend interface {
 }
 
 func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, error) {
+	forks, err := beacon.LoadForks(config.BeaconConfig)
+	if err != nil {
+		log.Error("Could not load beacon chain config file", "error", err)
+		return nil, fmt.Errorf("Could not load beacon chain config file: %v", err)
+	}
 	blip := &Blip{
 		chainDb:      b.ChainDb(),
 		peers:        newPeerSet(),
@@ -64,22 +74,73 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 		fcManager:    flowcontrol.NewClientManager(nil, &mclock.System{}),
 		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
 	}
-	if forks, err := beacon.LoadForks(config.BeaconConfig); err == nil {
-		if config.BeaconApi != "" {
-			blip.beaconNodeApi = &beaconNodeApiSource{url: config.BeaconApi}
-		}
-		if blip.beaconChain = beacon.NewBeaconChain(blip.beaconNodeApi, blip.blockchain, blip.chainDb, forks); blip.beaconChain == nil {
-			return nil, fmt.Errorf("Could not initialize beacon chain")
-		}
-		blip.syncCommitteeTracker = beacon.NewSyncCommitteeTracker(blip.chainDb, forks, blip.beaconChain, &mclock.System{})
-		blip.beaconChain.SubscribeToProcessedHeads(blip.syncCommitteeTracker.ProcessedBeaconHead, true)
-		blip.beaconNodeApi.chain = blip.beaconChain
-		blip.beaconNodeApi.sct = blip.syncCommitteeTracker
-		blip.beaconNodeApi.start()
+
+	blip.reqDist = newRequestDistributor(blip.peers, &mclock.System{})
+	blip.retriever = newRetrieveManager(blip.peers, blip.reqDist, func() time.Duration { return blipSoftTimeout })
+	blip.odr = NewLesOdr(blip.chainDb, light.DefaultClientIndexerConfig, blip.peers, blip.retriever)
+
+	if config.BeaconApi != "" {
+		blip.beaconNodeApi = &beaconNodeApiSource{url: config.BeaconApi}
+		log.Info("Beacon sync: using beacon node API")
 	} else {
-		log.Error("Could not load beacon chain config file", "error", err)
-		return nil, fmt.Errorf("Could not load beacon chain config file: %v", err)
+		var beaconCheckpoint common.Hash
+		if config.BeaconCheckpoint != "" {
+			if c, err := hexutil.Decode(config.BeaconCheckpoint); err == nil && len(c) == 32 {
+				copy(beaconCheckpoint[:len(c)], c)
+				log.Info("Beacon sync: using specified weak subjectivity checkpoint")
+			} else {
+				log.Error("Beacon sync: invalid weak subjectivity checkpoint specified")
+			}
+		}
+		blip.syncCommitteeCheckpoint = beacon.NewWeakSubjectivityCheckpoint(blip.chainDb, (*odrDataSource)(blip.odr), beaconCheckpoint, nil)
+		if blip.syncCommitteeCheckpoint == nil {
+			log.Error("Beacon sync: cannot sync without either a beacon node API or a weak subjectivity checkpoint")
+			return nil, fmt.Errorf("No weak subjectivity checkpoint")
+		}
+		if beaconCheckpoint == (common.Hash{}) {
+			log.Info("Beacon sync: using previously stored weak subjectivity checkpoint")
+		}
 	}
+
+	if blip.beaconChain = beacon.NewBeaconChain(blip.beaconNodeApi, (*odrDataSource)(blip.odr), blip.blockchain, blip.chainDb, forks); blip.beaconChain == nil {
+		return nil, fmt.Errorf("Could not initialize beacon chain")
+	}
+	blip.syncCommitteeTracker = beacon.NewSyncCommitteeTracker(blip.chainDb, forks, blip.beaconChain, &mclock.System{})
+	blip.syncCommitteeTracker.SubscribeToNewHeads(blip.odr.SetBeaconHead)
+	blip.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
+		blip.beaconChain.SyncToHead(head, nil)
+	})
+	blip.beaconChain.SubscribeToProcessedHeads(blip.syncCommitteeTracker.ProcessedBeaconHead, true)
+	blip.beaconNodeApi.chain = blip.beaconChain
+	blip.beaconNodeApi.sct = blip.syncCommitteeTracker
+	blip.beaconNodeApi.start()
+
+	blip.handler = newHandler(blip.peers, config.NetworkId)
+
+	fcWrapper := &fcRequestWrapper{
+		costTracker:  srv.costTracker,
+		servingQueue: srv.servingQueue,
+	}
+
+	beaconServerHandler := &beaconServerHandler{
+		syncCommitteeTracker: blip.syncCommitteeTracker,
+		beaconChain:          blip.beaconChain,
+		blockChain:           blip.blockchain,
+		fcWrapper:            fcWrapper,
+	}
+	blip.handler.registerHandshakeModule(beaconServerHandler)
+	blip.handler.registerConnectionModule(beaconServerHandler)
+	blip.handler.registerMessageHandlers(beaconServerHandler.messageHandlers())
+
+	beaconClientHandler := &beaconClientHandler{
+		syncCommitteeTracker:    blip.syncCommitteeTracker,
+		syncCommitteeCheckpoint: blip.syncCommitteeCheckpoint,
+		retriever:               blip.retriever,
+	}
+	blip.handler.registerHandshakeModule(beaconClientHandler)
+	blip.handler.registerConnectionModule(beaconClientHandler)
+	blip.handler.registerMessageHandlers(beaconClientHandler.messageHandlers())
+
 	node.RegisterProtocols(blip.Protocols())
 	//node.RegisterAPIs(blip.APIs())
 	node.RegisterLifecycle(blip)
