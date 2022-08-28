@@ -713,17 +713,30 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 	reader := beacon.MultiProof{Format: format, Values: reply.ProofValues}.Reader(nil)
 	target := make([]*beacon.MerkleValues, len(reply.StateProofFormats))
 	targetMap := make(map[uint64]beacon.ProofWriter)
-	writer := beacon.ProofWriter(beacon.NewMultiProofWriter(format, nil, func(index uint64) beacon.ProofWriter {
+	stateProofWriter := beacon.NewMultiProofWriter(format, nil, func(index uint64) beacon.ProofWriter {
 		return targetMap[index]
-	}))
+	})
+	writer := beacon.MergedWriter{stateProofWriter}
+	if firstSlot+0x2000 < uint64(beaconHeader.Slot) {
+		tailProofIndex := 0x2000000 + tailPeriod
+		request.TailProof = beacon.MultiProof{Format: beacon.NewRangeFormat(tailProofIndex, tailProofIndex)}
+		tailProofWriter := beacon.NewMultiProofWriter(beacon.NewRangeFormat(), nil, func(index uint64) beacon.ProofWriter {
+			if index == beacon.BsiHistoricRoots {
+				return beacon.NewMultiProofWriter(request.TailProof.Format, &request.TailProof.Values, nil)
+			}
+			return nil
+		})
+		writer = append(writer, tailProofWriter)
+	}
 
 	for i := range target {
 		target[i] = new(beacon.MerkleValues)
 		index := beacon.SlotProofIndex(uint64(beaconHeader.Slot), firstSlot+uint64(i))
 		subWriter := beacon.NewMultiProofWriter(beacon.StateProofFormats[reply.StateProofFormats[i]], target[i], nil)
 		if index == 1 {
-			// adding it to MultiProofWriter as a subtree at index 1 would prevent traversing the other beacon states that are children of the head block state
-			writer = beacon.MergedWriter{writer, subWriter}
+			// add to the MergedWriter as a separate MultiProofWriter
+			// adding it to stateProofWriter as a subtree at index 1 would prevent traversing the other beacon states that are children of the head block state
+			writer = append(writer, subWriter)
 		} else {
 			targetMap[index] = subWriter
 		}
