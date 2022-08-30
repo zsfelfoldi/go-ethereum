@@ -231,9 +231,11 @@ type ExecHeadersRequest struct {
 	ReqMode        uint   // 0: head  1: historic  2: finalized
 	HistoricNumber uint64 // highest requested exec header number (for historic mode only)
 	Amount         uint64 // number of requested exec headers
+	FullBlocks     bool
 
 	RefBeaconHead beacon.Header
 	ExecHeaders   []*types.Header
+	ExecBlocks    []*types.Block
 }
 
 func (req *ExecHeadersRequest) StoreResult(db ethdb.Database) {}

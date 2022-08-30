@@ -216,6 +216,7 @@ type GetExecHeadersPacket struct {
 	BlockRoot      common.Hash // recent beacon block root used as a reference to the canonical chain state (client should already have the beacon header)
 	HistoricNumber uint64      // highest requested exec header number (for historic mode only)
 	Amount         uint64      // number of requested exec headers
+	FullBlocks     bool
 }
 
 type ExecHeadersResponse struct {
@@ -231,6 +232,7 @@ type ExecHeadersResponse struct {
 	HistoricSlot uint64              // the requested HistoricNumber should be checked against the last returned header number during validation
 	ProofValues  beacon.MerkleValues // (format depends on ReqMode and HistoricSlot)
 	ExecHeaders  []*types.Header
+	ExecBodies   [][]byte
 }
 
 type requestInfo struct {

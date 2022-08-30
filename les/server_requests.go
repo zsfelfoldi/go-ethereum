@@ -1031,12 +1031,19 @@ func (s *BeaconRequestServer) handleGetExecHeaders(msg Decoder) (serveRequestFn,
 			return nil
 		}
 		headers := make([]*types.Header, int(r.Amount))
+		var bodies [][]byte
+		if r.FullBlocks {
+			bodies = make([][]byte, int(r.Amount))
+		}
 		headerPtr := int(r.Amount)
 		if headerPtr > 0 {
 			lastRetrieved := ec.GetHeaderByHash(execHash)
 			for lastRetrieved != nil {
 				headerPtr--
 				headers[headerPtr] = lastRetrieved
+				if r.FullBlocks {
+					bodies[headerPtr] = ec.GetBodyRLP(lastRetrieved.Hash())
+				}
 				if headerPtr == 0 {
 					break
 				}
@@ -1054,6 +1061,7 @@ func (s *BeaconRequestServer) handleGetExecHeaders(msg Decoder) (serveRequestFn,
 			HistoricSlot: historicSlot,
 			ProofValues:  proofValues,
 			ExecHeaders:  headers,
+			ExecBodies:   bodies,
 		})
 	}, r.ReqID, r.Amount, nil //TODO ???amount calculation, check
 }

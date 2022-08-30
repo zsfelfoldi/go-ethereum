@@ -615,7 +615,7 @@ func (r *BeaconDataRequest) GetCost(peer *peer) uint64 {
 
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *BeaconDataRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
-	return peer.version >= lpv5 && peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
+	return false //peer.version >= lpv5 && peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())	//TODO temp hack
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
@@ -821,6 +821,7 @@ func (r *ExecHeadersRequest) Request(reqID uint64, beaconHeader beacon.Header, p
 		BlockRoot:      beaconHeader.Hash(),
 		HistoricNumber: r.HistoricNumber,
 		Amount:         r.Amount,
+		FullBlocks:     r.FullBlocks,
 	})
 }
 
@@ -887,6 +888,27 @@ func (request *ExecHeadersRequest) Validate(db ethdb.Database, beaconHeader beac
 		expRoot = reply.ExecHeaders[i].ParentHash
 	}
 	request.ExecHeaders = reply.ExecHeaders
+	if request.FullBlocks {
+		if len(reply.ExecBodies) != len(reply.ExecHeaders) {
+			return errInvalidEntryCount
+		}
+		request.ExecBlocks = make([]*types.Block, len(reply.ExecBodies))
+		for i, bodyRlp := range reply.ExecBodies {
+			body := new(types.Body)
+			if err := rlp.DecodeBytes(bodyRlp, body); err != nil {
+				return err
+			}
+			header := reply.ExecHeaders[i]
+			if header.TxHash != types.DeriveSha(types.Transactions(body.Transactions), trie.NewStackTrie(nil)) {
+				return errTxHashMismatch
+			}
+			if header.UncleHash != types.CalcUncleHash(body.Uncles) {
+				return errUncleHashMismatch
+			}
+			request.ExecBlocks[i] = types.NewBlockWithHeader(header).WithBody(body.Transactions, body.Uncles)
+		}
+	}
+
 	/*for _, h := range reply.ExecHeaders {
 		fmt.Println(" header", h)
 	}*/

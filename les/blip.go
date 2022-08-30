@@ -17,7 +17,9 @@
 package les
 
 import (
+	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -37,7 +39,7 @@ import (
 
 const (
 	blipSoftTimeout = time.Second * 2
-	blipServRate     = 20
+	blipServRate    = 20
 )
 
 type Blip struct {
@@ -52,6 +54,11 @@ type Blip struct {
 	retriever    *retrieveManager
 	odr          *LesOdr
 	chainDb      ethdb.Database
+
+	fetchLock               sync.Mutex
+	fetchHeader             beacon.Header
+	fetchTrigger, fetchStop chan struct{}
+	fetchCancel             func()
 
 	beaconNodeApi           *beaconNodeApiSource
 	blockchain              *core.BlockChain
@@ -120,14 +127,25 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 	}
 	blip.syncCommitteeTracker = beacon.NewSyncCommitteeTracker(blip.chainDb, forks, blip.beaconChain, &mclock.System{})
 	blip.syncCommitteeTracker.SubscribeToNewHeads(blip.odr.SetBeaconHead)
-	blip.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
+	/*blip.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
 		blip.beaconChain.SyncToHead(head, nil)
-	})
+	})*/
 	blip.beaconChain.SubscribeToProcessedHeads(blip.syncCommitteeTracker.ProcessedBeaconHead, true)
 	if blip.beaconNodeApi != nil {
 		blip.beaconNodeApi.chain = blip.beaconChain
 		blip.beaconNodeApi.sct = blip.syncCommitteeTracker
 		blip.beaconNodeApi.start()
+	} else {
+		blip.startBlockFetcher()
+		blip.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
+			blip.fetchLock.Lock()
+			blip.fetchHeader = head
+			blip.fetchLock.Unlock()
+			select {
+			case blip.fetchTrigger <- struct{}{}:
+			default:
+			}
+		})
 	}
 
 	blip.handler = newHandler(blip.peers, config.NetworkId)
@@ -204,6 +222,7 @@ func (s *Blip) Start() error {
 // Stop implements node.Lifecycle, terminating all internal goroutines used by the
 // Ethereum protocol.
 func (s *Blip) Stop() error {
+	s.stopBlockFetcher()
 	s.syncCommitteeTracker.Stop()
 	s.beaconChain.StopSyncing()
 	s.handler.stop()
@@ -211,4 +230,53 @@ func (s *Blip) Stop() error {
 	s.odr.Stop()
 	log.Info("Beacon Light Protocol stopped")
 	return nil
+}
+
+func (s *Blip) startBlockFetcher() {
+	s.fetchTrigger = make(chan struct{}, 1)
+
+	go func() {
+		for {
+			<-s.fetchTrigger
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+			s.fetchLock.Lock()
+			head := s.fetchHeader
+			stopCh := s.fetchStop
+			s.fetchCancel = cancel
+			s.fetchLock.Unlock()
+			if stopCh != nil {
+				close(stopCh)
+				return
+			}
+			r := &light.ExecHeadersRequest{
+				ReqMode:    light.HeadMode,
+				Amount:     1,
+				FullBlocks: true,
+			}
+			fmt.Println("*** fetching block")
+			if err := s.odr.RetrieveWithBeaconHeader(ctx, head, r); err == nil && len(r.ExecBlocks) == 1 {
+				fmt.Println("*** fetched block", r.ExecBlocks[0].Hash())
+			}
+
+		}
+	}()
+}
+
+func (s *Blip) stopBlockFetcher() {
+	if s.fetchTrigger == nil {
+		return
+	}
+	stopCh := make(chan struct{})
+	s.fetchLock.Lock()
+	cancel := s.fetchCancel
+	s.fetchStop = stopCh
+	s.fetchLock.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	select {
+	case s.fetchTrigger <- struct{}{}:
+	default:
+	}
+	<-stopCh
 }
