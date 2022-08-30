@@ -26,6 +26,9 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
+	cb "github.com/ethereum/go-ethereum/core/beacon"
+	"github.com/ethereum/go-ethereum/eth"
+	"github.com/ethereum/go-ethereum/eth/catalyst"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
@@ -54,6 +57,7 @@ type Blip struct {
 	retriever    *retrieveManager
 	odr          *LesOdr
 	chainDb      ethdb.Database
+	backend      *eth.Ethereum //TODO ugly hack
 
 	fetchLock               sync.Mutex
 	fetchHeader             beacon.Header
@@ -61,18 +65,19 @@ type Blip struct {
 	fetchCancel             func()
 
 	beaconNodeApi           *beaconNodeApiSource
+	consensusApi            *catalyst.ConsensusAPI
 	blockchain              *core.BlockChain
 	beaconChain             *beacon.BeaconChain
 	syncCommitteeCheckpoint *beacon.WeakSubjectivityCheckpoint
 	syncCommitteeTracker    *beacon.SyncCommitteeTracker
 }
 
-type blipBackend interface {
+/*type blipBackend interface {
 	BlockChain() *core.BlockChain
 	ChainDb() ethdb.Database
-}
+}*/
 
-func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, error) {
+func NewBlip(node *node.Node, b /*blipBackend*/ *eth.Ethereum, config *ethconfig.Config) (*Blip, error) {
 	forks, err := beacon.LoadForks(config.BeaconConfig)
 	if err != nil {
 		log.Error("Could not load beacon chain config file", "error", err)
@@ -81,6 +86,7 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 	blip := &Blip{
 		chainDb:      b.ChainDb(),
 		peers:        newPeerSet(),
+		backend:      b,
 		blockchain:   b.BlockChain(),
 		fcManager:    flowcontrol.NewClientManager(nil, &mclock.System{}),
 		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(blipServRate)/100),
@@ -135,17 +141,6 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 		blip.beaconNodeApi.chain = blip.beaconChain
 		blip.beaconNodeApi.sct = blip.syncCommitteeTracker
 		blip.beaconNodeApi.start()
-	} else {
-		blip.startBlockFetcher()
-		blip.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
-			blip.fetchLock.Lock()
-			blip.fetchHeader = head
-			blip.fetchLock.Unlock()
-			select {
-			case blip.fetchTrigger <- struct{}{}:
-			default:
-			}
-		})
 	}
 
 	blip.handler = newHandler(blip.peers, config.NetworkId)
@@ -216,6 +211,19 @@ func (s *Blip) Start() error {
 	log.Warn("Beacon Light Protocol is an experimental feature")
 	s.handler.start()
 	s.beaconChain.StartSyncing()
+	if s.beaconNodeApi == nil {
+		s.consensusApi = s.backend.ConsensusAPI.(*catalyst.ConsensusAPI)
+		s.startBlockFetcher()
+		s.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
+			s.fetchLock.Lock()
+			s.fetchHeader = head
+			s.fetchLock.Unlock()
+			select {
+			case s.fetchTrigger <- struct{}{}:
+			default:
+			}
+		})
+	}
 	return nil
 }
 
@@ -254,10 +262,29 @@ func (s *Blip) startBlockFetcher() {
 				FullBlocks: true,
 			}
 			fmt.Println("*** fetching block")
+			var headHash common.Hash
 			if err := s.odr.RetrieveWithBeaconHeader(ctx, head, r); err == nil && len(r.ExecBlocks) == 1 {
-				fmt.Println("*** fetched block", r.ExecBlocks[0].Hash())
+				headHash = r.ExecBlocks[0].Hash()
+				fmt.Println("*** fetched block", headHash)
+				e := cb.BlockToExecutableData(r.ExecBlocks[0])
+				status, err := s.consensusApi.NewPayloadV1(*e)
+				fmt.Println("*** NewPayloadV1:", status, err)
 			}
-
+			r = &light.ExecHeadersRequest{
+				ReqMode: light.FinalizedMode,
+				Amount:  1,
+			}
+			if err := s.odr.RetrieveWithBeaconHeader(ctx, head, r); err == nil && len(r.ExecHeaders) == 1 {
+				finalizedHash := r.ExecHeaders[0].Hash()
+				fmt.Println("*** fetched finalized header", finalizedHash)
+				st := cb.ForkchoiceStateV1{
+					HeadBlockHash:      headHash,
+					SafeBlockHash:      finalizedHash,
+					FinalizedBlockHash: finalizedHash,
+				}
+				resp, err2 := s.consensusApi.ForkchoiceUpdatedV1(st, nil)
+				fmt.Println("*** ForkchoiceUpdatedV1:", resp, err2)
+			}
 		}
 	}()
 }
