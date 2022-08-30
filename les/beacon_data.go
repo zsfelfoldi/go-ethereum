@@ -725,7 +725,7 @@ func (bn *beaconNodeApiSource) GetInitBlock(ctx context.Context, checkpoint comm
 
 type odrDataSource LesOdr
 
-func (od *odrDataSource) GetHistoricBlocks(ctx context.Context, head beacon.Header, lastSlot, amount uint64) (blocks []*beacon.BlockData, beacon.MultiProof, err error) {
+func (od *odrDataSource) GetHistoricBlocks(ctx context.Context, head beacon.Header, lastSlot, amount uint64) (blocks []*beacon.BlockData, tailProof beacon.MultiProof, err error) {
 	req := &light.BeaconDataRequest{
 		LastSlot: lastSlot,
 		Length:   amount,

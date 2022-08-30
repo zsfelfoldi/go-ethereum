@@ -42,6 +42,7 @@ type Blip struct {
 	peers        *peerSet
 	fcManager    *flowcontrol.ClientManager
 	costTracker  *costTracker
+	minCapacity  uint64
 	defParams    flowcontrol.ServerParams
 	servingQueue *servingQueue
 	reqDist      *requestDistributor
@@ -73,6 +74,14 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 		blockchain:   b.BlockChain(),
 		fcManager:    flowcontrol.NewClientManager(nil, &mclock.System{}),
 		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
+	}
+
+	blip.costTracker, blip.minCapacity = newCostTracker(blip.chainDb, 20, 100, 100)
+
+	// Initialize server capacity management fields.
+	blip.defParams = flowcontrol.ServerParams{
+		BufLimit:    blip.minCapacity * bufLimitRatio,
+		MinRecharge: blip.minCapacity,
 	}
 
 	blip.reqDist = newRequestDistributor(blip.peers, &mclock.System{})
@@ -118,8 +127,8 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 	blip.handler = newHandler(blip.peers, config.NetworkId)
 
 	fcWrapper := &fcRequestWrapper{
-		costTracker:  srv.costTracker,
-		servingQueue: srv.servingQueue,
+		costTracker:  blip.costTracker,
+		servingQueue: blip.servingQueue,
 	}
 
 	beaconServerHandler := &beaconServerHandler{

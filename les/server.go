@@ -143,7 +143,7 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		}
 	}
 
-	srv.costTracker, srv.minCapacity = newCostTracker(e.ChainDb(), config)
+	srv.costTracker, srv.minCapacity = newCostTracker(e.ChainDb(), config.LightServ, config.LightIngress, config.LightEgress)
 	srv.oracle = srv.setupOracle(node, e.BlockChain().Genesis().Hash(), config)
 
 	// Initialize the bloom trie indexer.

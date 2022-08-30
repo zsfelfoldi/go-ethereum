@@ -718,9 +718,10 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 	})
 	writer := beacon.MergedWriter{stateProofWriter}
 	if firstSlot+0x2000 < uint64(beaconHeader.Slot) {
-		tailProofIndex := 0x2000000 + tailPeriod
-		request.TailProof = beacon.MultiProof{Format: beacon.NewRangeFormat(tailProofIndex, tailProofIndex)}
-		tailProofWriter := beacon.NewMultiProofWriter(beacon.NewRangeFormat(), nil, func(index uint64) beacon.ProofWriter {
+		tailProofIndex := 0x2000000 + firstSlot>>13
+		request.TailProof = beacon.MultiProof{Format: beacon.NewRangeFormat(tailProofIndex, tailProofIndex, nil)}
+		i := beacon.ChildIndex(beacon.BsiHistoricRoots, tailProofIndex)
+		tailProofWriter := beacon.NewMultiProofWriter(beacon.NewRangeFormat(i, i, nil), nil, func(index uint64) beacon.ProofWriter {
 			if index == beacon.BsiHistoricRoots {
 				return beacon.NewMultiProofWriter(request.TailProof.Format, &request.TailProof.Values, nil)
 			}
