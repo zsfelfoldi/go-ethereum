@@ -17,14 +17,11 @@
 package les
 
 import (
-	"crypto/ecdsa"
 	"fmt"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
@@ -64,9 +61,6 @@ type LesServer struct {
 	blockchain       *core.BlockChain
 	peers, serverset *peerSet
 	vfluxServer      *vfs.Server
-
-	privateKey                   *ecdsa.PrivateKey
-	lastAnnounce, signedAnnounce announceData
 
 	// Flow control and capacity management
 	fcManager    *flowcontrol.ClientManager
@@ -182,6 +176,7 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		beaconChain:          srv.beaconChain,
 		blockChain:           srv.blockchain,
 		fcWrapper:            fcWrapper,
+		beaconNodeApi:        srv.beaconNodeApi,
 	}
 	srv.handler.registerModule(beaconServerHandler)
 
@@ -250,7 +245,6 @@ func (s *LesServer) Protocols() []p2p.Protocol {
 
 // Start starts the LES server
 func (s *LesServer) Start() error {
-	s.privateKey = s.p2pSrv.PrivateKey
 	s.handler.start()
 
 	if s.p2pSrv.DiscV5 != nil {
@@ -299,76 +293,4 @@ func (s *LesServer) Stop() error {
 	log.Info("Les server stopped")
 
 	return nil
-}
-
-// broadcastLoop broadcasts new block information to all connected light
-// clients. According to the agreement between client and server, server should
-// only broadcast new announcement if the total difficulty is higher than the
-// last one. Besides server will add the signature if client requires.
-func (s *LesServer) broadcastLoop() {
-	defer s.wg.Done()
-
-	headCh := make(chan core.ChainHeadEvent, 10)
-	headSub := s.blockchain.SubscribeChainHeadEvent(headCh)
-	defer headSub.Unsubscribe()
-
-	var (
-		lastHead = s.blockchain.CurrentHeader()
-		lastTd   = common.Big0
-	)
-	for {
-		select {
-		case ev := <-headCh:
-			header := ev.Block.Header()
-			hash, number := header.Hash(), header.Number.Uint64()
-			if s.beaconChain != nil {
-				s.beaconChain.ProcessedExecHead(hash)
-			}
-			if s.beaconNodeApi != nil {
-				s.beaconNodeApi.newHead()
-			}
-			td := s.blockchain.GetTd(hash, number)
-			if td == nil || td.Cmp(lastTd) <= 0 {
-				continue
-			}
-			var reorg uint64
-			if lastHead != nil {
-				// If a setHead has been performed, the common ancestor can be nil.
-				if ancestor := rawdb.FindCommonAncestor(s.chainDb, header, lastHead); ancestor != nil {
-					reorg = lastHead.Number.Uint64() - ancestor.Number.Uint64()
-				}
-			}
-			lastHead, lastTd = header, td
-			log.Debug("Announcing block to peers", "number", number, "hash", hash, "td", td, "reorg", reorg)
-			s.broadcast(announceData{Hash: hash, Number: number, Td: td, ReorgDepth: reorg})
-		case <-s.closeCh:
-			return
-		}
-	}
-}
-
-// broadcast sends the given announcements to all active peers
-func (s *LesServer) broadcast(announce announceData) {
-	s.lastAnnounce = announce
-	for _, peer := range s.peers.allPeers() {
-		s.announceOrStore(peer)
-	}
-}
-
-// announceOrStore sends the requested type of announcement to the given peer or stores
-// it for later if the peer is inactive (capacity == 0).
-func (s *LesServer) announceOrStore(p *peer) {
-	if s.lastAnnounce.Td == nil {
-		return
-	}
-	switch p.announceType {
-	case announceTypeSimple:
-		p.announceOrStore(s.lastAnnounce)
-	case announceTypeSigned:
-		if s.signedAnnounce.Hash != s.lastAnnounce.Hash {
-			s.signedAnnounce = s.lastAnnounce
-			s.signedAnnounce.sign(s.privateKey)
-		}
-		p.announceOrStore(s.signedAnnounce)
-	}
 }

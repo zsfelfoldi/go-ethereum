@@ -136,6 +136,7 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 		beaconChain:          blip.beaconChain,
 		blockChain:           blip.blockchain,
 		fcWrapper:            fcWrapper,
+		beaconNodeApi:        blip.beaconNodeApi,
 	}
 	blip.handler.registerModule(beaconServerHandler)
 

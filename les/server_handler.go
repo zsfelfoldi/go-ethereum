@@ -17,6 +17,7 @@
 package les
 
 import (
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"sync"
@@ -70,6 +71,9 @@ type serverHandler struct {
 	server     *LesServer
 	fcWrapper  *fcRequestWrapper
 
+	privateKey                   *ecdsa.PrivateKey
+	lastAnnounce, signedAnnounce announceData
+
 	synced func() bool // Callback function used to determine whether local node is synced.
 
 	// Testing fields
@@ -87,6 +91,71 @@ func newServerHandler(server *LesServer, blockchain *core.BlockChain, chainDb et
 		fcWrapper:  fcWrapper,
 	}
 	return handler
+}
+
+func (h *serverHandler) start(wg *sync.WaitGroup, closeCh chan struct{}) {
+	h.privateKey = h.server.p2pSrv.PrivateKey
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		headCh := make(chan core.ChainHeadEvent, 10)
+		headSub := h.blockchain.SubscribeChainHeadEvent(headCh)
+		defer headSub.Unsubscribe()
+
+		var (
+			lastHead = h.blockchain.CurrentHeader()
+			lastTd   = common.Big0
+		)
+		for {
+			select {
+			case ev := <-headCh:
+				header := ev.Block.Header()
+				hash, number := header.Hash(), header.Number.Uint64()
+				td := h.blockchain.GetTd(hash, number)
+				if td == nil || td.Cmp(lastTd) <= 0 {
+					continue
+				}
+				var reorg uint64
+				if lastHead != nil {
+					// If a setHead has been performed, the common ancestor can be nil.
+					if ancestor := rawdb.FindCommonAncestor(h.chainDb, header, lastHead); ancestor != nil {
+						reorg = lastHead.Number.Uint64() - ancestor.Number.Uint64()
+					}
+				}
+				lastHead, lastTd = header, td
+				log.Debug("Announcing block to peers", "number", number, "hash", hash, "td", td, "reorg", reorg)
+				h.broadcast(announceData{Hash: hash, Number: number, Td: td, ReorgDepth: reorg})
+			case <-closeCh:
+				return
+			}
+		}
+	}()
+}
+
+func (h *serverHandler) broadcast(announce announceData) {
+	h.lastAnnounce = announce
+	for _, peer := range h.server.peers.allPeers() {
+		h.announceOrStore(peer)
+	}
+}
+
+// announceOrStore sends the requested type of announcement to the given peer or stores
+// it for later if the peer is inactive (capacity == 0).
+func (h *serverHandler) announceOrStore(p *peer) {
+	if h.lastAnnounce.Td == nil {
+		return
+	}
+	switch p.announceType {
+	case announceTypeSimple:
+		p.announceOrStore(h.lastAnnounce)
+	case announceTypeSigned:
+		if h.signedAnnounce.Hash != h.lastAnnounce.Hash {
+			h.signedAnnounce = h.lastAnnounce
+			h.signedAnnounce.sign(h.privateKey)
+		}
+		p.announceOrStore(h.signedAnnounce)
+	}
 }
 
 func (h *serverHandler) sendHandshake(p *peer, send *keyValueList) {
@@ -142,7 +211,7 @@ func (h *serverHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 	}
 
 	p.server = recv.get("serveHeaders", nil) == nil
-	if p.server {
+	if p.server || p.version >= lpv5 {
 		p.announceType = announceTypeNone // connected to another server, send no messages
 	} else {
 		if recv.get("announceType", &p.announceType) != nil {
@@ -166,7 +235,7 @@ func (h *serverHandler) peerConnected(p *peer) (func(), error) {
 	}
 
 	if p.version <= lpv4 {
-		h.server.announceOrStore(p)
+		h.announceOrStore(p)
 	}
 
 	// Mark the peer as being served.
@@ -224,6 +293,30 @@ type beaconServerHandler struct {
 	beaconChain          *beacon.BeaconChain
 	blockChain           *core.BlockChain
 	fcWrapper            *fcRequestWrapper
+	beaconNodeApi        *beaconNodeApiSource
+}
+
+func (h *beaconServerHandler) start(wg *sync.WaitGroup, closeCh chan struct{}) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		headCh := make(chan core.ChainHeadEvent, 10)
+		headSub := h.blockChain.SubscribeChainHeadEvent(headCh)
+		defer headSub.Unsubscribe()
+
+		for {
+			select {
+			case ev := <-headCh:
+				h.beaconChain.ProcessedExecHead(ev.Block.Header().Hash())
+				if h.beaconNodeApi != nil {
+					h.beaconNodeApi.newHead()
+				}
+			case <-closeCh:
+				return
+			}
+		}
+	}()
 }
 
 func (h *beaconServerHandler) sendHandshake(p *peer, send *keyValueList) {
