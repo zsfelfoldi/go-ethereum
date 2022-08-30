@@ -116,6 +116,7 @@ type beaconData interface { // supported by beacon node API
 
 type historicData interface { // supported by ODR
 	GetHistoricBlocks(ctx context.Context, head Header, lastSlot, amount uint64) ([]*BlockData, MultiProof, error)
+	AvailableTailSlots() (uint64, uint64)
 }
 
 type execChain interface {

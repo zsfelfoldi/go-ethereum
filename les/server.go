@@ -197,6 +197,14 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 	srv.handler.registerConnectionModule(beaconServerHandler)
 	srv.handler.registerMessageHandlers(beaconServerHandler.messageHandlers())
 
+	fcServerHandler := &fcServerHandler{
+		fcManager:   srv.fcManager,
+		costTracker: srv.costTracker,
+		defParams:   srv.defParams,
+	}
+	srv.handler.registerHandshakeModule(fcServerHandler)
+	srv.handler.registerConnectionModule(fcServerHandler)
+
 	vfxServerHandler := &vfxServerHandler{
 		clientPool: srv.clientPool,
 	}

@@ -19,6 +19,7 @@ package les
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/big"
 	"math/rand"
 
@@ -450,6 +451,13 @@ func (h *beaconClientHandler) receiveHandshake(p *peer, recv keyValueMap) error 
 	}
 	fmt.Println("Received update info", *updateInfo)
 	p.updateInfo = updateInfo
+
+	if err := recv.get("beacon/tailLongTerm", &p.beaconTailLongTerm); err != nil {
+		p.beaconTailLongTerm = math.MaxUint64
+	}
+	if err := recv.get("beacon/tailShortTerm", &p.beaconTailShortTerm); err != nil {
+		p.beaconTailShortTerm = math.MaxUint64
+	}
 	return nil
 }
 

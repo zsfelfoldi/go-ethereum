@@ -141,6 +141,14 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 	blip.handler.registerConnectionModule(beaconServerHandler)
 	blip.handler.registerMessageHandlers(beaconServerHandler.messageHandlers())
 
+	fcServerHandler := &fcServerHandler{
+		fcManager:   blip.fcManager,
+		costTracker: blip.costTracker,
+		defParams:   blip.defParams,
+	}
+	blip.handler.registerHandshakeModule(fcServerHandler)
+	blip.handler.registerConnectionModule(fcServerHandler)
+
 	beaconClientHandler := &beaconClientHandler{
 		syncCommitteeTracker:    blip.syncCommitteeTracker,
 		syncCommitteeCheckpoint: blip.syncCommitteeCheckpoint,

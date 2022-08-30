@@ -104,16 +104,10 @@ func (h *handler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter) error
 
 func (h *handler) handle(p *peer) error {
 	p.Log().Debug("Light Ethereum peer connected", "name", p.Name())
-	// Register the peer locally
-	if err := h.peers.register(p); err != nil {
-		p.Log().Error("Light Ethereum peer registration failed", "err", err)
-		return err
-	}
 
 	h.wg.Add(1)
 	defer func() {
 		p.wg.Wait()
-		h.peers.unregister(p.ID())
 		h.wg.Done()
 	}()
 
@@ -140,7 +134,14 @@ func (h *handler) handle(p *peer) error {
 		}
 	}
 
+	// Register the peer locally
+	if err := h.peers.register(p); err != nil {
+		p.Log().Error("Light Ethereum peer registration failed", "err", err)
+		return err
+	}
+
 	defer func() {
+		h.peers.unregister(p.ID())
 		connectionTimer.Update(time.Duration(mclock.Now() - p.connectedAt))
 	}()
 

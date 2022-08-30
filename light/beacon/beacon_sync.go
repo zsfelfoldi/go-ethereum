@@ -39,7 +39,6 @@ const (
 type beaconSyncer struct {
 	storedSection, syncHeadSection *chainSection
 	syncHeader                     Header
-	syncTail                       uint64
 	newHeadCh                      chan struct{} // closed and replaced when head is changed
 	syncedCh                       chan bool
 	latestHeadCounter              uint64   // +1 when head is changed
@@ -75,9 +74,6 @@ func (bc *BeaconChain) SyncToHead(head Header, syncedCh chan bool) {
 	if bc.syncHeadSection != nil && bc.syncHeadSection.prev != nil {
 		bc.syncHeadSection.prev.next = cs
 		cs.prev = bc.syncHeadSection.prev
-	}
-	if bc.historicSource == nil && cs.headSlot > bc.syncTail+32 {
-		bc.syncTail = cs.headSlot - 32 //TODO named constant
 	}
 	if cs.prev == nil && bc.storedSection != nil {
 		cs.prev = bc.storedSection
@@ -389,10 +385,20 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 		}
 		cs = cs.prev
 	}
-	if cs.tailSlot > bc.syncTail {
+
+	var syncTail uint64
+	if bc.historicSource != nil {
+		syncTail, _ = bc.historicSource.AvailableTailSlots() //TODO long term, short term
+	} else {
+		if bc.syncHeadSection.headSlot > 32 {
+			syncTail = bc.syncHeadSection.headSlot - 32 //TODO named constant
+		}
+	}
+
+	if cs.tailSlot > syncTail {
 		req := &chainSection{
 			headSlot:    cs.tailSlot - 1,
-			tailSlot:    bc.syncTail,
+			tailSlot:    syncTail,
 			headCounter: bc.latestHeadCounter,
 			next:        cs,
 		}

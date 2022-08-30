@@ -737,6 +737,10 @@ func (od *odrDataSource) GetHistoricBlocks(ctx context.Context, head beacon.Head
 	return req.Blocks, req.TailProof, nil
 }
 
+func (od *odrDataSource) AvailableTailSlots() (uint64, uint64) {
+	return (*LesOdr)(od).BeaconTailSlots()
+}
+
 func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head beacon.Header, amount uint64) (blocks []*beacon.BlockData, err error) {
 	req := &light.BeaconDataRequest{
 		LastSlot: uint64(head.Slot),

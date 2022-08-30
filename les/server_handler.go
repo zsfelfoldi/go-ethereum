@@ -120,18 +120,6 @@ func (h *serverHandler) sendHandshake(p *peer, send *keyValueList) {
 	if p.version >= lpv4 {
 		send.add("recentTxLookup", recentTx)
 	}
-	send.add("flowControl/BL", h.server.defParams.BufLimit)
-	send.add("flowControl/MRR", h.server.defParams.MinRecharge)
-
-	var costList RequestCostList
-	if h.server.costTracker.testCostList != nil {
-		costList = h.server.costTracker.testCostList
-	} else {
-		costList = h.server.costTracker.makeCostList(h.server.costTracker.globalFactor())
-	}
-	send.add("flowControl/MRC", costList)
-	p.fcCosts = costList.decode(ProtocolLengths[uint(p.version)])
-	p.fcParams = h.server.defParams
 
 	// Add advertised checkpoint and register block height which
 	// client can verify the checkpoint validity.
@@ -149,7 +137,7 @@ func (h *serverHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 		return err
 	}
 
-	p.server = recv.get("flowControl/MRR", nil) == nil
+	p.server = recv.get("serveHeaders", nil) == nil
 	if p.server {
 		p.announceType = announceTypeNone // connected to another server, send no messages
 	} else {
@@ -173,9 +161,6 @@ func (h *serverHandler) peerConnected(p *peer) (func(), error) {
 		return nil, p2p.DiscRequested
 	}
 
-	// Setup flow control mechanism for the peer
-	p.fcClient = flowcontrol.NewClientNode(h.server.fcManager, p.fcParams)
-
 	if p.version <= lpv4 {
 		h.server.announceOrStore(p)
 	}
@@ -185,10 +170,6 @@ func (h *serverHandler) peerConnected(p *peer) (func(), error) {
 
 	return func() {
 		atomic.StoreUint32(&p.serving, 0)
-
-		//wg.Wait() // Ensure all background task routines have exited. //TODO ???
-		p.fcClient.Disconnect()
-		p.fcClient = nil
 	}, nil
 }
 
@@ -248,6 +229,9 @@ func (h *beaconServerHandler) sendHandshake(p *peer, send *keyValueList) {
 	updateInfo := h.syncCommitteeTracker.GetUpdateInfo()
 	fmt.Println("Adding update info", updateInfo)
 	send.add("beacon/updateInfo", updateInfo)
+	tailLongTerm, tailShortTerm := h.beaconChain.GetTailSlots()
+	send.add("beacon/tailLongTerm", tailLongTerm)
+	send.add("beacon/tailShortTerm", tailShortTerm)
 }
 
 func (h *beaconServerHandler) receiveHandshake(p *peer, recv keyValueMap) error {
@@ -282,5 +266,40 @@ func (h *vfxServerHandler) peerConnected(p *peer) (func(), error) {
 	return func() {
 		h.clientPool.Unregister(p)
 		p.balance = nil
+	}, nil
+}
+
+type fcServerHandler struct {
+	fcManager   *flowcontrol.ClientManager
+	costTracker *costTracker
+	defParams   flowcontrol.ServerParams
+}
+
+func (h *fcServerHandler) sendHandshake(p *peer, send *keyValueList) {
+	send.add("flowControl/BL", h.defParams.BufLimit)
+	send.add("flowControl/MRR", h.defParams.MinRecharge)
+
+	var costList RequestCostList
+	if h.costTracker.testCostList != nil {
+		costList = h.costTracker.testCostList
+	} else {
+		costList = h.costTracker.makeCostList(h.costTracker.globalFactor())
+	}
+	send.add("flowControl/MRC", costList)
+	p.fcCosts = costList.decode(ProtocolLengths[uint(p.version)])
+	p.fcParams = h.defParams
+}
+
+func (h *fcServerHandler) receiveHandshake(p *peer, recv keyValueMap) error {
+	return nil
+}
+
+func (h *fcServerHandler) peerConnected(p *peer) (func(), error) {
+	// Setup flow control mechanism for the peer
+	p.fcClient = flowcontrol.NewClientNode(h.fcManager, p.fcParams)
+
+	return func() {
+		p.fcClient.Disconnect()
+		p.fcClient = nil
 	}, nil
 }

@@ -18,9 +18,9 @@ package les
 
 import (
 	"context"
+	"math"
 	"math/rand"
 	"sort"
-
 	"sync"
 	"time"
 
@@ -66,20 +66,26 @@ type LesOdr struct {
 	peers                                      *peerSet
 	retriever                                  *retrieveManager
 	stop                                       chan struct{}
+	beaconTailLock                             sync.RWMutex
+	beaconTailLongTerm, beaconTailShortTerm    uint64
 
 	beaconHeaderLock sync.RWMutex
 	beaconHeader     beacon.Header
 }
 
 func NewLesOdr(db ethdb.Database, config *light.IndexerConfig, peers *peerSet, retriever *retrieveManager) *LesOdr {
-	return &LesOdr{
-		db:            db,
-		indexerConfig: config,
-		peers:         peers,
-		retriever:     retriever,
-		stop:          make(chan struct{}),
+	odr := &LesOdr{
+		db:                  db,
+		indexerConfig:       config,
+		peers:               peers,
+		retriever:           retriever,
+		stop:                make(chan struct{}),
+		beaconTailLongTerm:  math.MaxUint64,
+		beaconTailShortTerm: math.MaxUint64,
 		//beaconHeadMap: make(map[common.Hash]*beaconHeadInfo),
 	}
+	peers.subscribe(odr)
+	return odr
 }
 
 // Stop cancels all pending retrievals
@@ -338,3 +344,45 @@ func (odr *LesOdr) RetrieveWithBeaconHeader(ctx context.Context, beaconHeader be
 	odr.beaconHeadLock.RUnlock()
 	return header
 }*/
+
+// registerPeer implements peerSetNotify
+func (odr *LesOdr) registerPeer(p *peer) {
+	odr.beaconTailLock.Lock()
+	if p.beaconTailLongTerm < odr.beaconTailLongTerm {
+		odr.beaconTailLongTerm = p.beaconTailLongTerm
+	}
+	if p.beaconTailShortTerm < odr.beaconTailShortTerm {
+		odr.beaconTailShortTerm = p.beaconTailShortTerm
+	}
+	odr.beaconTailLock.Unlock()
+}
+
+// unregisterPeer implements peerSetNotify
+func (odr *LesOdr) unregisterPeer(p *peer) {
+	beaconTailLongTerm := uint64(math.MaxUint64)
+	beaconTailShortTerm := uint64(math.MaxUint64)
+
+	for _, peer := range odr.peers.allPeers() {
+		if peer != p {
+			if peer.beaconTailLongTerm < beaconTailLongTerm { //TODO add read lock if updated while connected
+				beaconTailLongTerm = peer.beaconTailLongTerm
+			}
+			if peer.beaconTailShortTerm < beaconTailShortTerm {
+				beaconTailShortTerm = peer.beaconTailShortTerm
+			}
+		}
+	}
+
+	odr.beaconTailLock.Lock()
+	odr.beaconTailLongTerm = beaconTailLongTerm
+	odr.beaconTailShortTerm = beaconTailShortTerm
+	odr.beaconTailLock.Unlock()
+}
+
+func (odr *LesOdr) BeaconTailSlots() (uint64, uint64) {
+	odr.beaconTailLock.RLock()
+	beaconTailLongTerm, beaconTailShortTerm := odr.beaconTailLongTerm, odr.beaconTailShortTerm
+	odr.beaconTailLock.RUnlock()
+
+	return beaconTailLongTerm, beaconTailShortTerm
+}

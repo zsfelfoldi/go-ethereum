@@ -148,9 +148,10 @@ type peer struct {
 	// fields related to provided service
 
 	// Status fields
-	chainSince, chainRecent uint64 // The range of chain server peer can serve.
-	stateSince, stateRecent uint64 // The range of state server peer can serve.
-	txHistory               uint64 // The length of available tx history, 0 means all, 1 means disabled
+	chainSince, chainRecent                 uint64 // The range of chain server peer can serve.		//TODO remove "recent"?
+	stateSince, stateRecent                 uint64 // The range of state server peer can serve.
+	txHistory                               uint64 // The length of available tx history, 0 means all, 1 means disabled
+	beaconTailLongTerm, beaconTailShortTerm uint64
 
 	// Advertised checkpoint fields
 	checkpointNumber uint64                   // The block height which the checkpoint is registered.
