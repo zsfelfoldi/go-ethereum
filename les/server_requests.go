@@ -50,6 +50,7 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 			lastVersion:  req.LastVersion,
 			handler: func(p *peer, msg p2p.Msg) error {
 				// Decode the p2p message, resolve the concrete handler for it.
+				fmt.Println("*** received msg", msg.Code)
 				serve, reqID, reqCnt, err := req.Handle(msg)
 				if err != nil {
 					fmt.Println("*** decode error", err)
@@ -66,18 +67,23 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 				// Ensure that the request sent by client peer is valid
 				inSizeCost := f.costTracker.realCost(0, msg.Size, 0)
 				if reqCnt == 0 || reqCnt > req.MaxCount {
+					fmt.Println("*** reqCnt err", reqCnt)
 					p.fcClient.OneTimeCost(inSizeCost)
 					return nil
 				}
 				// Ensure that the client peer complies with the flow control
 				// rules agreed by both sides.
 				if p.isFrozen() {
+					fmt.Println("*** frozen")
 					p.fcClient.OneTimeCost(inSizeCost)
 					return nil
 				}
 				maxCost := p.fcCosts.getMaxCost(msg.Code, reqCnt)
 				accepted, bufShort, priority := p.fcClient.AcceptRequest(reqID, responseCount, maxCost)
+				fmt.Println("*** accepted", accepted)
 				if !accepted {
+					bv, limit := p.fcClient.BufferStatus()
+					fmt.Println("*** buffer too low   bv:", bv, "limit:", limit, "maxCost:", maxCost)
 					p.freezeClient()
 					p.Log().Error("Flow control buffer too low", "time until sufficiently recharged", common.PrettyDuration(time.Duration(bufShort*1000000/p.fcParams.MinRecharge)))
 					p.fcClient.OneTimeCost(inSizeCost)
@@ -93,9 +99,11 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 				maxTime := uint64(float64(maxCost) / factor)
 				task := f.servingQueue.newTask(p, maxTime, priority)
 				if !task.start() {
+					fmt.Println("*** cannot start task")
 					p.fcClient.RequestProcessed(reqID, responseCount, maxCost, inSizeCost)
 					return nil
 				}
+				fmt.Println("*** started task")
 				p.wg.Add(1) //TODO ???
 				go func() {
 					defer p.wg.Done()
@@ -103,12 +111,14 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 					reply := serve(p, task.waitOrStop)
 					//if reply != nil {
 					task.done()
+					fmt.Println("*** task done")
 					//}
 					p.responseLock.Lock()
 					defer p.responseLock.Unlock()
 
 					// Short circuit if the client is already frozen.
 					if p.isFrozen() {
+						fmt.Println("*** frozen after served")
 						realCost := f.costTracker.realCost(task.servingTime, msg.Size, 0)
 						p.fcClient.RequestProcessed(reqID, responseCount, maxCost, realCost)
 						return
@@ -132,14 +142,20 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 						// Feed cost tracker request serving statistic.
 						f.costTracker.updateStats(msg.Code, reqCnt, task.servingTime, realCost)
 						// Reduce priority "balance" for the specific peer.
-						p.balance.RequestServed(realCost)
+						if p.balance != nil {
+							p.balance.RequestServed(realCost)
+						}
+						fmt.Println("*** queueSend")
 						p.queueSend(func() {
+							fmt.Println("*** reply.send")
 							if err := reply.send(bv); err != nil {
+								fmt.Println("*** send error", err)
 								select {
 								case p.errCh <- err:
 								default:
 								}
 							}
+							fmt.Println("*** send success")
 						})
 					}
 

@@ -17,6 +17,7 @@
 package les
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -207,6 +208,7 @@ func (l peerList) Swap(i, j int) {
 // freezePeers selects the peers with the worst priority queued tasks and freezes
 // them until burstTime goes under burstDropLimit or all peers are frozen
 func (sq *servingQueue) freezePeers() {
+	fmt.Println("** sq.freezePeers()")
 	peerMap := make(map[*peer]*peerTasks)
 	var peerList peerList
 	if sq.best != nil {
@@ -358,6 +360,7 @@ func (sq *servingQueue) threadCountLoop() {
 // setThreads sets the allowed processing thread count, suspending tasks as soon as
 // possible if necessary.
 func (sq *servingQueue) setThreads(threadCount int) {
+	fmt.Println("*** sq.setThreads", threadCount)
 	select {
 	case sq.setThreadsCh <- threadCount:
 	case <-sq.quit:

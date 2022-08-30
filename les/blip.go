@@ -35,7 +35,10 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/enode"
 )
 
-const blipSoftTimeout = time.Second * 2
+const (
+	blipSoftTimeout = time.Second * 2
+	blipServRate     = 20
+)
 
 type Blip struct {
 	handler      *handler
@@ -73,10 +76,11 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 		peers:        newPeerSet(),
 		blockchain:   b.BlockChain(),
 		fcManager:    flowcontrol.NewClientManager(nil, &mclock.System{}),
-		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
+		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(blipServRate)/100),
 	}
 
-	blip.costTracker, blip.minCapacity = newCostTracker(blip.chainDb, 20, 100, 100)
+	blip.costTracker, blip.minCapacity = newCostTracker(blip.chainDb, blipServRate, 100, 100)
+	fmt.Println("*** minCapacity:", blip.minCapacity)
 
 	// Initialize server capacity management fields.
 	blip.defParams = flowcontrol.ServerParams{

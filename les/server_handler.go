@@ -371,7 +371,11 @@ func (h *fcServerHandler) start(wg *sync.WaitGroup, closeCh chan struct{}) {
 		totalRecharge := h.costTracker.subscribeTotalRecharge(totalRechargeCh)
 
 		threadsIdle := int(h.costTracker.utilTarget * 4 / flowcontrol.FixedPointMultiplier)
+		if threadsIdle < 4 {
+			threadsIdle = 4
+		}
 		threadsBusy := int(h.costTracker.utilTarget/flowcontrol.FixedPointMultiplier + 1)
+		fmt.Println("*** threadsIdle/Busy", threadsIdle, threadsBusy)
 
 		var (
 			busy         bool
