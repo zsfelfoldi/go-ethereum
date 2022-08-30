@@ -279,9 +279,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		})
 		clientHandler.fetcher, clientHandler.downloader = leth.fetcher, leth.downloader
 	}
-	leth.handler.registerHandshakeModule(clientHandler)
-	leth.handler.registerConnectionModule(clientHandler)
-	leth.handler.registerMessageHandlers(clientHandler.messageHandlers())
+	leth.handler.registerModule(clientHandler)
 
 	if leth.v5 {
 		beaconClientHandler := &beaconClientHandler{
@@ -289,21 +287,18 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 			syncCommitteeCheckpoint: leth.syncCommitteeCheckpoint,
 			retriever:               leth.retriever,
 		}
-		leth.handler.registerHandshakeModule(beaconClientHandler)
-		leth.handler.registerConnectionModule(beaconClientHandler)
-		leth.handler.registerMessageHandlers(beaconClientHandler.messageHandlers())
+		leth.handler.registerModule(beaconClientHandler)
 	}
 
 	fcClientHandler := &fcClientHandler{
 		retriever: leth.retriever,
 	}
-	leth.handler.registerHandshakeModule(fcClientHandler)
-	leth.handler.registerMessageHandlers(fcClientHandler.messageHandlers())
+	leth.handler.registerModule(fcClientHandler)
 
 	vfxClientHandler := &vfxClientHandler{
 		serverPool: leth.serverPool,
 	}
-	leth.handler.registerConnectionModule(vfxClientHandler)
+	leth.handler.registerModule(vfxClientHandler)
 
 	leth.netRPCService = ethapi.NewNetAPI(leth.p2pServer, leth.config.NetworkId)
 
@@ -468,6 +463,7 @@ func (s *LightEthereum) Start() error {
 	if err != nil {
 		return err
 	}
+	s.handler.start()
 	s.serverPool.AddSource(discovery)
 	s.serverPool.Start()
 	// Start bloom request workers.

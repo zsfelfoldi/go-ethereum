@@ -37,6 +37,10 @@ type messageHandlerModule interface {
 	messageHandlers() messageHandlers
 }
 
+type auxModule interface {
+	start(wg *sync.WaitGroup, closeCh chan struct{})
+}
+
 type messageHandler func(*peer, p2p.Msg) error
 
 type messageHandlerWithCodeAndVersion struct {
@@ -56,35 +60,49 @@ type handler struct {
 	handshakeModules  []handshakeModule
 	connectionModules []connectionModule
 	messageHandlers   map[codeAndVersion]messageHandler
+	auxModules        []auxModule
 	networkId         uint64
 
-	peers *peerSet
-	//closeCh chan struct{}
-	wg sync.WaitGroup
+	peers   *peerSet
+	closeCh chan struct{}
+	wg      sync.WaitGroup
 }
 
 func newHandler(peers *peerSet, networkId uint64) *handler {
 	return &handler{
-		peers:     peers,
-		networkId: networkId,
-		//closeCh:         make(chan struct{}),
+		peers:           peers,
+		networkId:       networkId,
+		closeCh:         make(chan struct{}),
 		messageHandlers: make(map[codeAndVersion]messageHandler),
+	}
+}
+
+func (h *handler) start() {
+	for _, m := range h.auxModules {
+		m.start(&h.wg, h.closeCh)
 	}
 }
 
 // stop stops the protocol handler.
 func (h *handler) stop() {
-	//close(h.closeCh)
+	close(h.closeCh)
 	h.peers.close() // h.wg.Add is called after successful h.peers.register so it cannot happen after this line
 	h.wg.Wait()
 }
 
-func (h *handler) registerHandshakeModule(m handshakeModule) {
-	h.handshakeModules = append(h.handshakeModules, m)
-}
-
-func (h *handler) registerConnectionModule(m connectionModule) {
-	h.connectionModules = append(h.connectionModules, m)
+func (h *handler) registerModule(module interface{}) {
+	if m, ok := module.(handshakeModule); ok {
+		h.handshakeModules = append(h.handshakeModules, m)
+	}
+	if m, ok := module.(connectionModule); ok {
+		h.connectionModules = append(h.connectionModules, m)
+	}
+	if m, ok := module.(auxModule); ok {
+		h.auxModules = append(h.auxModules, m)
+	}
+	if m, ok := module.(messageHandlerModule); ok {
+		h.registerMessageHandlers(m.messageHandlers())
+	}
 }
 
 func (h *handler) registerMessageHandlers(handlers messageHandlers) {

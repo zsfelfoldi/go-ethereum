@@ -137,32 +137,28 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 		blockChain:           blip.blockchain,
 		fcWrapper:            fcWrapper,
 	}
-	blip.handler.registerHandshakeModule(beaconServerHandler)
-	blip.handler.registerConnectionModule(beaconServerHandler)
-	blip.handler.registerMessageHandlers(beaconServerHandler.messageHandlers())
+	blip.handler.registerModule(beaconServerHandler)
 
 	fcServerHandler := &fcServerHandler{
-		fcManager:   blip.fcManager,
-		costTracker: blip.costTracker,
-		defParams:   blip.defParams,
+		fcManager:    blip.fcManager,
+		costTracker:  blip.costTracker,
+		defParams:    blip.defParams,
+		servingQueue: blip.servingQueue,
+		blockchain:   blip.blockchain,
 	}
-	blip.handler.registerHandshakeModule(fcServerHandler)
-	blip.handler.registerConnectionModule(fcServerHandler)
+	blip.handler.registerModule(fcServerHandler)
 
 	beaconClientHandler := &beaconClientHandler{
 		syncCommitteeTracker:    blip.syncCommitteeTracker,
 		syncCommitteeCheckpoint: blip.syncCommitteeCheckpoint,
 		retriever:               blip.retriever,
 	}
-	blip.handler.registerHandshakeModule(beaconClientHandler)
-	blip.handler.registerConnectionModule(beaconClientHandler)
-	blip.handler.registerMessageHandlers(beaconClientHandler.messageHandlers())
+	blip.handler.registerModule(beaconClientHandler)
 
 	fcClientHandler := &fcClientHandler{
 		retriever: blip.retriever,
 	}
-	blip.handler.registerHandshakeModule(fcClientHandler)
-	blip.handler.registerMessageHandlers(fcClientHandler.messageHandlers())
+	blip.handler.registerModule(fcClientHandler)
 
 	node.RegisterProtocols(blip.Protocols())
 	//node.RegisterAPIs(blip.APIs())
@@ -193,6 +189,7 @@ func (s *Blip) Protocols() []p2p.Protocol {
 // light ethereum protocol implementation.
 func (s *Blip) Start() error {
 	log.Warn("Beacon Light Protocol is an experimental feature")
+	s.handler.start()
 	s.beaconChain.StartSyncing()
 	return nil
 }

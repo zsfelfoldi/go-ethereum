@@ -19,9 +19,12 @@ package les
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/forkid"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -31,6 +34,7 @@ import (
 	vfs "github.com/ethereum/go-ethereum/les/vflux/server"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/light/beacon"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -253,26 +257,61 @@ func (h *beaconServerHandler) messageHandlers() messageHandlers {
 	return h.fcWrapper.wrapMessageHandlers((&BeaconRequestServer{SyncCommitteeTracker: h.syncCommitteeTracker, BeaconChain: h.beaconChain, BlockChain: h.blockChain}).MessageHandlers())
 }
 
-type vfxServerHandler struct {
-	clientPool *vfs.ClientPool
-}
-
-func (h *vfxServerHandler) peerConnected(p *peer) (func(), error) {
-	if p.balance = h.clientPool.Register(p); p.balance == nil {
-		p.Log().Debug("Client pool already closed")
-		return nil, p2p.DiscRequested
-	}
-
-	return func() {
-		h.clientPool.Unregister(p)
-		p.balance = nil
-	}, nil
-}
-
 type fcServerHandler struct {
-	fcManager   *flowcontrol.ClientManager
-	costTracker *costTracker
-	defParams   flowcontrol.ServerParams
+	fcManager    *flowcontrol.ClientManager
+	costTracker  *costTracker
+	defParams    flowcontrol.ServerParams
+	servingQueue *servingQueue
+	blockchain   *core.BlockChain // only for SubscribeBlockProcessingEvent, could also use an interface
+}
+
+func (h *fcServerHandler) start(wg *sync.WaitGroup, closeCh chan struct{}) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		processCh := make(chan bool, 100)
+		sub := h.blockchain.SubscribeBlockProcessingEvent(processCh)
+		defer sub.Unsubscribe()
+
+		totalRechargeCh := make(chan uint64, 100)
+		totalRecharge := h.costTracker.subscribeTotalRecharge(totalRechargeCh)
+
+		threadsIdle := int(h.costTracker.utilTarget * 4 / flowcontrol.FixedPointMultiplier)
+		threadsBusy := int(h.costTracker.utilTarget/flowcontrol.FixedPointMultiplier + 1)
+
+		var (
+			busy         bool
+			blockProcess mclock.AbsTime
+		)
+		updateRecharge := func() {
+			if busy {
+				h.servingQueue.setThreads(threadsBusy)
+				h.fcManager.SetRechargeCurve(flowcontrol.PieceWiseLinear{{0, 0}, {totalRecharge, totalRecharge}})
+			} else {
+				h.servingQueue.setThreads(threadsIdle)
+				h.fcManager.SetRechargeCurve(flowcontrol.PieceWiseLinear{{0, 0}, {totalRecharge / 10, totalRecharge}, {totalRecharge, totalRecharge}})
+			}
+		}
+		updateRecharge()
+
+		for {
+			select {
+			case busy = <-processCh:
+				if busy {
+					blockProcess = mclock.Now()
+				} else {
+					blockProcessingTimer.Update(time.Duration(mclock.Now() - blockProcess))
+				}
+				updateRecharge()
+			case totalRecharge = <-totalRechargeCh:
+				totalRechargeGauge.Update(int64(totalRecharge))
+				updateRecharge()
+			case <-closeCh:
+				return
+			}
+		}
+	}()
 }
 
 func (h *fcServerHandler) sendHandshake(p *peer, send *keyValueList) {
@@ -302,4 +341,51 @@ func (h *fcServerHandler) peerConnected(p *peer) (func(), error) {
 		p.fcClient.Disconnect()
 		p.fcClient = nil
 	}, nil
+}
+
+type vfxServerHandler struct {
+	fcManager   *flowcontrol.ClientManager
+	clientPool  *vfs.ClientPool
+	minCapacity uint64
+	maxPeers    int
+}
+
+func (h *vfxServerHandler) peerConnected(p *peer) (func(), error) {
+	if p.balance = h.clientPool.Register(p); p.balance == nil {
+		p.Log().Debug("Client pool already closed")
+		return nil, p2p.DiscRequested
+	}
+
+	return func() {
+		h.clientPool.Unregister(p)
+		p.balance = nil
+	}, nil
+}
+
+func (h *vfxServerHandler) start(wg *sync.WaitGroup, closeCh chan struct{}) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		totalCapacityCh := make(chan uint64, 100)
+		totalCapacity := h.fcManager.SubscribeTotalCapacity(totalCapacityCh)
+		h.clientPool.SetLimits(uint64(h.maxPeers), totalCapacity)
+
+		var freePeers uint64
+
+		for {
+			select {
+			case totalCapacity = <-totalCapacityCh:
+				totalCapacityGauge.Update(int64(totalCapacity))
+				newFreePeers := totalCapacity / h.minCapacity
+				if newFreePeers < freePeers && newFreePeers < uint64(h.maxPeers) {
+					log.Warn("Reduced free peer connections", "from", freePeers, "to", newFreePeers)
+				}
+				freePeers = newFreePeers
+				h.clientPool.SetLimits(uint64(h.maxPeers), totalCapacity)
+			case <-closeCh:
+				return
+			}
+		}
+	}()
 }

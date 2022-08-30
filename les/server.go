@@ -80,8 +80,6 @@ type LesServer struct {
 	syncCommitteeTracker *beacon.SyncCommitteeTracker
 
 	minCapacity, maxCapacity uint64
-	threadsIdle              int // Request serving threads count when system is idle.
-	threadsBusy              int // Request serving threads count when system is busy(block insertion).
 
 	p2pSrv *p2p.Server
 }
@@ -93,10 +91,6 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 	}
 	// Calculate the number of threads used to service the light client
 	// requests based on the user-specified value.
-	threads := config.LightServ * 4 / 100
-	if threads < 4 {
-		threads = 4
-	}
 
 	srv := &LesServer{
 		lesCommons: lesCommons{
@@ -118,8 +112,6 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		vfluxServer:  vfs.NewServer(time.Millisecond * 10),
 		fcManager:    flowcontrol.NewClientManager(nil, &mclock.System{}),
 		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(config.LightServ)/100),
-		threadsBusy:  config.LightServ/100 + 1,
-		threadsIdle:  threads,
 		p2pSrv:       node.Server(),
 	}
 
@@ -183,9 +175,7 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 	}
 
 	serverHandler := newServerHandler(srv, e.BlockChain(), e.ChainDb(), e.TxPool(), fcWrapper, issync)
-	srv.handler.registerHandshakeModule(serverHandler)
-	srv.handler.registerConnectionModule(serverHandler)
-	srv.handler.registerMessageHandlers(serverHandler.messageHandlers())
+	srv.handler.registerModule(serverHandler)
 
 	beaconServerHandler := &beaconServerHandler{
 		syncCommitteeTracker: srv.syncCommitteeTracker,
@@ -193,22 +183,24 @@ func NewLesServer(node *node.Node, e ethBackend, config *ethconfig.Config) (*Les
 		blockChain:           srv.blockchain,
 		fcWrapper:            fcWrapper,
 	}
-	srv.handler.registerHandshakeModule(beaconServerHandler)
-	srv.handler.registerConnectionModule(beaconServerHandler)
-	srv.handler.registerMessageHandlers(beaconServerHandler.messageHandlers())
+	srv.handler.registerModule(beaconServerHandler)
 
 	fcServerHandler := &fcServerHandler{
-		fcManager:   srv.fcManager,
-		costTracker: srv.costTracker,
-		defParams:   srv.defParams,
+		fcManager:    srv.fcManager,
+		costTracker:  srv.costTracker,
+		defParams:    srv.defParams,
+		servingQueue: srv.servingQueue,
+		blockchain:   srv.blockchain,
 	}
-	srv.handler.registerHandshakeModule(fcServerHandler)
-	srv.handler.registerConnectionModule(fcServerHandler)
+	srv.handler.registerModule(fcServerHandler)
 
 	vfxServerHandler := &vfxServerHandler{
-		clientPool: srv.clientPool,
+		fcManager:   srv.fcManager,
+		clientPool:  srv.clientPool,
+		minCapacity: srv.minCapacity,
+		maxPeers:    srv.config.LightPeers,
 	}
-	srv.handler.registerConnectionModule(vfxServerHandler)
+	srv.handler.registerModule(vfxServerHandler)
 
 	checkpoint := srv.latestLocalCheckpoint()
 	if !checkpoint.Empty() {
@@ -259,9 +251,7 @@ func (s *LesServer) Protocols() []p2p.Protocol {
 // Start starts the LES server
 func (s *LesServer) Start() error {
 	s.privateKey = s.p2pSrv.PrivateKey
-	s.wg.Add(2)
-	go s.capacityManagement()
-	go s.broadcastLoop()
+	s.handler.start()
 
 	if s.p2pSrv.DiscV5 != nil {
 		s.p2pSrv.DiscV5.RegisterTalkHandler("vfx", s.vfluxServer.ServeEncoded)
@@ -309,65 +299,6 @@ func (s *LesServer) Stop() error {
 	log.Info("Les server stopped")
 
 	return nil
-}
-
-// capacityManagement starts an event handler loop that updates the recharge curve of
-// the client manager and adjusts the client pool's size according to the total
-// capacity updates coming from the client manager
-func (s *LesServer) capacityManagement() {
-	defer s.wg.Done()
-
-	processCh := make(chan bool, 100)
-	sub := s.blockchain.SubscribeBlockProcessingEvent(processCh)
-	defer sub.Unsubscribe()
-
-	totalRechargeCh := make(chan uint64, 100)
-	totalRecharge := s.costTracker.subscribeTotalRecharge(totalRechargeCh)
-
-	totalCapacityCh := make(chan uint64, 100)
-	totalCapacity := s.fcManager.SubscribeTotalCapacity(totalCapacityCh)
-	s.clientPool.SetLimits(uint64(s.config.LightPeers), totalCapacity)
-
-	var (
-		busy         bool
-		freePeers    uint64
-		blockProcess mclock.AbsTime
-	)
-	updateRecharge := func() {
-		if busy {
-			s.servingQueue.setThreads(s.threadsBusy)
-			s.fcManager.SetRechargeCurve(flowcontrol.PieceWiseLinear{{0, 0}, {totalRecharge, totalRecharge}})
-		} else {
-			s.servingQueue.setThreads(s.threadsIdle)
-			s.fcManager.SetRechargeCurve(flowcontrol.PieceWiseLinear{{0, 0}, {totalRecharge / 10, totalRecharge}, {totalRecharge, totalRecharge}})
-		}
-	}
-	updateRecharge()
-
-	for {
-		select {
-		case busy = <-processCh:
-			if busy {
-				blockProcess = mclock.Now()
-			} else {
-				blockProcessingTimer.Update(time.Duration(mclock.Now() - blockProcess))
-			}
-			updateRecharge()
-		case totalRecharge = <-totalRechargeCh:
-			totalRechargeGauge.Update(int64(totalRecharge))
-			updateRecharge()
-		case totalCapacity = <-totalCapacityCh:
-			totalCapacityGauge.Update(int64(totalCapacity))
-			newFreePeers := totalCapacity / s.minCapacity
-			if newFreePeers < freePeers && newFreePeers < uint64(s.config.LightPeers) {
-				log.Warn("Reduced free peer connections", "from", freePeers, "to", newFreePeers)
-			}
-			freePeers = newFreePeers
-			s.clientPool.SetLimits(uint64(s.config.LightPeers), totalCapacity)
-		case <-s.closeCh:
-			return
-		}
-	}
 }
 
 // broadcastLoop broadcasts new block information to all connected light
