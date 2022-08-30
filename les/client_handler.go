@@ -112,21 +112,6 @@ func (h *clientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 		// versions is disabled if the transaction is unindexed.
 		p.txHistory = txIndexUnlimited
 	}
-	// Parse flow control handshake packet.
-	var sParams flowcontrol.ServerParams
-	if err := recv.get("flowControl/BL", &sParams.BufLimit); err != nil {
-		return err
-	}
-	if err := recv.get("flowControl/MRR", &sParams.MinRecharge); err != nil {
-		return err
-	}
-	var MRC RequestCostList
-	if err := recv.get("flowControl/MRC", &MRC); err != nil {
-		return err
-	}
-	p.fcParams = sParams
-	p.fcServer = flowcontrol.NewServerNode(sParams, &mclock.System{})
-	p.fcCosts = MRC.decode(ProtocolLengths[uint(p.version)])
 
 	recv.get("checkpoint/value", &p.checkpoint)
 	recv.get("checkpoint/registerHeight", &p.checkpointNumber)
@@ -205,18 +190,6 @@ func (h *clientHandler) messageHandlers() messageHandlers {
 			firstVersion: lpv2,
 			lastVersion:  lpvLatest,
 			handler:      h.handleTxStatus,
-		},
-		messageHandlerWithCodeAndVersion{
-			code:         StopMsg,
-			firstVersion: lpv3,
-			lastVersion:  lpvLatest,
-			handler:      h.handleStop,
-		},
-		messageHandlerWithCodeAndVersion{
-			code:         ResumeMsg,
-			firstVersion: lpv3,
-			lastVersion:  lpvLatest,
-			handler:      h.handleResume,
 		},
 	}
 }
@@ -402,24 +375,6 @@ func (h *clientHandler) handleTxStatus(p *peer, msg p2p.Msg) error {
 		ReqID:   resp.ReqID,
 		Obj:     resp.Status,
 	})
-}
-
-func (h *clientHandler) handleStop(p *peer, msg p2p.Msg) error {
-	p.freezeServer()
-	h.retriever.frozen(p)
-	p.Log().Debug("Service stopped")
-	return nil
-}
-
-func (h *clientHandler) handleResume(p *peer, msg p2p.Msg) error {
-	var bv uint64
-	if err := msg.Decode(&bv); err != nil {
-		return errResp(ErrDecode, "msg %v: %v", msg, err)
-	}
-	p.fcServer.ResumeFreeze(bv)
-	p.unfreezeServer()
-	p.Log().Debug("Service resumed")
-	return nil
 }
 
 func deliverResponse(retriever *retrieveManager, p *peer, deliverMsg *Msg) error {
@@ -613,6 +568,66 @@ func (h *beaconClientHandler) handleSignedBeaconHeads(p *peer, msg p2p.Msg) erro
 		p.ulcInfo.AddBeaconHead(hash)
 	}
 	h.syncCommitteeTracker.AddSignedHeads(sctServerPeer{peer: p, retriever: h.retriever}, heads)
+	return nil
+}
+
+type fcClientHandler struct {
+	retriever *retrieveManager
+}
+
+func (h *fcClientHandler) sendHandshake(p *peer, send *keyValueList) {}
+
+func (h *fcClientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
+	// Parse flow control handshake packet.
+	var sParams flowcontrol.ServerParams
+	if err := recv.get("flowControl/BL", &sParams.BufLimit); err != nil {
+		return err
+	}
+	if err := recv.get("flowControl/MRR", &sParams.MinRecharge); err != nil {
+		return err
+	}
+	var MRC RequestCostList
+	if err := recv.get("flowControl/MRC", &MRC); err != nil {
+		return err
+	}
+	p.fcParams = sParams
+	p.fcServer = flowcontrol.NewServerNode(sParams, &mclock.System{})
+	p.fcCosts = MRC.decode(ProtocolLengths[uint(p.version)])
+	return nil
+}
+
+func (h *fcClientHandler) messageHandlers() messageHandlers {
+	return messageHandlers{
+		messageHandlerWithCodeAndVersion{
+			code:         StopMsg,
+			firstVersion: lpv3,
+			lastVersion:  lpvLatest,
+			handler:      h.handleStop,
+		},
+		messageHandlerWithCodeAndVersion{
+			code:         ResumeMsg,
+			firstVersion: lpv3,
+			lastVersion:  lpvLatest,
+			handler:      h.handleResume,
+		},
+	}
+}
+
+func (h *fcClientHandler) handleStop(p *peer, msg p2p.Msg) error {
+	p.freezeServer()
+	h.retriever.frozen(p)
+	p.Log().Debug("Service stopped")
+	return nil
+}
+
+func (h *fcClientHandler) handleResume(p *peer, msg p2p.Msg) error {
+	var bv uint64
+	if err := msg.Decode(&bv); err != nil {
+		return errResp(ErrDecode, "msg %v: %v", msg, err)
+	}
+	p.fcServer.ResumeFreeze(bv)
+	p.unfreezeServer()
+	p.Log().Debug("Service resumed")
 	return nil
 }
 

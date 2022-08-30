@@ -158,6 +158,12 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 	blip.handler.registerConnectionModule(beaconClientHandler)
 	blip.handler.registerMessageHandlers(beaconClientHandler.messageHandlers())
 
+	fcClientHandler := &fcClientHandler{
+		retriever: blip.retriever,
+	}
+	blip.handler.registerHandshakeModule(fcClientHandler)
+	blip.handler.registerMessageHandlers(fcClientHandler.messageHandlers())
+
 	node.RegisterProtocols(blip.Protocols())
 	//node.RegisterAPIs(blip.APIs())
 	node.RegisterLifecycle(blip)

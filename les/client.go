@@ -294,6 +294,12 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		leth.handler.registerMessageHandlers(beaconClientHandler.messageHandlers())
 	}
 
+	fcClientHandler := &fcClientHandler{
+		retriever: leth.retriever,
+	}
+	leth.handler.registerHandshakeModule(fcClientHandler)
+	leth.handler.registerMessageHandlers(fcClientHandler.messageHandlers())
+
 	vfxClientHandler := &vfxClientHandler{
 		serverPool: leth.serverPool,
 	}
