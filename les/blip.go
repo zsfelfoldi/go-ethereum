@@ -120,9 +120,11 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 		blip.beaconChain.SyncToHead(head, nil)
 	})
 	blip.beaconChain.SubscribeToProcessedHeads(blip.syncCommitteeTracker.ProcessedBeaconHead, true)
-	blip.beaconNodeApi.chain = blip.beaconChain
-	blip.beaconNodeApi.sct = blip.syncCommitteeTracker
-	blip.beaconNodeApi.start()
+	if blip.beaconNodeApi != nil {
+		blip.beaconNodeApi.chain = blip.beaconChain
+		blip.beaconNodeApi.sct = blip.syncCommitteeTracker
+		blip.beaconNodeApi.start()
+	}
 
 	blip.handler = newHandler(blip.peers, config.NetworkId)
 
@@ -170,11 +172,11 @@ func NewBlip(node *node.Node, b blipBackend, config *ethconfig.Config) (*Blip, e
 func (s *Blip) Protocols() []p2p.Protocol {
 	return []p2p.Protocol{{
 		Name:     "blip",
-		Version:  1,
+		Version:  5, //TODO
 		Length:   ProtocolLengths[lpv5],
 		NodeInfo: nil,
 		Run: func(peer *p2p.Peer, rw p2p.MsgReadWriter) error {
-			return s.handler.runPeer(1, peer, rw)
+			return s.handler.runPeer(5, peer, rw) //TODO
 		},
 		PeerInfo: func(id enode.ID) interface{} {
 			if p := s.peers.peer(id); p != nil {

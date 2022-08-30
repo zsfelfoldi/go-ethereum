@@ -261,6 +261,9 @@ func (p *peer) Td() *big.Int {
 	p.lock.RLock()
 	defer p.lock.RUnlock()
 
+	if p.headInfo.Td == nil {
+		return common.Big0
+	}
 	return new(big.Int).Set(p.headInfo.Td)
 }
 
@@ -269,6 +272,9 @@ func (p *peer) HeadAndTd() (hash common.Hash, td *big.Int) {
 	p.lock.RLock()
 	defer p.lock.RUnlock()
 
+	if p.headInfo.Td == nil {
+		return p.headInfo.Hash, common.Big0
+	}
 	return p.headInfo.Hash, new(big.Int).Set(p.headInfo.Td)
 }
 
@@ -1057,24 +1063,26 @@ func (ps *peerSet) subscribe(sub peerSubscriber) {
 	defer ps.lock.Unlock()
 
 	ps.subscribers = append(ps.subscribers, sub)
-	for _, p := range ps.peers {
+	/*for _, p := range ps.peers {
 		sub.registerPeer(p)
-	}
+	}*/
 }
 
 // register adds a new peer into the peer set, or returns an error if the
 // peer is already known.
 func (ps *peerSet) register(peer *peer) error {
 	ps.lock.Lock()
-	defer ps.lock.Unlock()
-
 	if ps.closed {
+		ps.lock.Unlock()
 		return errClosed
 	}
 	if _, exist := ps.peers[peer.ID()]; exist {
+		ps.lock.Unlock()
 		return errAlreadyRegistered
 	}
 	ps.peers[peer.ID()] = peer
+	ps.lock.Unlock()
+
 	for _, sub := range ps.subscribers {
 		sub.registerPeer(peer)
 	}
@@ -1086,13 +1094,13 @@ func (ps *peerSet) register(peer *peer) error {
 // at the networking layer.
 func (ps *peerSet) unregister(id enode.ID) error {
 	ps.lock.Lock()
-	defer ps.lock.Unlock()
-
 	p, ok := ps.peers[id]
 	if !ok {
+		ps.lock.Unlock()
 		return errNotRegistered
 	}
 	delete(ps.peers, id)
+	ps.lock.Unlock()
 	for _, sub := range ps.subscribers {
 		sub.unregisterPeer(p)
 	}

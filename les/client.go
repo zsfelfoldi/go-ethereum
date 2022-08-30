@@ -511,6 +511,8 @@ func (s *LightEthereum) Stop() error {
 	s.lesDb.Close()
 	if s.syncCommitteeTracker != nil {
 		s.syncCommitteeTracker.Stop()
+	}
+	if s.syncCommitteeCheckpoint != nil {
 		s.syncCommitteeCheckpoint.Stop()
 	}
 	s.wg.Wait()

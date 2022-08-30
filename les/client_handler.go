@@ -115,12 +115,6 @@ func (h *clientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 
 	recv.get("checkpoint/value", &p.checkpoint)
 	recv.get("checkpoint/registerHeight", &p.checkpointNumber)
-
-	for msgCode := range reqAvgTimeCost {
-		if p.fcCosts[msgCode] == nil {
-			return errResp(ErrUselessPeer, "peer does not support message %d", msgCode)
-		}
-	}
 	return nil
 }
 
@@ -420,7 +414,9 @@ func (h *beaconClientHandler) peerConnected(p *peer) (func(), error) {
 	if p.updateInfo == nil || h.syncCommitteeTracker == nil {
 		return nil, nil
 	}
-	h.syncCommitteeCheckpoint.TriggerFetch()
+	if h.syncCommitteeCheckpoint != nil {
+		h.syncCommitteeCheckpoint.TriggerFetch()
+	}
 	sctPeer := sctServerPeer{peer: p, retriever: h.retriever}
 	h.syncCommitteeTracker.SyncWithPeer(sctPeer, p.updateInfo)
 
@@ -593,6 +589,11 @@ func (h *fcClientHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 	p.fcParams = sParams
 	p.fcServer = flowcontrol.NewServerNode(sParams, &mclock.System{})
 	p.fcCosts = MRC.decode(ProtocolLengths[uint(p.version)])
+	for msgCode := range reqAvgTimeCost {
+		if p.fcCosts[msgCode] == nil {
+			return errResp(ErrUselessPeer, "peer does not support message %d", msgCode)
+		}
+	}
 	return nil
 }
 

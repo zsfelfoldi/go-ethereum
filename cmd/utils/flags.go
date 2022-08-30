@@ -2003,7 +2003,7 @@ func RegisterEthService(stack *node.Node, cfg *ethconfig.Config) (ethapi.Backend
 		}
 		_, err := les.NewBlip(stack, backend, cfg)
 		if err != nil {
-			Fatalf("Failed to create the LES server: %v", err)
+			Fatalf("Failed to setup the BLiP protocol: %v", err)
 		}
 	}
 	if err := ethcatalyst.Register(stack, backend); err != nil {
