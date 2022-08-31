@@ -19,7 +19,8 @@ package les
 import (
 	"crypto/ecdsa"
 	"errors"
-	"fmt"
+
+	//"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -324,7 +325,7 @@ func (h *beaconServerHandler) sendHandshake(p *peer, send *keyValueList) {
 		return
 	}
 	updateInfo := h.syncCommitteeTracker.GetUpdateInfo()
-	fmt.Println("Adding update info", updateInfo)
+	//fmt.Println("Adding update info", updateInfo)
 	send.add("beacon/updateInfo", updateInfo)
 	tailLongTerm, tailShortTerm := h.beaconChain.GetTailSlots()
 	send.add("beacon/tailLongTerm", tailLongTerm)
@@ -375,7 +376,7 @@ func (h *fcServerHandler) start(wg *sync.WaitGroup, closeCh chan struct{}) {
 			threadsIdle = 4
 		}
 		threadsBusy := int(h.costTracker.utilTarget/flowcontrol.FixedPointMultiplier + 1)
-		fmt.Println("*** threadsIdle/Busy", threadsIdle, threadsBusy)
+		//fmt.Println("*** threadsIdle/Busy", threadsIdle, threadsBusy)
 
 		var (
 			busy         bool

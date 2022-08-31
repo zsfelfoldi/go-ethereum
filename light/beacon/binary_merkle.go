@@ -19,7 +19,8 @@ package beacon
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
+
+	//"fmt"
 	"math/bits"
 	"reflect"
 	"sync/atomic"
@@ -373,13 +374,13 @@ func addToIndexMap(m map[uint64]int, f ProofFormat, pos *int, index uint64) {
 }
 
 func printIndices(f ProofFormat, index uint64) { //TODO
-	fmt.Print(" ", index)
+	//fmt.Print(" ", index)
 	if l, r := f.children(); l != nil {
 		printIndices(l, index*2)
 		printIndices(r, index*2+1)
 	}
 	if index == 1 {
-		fmt.Println()
+		//fmt.Println()
 	}
 }
 
@@ -397,27 +398,27 @@ func TraverseProof(reader ProofReader, writer ProofWriter) (common.Hash, bool) {
 	node, nodeAvailable := reader.readNode()
 	if nodeAvailable && wl == nil {
 		if writer != nil {
-			//			fmt.Print("W")
+			//			//fmt.Print("W")
 			writer.writeNode(node)
 		} else {
-			//			fmt.Print("O")
+			//			//fmt.Print("O")
 		}
 		return common.Hash(node), true
 	}
 	rl, rr := reader.children()
 	if rl == nil {
-		//		fmt.Print("X")
+		//		//fmt.Print("X")
 		return common.Hash{}, false
 	}
-	//	fmt.Print("l")
+	//	//fmt.Print("l")
 	lhash, ok := TraverseProof(rl, wl)
-	//	fmt.Print("\\")
+	//	//fmt.Print("\\")
 	if !ok {
 		return common.Hash{}, false
 	}
-	//	fmt.Print("r")
+	//	//fmt.Print("r")
 	rhash, ok := TraverseProof(rr, wr)
-	//	fmt.Print("\\")
+	//	//fmt.Print("\\")
 	if !ok {
 		return common.Hash{}, false
 	}
@@ -429,9 +430,9 @@ func TraverseProof(reader ProofReader, writer ProofWriter) (common.Hash, bool) {
 	}
 	if writer != nil {
 		if wl != nil {
-			//			fmt.Print("w")
+			//			//fmt.Print("w")
 		} else {
-			//			fmt.Print("W")
+			//			//fmt.Print("W")
 		}
 		writer.writeNode(node)
 	}

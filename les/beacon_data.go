@@ -20,7 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+
+	//"fmt"
 	"io/ioutil"
 	"sync"
 
@@ -95,7 +96,7 @@ func (bn *beaconNodeApiSource) stop() {
 }
 
 func (bn *beaconNodeApiSource) headPollLoop() {
-	fmt.Println("Started headPollLoop()")
+	//fmt.Println("Started headPollLoop()")
 	timer := time.NewTimer(0)
 	var (
 		counter      int
@@ -108,11 +109,11 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 		select {
 		case <-timer.C:
 			timerStarted = false
-			//fmt.Println(" headPollLoop timer")
+			////fmt.Println(" headPollLoop timer")
 			if head, err := bn.getHeadUpdate(); err == nil {
-				//fmt.Println(" headPollLoop head update for slot", head.Header.Slot, nextAdvertiseSlot)
+				////fmt.Println(" headPollLoop head update for slot", head.Header.Slot, nextAdvertiseSlot)
 				if !head.Equal(&lastHead) {
-					fmt.Println("head poll: new head", head.Header.Slot, nextAdvertiseSlot)
+					//fmt.Println("head poll: new head", head.Header.Slot, nextAdvertiseSlot)
 					bn.sct.AddSignedHeads(bn, []beacon.SignedHead{head})
 					lastHead = head
 					if uint64(head.Header.Slot) >= nextAdvertiseSlot {
@@ -131,10 +132,10 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 					timerStarted = true
 				}
 			} else {
-				fmt.Println(" getHeadUpdate failed:", err)
+				//fmt.Println(" getHeadUpdate failed:", err)
 			}
 		case syncedCh := <-bn.headTriggerCh:
-			fmt.Println(" headTriggerCh")
+			//fmt.Println(" headTriggerCh")
 			if syncedCh == nil {
 				close(bn.closedCh)
 				return
@@ -155,7 +156,7 @@ func (bn *beaconNodeApiSource) headPollLoop() {
 }
 
 func (bn *beaconNodeApiSource) advertiseUpdates(lastPeriod uint64) bool {
-	fmt.Println("advertiseUpdates", lastPeriod)
+	//fmt.Println("advertiseUpdates", lastPeriod)
 	nextPeriod := bn.sct.NextPeriod()
 	if nextPeriod < 2 {
 		nextPeriod = 2 //TODO ???
@@ -179,7 +180,7 @@ func (bn *beaconNodeApiSource) advertiseUpdates(lastPeriod uint64) bool {
 		}
 		ptr += 3
 	}
-	fmt.Println("advertiseUpdates", lastPeriod, updateInfo, len(updateInfo.Scores)/3)
+	//fmt.Println("advertiseUpdates", lastPeriod, updateInfo, len(updateInfo.Scores)/3)
 	bn.sct.SyncWithPeer(bn, updateInfo)
 	return true
 }
@@ -265,11 +266,11 @@ func (bn *beaconNodeApiSource) getHeadUpdate() (beacon.SignedHead, error) {
 			Header    beacon.Header `json:"attested_header"`
 		} `json:"data"`
 	}
-	//fmt.Println("getHeadUpdate:", string(body))
+	////fmt.Println("getHeadUpdate:", string(body))
 	if err := json.Unmarshal(body, &data); err != nil {
 		return beacon.SignedHead{}, err
 	}
-	//fmt.Println(" data:", data)
+	////fmt.Println(" data:", data)
 	if len(data.Data.Aggregate.BitMask) != 64 {
 		return beacon.SignedHead{}, errors.New("invalid sync_committee_bits length")
 	}
@@ -380,9 +381,9 @@ func (bn *beaconNodeApiSource) getHeader(blockRoot common.Hash) (beacon.Header, 
 			} `json:"header"`
 		} `json:"data"`
 	}
-	fmt.Println("header json", string(body), "url", url)
+	//fmt.Println("header json", string(body), "url", url)
 	if err := json.Unmarshal(body, &data); err != nil {
-		fmt.Println("header unmarshal err", err)
+		//fmt.Println("header unmarshal err", err)
 		return beacon.Header{}, err
 	}
 	header := data.Data.Header.Message
@@ -466,7 +467,7 @@ func (bn *beaconNodeApiSource) getStateProof(stateRoot common.Hash, paths []stri
 	if err != nil {
 		return beacon.MultiProof{}, err
 	}
-	//fmt.Println("paths", paths, "proof length", len(body))
+	////fmt.Println("paths", paths, "proof length", len(body))
 	return beacon.ParseMultiProof(body)
 }
 
@@ -500,7 +501,7 @@ func (bn *beaconNodeApiSource) getBlockState(block *beacon.BlockData) error {
 	}
 	var stateDiffWriter, historicDiffWriter beacon.ProofWriter
 	if block.ParentSlotDiff >= 2 {
-		fmt.Println("StateRootsDiff", block.Header.Slot, block.ParentSlotDiff)
+		//fmt.Println("StateRootsDiff", block.Header.Slot, block.ParentSlotDiff)
 		firstDiffSlot := block.Header.Slot - block.ParentSlotDiff + 1
 		block.StateRootDiffs = make(beacon.MerkleValues, block.ParentSlotDiff-1)
 		stateDiffWriter = beacon.NewValueWriter(beacon.StateRootsRangeFormat(firstDiffSlot, block.Header.Slot-1, nil), block.StateRootDiffs, func(index uint64) int {
@@ -523,15 +524,15 @@ func (bn *beaconNodeApiSource) getBlockState(block *beacon.BlockData) error {
 		}
 		return nil
 	}))
-	fmt.Print("received format:")
+	//fmt.Print("received format:")
 	//printIndices(proof.format, 1)
-	fmt.Print("expected format ", block.ProofFormat, ":")
+	//fmt.Print("expected format ", block.ProofFormat, ":")
 	//printIndices(beacon.StateProofFormats[block.ProofFormat], 1)
 	if root, ok := beacon.TraverseProof(proof.Reader(nil), writer); !ok || root != block.StateRoot {
-		fmt.Println("invalid block state proof", ok, root, block.StateRoot, block.ProofFormat)
+		//fmt.Println("invalid block state proof", ok, root, block.StateRoot, block.ProofFormat)
 		return errors.New("invalid state proof")
 	}
-	fmt.Println("DIFFS", block.StateRootDiffs)
+	//fmt.Println("DIFFS", block.StateRootDiffs)
 	return nil
 }
 
@@ -565,7 +566,7 @@ func (bn *beaconNodeApiSource) GetBlocksFromHead(ctx context.Context, header bea
 			if err := bn.getBlockState(block); err != nil {
 				return nil, err
 			}
-			fmt.Println("GetBlocksFromHead", block.Header.Slot, block.ParentSlotDiff, block.StateRootDiffs)
+			//fmt.Println("GetBlocksFromHead", block.Header.Slot, block.ParentSlotDiff, block.StateRootDiffs)
 			blockRoot = header.ParentRoot
 			header = parentHeader
 		} else {
@@ -612,7 +613,7 @@ func (bn *beaconNodeApiSource) getSingleRootsProof(block *beacon.BlockData, leaf
 		return nil
 	})
 	if root, ok := beacon.TraverseProof(reader, writer); !ok || root != block.StateRoot {
-		fmt.Println("invalid state roots state proof", ok, root, block.StateRoot)
+		//fmt.Println("invalid state roots state proof", ok, root, block.StateRoot)
 		return beacon.MultiProof{}, errors.New("invalid state proof")
 	}
 	return beacon.MultiProof{Format: format, Values: values}, nil
@@ -634,7 +635,7 @@ func (bn *beaconNodeApiSource) GetHistoricRootsProof(ctx context.Context, block 
 		return nil
 	})
 	if root, ok := beacon.TraverseProof(proof.Reader(nil), writer); !ok || root != block.StateRoot {
-		fmt.Println("invalid historic roots state proof", ok, root, block.StateRoot)
+		//fmt.Println("invalid historic roots state proof", ok, root, block.StateRoot)
 		return beacon.MultiProof{}, errors.New("invalid state proof")
 	}
 	return beacon.MultiProof{Format: format, Values: values}, nil
@@ -669,12 +670,12 @@ func (bn *beaconNodeApiSource) getSyncCommittee(block *beacon.BlockData, leafInd
 		return nil
 	}))
 	if root, ok := beacon.TraverseProof(reader, writer); !ok || root != block.StateRoot {
-		fmt.Println("invalid sync committee state proof", ok, root, block.StateRoot)
+		//fmt.Println("invalid sync committee state proof", ok, root, block.StateRoot)
 		return nil, errors.New("invalid state proof")
 	}
 	committee := make([]byte, 513*48)
 	for i, v := range values {
-		fmt.Println("committee", i, v)
+		//fmt.Println("committee", i, v)
 		i2 := i / 2
 		if i&1 == 0 {
 			copy(committee[i2*48:i2*48+32], v[:])

@@ -93,7 +93,7 @@ func NewBlip(node *node.Node, b /*blipBackend*/ *eth.Ethereum, config *ethconfig
 	}
 
 	blip.costTracker, blip.minCapacity = newCostTracker(blip.chainDb, blipServRate, 10000, 10000) //100
-	fmt.Println("*** minCapacity:", blip.minCapacity)
+	//fmt.Println("*** minCapacity:", blip.minCapacity)
 
 	// Initialize server capacity management fields.
 	blip.defParams = flowcontrol.ServerParams{
@@ -151,9 +151,9 @@ func NewBlip(node *node.Node, b /*blipBackend*/ *eth.Ethereum, config *ethconfig
 		blip.beaconNodeApi.sct = blip.syncCommitteeTracker
 		blip.beaconNodeApi.start()
 	} else {
-		blip.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
+		/*blip.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
 			blip.beaconChain.SyncToHead(head, nil)
-		})
+		})*/
 	}
 
 	blip.handler = newHandler(blip.peers, config.NetworkId)
@@ -274,14 +274,15 @@ func (s *Blip) startBlockFetcher() {
 				Amount:     1,
 				FullBlocks: true,
 			}
-			fmt.Println("*** fetching block")
+			//fmt.Println("*** fetching block")
 			var headHash common.Hash
 			if err := s.odr.RetrieveWithBeaconHeader(ctx, head, r); err == nil && len(r.ExecBlocks) == 1 {
 				headHash = r.ExecBlocks[0].Hash()
-				fmt.Println("*** fetched block", headHash)
+				log.Info("Received new block from BLiP", "hash", headHash, "number", r.ExecBlocks[0].NumberU64())
+				//fmt.Println("*** fetched block", headHash)
 				e := cb.BlockToExecutableData(r.ExecBlocks[0])
-				status, err := s.consensusApi.NewPayloadV1(*e)
-				fmt.Println("*** NewPayloadV1:", status, err)
+				/*status, err :=*/ s.consensusApi.NewPayloadV1(*e)
+				//fmt.Println("*** NewPayloadV1:", status, err)
 			}
 			r = &light.ExecHeadersRequest{
 				ReqMode: light.FinalizedMode,
@@ -289,14 +290,14 @@ func (s *Blip) startBlockFetcher() {
 			}
 			if err := s.odr.RetrieveWithBeaconHeader(ctx, head, r); err == nil && len(r.ExecHeaders) == 1 {
 				finalizedHash := r.ExecHeaders[0].Hash()
-				fmt.Println("*** fetched finalized header", finalizedHash)
+				//fmt.Println("*** fetched finalized header", finalizedHash)
 				st := cb.ForkchoiceStateV1{
 					HeadBlockHash:      headHash,
 					SafeBlockHash:      finalizedHash,
 					FinalizedBlockHash: finalizedHash,
 				}
-				resp, err2 := s.consensusApi.ForkchoiceUpdatedV1(st, nil)
-				fmt.Println("*** ForkchoiceUpdatedV1:", resp, err2)
+				/*resp, err2 :=*/ s.consensusApi.ForkchoiceUpdatedV1(st, nil)
+				//fmt.Println("*** ForkchoiceUpdatedV1:", resp, err2)
 			}
 		}
 	}()

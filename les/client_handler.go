@@ -18,7 +18,7 @@ package les
 
 import (
 	"context"
-	"fmt"
+	//"fmt"
 	"math"
 	"math/big"
 	"math/rand"
@@ -398,7 +398,7 @@ func (h *beaconClientHandler) receiveHandshake(p *peer, recv keyValueMap) error 
 	if err := recv.get("beacon/updateInfo", updateInfo); err != nil {
 		return err
 	}
-	fmt.Println("Received update info", *updateInfo)
+	//fmt.Println("Received update info", *updateInfo)
 	p.updateInfo = updateInfo
 
 	if err := recv.get("beacon/tailLongTerm", &p.beaconTailLongTerm); err != nil {
@@ -526,12 +526,12 @@ func (h *beaconClientHandler) handleCommitteeProofs(p *peer, msg p2p.Msg) error 
 		ReqID, BV             uint64
 		beacon.CommitteeReply //TODO check RLP encoding
 	}
-	fmt.Println("Received CommitteeProofsMsg")
+	//fmt.Println("Received CommitteeProofsMsg")
 	if err := msg.Decode(&resp); err != nil {
-		fmt.Println(" decode err", err)
+		//fmt.Println(" decode err", err)
 		return errResp(ErrDecode, "msg %v: %v", msg, err)
 	}
-	fmt.Println(" decode ok")
+	//fmt.Println(" decode ok")
 	p.fcServer.ReceivedReply(resp.ReqID, resp.BV)
 	p.answeredRequest(resp.ReqID)
 	return deliverResponse(h.retriever, p, &Msg{
@@ -553,10 +553,10 @@ func (h *beaconClientHandler) handleAdvertiseCommitteeProofs(p *peer, msg p2p.Ms
 
 func (h *beaconClientHandler) handleSignedBeaconHeads(p *peer, msg p2p.Msg) error {
 	p.Log().Trace("Received beacon chain head update")
-	fmt.Println("*** Received beacon chain head update")
+	//fmt.Println("*** Received beacon chain head update")
 	var heads []beacon.SignedHead
 	if err := msg.Decode(&heads); err != nil {
-		fmt.Println(" decode error", err)
+		//fmt.Println(" decode error", err)
 		return errResp(ErrDecode, "msg %v: %v", msg, err)
 	}
 	for _, head := range heads {

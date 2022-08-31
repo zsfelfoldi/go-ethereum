@@ -19,7 +19,8 @@ package les
 import (
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
+
+	//"fmt"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -50,10 +51,10 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 			lastVersion:  req.LastVersion,
 			handler: func(p *peer, msg p2p.Msg) error {
 				// Decode the p2p message, resolve the concrete handler for it.
-				fmt.Println("*** received msg", msg.Code)
+				//fmt.Println("*** received msg", msg.Code)
 				serve, reqID, reqCnt, err := req.Handle(msg)
 				if err != nil {
-					fmt.Println("*** decode error", err)
+					//fmt.Println("*** decode error", err)
 					clientErrorMeter.Mark(1)
 					return errResp(ErrDecode, "%v: %v", msg, err)
 				}
@@ -67,23 +68,23 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 				// Ensure that the request sent by client peer is valid
 				inSizeCost := f.costTracker.realCost(0, msg.Size, 0)
 				if reqCnt == 0 || reqCnt > req.MaxCount {
-					fmt.Println("*** reqCnt err", reqCnt)
+					//fmt.Println("*** reqCnt err", reqCnt)
 					p.fcClient.OneTimeCost(inSizeCost)
 					return nil
 				}
 				// Ensure that the client peer complies with the flow control
 				// rules agreed by both sides.
 				if p.isFrozen() {
-					fmt.Println("*** frozen")
+					//fmt.Println("*** frozen")
 					p.fcClient.OneTimeCost(inSizeCost)
 					return nil
 				}
 				maxCost := p.fcCosts.getMaxCost(msg.Code, reqCnt)
 				accepted, bufShort, priority := p.fcClient.AcceptRequest(reqID, responseCount, maxCost)
-				fmt.Println("*** accepted", accepted)
+				//fmt.Println("*** accepted", accepted)
 				if !accepted {
-					bv, limit := p.fcClient.BufferStatus()
-					fmt.Println("*** buffer too low   bv:", bv, "limit:", limit, "maxCost:", maxCost)
+					//bv, limit := p.fcClient.BufferStatus()
+					//fmt.Println("*** buffer too low   bv:", bv, "limit:", limit, "maxCost:", maxCost)
 					p.freezeClient()
 					p.Log().Error("Flow control buffer too low", "time until sufficiently recharged", common.PrettyDuration(time.Duration(bufShort*1000000/p.fcParams.MinRecharge)))
 					p.fcClient.OneTimeCost(inSizeCost)
@@ -99,11 +100,11 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 				maxTime := uint64(float64(maxCost) / factor)
 				task := f.servingQueue.newTask(p, maxTime, priority)
 				if !task.start() {
-					fmt.Println("*** cannot start task")
+					//fmt.Println("*** cannot start task")
 					p.fcClient.RequestProcessed(reqID, responseCount, maxCost, inSizeCost)
 					return nil
 				}
-				fmt.Println("*** started task")
+				//fmt.Println("*** started task")
 				p.wg.Add(1) //TODO ???
 				go func() {
 					defer p.wg.Done()
@@ -111,14 +112,14 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 					reply := serve(p, task.waitOrStop)
 					//if reply != nil {
 					task.done()
-					fmt.Println("*** task done")
+					//fmt.Println("*** task done")
 					//}
 					p.responseLock.Lock()
 					defer p.responseLock.Unlock()
 
 					// Short circuit if the client is already frozen.
 					if p.isFrozen() {
-						fmt.Println("*** frozen after served")
+						//fmt.Println("*** frozen after served")
 						realCost := f.costTracker.realCost(task.servingTime, msg.Size, 0)
 						p.fcClient.RequestProcessed(reqID, responseCount, maxCost, realCost)
 						return
@@ -145,17 +146,17 @@ func (f *fcRequestWrapper) wrapMessageHandlers(fcHandlers []FlowControlledHandle
 						if p.balance != nil {
 							p.balance.RequestServed(realCost)
 						}
-						fmt.Println("*** queueSend")
+						//fmt.Println("*** queueSend")
 						p.queueSend(func() {
-							fmt.Println("*** reply.send")
+							//fmt.Println("*** reply.send")
 							if err := reply.send(bv); err != nil {
-								fmt.Println("*** send error", err)
+								//fmt.Println("*** send error", err)
 								select {
 								case p.errCh <- err:
 								default:
 								}
 							}
-							fmt.Println("*** send success")
+							//fmt.Println("*** send success")
 						})
 					}
 
@@ -809,13 +810,13 @@ func (s *RequestServer) txStatus(hash common.Hash) light.TxStatus {
 }
 
 func (s *BeaconRequestServer) handleGetCommitteeProofs(msg Decoder) (serveRequestFn, uint64, uint64, error) {
-	fmt.Println("*** Handling GetCommitteeProofsMsg")
+	//fmt.Println("*** Handling GetCommitteeProofsMsg")
 	var r GetCommitteeProofsPacket
 	if err := msg.Decode(&r); err != nil {
-		fmt.Println(" decode err", err)
+		//fmt.Println(" decode err", err)
 		return nil, 0, 0, err
 	}
-	fmt.Println("*** decode ok", r)
+	//fmt.Println("*** decode ok", r)
 	return func(p *peer, waitOrStop func() bool) *reply { //TODO waitOrStop
 		sct := s.SyncCommitteeTracker
 		updates := make([]beacon.LightClientUpdate, len(r.UpdatePeriods))
@@ -828,7 +829,7 @@ func (s *BeaconRequestServer) handleGetCommitteeProofs(msg Decoder) (serveReques
 		for i, period := range r.CommitteePeriods {
 			committees[i] = sct.GetSerializedSyncCommittee(period, sct.GetSyncCommitteeRoot(period))
 		}
-		fmt.Println("*** sending reply", len(updates), len(committees))
+		//fmt.Println("*** sending reply", len(updates), len(committees))
 		return p.replyCommitteeProofs(r.ReqID, beacon.CommitteeReply{
 			Updates:    updates,
 			Committees: committees,
@@ -950,7 +951,7 @@ func (s *BeaconRequestServer) handleGetExecHeaders(msg Decoder) (serveRequestFn,
 		return nil, 0, 0, err
 	}
 	return func(p *peer, waitOrStop func() bool) *reply { //TODO waitOrStop
-		fmt.Println("*** Handling GetExecHeaders", r.ReqMode)
+		//fmt.Println("*** Handling GetExecHeaders", r.ReqMode)
 		bc := s.BeaconChain
 		ec := s.BlockChain
 		var (
@@ -963,33 +964,33 @@ func (s *BeaconRequestServer) handleGetExecHeaders(msg Decoder) (serveRequestFn,
 
 		ht := bc.GetHistoricTree(r.BlockRoot) // specified reference block needs to be close to the current head
 		if ht == nil {
-			fmt.Println(" historic tree for ref block not found", r.BlockRoot)
+			//fmt.Println(" historic tree for ref block not found", r.BlockRoot)
 			return nil
 		}
 		refBlock := ht.HeadBlock
 
 		switch r.ReqMode {
 		case light.HeadMode:
-			fmt.Println(" head request  refBlock slot:", refBlock.Header.Slot, "  root:", refBlock.BlockRoot, "  proofFormat:", refBlock.ProofFormat)
+			//fmt.Println(" head request  refBlock slot:", refBlock.Header.Slot, "  root:", refBlock.BlockRoot, "  proofFormat:", refBlock.ProofFormat)
 			reader = refBlock.Proof().Reader(nil)
 			if e, ok := refBlock.GetStateValue(beacon.BsiExecHead); ok {
 				execHash = common.Hash(e)
 			} else {
-				fmt.Println(" exec head field not found")
+				//fmt.Println(" exec head field not found")
 				return nil
 			}
 			leafIndex = beacon.BsiExecHead
 		case light.HistoricMode:
 			block := bc.GetBlockDataByExecNumber(ht, r.HistoricNumber) //TODO is tail check needed?
 			if block == nil {
-				fmt.Println(" block not found by number")
+				//fmt.Println(" block not found by number")
 				return nil
 			}
 			reader = ht.HistoricStateReader()
 			if e, ok := block.GetStateValue(beacon.BsiExecHead); ok {
 				execHash = common.Hash(e)
 			} else {
-				fmt.Println(" exec head field not found")
+				//fmt.Println(" exec head field not found")
 				return nil
 			}
 			historicSlot = block.Header.Slot
@@ -1000,13 +1001,13 @@ func (s *BeaconRequestServer) handleGetExecHeaders(msg Decoder) (serveRequestFn,
 				finalBlock = bc.GetBlockDataByBlockRoot(common.Hash(finalBlockRoot))
 			}
 			if finalBlock == nil {
-				fmt.Println(" final block not found")
+				//fmt.Println(" final block not found")
 				return nil
 			}
 			if e, ok := finalBlock.GetStateValue(beacon.BsiExecHead); ok {
 				execHash = common.Hash(e)
 			} else {
-				fmt.Println(" exec head field not found")
+				//fmt.Println(" exec head field not found")
 				return nil
 			}
 			reader = refBlock.Proof().Reader(func(index uint64) beacon.ProofReader {
@@ -1022,12 +1023,12 @@ func (s *BeaconRequestServer) handleGetExecHeaders(msg Decoder) (serveRequestFn,
 			})
 			leafIndex = beacon.BsiFinalExecHash
 		default:
-			fmt.Println(" unknown request mode")
+			//fmt.Println(" unknown request mode")
 			return nil
 		}
 		if _, ok := beacon.TraverseProof(reader, beacon.NewMultiProofWriter(beacon.NewIndexMapFormat().AddLeaf(leafIndex, nil), &proofValues, nil)); !ok {
 			log.Error("Multiproof format mismatch while serving GetExecHeaders", "mode", r.ReqMode)
-			fmt.Println(" proof format error")
+			//fmt.Println(" proof format error")
 			return nil
 		}
 		headers := make([]*types.Header, int(r.Amount))
@@ -1056,7 +1057,7 @@ func (s *BeaconRequestServer) handleGetExecHeaders(msg Decoder) (serveRequestFn,
 			if bytes += len(code); bytes >= softResponseLimit {
 			break
 		}*/
-		fmt.Println(" sending reply")
+		//fmt.Println(" sending reply")
 		return p.replyExecHeaders(r.ReqID, ExecHeadersResponse{
 			HistoricSlot: historicSlot,
 			ProofValues:  proofValues,

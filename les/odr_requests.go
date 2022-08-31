@@ -615,7 +615,7 @@ func (r *BeaconDataRequest) GetCost(peer *peer) uint64 {
 
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *BeaconDataRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
-	return peer.version >= lpv5 && peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
+	return false //peer.version >= lpv5 && peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
@@ -709,7 +709,7 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 		return errors.New("Number of returned headers do not match non-empty state proofs")
 	}
 
-	fmt.Println("*** len(reply.StateProofFormats)", len(reply.StateProofFormats), "len(reply.ProofValues)", len(reply.ProofValues))
+	//fmt.Println("*** len(reply.StateProofFormats)", len(reply.StateProofFormats), "len(reply.ProofValues)", len(reply.ProofValues))
 	format := beacon.SlotRangeFormat(uint64(beaconHeader.Slot), firstSlot, reply.StateProofFormats)
 	reader := beacon.MultiProof{Format: format, Values: reply.ProofValues}.Reader(nil)
 	target := make([]*beacon.MerkleValues, len(reply.StateProofFormats))
@@ -759,9 +759,9 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 		stateRootDiffs beacon.MerkleValues
 	)
 	slot := firstSlot
-	fmt.Println("*** slot range")
+	//fmt.Println("*** slot range")
 	for i, format := range reply.StateProofFormats {
-		fmt.Println(" proofFormat", format, "proofLen", len(*target[i]))
+		//fmt.Println(" proofFormat", format, "proofLen", len(*target[i]))
 		if format == 0 {
 			stateRootDiffs = append(stateRootDiffs, (*target[i])[0])
 		} else {
@@ -787,10 +787,10 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 		slot++
 	}
 
-	fmt.Println("*** blocks")
-	for _, block := range blocks {
-		fmt.Println(" slot", block.Header.Slot, "proofFormat", block.ProofFormat, "proofLen", len(block.StateProof))
-	}
+	//fmt.Println("*** blocks")
+	//for _, block := range blocks {
+	//fmt.Println(" slot", block.Header.Slot, "proofFormat", block.ProofFormat, "proofLen", len(block.StateProof))
+	//}
 
 	// compare latest_header root in last block's state with the reconstructed header
 	lastBlock := blocks[len(blocks)-1]
@@ -844,15 +844,15 @@ func (request *ExecHeadersRequest) Validate(db ethdb.Database, beaconHeader beac
 	}
 	reply := msg.Obj.(ExecHeadersResponse)
 
-	fmt.Println(" ref slot", beaconHeader.Slot, " historic slot", reply.HistoricSlot)
+	//fmt.Println(" ref slot", beaconHeader.Slot, " historic slot", reply.HistoricSlot)
 	if reply.HistoricSlot > uint64(beaconHeader.Slot) {
-		fmt.Println(" validate err 1")
+		//fmt.Println(" validate err 1")
 		return errors.New("Invalid historic slot")
 	}
 
 	hc := uint64(len(reply.ExecHeaders))
 	if hc > request.Amount || hc == 0 || (hc < request.Amount && hc != reply.ExecHeaders[int(hc)-1].Number.Uint64()) {
-		fmt.Println(" validate err 2")
+		//fmt.Println(" validate err 2")
 		return errors.New("Invalid number of exec headers returned")
 	}
 
@@ -880,17 +880,17 @@ func (request *ExecHeadersRequest) Validate(db ethdb.Database, beaconHeader beac
 	proofRoot, ok := beacon.TraverseProof(reader, writer)
 	if ok && reader.Finished() {
 		if proofRoot != beaconHeader.StateRoot {
-			fmt.Println(" validate err 3")
+			//fmt.Println(" validate err 3")
 			return errors.New("Multiproof root hash does not match")
 		}
 	} else {
-		fmt.Println(" validate err 4")
+		//fmt.Println(" validate err 4")
 		return errors.New("Multiproof format error")
 	}
 	expRoot := common.Hash(target[0])
 	for i := len(reply.ExecHeaders) - 1; i >= 0; i-- {
 		if reply.ExecHeaders[i].Hash() != expRoot {
-			fmt.Println(" validate err 5")
+			//fmt.Println(" validate err 5")
 			return errors.New("Exec header root hash does not match")
 		}
 		expRoot = reply.ExecHeaders[i].ParentHash
@@ -918,9 +918,9 @@ func (request *ExecHeadersRequest) Validate(db ethdb.Database, beaconHeader beac
 	}
 
 	/*for _, h := range reply.ExecHeaders {
-		fmt.Println(" header", h)
+		//fmt.Println(" header", h)
 	}*/
-	fmt.Println(" validate success")
+	//fmt.Println(" validate success")
 	return nil
 }
 

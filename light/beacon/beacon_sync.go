@@ -18,7 +18,7 @@ package beacon
 
 import (
 	"context"
-	"fmt"
+	//"fmt"
 	"sync"
 	"time"
 
@@ -58,7 +58,7 @@ func (bc *BeaconChain) SyncToHead(head Header, syncedCh chan bool) {
 	bc.chainMu.Lock()
 	defer bc.chainMu.Unlock()
 
-	fmt.Println("SyncToHead", head.Slot)
+	//fmt.Println("SyncToHead", head.Slot)
 	if bc.syncedCh != nil {
 		bc.syncedCh <- false
 	}
@@ -133,10 +133,10 @@ func (bc *BeaconChain) syncWorker() {
 			bc.chainMu.Unlock()
 			cb()
 			if bc.dataSource != nil && cs.tailSlot+MaxHeaderFetch-1 >= uint64(head.Slot) {
-				fmt.Println("SYNC dataSource request", head.Slot, cs.tailSlot, cs.headSlot)
+				//fmt.Println("SYNC dataSource request", head.Slot, cs.tailSlot, cs.headSlot)
 				blocks, err = bc.dataSource.GetBlocksFromHead(ctx, head, uint64(head.Slot)+1-cs.tailSlot)
 			} else if bc.historicSource != nil {
-				fmt.Println("SYNC historicSource request", head.Slot, cs.tailSlot, cs.headSlot)
+				//fmt.Println("SYNC historicSource request", head.Slot, cs.tailSlot, cs.headSlot)
 				blocks, proof, err = bc.historicSource.GetHistoricBlocks(ctx, head, cs.headSlot, cs.headSlot+1-cs.tailSlot)
 			} else {
 				log.Error("Historic data source not available") //TODO print only once, ?reset chain?
@@ -149,7 +149,7 @@ func (bc *BeaconChain) syncWorker() {
 				blocks = nil
 				log.Error("Retrieved beacon block range insufficient")
 			}
-			fmt.Println(" blocks", len(blocks), "err", err)
+			//fmt.Println(" blocks", len(blocks), "err", err)
 			if blocks == nil {
 				bc.chainMu.Lock()
 				if bc.syncedCh != nil {
@@ -222,7 +222,7 @@ func (bc *BeaconChain) cancelRequests(dt time.Duration) {
 }
 
 func (bc *BeaconChain) rollback(slot uint64) {
-	fmt.Println("bc.rollback", slot)
+	//fmt.Println("bc.rollback", slot)
 	if slot >= uint64(bc.storedHead.Header.Slot) {
 		log.Error("Cannot roll back beacon chain", "slot", slot, "head", uint64(bc.storedHead.Header.Slot))
 	}
@@ -233,12 +233,12 @@ func (bc *BeaconChain) rollback(slot uint64) {
 		}
 		slot--
 		if slot < bc.tailLongTerm {
-			fmt.Println(" tail reached, reset")
+			//fmt.Println(" tail reached, reset")
 			bc.reset()
 			return
 		}
 	}
-	fmt.Println(" found last non-empty slot", slot, block.Header.Slot)
+	//fmt.Println(" found last non-empty slot", slot, block.Header.Slot)
 	headTree := bc.makeChildTree()
 	headTree.addRoots(slot, nil, nil, true, MultiProof{})
 	headTree.HeadBlock = block
@@ -344,7 +344,7 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 	if bc.syncHeadSection == nil {
 		return nil
 	}
-	fmt.Println("SYNC nextRequest")
+	//fmt.Println("SYNC nextRequest")
 	origin := bc.storedSection
 	if origin == nil {
 		origin = bc.syncHeadSection
@@ -362,7 +362,7 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 			cs.next.prev = req
 			cs.next = req
 			req.trim(true)
-			fmt.Println(" fwd", req.tailSlot, req.headSlot)
+			//fmt.Println(" fwd", req.tailSlot, req.headSlot)
 			return req
 		}
 		cs = cs.next
@@ -380,7 +380,7 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 			cs.prev.next = req
 			cs.prev = req
 			req.trim(false)
-			fmt.Println(" rev", req.tailSlot, req.headSlot)
+			//fmt.Println(" rev", req.tailSlot, req.headSlot)
 			return req
 		}
 		cs = cs.prev
@@ -404,7 +404,7 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 		}
 		cs.prev = req
 		req.trim(false)
-		fmt.Println(" tail", req.tailSlot, req.headSlot)
+		//fmt.Println(" tail", req.tailSlot, req.headSlot)
 		return req
 	}
 	return nil
@@ -412,7 +412,7 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 
 // assumes continuity; overwrite allowed
 func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData, setHead bool, tailProof MultiProof) {
-	fmt.Println("SYNC addCanonicalBlocks", len(blocks), blocks[0].Header.Slot, blocks[len(blocks)-1].Header.Slot, setHead, tailProof.Format != nil)
+	//fmt.Println("SYNC addCanonicalBlocks", len(blocks), blocks[0].Header.Slot, blocks[len(blocks)-1].Header.Slot, setHead, tailProof.Format != nil)
 	eh, ok := blocks[len(blocks)-1].GetStateValue(BsiExecHead)
 	if !ok { // should not happen, backend should check proof format
 		log.Error("exec header root not found in beacon state", "slot", blocks[0].Header.Slot)
@@ -452,7 +452,7 @@ func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData, setHead bool, tai
 		log.Error("Missing parent block", "slot", blocks[0].Header.Slot)
 	}
 	tailSlot := blocks[0].Header.Slot - uint64(len(blocks[0].StateRootDiffs))
-	fmt.Println("addCanonicalBlocks", tailSlot, bc.tailLongTerm)
+	//fmt.Println("addCanonicalBlocks", tailSlot, bc.tailLongTerm)
 	if tailSlot < bc.tailLongTerm {
 		bc.tailLongTerm = tailSlot
 	}
@@ -482,14 +482,14 @@ func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData, setHead bool, tai
 	if execHeader != nil && bc.processedHead(blocks[len(blocks)-1].BlockRoot, execHeader.Hash()) {
 		bc.callProcessedBeaconHead = blocks[len(blocks)-1].BlockRoot
 	}
-	log.Info("Successful BeaconChain insert")
+	log.Info("Successful beacon chain insert", "firstSlot", firstSlot, "lastSlot", afterLastSlot-1)
 }
 
 func (bc *BeaconChain) initWithSection(cs *chainSection) bool { // ha a result true, a chain inicializalva van, storedSection != nil
 	bc.debugPrint("before initWithSection")
 	defer bc.debugPrint("after initWithSection")
 
-	fmt.Println("SYNC initWithSection", cs.tailSlot, cs.headSlot)
+	//fmt.Println("SYNC initWithSection", cs.tailSlot, cs.headSlot)
 	if bc.syncHeadSection == nil || cs.next != bc.syncHeadSection || cs.headSlot != uint64(bc.syncHeader.Slot) || cs.blockRootAt(uint64(bc.syncHeader.Slot)) != bc.syncHeader.Hash() {
 		return false
 	}
@@ -516,7 +516,7 @@ func (bc *BeaconChain) initWithSection(cs *chainSection) bool { // ha a result t
 	bc.addCanonicalBlocks(cs.blocks, true, MultiProof{})
 	bc.storedSection = cs
 	cs.blocks, cs.tailProof = nil, MultiProof{}
-	fmt.Println(" init success")
+	//fmt.Println(" init success")
 	return true
 }
 
@@ -525,9 +525,9 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 	bc.debugPrint("before mergeWithStoredSection")
 	defer bc.debugPrint("after mergeWithStoredSection")
 
-	fmt.Println("SYNC mergeWithStoredSection", bc.storedSection.tailSlot, bc.storedSection.headSlot, cs.tailSlot, cs.headSlot)
+	//fmt.Println("SYNC mergeWithStoredSection", bc.storedSection.tailSlot, bc.storedSection.headSlot, cs.tailSlot, cs.headSlot)
 	if cs.tailSlot > bc.storedSection.headSlot+1 || cs.headSlot+1 < bc.storedSection.tailSlot {
-		fmt.Println(" 1 false")
+		//fmt.Println(" 1 false")
 		return false
 	}
 
@@ -542,11 +542,11 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 			bc.addCanonicalBlocks(cs.blockRange(cs.tailSlot, bc.storedSection.tailSlot-1), false, cs.tailProof)
 		} else {
 			if cs.headCounter <= bc.storedSection.headCounter {
-				fmt.Println(" 2 true")
+				//fmt.Println(" 2 true")
 				return true
 			}
 			bc.reset()
-			fmt.Println(" 3 false")
+			//fmt.Println(" 3 false")
 			return false
 		}
 	}
@@ -558,7 +558,7 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 			bc.storedSection.headCounter = cs.headCounter
 			bc.nextRollback = firstRollback
 		}
-		fmt.Println(" 4 true")
+		//fmt.Println(" 4 true")
 		return true
 	}
 
@@ -575,7 +575,7 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 			} else {
 				bc.reset()
 			}
-			fmt.Println(" 5 false")
+			//fmt.Println(" 5 false")
 			return false
 		}
 		lastCommon--
@@ -589,12 +589,12 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 		bc.addCanonicalBlocks(cs.blockRange(lastCommon+1, cs.headSlot), true, MultiProof{})
 		bc.nextRollback = firstRollback
 	}
-	fmt.Println(" 6 true")
+	//fmt.Println(" 6 true")
 	return true
 }
 
 func (bc *BeaconChain) addBlocksToSection(cs *chainSection, blocks []*BlockData, tailProof MultiProof) {
-	fmt.Println("SYNC addBlocksToSection", cs.tailSlot, cs.headSlot, len(blocks), blocks[0].Header.Slot, blocks[len(blocks)-1].Header.Slot, tailProof.Format != nil)
+	//fmt.Println("SYNC addBlocksToSection", cs.tailSlot, cs.headSlot, len(blocks), blocks[0].Header.Slot, blocks[len(blocks)-1].Header.Slot, tailProof.Format != nil)
 	headSlot, tailSlot := blocks[len(blocks)-1].Header.Slot, blocks[0].Header.Slot+1-blocks[0].ParentSlotDiff
 	if headSlot < cs.headSlot || tailSlot > cs.tailSlot {
 		panic(nil)
@@ -631,7 +631,7 @@ func (bc *BeaconChain) SubscribeToProcessedHeads(processedCallback func(common.H
 // called under chainMu
 // returns true if cb should be called with beaconHead as parameter after releasing lock
 func (bc *BeaconChain) processedHead(beaconHead, execHead common.Hash) bool {
-	fmt.Println("processedHead", beaconHead, execHead)
+	//fmt.Println("processedHead", beaconHead, execHead)
 	if bc.processedCallback == nil {
 		return false
 	}
@@ -662,19 +662,20 @@ func (bc *BeaconChain) ProcessedExecHead(execHead common.Hash) {
 }
 
 func (bc *BeaconChain) debugPrint(id string) {
-	if bc.storedHead != nil {
-		fmt.Println("***", id, "*** storedHead", bc.storedHead.Header.Slot)
-	} else {
-		fmt.Println("***", id, "*** no storedHead")
-	}
-	cs := bc.syncHeadSection
-	for cs != nil {
-		var bs, be uint64
-		if len(cs.blocks) > 0 {
-			bs, be = cs.blocks[0].Header.Slot, cs.blocks[len(cs.blocks)-1].Header.Slot
+	/*	if bc.storedHead != nil {
+			//fmt.Println("***", id, "*** storedHead", bc.storedHead.Header.Slot)
+		} else {
+			//fmt.Println("***", id, "*** no storedHead")
 		}
-		fmt.Println("***", id, "*** cs  headCounter", cs.headCounter, "requesting", cs.requesting, "stored", cs == bc.storedSection, "tail", cs.tailSlot, "head", cs.headSlot, "blocks", len(cs.blocks), bs, be)
-		cs = cs.prev
-	}
-	fmt.Println("***", id, "*** tail", bc.tailLongTerm)
+		cs := bc.syncHeadSection
+		for cs != nil {
+			var bs, be uint64
+			if len(cs.blocks) > 0 {
+				bs, be = cs.blocks[0].Header.Slot, cs.blocks[len(cs.blocks)-1].Header.Slot
+			}
+			//fmt.Println("***", id, "*** cs  headCounter", cs.headCounter, "requesting", cs.requesting, "stored", cs == bc.storedSection, "tail", cs.tailSlot, "head", cs.headSlot, "blocks", len(cs.blocks), bs, be)
+			cs = cs.prev
+		}
+		//fmt.Println("***", id, "*** tail", bc.tailLongTerm)
+	*/
 }

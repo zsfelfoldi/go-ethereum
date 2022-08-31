@@ -19,7 +19,8 @@ package beacon
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
+
+	//"fmt"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -139,7 +140,7 @@ func (bh *Header) Hash() common.Hash {
 	values[2] = MerkleValue(bh.ParentRoot)
 	values[3] = MerkleValue(bh.StateRoot)
 	values[4] = MerkleValue(bh.BodyRoot)
-	//fmt.Println("hashing full header", bh, values)
+	////fmt.Println("hashing full header", bh, values)
 	return MultiProof{Format: NewRangeFormat(8, 15, nil), Values: values[:]}.rootHash()
 }
 
@@ -298,7 +299,7 @@ func NewBeaconChain(dataSource BeaconDataSource, historicSource HistoricDataSour
 }
 
 func (bc *BeaconChain) clearDb() {
-	fmt.Println("CLEAR DB")
+	//fmt.Println("CLEAR DB")
 	bc.db.Delete(beaconHeadTailKey) // delete head info first to ensure that next time the chain will not be initialized with partially remaining data
 	iter := bc.db.NewIterator(nil, nil)
 	for iter.Next() {
@@ -355,10 +356,10 @@ func getBlockDataKey(slot uint64, root common.Hash, byBlockRoot, addRoot bool) [
 }
 
 func (bc *BeaconChain) GetBlockData(slot uint64, hash common.Hash, byBlockRoot bool) *BlockData {
-	fmt.Println("GetBlockData", slot, hash, byBlockRoot)
+	//fmt.Println("GetBlockData", slot, hash, byBlockRoot)
 	key := getBlockDataKey(slot, hash, byBlockRoot, true)
 	if bd, ok := bc.blockDataCache.Get(string(key)); ok {
-		fmt.Println(" cached")
+		//fmt.Println(" cached")
 		return bd.(*BlockData)
 	}
 	var blockData *BlockData
@@ -382,18 +383,18 @@ func (bc *BeaconChain) GetBlockData(slot uint64, hash common.Hash, byBlockRoot b
 		iter.Release()
 	} else {
 		if blockDataEnc, err := bc.db.Get(key); err == nil {
-			fmt.Println(" found in db")
+			//fmt.Println(" found in db")
 			blockData = new(BlockData)
 			if err := rlp.DecodeBytes(blockDataEnc, blockData); err == nil {
 				blockData.CalculateRoots()
-				fmt.Println(" decoded")
+				//fmt.Println(" decoded")
 			} else {
-				fmt.Println(" decode err", err)
+				//fmt.Println(" decode err", err)
 				blockData = nil
 				log.Error("Error decoding stored beacon slot data", "slot", slot, "stateRoot", hash, "error", err)
 			}
 		} else {
-			fmt.Println(" db err", err)
+			//fmt.Println(" db err", err)
 		}
 	}
 
@@ -416,17 +417,18 @@ func (bc *BeaconChain) GetParent(block *BlockData) *BlockData {
 }
 
 func (bc *BeaconChain) storeBlockData(blockData *BlockData) {
-	fmt.Println("storeBlockData", blockData.Header.Slot, blockData.StateRoot)
+	//fmt.Println("storeBlockData", blockData.Header.Slot, blockData.StateRoot)
 	key := getBlockDataKey(blockData.Header.Slot, blockData.StateRoot, false, true)
 	bc.blockDataCache.Add(string(key), blockData)
 	bc.blockDataCache.Add(string(getBlockDataKey(blockData.Header.Slot, blockData.BlockRoot, true, true)), blockData)
 	enc, err := rlp.EncodeToBytes(blockData)
 	if err != nil {
-		fmt.Println(" encode err", err)
+		//fmt.Println(" encode err", err)
 		log.Error("Error encoding beacon slot data for storage", "slot", blockData.Header.Slot, "blockRoot", blockData.BlockRoot, "error", err)
 		return
 	}
-	fmt.Println(" store err", bc.db.Put(key, enc))
+	//fmt.Println(" store err", bc.db.Put(key, enc))
+	bc.db.Put(key, enc)
 }
 
 func getExecNumberKey(execNumber uint64, stateRoot common.Hash, addRoot bool) []byte {
@@ -480,13 +482,13 @@ func (bc *BeaconChain) getSlotsAndStateRoots(execNumber uint64) slotsAndStateRoo
 }
 
 func (bc *BeaconChain) GetBlockDataByExecNumber(ht *HistoricTree, execNumber uint64) *BlockData {
-	fmt.Println("GetBlockDataByExecNumber", execNumber)
+	//fmt.Println("GetBlockDataByExecNumber", execNumber)
 	list := bc.getSlotsAndStateRoots(execNumber)
-	fmt.Println(" list", list)
+	//fmt.Println(" list", list)
 	for _, entry := range list {
-		fmt.Println("  check", ht.GetStateRoot(entry.slot), entry.stateRoot)
+		//fmt.Println("  check", ht.GetStateRoot(entry.slot), entry.stateRoot)
 		if ht.GetStateRoot(entry.slot) == entry.stateRoot {
-			fmt.Println("  GetBlockData", bc.GetBlockData(entry.slot, entry.stateRoot, false))
+			//fmt.Println("  GetBlockData", bc.GetBlockData(entry.slot, entry.stateRoot, false))
 			return bc.GetBlockData(entry.slot, entry.stateRoot, false)
 		}
 	}
@@ -597,7 +599,7 @@ func (bc *BeaconChain) CommitteeRoot(period uint64) (root common.Hash, matchAll 
 }
 
 func (bc *BeaconChain) committeeRoot(period uint64) (root common.Hash) {
-	fmt.Println("committeeRoot", period)
+	//fmt.Println("committeeRoot", period)
 	if bc.headTree == nil {
 		return
 	}
@@ -616,7 +618,7 @@ func (bc *BeaconChain) committeeRoot(period uint64) (root common.Hash) {
 	binary.BigEndian.PutUint64(slotEnc[:], start)
 	iter := bc.db.NewIterator(blockDataKey, slotEnc[:])
 
-	fmt.Println(" committeeRoot iter")
+	//fmt.Println(" committeeRoot iter")
 	defer func() {
 		iter.Release()
 		bc.committeeRootCache.Add(period, root)
@@ -625,7 +627,7 @@ func (bc *BeaconChain) committeeRoot(period uint64) (root common.Hash) {
 	for iter.Next() {
 		block := new(BlockData)
 		if err := rlp.DecodeBytes(iter.Value(), block); err == nil {
-			fmt.Println(" committeeRoot block", block.Header.Slot, block.Header.Slot>>13, block.ProofFormat&HspInitData)
+			//fmt.Println(" committeeRoot block", block.Header.Slot, block.Header.Slot>>13, block.ProofFormat&HspInitData)
 			if uint64(block.Header.Slot) >= nextPeriodStart {
 				// no more blocks from period-1 and period
 				return
@@ -640,7 +642,7 @@ func (bc *BeaconChain) committeeRoot(period uint64) (root common.Hash) {
 				} else {
 					root = common.Hash(block.mustGetStateValue(BsiNextSyncCommittee))
 				}
-				fmt.Println("  canonical", block.Header.Slot, root)
+				//fmt.Println("  canonical", block.Header.Slot, root)
 				return
 			}
 		} else {
@@ -691,7 +693,7 @@ func (bc *BeaconChain) updateConstraints(firstSlot, lastSlot uint64) {
 	if bc.initCallback != nil {
 		bc.genesisData, bc.callInit = bc.getGenesisData()
 	}
-	fmt.Println("updateConstraints  old", oldFirst, oldAfterLast, "update range", firstPeriod, afterLastPeriod, "new", bc.constraintFirst, bc.constraintAfterLast, "callUpdate", bc.callUpdate, "callInit", bc.callInit)
+	//fmt.Println("updateConstraints  old", oldFirst, oldAfterLast, "update range", firstPeriod, afterLastPeriod, "new", bc.constraintFirst, bc.constraintAfterLast, "callUpdate", bc.callUpdate, "callInit", bc.callInit)
 }
 
 func (bc *BeaconChain) getGenesisData() (genesisData, bool) {
@@ -726,7 +728,7 @@ func (bc *BeaconChain) constraintCallbacks() func() {
 	callProcessedBeaconHead := bc.callProcessedBeaconHead
 	bc.callProcessedBeaconHead = common.Hash{}
 	return func() {
-		fmt.Println("constraintCallbacks  init", callInit, "update", callUpdate)
+		//fmt.Println("constraintCallbacks  init", callInit, "update", callUpdate)
 		if callInit && initCallback != nil {
 			initCallback(genesisData)
 		} else if callUpdate && bc.updateCallback != nil { // init updates automatically

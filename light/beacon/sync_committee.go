@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+
 	"fmt"
 	"io"
 	"math"
@@ -157,12 +158,12 @@ func NewSyncCommitteeTracker(db ethdb.Database, forks Forks, constraints SctCons
 	binary.BigEndian.PutUint64(np[:], s.nextPeriod)*/
 	iter := s.db.NewIterator(bestUpdateKey, nil) //np[:])
 	kl := len(bestUpdateKey)
-	fmt.Println("NewSyncCommitteeTracker")
+	//fmt.Println("NewSyncCommitteeTracker")
 	// iterate through them all for simplicity; at most a few hundred items
 	first := true
 	for iter.Next() {
 		period := binary.BigEndian.Uint64(iter.Key()[kl : kl+8])
-		fmt.Println(" period", period)
+		//fmt.Println(" period", period)
 		if first {
 			s.firstPeriod = period
 			first = false
@@ -181,7 +182,7 @@ func (s *SyncCommitteeTracker) Stop() {
 }
 
 /*func (s *SyncCommitteeTracker) clearDb() {
-	fmt.Println("clearDb")
+	//fmt.Println("clearDb")
 	iter := s.db.NewIterator(nil, nil)
 	for iter.Next() {
 		s.db.Delete(iter.Key())
@@ -210,11 +211,11 @@ func getBestUpdateKey(period uint64) []byte {
 }*/
 
 func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
-	fmt.Println("GetBestUpdate", period)
+	//fmt.Println("GetBestUpdate", period)
 	if v, ok := s.bestUpdateCache.Get(period); ok {
 		update, _ := v.(*LightClientUpdate)
 		if update != nil {
-			fmt.Println(" cache", update.Header.Slot>>13)
+			//fmt.Println(" cache", update.Header.Slot>>13)
 			if uint64(update.Header.Slot>>13) != period {
 				log.Error("Best update from wrong period found in cache")
 			}
@@ -226,7 +227,7 @@ func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
 		if err := rlp.DecodeBytes(updateEnc, update); err == nil {
 			update.CalculateScore()
 			s.bestUpdateCache.Add(period, update)
-			fmt.Println(" db", update.Header.Slot>>13)
+			//fmt.Println(" db", update.Header.Slot>>13)
 			if uint64(update.Header.Slot>>13) != period {
 				log.Error("Best update from wrong period found in database")
 			}
@@ -241,7 +242,7 @@ func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
 
 func (s *SyncCommitteeTracker) storeBestUpdate(update *LightClientUpdate) {
 	period := uint64(update.Header.Slot) >> 13 //TODO which header?
-	fmt.Println("storeBestUpdate", period, update)
+	//fmt.Println("storeBestUpdate", period, update)
 	updateEnc, err := rlp.EncodeToBytes(update)
 	if err != nil {
 		log.Error("Error encoding LightClientUpdate", "error", err)
@@ -282,7 +283,7 @@ func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
 			return false
 		}
 		if root, ok := verifySingleProof(update.FinalityBranch, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()), 0); !ok || root != update.Header.StateRoot {
-			fmt.Println("wrong finality proof", ok, root, update.FinalizedHeader.StateRoot)
+			//fmt.Println("wrong finality proof", ok, root, update.FinalizedHeader.StateRoot)
 			return false
 		}
 		checkRoot = update.FinalizedHeader.StateRoot
@@ -290,7 +291,7 @@ func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
 		checkRoot = update.Header.StateRoot
 	}
 	if root, ok := verifySingleProof(update.NextSyncCommitteeBranch, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot), 0); !ok || root != checkRoot {
-		fmt.Println("wrong nsc proof", ok, root, checkRoot)
+		//fmt.Println("wrong nsc proof", ok, root, checkRoot)
 		return false
 	}
 	return s.verifySignature(SignedHead{Header: update.Header, Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits})
@@ -299,11 +300,11 @@ func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
 // returns true if nextCommittee is needed; call again
 // verifies update before inserting
 func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommittee []byte) int {
-	fmt.Println("insertUpdate", update, nextCommittee != nil)
+	//fmt.Println("insertUpdate", update, nextCommittee != nil)
 	period := uint64(update.Header.Slot) >> 13
-	fmt.Println(" before insert (first, next, update):", s.firstPeriod, s.nextPeriod, period)
+	//fmt.Println(" before insert (first, next, update):", s.firstPeriod, s.nextPeriod, period)
 	if !s.verifyUpdate(update) {
-		fmt.Println("wrong update")
+		//fmt.Println("wrong update")
 		return sciWrongUpdate
 	}
 
@@ -327,24 +328,24 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommi
 		rollback = update.NextSyncCommitteeRoot != oldUpdate.NextSyncCommitteeRoot
 		if !update.score.betterThan(oldUpdate.score) {
 			// not better that existing one, nothing to do
-			fmt.Println(" not better than existing update, nothing changed")
+			//fmt.Println(" not better than existing update, nothing changed")
 			return sciSuccess
 		}
 	}
 
-	fmt.Println(" insertUpdate(period, nextPeriod, p+1 committee root, exists):", period, s.nextPeriod, update.NextSyncCommitteeRoot, s.GetSerializedSyncCommittee(period+1, update.NextSyncCommitteeRoot) != nil)
+	//fmt.Println(" insertUpdate(period, nextPeriod, p+1 committee root, exists):", period, s.nextPeriod, update.NextSyncCommitteeRoot, s.GetSerializedSyncCommittee(period+1, update.NextSyncCommitteeRoot) != nil)
 	if (period == s.nextPeriod || rollback) && s.GetSerializedSyncCommittee(period+1, update.NextSyncCommitteeRoot) == nil {
-		fmt.Println("111")
+		//fmt.Println("111")
 		// committee is not yet stored in db
 		if nextCommittee == nil {
-			fmt.Println("need committee")
+			//fmt.Println("need committee")
 			return sciNeedCommittee
 		}
 		if SerializedCommitteeRoot(nextCommittee) != update.NextSyncCommitteeRoot {
-			fmt.Println("wrong committee root")
+			//fmt.Println("wrong committee root")
 			return sciWrongUpdate
 		}
-		fmt.Println("222")
+		//fmt.Println("222")
 		s.storeSerializedSyncCommittee(period+1, update.NextSyncCommitteeRoot, nextCommittee)
 	}
 
@@ -361,7 +362,7 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommi
 	if period+1 == s.firstPeriod {
 		s.firstPeriod--
 	}
-	fmt.Println(" after insert (first, next):", s.firstPeriod, s.nextPeriod)
+	//fmt.Println(" after insert (first, next):", s.firstPeriod, s.nextPeriod)
 	log.Info("Synced new committee update", "period", period, "nextCommitteeRoot", update.NextSyncCommitteeRoot)
 	return sciSuccess
 }
@@ -376,12 +377,12 @@ func getSyncCommitteeKey(period uint64, committeeRoot common.Hash) []byte {
 }
 
 func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committeeRoot common.Hash) []byte {
-	fmt.Println("GetSerializedSyncCommittee", period, committeeRoot)
+	//fmt.Println("GetSerializedSyncCommittee", period, committeeRoot)
 	key := getSyncCommitteeKey(period, committeeRoot)
 	if v, ok := s.serializedCommitteeCache.Get(string(key)); ok {
 		committee, _ := v.([]byte)
 		if len(committee) == 513*48 {
-			fmt.Println(" in cache")
+			//fmt.Println(" in cache")
 			return committee
 		} else {
 			log.Error("Serialized committee with invalid size found in cache")
@@ -389,7 +390,7 @@ func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committ
 	}
 	if committee, err := s.db.Get(key); err == nil {
 		if len(committee) == 513*48 {
-			fmt.Println(" in db", len(committee))
+			//fmt.Println(" in db", len(committee))
 			s.serializedCommitteeCache.Add(string(key), committee)
 			return committee
 		} else {
@@ -400,7 +401,7 @@ func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committ
 }
 
 func (s *SyncCommitteeTracker) storeSerializedSyncCommittee(period uint64, committeeRoot common.Hash, committee []byte) {
-	fmt.Println("storeSerializedSyncCommittee", period, committeeRoot)
+	//fmt.Println("storeSerializedSyncCommittee", period, committeeRoot)
 	key := getSyncCommitteeKey(period, committeeRoot)
 	s.serializedCommitteeCache.Add(string(key), committee)
 	s.syncCommitteeCache.Remove(string(key)) // a nil entry for "not found" might have been stored here earlier
@@ -410,20 +411,20 @@ func (s *SyncCommitteeTracker) storeSerializedSyncCommittee(period uint64, commi
 // caller should ensure that previous advertised committees are synced before checking signature
 func (s *SyncCommitteeTracker) verifySignature(head SignedHead) bool {
 	if len(head.Signature) != 96 || len(head.BitMask) != 64 {
-		fmt.Println("wrong sig size")
+		//fmt.Println("wrong sig size")
 		return false
 	}
 	var signature bls.Signature
 	var sigBytes [96]byte
 	copy(sigBytes[:], head.Signature)
 	if err := signature.Deserialize(&sigBytes); err != nil {
-		fmt.Println("sig deserialize error", err)
+		//fmt.Println("sig deserialize error", err)
 		return false
 	}
 
 	committee := s.getSyncCommitteeLocked(uint64(head.Header.Slot+1) >> 13) // signed with the next slot's committee
 	if committee == nil {
-		fmt.Println("sig check: committee not found", uint64(head.Header.Slot+1)>>13)
+		//fmt.Println("sig check: committee not found", uint64(head.Header.Slot+1)>>13)
 		return false
 	}
 	var signerKeys [512]*bls.Pubkey
@@ -440,13 +441,13 @@ func (s *SyncCommitteeTracker) verifySignature(head SignedHead) bool {
 	headerHash := head.Header.Hash()
 	hasher.Write(headerHash[:])
 	domain := s.forks.domain(uint64(head.Header.Slot) >> 5)
-	fmt.Println("sig check domain", domain)
+	//fmt.Println("sig check domain", domain)
 	hasher.Write(domain[:])
 	hasher.Sum(signingRoot[:0])
-	fmt.Println("signingRoot", signingRoot, "signerCount", signerCount)
+	//fmt.Println("signingRoot", signingRoot, "signerCount", signerCount)
 
 	vvv := bls.FastAggregateVerify(signerKeys[:signerCount], signingRoot[:], &signature)
-	fmt.Println("sig bls check", vvv)
+	//fmt.Println("sig bls check", vvv)
 	return vvv
 }
 
@@ -459,7 +460,7 @@ func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) Merkle
 	hasher.Sum(forkDataRoot[:0])
 	domain[0] = 7
 	copy(domain[4:], forkDataRoot[:28])
-	fmt.Println("computeDomain", forkVersion, genesisValidatorsRoot, domain)
+	//fmt.Println("computeDomain", forkVersion, genesisValidatorsRoot, domain)
 	return domain
 }
 
@@ -523,9 +524,9 @@ func deserializeSyncCommittee(enc []byte) *syncCommittee {
 }
 
 func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) (root common.Hash) {
-	fmt.Println("getSyncCommitteeRoot", period)
+	//fmt.Println("getSyncCommitteeRoot", period)
 	if v, ok := s.committeeRootCache.Get(period); ok {
-		fmt.Println(" cached", v.(common.Hash))
+		//fmt.Println(" cached", v.(common.Hash))
 		return v.(common.Hash)
 	}
 	defer func() {
@@ -534,24 +535,24 @@ func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) (root common.
 
 	/*if s.nextPeriod > 0 && period > 0 {
 		if update := s.GetBestUpdate(period - 1); update != nil {
-			fmt.Println(" update", period-1, update)
+			//fmt.Println(" update", period-1, update)
 			return update.NextSyncCommitteeRoot
 		}
 	}*/
 
 	if r, matchAll := s.constraints.CommitteeRoot(period); !matchAll {
-		fmt.Println(" from constraints", r)
+		//fmt.Println(" from constraints", r)
 		return r
 	}
 	if s.nextPeriod == 0 || period == 0 {
-		fmt.Println(" not found", s.nextPeriod, period)
+		//fmt.Println(" not found", s.nextPeriod, period)
 		return common.Hash{}
 	}
 	if update := s.GetBestUpdate(period - 1); update != nil {
-		fmt.Println(" found in update", period-1, update)
+		//fmt.Println(" found in update", period-1, update)
 		return update.NextSyncCommitteeRoot
 	}
-	fmt.Println(" no update, root not found")
+	//fmt.Println(" no update, root not found")
 	return common.Hash{}
 }
 
@@ -563,11 +564,11 @@ func (s *SyncCommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
 }
 
 func (s *SyncCommitteeTracker) getSyncCommitteeLocked(period uint64) *syncCommittee {
-	//fmt.Println("sct.getSyncCommittee", period)
+	////fmt.Println("sct.getSyncCommittee", period)
 	if committeeRoot := s.getSyncCommitteeRoot(period); committeeRoot != (common.Hash{}) {
 		key := string(getSyncCommitteeKey(period, committeeRoot))
 		if v, ok := s.syncCommitteeCache.Get(key); ok {
-			//fmt.Println(" cached")
+			////fmt.Println(" cached")
 			sc, _ := v.(*syncCommittee)
 			return sc
 		}
@@ -576,7 +577,7 @@ func (s *SyncCommitteeTracker) getSyncCommitteeLocked(period uint64) *syncCommit
 			s.syncCommitteeCache.Add(key, c)
 			return c
 		} else {
-			//fmt.Println(" no committee")
+			////fmt.Println(" no committee")
 			log.Error("Missing serialized sync committee", "period", period, "committeeRoot", committeeRoot)
 		}
 	}
@@ -714,7 +715,7 @@ type sctPeerInfo struct {
 func (s *SyncCommitteeTracker) startRequest(sp *sctPeerInfo) bool {
 	req := s.nextRequest(sp)
 	if req.empty() {
-		fmt.Println("startRequest: no more requests")
+		//fmt.Println("startRequest: no more requests")
 		if sp.deferredHeads != nil {
 			s.addSignedHeads(sp.peer, sp.deferredHeads)
 			sp.deferredHeads = nil
@@ -722,12 +723,12 @@ func (s *SyncCommitteeTracker) startRequest(sp *sctPeerInfo) bool {
 		return false
 	}
 	sp.requesting = true
-	fmt.Println("startRequest: requesting")
+	//fmt.Println("startRequest: requesting")
 	go func() {
 		ctx, _ := context.WithTimeout(context.Background(), time.Second*20)
 		reply, err := sp.peer.GetBestCommitteeProofs(ctx, req) // expected to return with error in case of shutdown
 		if err != nil {
-			fmt.Println("startRequest: request error", err)
+			//fmt.Println("startRequest: request error", err)
 			s.lock.Lock()
 			sp.requesting = false
 			s.lock.Unlock()
@@ -783,7 +784,7 @@ func (s *SyncCommitteeTracker) syncLoop() {
 }
 
 func (s *SyncCommitteeTracker) SyncWithPeer(peer sctServer, remoteInfo *UpdateInfo) {
-	fmt.Println("SyncWithPeer", remoteInfo)
+	//fmt.Println("SyncWithPeer", remoteInfo)
 
 	s.lock.Lock()
 	sp := s.connected[peer]
@@ -830,16 +831,16 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		return CommitteeRequest{}
 	}
 	localInfo := s.getUpdateInfo()
-	fmt.Println("nextRequest")
-	fmt.Println(" localInfo", localInfo)
-	fmt.Println(" remoteInfo", sp.remoteInfo)
+	//fmt.Println("nextRequest")
+	//fmt.Println(" localInfo", localInfo)
+	//fmt.Println(" remoteInfo", sp.remoteInfo)
 	localFirstPeriod := localInfo.AfterLastPeriod - uint64(len(localInfo.Scores)/3)
 	remoteFirstPeriod := sp.remoteInfo.AfterLastPeriod - uint64(len(sp.remoteInfo.Scores)/3)
 
 	constraintsFirst, constraintsAfterFixed, constraintsAfterLast := s.constraints.PeriodRange()
-	fmt.Println(" local range:", s.firstPeriod, s.nextPeriod)
-	fmt.Println(" remote range:", remoteFirstPeriod, sp.remoteInfo.AfterLastPeriod)
-	fmt.Println(" committee constraint range:", constraintsFirst, constraintsAfterFixed, constraintsAfterLast)
+	//fmt.Println(" local range:", s.firstPeriod, s.nextPeriod)
+	//fmt.Println(" remote range:", remoteFirstPeriod, sp.remoteInfo.AfterLastPeriod)
+	//fmt.Println(" committee constraint range:", constraintsFirst, constraintsAfterFixed, constraintsAfterLast)
 
 	if constraintsAfterLast < constraintsFirst+2 {
 		return CommitteeRequest{}
@@ -864,7 +865,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	if syncAfterLast < syncFirst {
 		return CommitteeRequest{}
 	}
-	fmt.Println(" sync range:", syncFirst, syncAfterFixed, syncAfterLast)
+	//fmt.Println(" sync range:", syncFirst, syncAfterFixed, syncAfterLast)
 
 	var (
 		request  CommitteeRequest
@@ -912,7 +913,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 			var localScore UpdateScore
 			localPtr := int(updatePeriod-localFirstPeriod) * 3
 			localScore.Decode(localInfo.Scores[localPtr : localPtr+3])
-			fmt.Println(" known period", updatePeriod, "remoteScore", remoteScore, "localScore", localScore, remoteScore.betterThan(localScore))
+			//fmt.Println(" known period", updatePeriod, "remoteScore", remoteScore, "localScore", localScore, remoteScore.betterThan(localScore))
 			if remoteScore.betterThan(localScore) {
 				request.UpdatePeriods = append(request.UpdatePeriods, updatePeriod)
 				reqCount++
@@ -939,7 +940,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		}
 	}
 
-	fmt.Println(" request", request)
+	//fmt.Println(" request", request)
 	return request
 }
 
@@ -948,15 +949,15 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 }*/
 
 func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest CommitteeRequest, reply CommitteeReply) bool {
-	fmt.Println("Processing committee reply", len(reply.Updates), len(reply.Committees))
-	for i, u := range reply.Updates {
-		fmt.Println(" update", sentRequest.UpdatePeriods[i], u.Header.Slot>>13, u.NextSyncCommitteeRoot)
-	}
+	//fmt.Println("Processing committee reply", len(reply.Updates), len(reply.Committees))
+	//for i, u := range reply.Updates {
+	//fmt.Println(" update", sentRequest.UpdatePeriods[i], u.Header.Slot>>13, u.NextSyncCommitteeRoot)
+	//}
 	/*	for i, c := range reply.Committees {
-		fmt.Println(" committees", sentRequest.CommitteePeriods[i], SerializedCommitteeRoot(c))
+		//fmt.Println(" committees", sentRequest.CommitteePeriods[i], SerializedCommitteeRoot(c))
 	}*/
 	if len(reply.Updates) != len(sentRequest.UpdatePeriods) || len(reply.Committees) != len(sentRequest.CommitteePeriods) {
-		fmt.Println(" length mismatch", len(sentRequest.UpdatePeriods), len(sentRequest.CommitteePeriods))
+		//fmt.Println(" length mismatch", len(sentRequest.UpdatePeriods), len(sentRequest.CommitteePeriods))
 		return false
 	}
 
@@ -964,11 +965,11 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 	var lastStoredCommittee uint64
 	for i, c := range reply.Committees {
 		if len(c) != 513*48 {
-			fmt.Println(" wrong committee size")
+			//fmt.Println(" wrong committee size")
 			return false
 		}
 		period := sentRequest.CommitteePeriods[i]
-		fmt.Println(" committees", period, s.getSyncCommitteeRoot(period), SerializedCommitteeRoot(c))
+		//fmt.Println(" committees", period, s.getSyncCommitteeRoot(period), SerializedCommitteeRoot(c))
 		if root := s.getSyncCommitteeRoot(period); root != (common.Hash{}) {
 			if SerializedCommitteeRoot(c) == root {
 				s.storeSerializedSyncCommittee(period, root, c)
@@ -976,24 +977,24 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 					lastStoredCommittee = period
 				}
 			} else {
-				fmt.Println(" committee root mismatch")
+				//fmt.Println(" committee root mismatch")
 				return false
 			}
 		} else {
-			fmt.Println("  future committee", period)
+			//fmt.Println("  future committee", period)
 			futureCommittees[period] = c
 		}
 	}
 
-	fmt.Println(" committees processed; nextPeriod ==", s.nextPeriod)
+	//fmt.Println(" committees processed; nextPeriod ==", s.nextPeriod)
 	if s.nextPeriod == 0 {
-		fmt.Println(" init chain", lastStoredCommittee)
+		//fmt.Println(" init chain", lastStoredCommittee)
 		// chain not initialized
 		if lastStoredCommittee > 0 && s.getSyncCommitteeLocked(lastStoredCommittee-1) != nil {
 			s.firstPeriod, s.nextPeriod = lastStoredCommittee, lastStoredCommittee
 			s.updateInfoChanged()
 		} else {
-			fmt.Println("  can not init")
+			//fmt.Println("  can not init")
 			return false
 		}
 	}
@@ -1002,10 +1003,10 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 		period, committee := sentRequest.CommitteePeriods[committeeIndex], reply.Committees[committeeIndex]
 		committeeRoot := s.getSyncCommitteeRoot(period)
 		if SerializedCommitteeRoot(committee) != committeeRoot {
-			fmt.Println(" wrong committee root")
+			//fmt.Println(" wrong committee root")
 			return false
 		}
-		fmt.Println(" storing init committee for period", period)
+		//fmt.Println(" storing init committee for period", period)
 		s.storeSerializedSyncCommittee(period, committeeRoot, committee)
 		committeeIndex++
 	}*/
@@ -1017,7 +1018,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 
 		}*/
 		if period != sentRequest.UpdatePeriods[i] {
-			fmt.Println(" wrong update period")
+			//fmt.Println(" wrong update period")
 			return false
 		}
 		if period > s.nextPeriod { // a previous insertUpdate could have reduced nextPeriod since the request was created
@@ -1033,7 +1034,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 		}
 		update.CalculateScore()
 		if remoteInfoScore.betterThan(update.score) {
-			fmt.Println(" update has lower score than promised")
+			//fmt.Println(" update has lower score than promised")
 			return false // remote did not deliver an update with the promised score
 		}
 
@@ -1044,7 +1045,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 				sp.forkPeriod = sp.remoteInfo.AfterLastPeriod
 			}
 		case sciWrongUpdate:
-			fmt.Println(" insert: wrong update")
+			//fmt.Println(" insert: wrong update")
 			return false
 		case sciNeedCommittee:
 			// remember that remote is on a different and more valuable fork; do not fail but construct next request accordingly
@@ -1052,7 +1053,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 			continue
 		case sciUnexpectedError:
 			// local error, insertUpdate has already printed an error log
-			fmt.Println(" insert: unexpected error")
+			//fmt.Println(" insert: unexpected error")
 			return false // though not the remote's fault, fail here to avoid infinite retries
 		}
 	}
@@ -1148,7 +1149,7 @@ func (s *SyncCommitteeTracker) AddSignedHeads(peer sctServer, heads []SignedHead
 	defer s.lock.Unlock()
 
 	if sp := s.connected[peer]; sp != nil && (sp.requesting || sp.queued) {
-		fmt.Println("deferred heads", len(heads))
+		//fmt.Println("deferred heads", len(heads))
 		sp.deferredHeads = append(sp.deferredHeads, heads...)
 		return
 	}
@@ -1164,7 +1165,7 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 		oldHeadHash = s.receivedList.list[0].hash
 	}
 	for _, head := range heads {
-		fmt.Println("*** addSignedHead", head.Header.Slot, head.Header.Hash())
+		//fmt.Println("*** addSignedHead", head.Header.Slot, head.Header.Hash())
 		if !s.verifySignature(head) {
 			peer.WrongReply("invalid header signature")
 			continue
@@ -1172,7 +1173,7 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 		signerCount, score := head.calculateScore()
 		hash := head.Header.Hash()
 		if h := s.receivedList.getHead(hash); h != nil {
-			fmt.Println(" already in receivedList   processed ==", h.processed, "   new score ==", score, "   old score ==", h.score)
+			//fmt.Println(" already in receivedList   processed ==", h.processed, "   new score ==", score, "   old score ==", h.score)
 			h.receivedFrom[peer] = struct{}{}
 			if score > h.score {
 				h.head = head
@@ -1201,17 +1202,17 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 				receivedFrom: map[sctServer]struct{}{peer: struct{}{}},
 				processed:    processed,
 			}
-			fmt.Println(" added to in receivedList   processed ==", h.processed, "   hash ==", hash, "   lastProcessed ==", s.lastProcessed)
+			//fmt.Println(" added to in receivedList   processed ==", h.processed, "   hash ==", hash, "   lastProcessed ==", s.lastProcessed)
 			s.receivedList.updateHead(h)
 			if h.processed {
 				s.processedList.updateHead(h)
 				broadcast = true
 			}
 		}
-		fmt.Println(" broadcast ==", broadcast)
+		//fmt.Println(" broadcast ==", broadcast)
 	}
 	if broadcast {
-		fmt.Println(" broadcast")
+		//fmt.Println(" broadcast")
 		s.broadcastHeads()
 	}
 	if len(s.receivedList.list) > 0 && oldHeadHash != s.receivedList.list[0].hash {
@@ -1233,15 +1234,15 @@ func (s *SyncCommitteeTracker) ProcessedBeaconHead(hash common.Hash) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	fmt.Println("ProcessedBeaconHead", hash)
+	//fmt.Println("ProcessedBeaconHead", hash)
 	if headInfo := s.receivedList.getHead(hash); headInfo != nil {
-		fmt.Println(" processed head in received list, broadcasting")
+		//fmt.Println(" processed head in received list, broadcasting")
 		headInfo.processed = true
 		s.processedList.updateHead(headInfo)
-		fmt.Println(" processedList", s.processedList)
+		//fmt.Println(" processedList", s.processedList)
 		s.broadcastHeads()
 	} else {
-		fmt.Println(" not found in received list")
+		//fmt.Println(" not found in received list")
 	}
 	s.lastProcessed[s.lastProcessedIndex] = hash
 	s.lastProcessedIndex++
@@ -1291,7 +1292,7 @@ func (s *SyncCommitteeTracker) broadcastHeads() {
 }
 
 func (s *SyncCommitteeTracker) broadcastHeadsNow() {
-	fmt.Println(" broadcastHeadsNow")
+	//fmt.Println(" broadcastHeadsNow")
 	for peer := range s.broadcastTo {
 		s.broadcastHeadsTo(peer, false)
 	}
@@ -1299,7 +1300,7 @@ func (s *SyncCommitteeTracker) broadcastHeadsNow() {
 
 // broadcast to all if peer == nil
 func (s *SyncCommitteeTracker) broadcastHeadsTo(peer sctClient, sendEmpty bool) {
-	fmt.Println(" broadcastHeadsTo")
+	//fmt.Println(" broadcastHeadsTo")
 	heads := make([]SignedHead, 0, len(s.processedList.list))
 	for _, headInfo := range s.processedList.list {
 		if _, ok := headInfo.sentTo[peer]; !ok {
@@ -1311,7 +1312,7 @@ func (s *SyncCommitteeTracker) broadcastHeadsTo(peer sctClient, sendEmpty bool) 
 		}
 	}
 	if sendEmpty || len(heads) > 0 {
-		fmt.Println("  send", len(heads))
+		//fmt.Println("  send", len(heads))
 		peer.SendSignedHeads(heads)
 	}
 }
@@ -1368,7 +1369,7 @@ func (s *SyncCommitteeTracker) EnforceForksAndConstraints() {
 }
 
 func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
-	fmt.Println("sct.EnforceForksAndConstraints", s.initDone)
+	//fmt.Println("sct.EnforceForksAndConstraints", s.initDone)
 	if !s.initDone {
 		return
 	}
@@ -1381,28 +1382,28 @@ func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
 			break
 		}
 		s.nextPeriod--
-		fmt.Println(" roll back head", s.nextPeriod)
+		//fmt.Println(" roll back head", s.nextPeriod)
 		s.deleteBestUpdate(s.nextPeriod)
 	}
 	for s.nextPeriod > s.firstPeriod {
 		if s.firstPeriod > 0 && s.getSyncCommitteeLocked(s.firstPeriod-1) != nil {
 			break
 		}
-		fmt.Println(" delete tail", s.firstPeriod)
+		//fmt.Println(" delete tail", s.firstPeriod)
 		s.deleteBestUpdate(s.firstPeriod)
 		s.firstPeriod++
 	}
 	if s.nextPeriod == s.firstPeriod && s.nextPeriod > 0 && (s.getSyncCommitteeLocked(s.nextPeriod-1) == nil || s.getSyncCommitteeLocked(s.nextPeriod) == nil) {
-		fmt.Println(" reset chain")
+		//fmt.Println(" reset chain")
 		s.nextPeriod, s.firstPeriod = 0, 0
 	}
 
 	s.retrySyncAllPeers()
-	fmt.Println(" finished sct.EnforceForksAndConstraints")
+	//fmt.Println(" finished sct.EnforceForksAndConstraints")
 }
 
 func (s *SyncCommitteeTracker) Init(genesisData genesisData) {
-	fmt.Println("sct.Init")
+	//fmt.Println("sct.Init")
 	s.lock.Lock()
 	s.forks.computeDomains(genesisData.GenesisValidatorsRoot)
 	s.initDone = true
@@ -1609,7 +1610,7 @@ func NewWeakSubjectivityCheckpoint(db ethdb.Database, backend sctInitBackend, ch
 	if enc, err := db.Get(initDataKey); err == nil {
 		var initData lightClientInitData
 		if err := rlp.DecodeBytes(enc, &initData); err == nil {
-			fmt.Println("Found stored initData", initData.Checkpoint, checkpoint)
+			//fmt.Println("Found stored initData", initData.Checkpoint, checkpoint)
 			if initData.Checkpoint == checkpoint {
 				wsc.initData = initData
 				haveInitData = true
@@ -1631,24 +1632,24 @@ func NewWeakSubjectivityCheckpoint(db ethdb.Database, backend sctInitBackend, ch
 					return
 				case <-wsc.initTriggerCh:
 					ctx, _ := context.WithTimeout(context.Background(), time.Second*20)
-					fmt.Println("Fetching init block at checkpoint", checkpoint)
+					//fmt.Println("Fetching init block at checkpoint", checkpoint)
 					if block, err := backend.GetInitBlock(ctx, checkpoint); err == nil {
-						fmt.Println("Received init block:", block)
+						//fmt.Println("Received init block:", block)
 						var ok bool
 						if initData, ok = block.getInitData(); ok {
-							fmt.Println("wsc 1")
+							//fmt.Println("wsc 1")
 							break loop
 						} else {
-							fmt.Println("wsc 1xx")
+							//fmt.Println("wsc 1xx")
 							log.Error("Init data not found in checkpoint block")
 						}
 					} else {
-						fmt.Println(" failed to fetch init block", err)
+						//fmt.Println(" failed to fetch init block", err)
 					}
 				}
 			}
 		}
-		fmt.Println("wsc 2")
+		//fmt.Println("wsc 2")
 		if wsc.parentInitCh != nil {
 			select {
 			case <-wsc.stopCh:
@@ -1656,7 +1657,7 @@ func NewWeakSubjectivityCheckpoint(db ethdb.Database, backend sctInitBackend, ch
 			case <-wsc.parentInitCh:
 			}
 		}
-		fmt.Println("wsc 3")
+		//fmt.Println("wsc 3")
 		wsc.lock.Lock()
 		wsc.initData = initData
 		wsc.initialized = true
@@ -1664,10 +1665,10 @@ func NewWeakSubjectivityCheckpoint(db ethdb.Database, backend sctInitBackend, ch
 		wsc.initCallback = nil
 		wsc.lock.Unlock()
 		if initCallback != nil {
-			fmt.Println("wsc 4")
+			//fmt.Println("wsc 4")
 			initCallback(initData.genesisData)
 		}
-		fmt.Println("wsc 5")
+		//fmt.Println("wsc 5")
 	}()
 	return wsc
 }

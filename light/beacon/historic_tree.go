@@ -18,7 +18,7 @@ package beacon
 
 import (
 	"context"
-	"fmt"
+	//"fmt"
 
 	//"errors"
 	//"math/bits"
@@ -145,7 +145,7 @@ func (ht *HistoricTree) verifyRoots() {
 		if ht.state.get(ht.HeadBlock.Header.Slot>>13, 1) != stateRootsRoot {
 			log.Error("Historic roots root hash does not match", "local tree root", common.Hash(ht.state.get(ht.HeadBlock.Header.Slot>>13, 1)), "head block historicRoots", common.Hash(stateRootsRoot))
 		} else {
-			fmt.Println("*** state root match ***")
+			//fmt.Println("*** state root match ***")
 		}
 	} else {
 		log.Error("State roots not found in historic tree head block's state proof")
@@ -154,7 +154,7 @@ func (ht *HistoricTree) verifyRoots() {
 		if ht.historic.get(0, 1) != historicRootsRoot {
 			log.Error("Historic roots root hash does not match", "local tree root", common.Hash(ht.historic.get(0, 1)), "head block historicRoots", common.Hash(historicRootsRoot))
 		} else {
-			fmt.Println("*** historic root match ***")
+			//fmt.Println("*** historic root match ***")
 		}
 	} else {
 		log.Error("Historic roots not found in historic tree head block's state proof")
@@ -236,7 +236,7 @@ func blockAndStateRoots(parent *BlockData, blocks []*BlockData) (firstSlot uint6
 		firstSlot--
 	}
 	rootCount := uint64(blocks[len(blocks)-1].Header.Slot) - firstSlot
-	fmt.Println("blockAndStateRoots", blocks[0].Header.Slot, len(blocks[0].StateRootDiffs), firstSlot, rootCount)
+	//fmt.Println("blockAndStateRoots", blocks[0].Header.Slot, len(blocks[0].StateRootDiffs), firstSlot, rootCount)
 	blockRoots, stateRoots = make(MerkleValues, rootCount), make(MerkleValues, rootCount)
 	var rootIndex int
 	for _, block := range blocks {
@@ -251,7 +251,7 @@ func blockAndStateRoots(parent *BlockData, blocks []*BlockData) (firstSlot uint6
 			stateRoots[rootIndex] = stateRoot
 			rootIndex++
 		}
-		fmt.Println(" rootIndex", rootIndex, block.Header.Slot, len(block.StateRootDiffs), block.ParentSlotDiff)
+		//fmt.Println(" rootIndex", rootIndex, block.Header.Slot, len(block.StateRootDiffs), block.ParentSlotDiff)
 	}
 	if rootIndex != len(blockRoots) {
 		panic(nil)

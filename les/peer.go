@@ -335,7 +335,7 @@ func (p *peer) handshake(modules []handshakeModule) error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
-	fmt.Println("Handshake with peer", p.id, "version", p.version)
+	//fmt.Println("Handshake with peer", p.id, "version", p.version)
 
 	var send keyValueList
 
@@ -625,7 +625,7 @@ func (p *peer) HasBlock(hash common.Hash, number uint64, hasState bool) bool {
 		since = p.chainSince
 		recent = p.chainRecent
 	}
-	fmt.Println("HasBlock  number", number, "head", head, "since", since, "recent", recent, "result", head >= number && number >= since && (recent == 0 || number+recent+4 > head))
+	//fmt.Println("HasBlock  number", number, "head", head, "since", since, "recent", recent, "result", head >= number && number >= since && (recent == 0 || number+recent+4 > head))
 	return head >= number && number >= since && (recent == 0 || number+recent+4 > head)
 }
 
@@ -1023,14 +1023,14 @@ func (p *peer) Disconnect() {
 }
 
 func (p *peer) SendSignedHeads(heads []beacon.SignedHead) {
-	//	fmt.Println("Sending signed heads", len(heads))
-	//	fmt.Println(" err", p2p.Send(p.rw, SignedBeaconHeadsMsg, heads)) //TODO ?exec queue
+	//	//fmt.Println("Sending signed heads", len(heads))
+	//	//fmt.Println(" err", p2p.Send(p.rw, SignedBeaconHeadsMsg, heads)) //TODO ?exec queue
 	p2p.Send(p.rw, SignedBeaconHeadsMsg, heads) //TODO ?exec queue
 }
 
 func (p *peer) SendUpdateInfo(updateInfo *beacon.UpdateInfo) {
-	//	fmt.Println("Sending update info")
-	//	fmt.Println(" err", p2p.Send(p.rw, AdvertiseCommitteeProofsMsg, updateInfo)) //TODO ?exec queue
+	//	//fmt.Println("Sending update info")
+	//	//fmt.Println(" err", p2p.Send(p.rw, AdvertiseCommitteeProofsMsg, updateInfo)) //TODO ?exec queue
 	p2p.Send(p.rw, AdvertiseCommitteeProofsMsg, updateInfo) //TODO ?exec queue
 }
 

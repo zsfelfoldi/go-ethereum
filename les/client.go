@@ -189,7 +189,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 
 	if leth.v5 {
 		if forks, err := beacon.LoadForks(config.BeaconConfig); err == nil {
-			fmt.Println("Forks", forks)
+			//fmt.Println("Forks", forks)
 
 			chain, err := light.NewUltraLightChain(leth.odr, leth.chainConfig, leth.engine)
 			if err != nil {
