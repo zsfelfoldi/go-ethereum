@@ -926,7 +926,7 @@ func (s *BeaconRequestServer) handleGetBeaconData(msg Decoder) (serveRequestFn, 
 
 		// create multiproof
 		var proofValues beacon.MerkleValues
-		if _, ok := beacon.TraverseProof(ht.HistoricStateReader(), beacon.NewMultiProofWriter(beacon.SlotRangeFormat(refSlot, firstSlot, proofFormats), &proofValues, nil)); !ok {
+		if _, ok := beacon.TraverseProof(ht.HistoricStateReader(), beacon.NewMultiProofWriter(beacon.SlotRangeFormat(refSlot, block.Header.Slot+1, proofFormats), &proofValues, nil)); !ok {
 			log.Error("Multiproof format mismatch while serving GetBeaconData")
 			return nil
 		}

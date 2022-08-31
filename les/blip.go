@@ -128,10 +128,16 @@ func NewBlip(node *node.Node, b /*blipBackend*/ *eth.Ethereum, config *ethconfig
 		}
 	}
 
-	if blip.beaconChain = beacon.NewBeaconChain(blip.beaconNodeApi, (*odrDataSource)(blip.odr), blip.blockchain, blip.chainDb, forks); blip.beaconChain == nil {
+	var (
+		sctConstraints beacon.SctConstraints
+		dataSource     beacon.BeaconDataSource
+	)
+	if blip.beaconNodeApi != nil {
+		dataSource = blip.beaconNodeApi
+	}
+	if blip.beaconChain = beacon.NewBeaconChain(dataSource, (*odrDataSource)(blip.odr), blip.blockchain, blip.chainDb, forks); blip.beaconChain == nil {
 		return nil, fmt.Errorf("Could not initialize beacon chain")
 	}
-	var sctConstraints beacon.SctConstraints
 	if blip.beaconNodeApi != nil {
 		sctConstraints = blip.beaconChain
 	} else {

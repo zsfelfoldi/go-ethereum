@@ -300,7 +300,7 @@ func (bc *BeaconChain) findCloseBlocks(block *BlockData, maxDistance int) (res [
 	return res
 }
 
-func (ht *HistoricTree) initRecentRoots(ctx context.Context, dataSource beaconData) error {
+func (ht *HistoricTree) initRecentRoots(ctx context.Context, dataSource BeaconDataSource) error {
 	period, index := uint64(ht.HeadBlock.Header.Slot)>>13, uint64(ht.HeadBlock.Header.Slot)&0x1fff
 	blockRootsProof, stateRootsProof, err := dataSource.GetRootsProof(ctx, ht.HeadBlock)
 	if err != nil {

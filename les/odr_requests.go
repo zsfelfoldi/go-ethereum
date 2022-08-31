@@ -709,6 +709,7 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 		return errors.New("Number of returned headers do not match non-empty state proofs")
 	}
 
+	fmt.Println("*** len(reply.StateProofFormats)", len(reply.StateProofFormats), "len(reply.ProofValues)", len(reply.ProofValues))
 	format := beacon.SlotRangeFormat(uint64(beaconHeader.Slot), firstSlot, reply.StateProofFormats)
 	reader := beacon.MultiProof{Format: format, Values: reply.ProofValues}.Reader(nil)
 	target := make([]*beacon.MerkleValues, len(reply.StateProofFormats))
@@ -758,7 +759,9 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 		stateRootDiffs beacon.MerkleValues
 	)
 	slot := firstSlot
+	fmt.Println("*** slot range")
 	for i, format := range reply.StateProofFormats {
+		fmt.Println(" proofFormat", format, "proofLen", len(*target[i]))
 		if format == 0 {
 			stateRootDiffs = append(stateRootDiffs, (*target[i])[0])
 		} else {
@@ -782,6 +785,11 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 			stateRootDiffs = nil
 		}
 		slot++
+	}
+
+	fmt.Println("*** blocks")
+	for _, block := range blocks {
+		fmt.Println(" slot", block.Header.Slot, "proofFormat", block.ProofFormat, "proofLen", len(block.StateProof))
 	}
 
 	// compare latest_header root in last block's state with the reconstructed header

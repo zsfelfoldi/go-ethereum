@@ -108,13 +108,13 @@ func init() {
 	}
 }
 
-type beaconData interface { // supported by beacon node API
+type BeaconDataSource interface { // supported by beacon node API
 	GetBlocksFromHead(ctx context.Context, head Header, amount uint64) ([]*BlockData, error)
 	GetRootsProof(ctx context.Context, block *BlockData) (MultiProof, MultiProof, error)
 	GetHistoricRootsProof(ctx context.Context, block *BlockData, period uint64) (MultiProof, error)
 }
 
-type historicData interface { // supported by ODR
+type HistoricDataSource interface { // supported by ODR
 	GetHistoricBlocks(ctx context.Context, head Header, lastSlot, amount uint64) ([]*BlockData, MultiProof, error)
 	AvailableTailSlots() (uint64, uint64)
 }
@@ -221,8 +221,8 @@ func (block *BlockData) CalculateRoots() {
 }
 
 type BeaconChain struct {
-	dataSource     beaconData
-	historicSource historicData
+	dataSource     BeaconDataSource
+	historicSource HistoricDataSource
 
 	execChain      execChain
 	db             ethdb.Database
@@ -256,7 +256,7 @@ type BeaconChain struct {
 	beaconSyncer
 }
 
-func NewBeaconChain(dataSource beaconData, historicSource historicData, execChain execChain, db ethdb.Database, forks Forks) *BeaconChain {
+func NewBeaconChain(dataSource BeaconDataSource, historicSource HistoricDataSource, execChain execChain, db ethdb.Database, forks Forks) *BeaconChain {
 	chainDb := rawdb.NewTable(db, "bc-")
 	blockDataCache, _ := lru.New(2000)
 	historicCache, _ := lru.New(20000)
