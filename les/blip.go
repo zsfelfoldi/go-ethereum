@@ -145,9 +145,9 @@ func NewBlip(node *node.Node, b /*blipBackend*/ *eth.Ethereum, config *ethconfig
 		blip.beaconNodeApi.sct = blip.syncCommitteeTracker
 		blip.beaconNodeApi.start()
 	} else {
-		/*blip.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
+		blip.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
 			blip.beaconChain.SyncToHead(head, nil)
-		})*/
+		})
 	}
 
 	blip.handler = newHandler(blip.peers, config.NetworkId)

@@ -615,7 +615,7 @@ func (r *BeaconDataRequest) GetCost(peer *peer) uint64 {
 
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *BeaconDataRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
-	return false //peer.version >= lpv5 && peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())	//TODO temp hack
+	return peer.version >= lpv5 && peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
