@@ -288,6 +288,7 @@ func (sq *servingQueue) addTask(task *servingTask) {
 	sqServedGauge.Update(int64(sq.recentTime))
 	sqQueuedGauge.Update(int64(sq.queuedTime))
 	if sq.recentTime+sq.queuedTime > sq.burstLimit {
+		fmt.Println("*** sq.recentTime", sq.recentTime, "sq.queuedTime", sq.queuedTime, "sq.burstLimit", sq.burstLimit)
 		sq.freezePeers()
 	}
 }

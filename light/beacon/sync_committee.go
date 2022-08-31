@@ -114,7 +114,7 @@ type SyncCommitteeTracker struct {
 	bestUpdateCache, serializedCommitteeCache, syncCommitteeCache, committeeRootCache *lru.Cache
 
 	forks       Forks
-	constraints sctConstraints
+	constraints SctConstraints
 	initDone    bool
 
 	firstPeriod uint64 // first bestUpdate stored in db (can be <= initData.Period)
@@ -134,7 +134,7 @@ type SyncCommitteeTracker struct {
 	headSubs []func(Header)
 }
 
-func NewSyncCommitteeTracker(db ethdb.Database, forks Forks, constraints sctConstraints, clock mclock.Clock) *SyncCommitteeTracker {
+func NewSyncCommitteeTracker(db ethdb.Database, forks Forks, constraints SctConstraints, clock mclock.Clock) *SyncCommitteeTracker {
 	db = rawdb.NewTable(db, "sct-")
 	s := &SyncCommitteeTracker{
 		db:            db,
@@ -1519,7 +1519,7 @@ func LoadForks(fileName string) (Forks, error) {
 	return forks, nil
 }
 
-type sctConstraints interface {
+type SctConstraints interface {
 	PeriodRange() (first, afterFixed, afterLast uint64)
 	CommitteeRoot(period uint64) (root common.Hash, matchAll bool)
 	SetCallbacks(initCallback func(genesisData), updateCallback func())
@@ -1585,7 +1585,7 @@ type sctInitBackend interface {
 type WeakSubjectivityCheckpoint struct {
 	lock sync.RWMutex
 
-	parent                              sctConstraints // constraints applied to pre-checkpoint history (no old committees synced if nil)
+	parent                              SctConstraints // constraints applied to pre-checkpoint history (no old committees synced if nil)
 	db                                  ethdb.Database
 	initData                            lightClientInitData
 	initialized                         bool
@@ -1594,7 +1594,7 @@ type WeakSubjectivityCheckpoint struct {
 	updateCallback                      func()
 }
 
-func NewWeakSubjectivityCheckpoint(db ethdb.Database, backend sctInitBackend, checkpoint common.Hash, parent sctConstraints) *WeakSubjectivityCheckpoint {
+func NewWeakSubjectivityCheckpoint(db ethdb.Database, backend sctInitBackend, checkpoint common.Hash, parent SctConstraints) *WeakSubjectivityCheckpoint {
 	wsc := &WeakSubjectivityCheckpoint{
 		parent:        parent,
 		db:            db,

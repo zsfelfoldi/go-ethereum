@@ -42,7 +42,7 @@ import (
 
 const (
 	blipSoftTimeout = time.Second * 2
-	blipServRate    = 20
+	blipServRate    = 50 //20
 )
 
 type Blip struct {
@@ -92,7 +92,7 @@ func NewBlip(node *node.Node, b /*blipBackend*/ *eth.Ethereum, config *ethconfig
 		servingQueue: newServingQueue(int64(time.Millisecond*10), float64(blipServRate)/100),
 	}
 
-	blip.costTracker, blip.minCapacity = newCostTracker(blip.chainDb, blipServRate, 100, 100)
+	blip.costTracker, blip.minCapacity = newCostTracker(blip.chainDb, blipServRate, 10000, 10000) //100
 	fmt.Println("*** minCapacity:", blip.minCapacity)
 
 	// Initialize server capacity management fields.
@@ -131,16 +131,23 @@ func NewBlip(node *node.Node, b /*blipBackend*/ *eth.Ethereum, config *ethconfig
 	if blip.beaconChain = beacon.NewBeaconChain(blip.beaconNodeApi, (*odrDataSource)(blip.odr), blip.blockchain, blip.chainDb, forks); blip.beaconChain == nil {
 		return nil, fmt.Errorf("Could not initialize beacon chain")
 	}
-	blip.syncCommitteeTracker = beacon.NewSyncCommitteeTracker(blip.chainDb, forks, blip.beaconChain, &mclock.System{})
+	var sctConstraints beacon.SctConstraints
+	if blip.beaconNodeApi != nil {
+		sctConstraints = blip.beaconChain
+	} else {
+		sctConstraints = blip.syncCommitteeCheckpoint
+	}
+	blip.syncCommitteeTracker = beacon.NewSyncCommitteeTracker(blip.chainDb, forks, sctConstraints, &mclock.System{})
 	blip.syncCommitteeTracker.SubscribeToNewHeads(blip.odr.SetBeaconHead)
-	/*blip.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
-		blip.beaconChain.SyncToHead(head, nil)
-	})*/
 	blip.beaconChain.SubscribeToProcessedHeads(blip.syncCommitteeTracker.ProcessedBeaconHead, true)
 	if blip.beaconNodeApi != nil {
 		blip.beaconNodeApi.chain = blip.beaconChain
 		blip.beaconNodeApi.sct = blip.syncCommitteeTracker
 		blip.beaconNodeApi.start()
+	} else {
+		/*blip.syncCommitteeTracker.SubscribeToNewHeads(func(head beacon.Header) {
+			blip.beaconChain.SyncToHead(head, nil)
+		})*/
 	}
 
 	blip.handler = newHandler(blip.peers, config.NetworkId)
