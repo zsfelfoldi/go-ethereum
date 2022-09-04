@@ -214,8 +214,10 @@ type BeaconDataRequest struct {
 	// Note that for the first block ParentSlotDiff and StateRootDiffs are not proven; retrieving the
 	// range ending with the previous slot will update it if necessary, therefore they are guaranteed valid
 	// for each but the first block of any continuous range.
-	Blocks    []*beacon.BlockData // filled by Validate
-	TailProof beacon.MultiProof   // proof root is the historic tree root in the reference block's beacon state; proves first relevant entry in the historic tree
+	//TODO ^^^ ???
+	ParentHeader beacon.Header
+	Blocks       []*beacon.BlockData // filled by Validate
+	TailProof    beacon.MultiProof   // proof root is the historic tree root in the reference block's beacon state; proves first relevant entry in the historic tree
 }
 
 func (req *BeaconDataRequest) StoreResult(db ethdb.Database) {}

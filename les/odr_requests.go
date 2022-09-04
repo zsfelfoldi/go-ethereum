@@ -803,7 +803,7 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 		return errors.New("Beacon state field latest_header missing in last retrieved block")
 	}
 
-	request.Blocks = blocks
+	request.ParentHeader, request.Blocks = reply.ParentHeader, blocks
 	return nil
 }
 

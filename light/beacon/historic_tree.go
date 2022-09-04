@@ -216,7 +216,7 @@ func (bc *BeaconChain) updateTreeMap() {
 	newTreeMap[bc.storedHead.BlockRoot] = bc.headTree
 	for _, path := range bc.findCloseBlocks(bc.storedHead, maxHistoricTreeDistance) {
 		ht := bc.makeChildTree()
-		firstSlot, blockRoots, stateRoots := blockAndStateRoots(path[0], path[1:])
+		firstSlot, blockRoots, stateRoots := blockAndStateRoots(path[0].FullHeader(), path[1:])
 		ht.addRoots(firstSlot, blockRoots, stateRoots, true, MultiProof{})
 		ht.HeadBlock = path[len(path)-1]
 		newTreeMap[ht.HeadBlock.BlockRoot] = ht
@@ -227,30 +227,26 @@ func (bc *BeaconChain) updateTreeMap() {
 	bc.historicMu.Unlock()
 }
 
-func blockAndStateRoots(parent *BlockData, blocks []*BlockData) (firstSlot uint64, blockRoots, stateRoots MerkleValues) {
+func blockAndStateRoots(parentHeader Header, blocks []*BlockData) (firstSlot uint64, blockRoots, stateRoots MerkleValues) {
 	if len(blocks) == 0 {
-		return parent.Header.Slot, nil, nil
+		return uint64(parentHeader.Slot), nil, nil
 	}
-	firstSlot = uint64(blocks[0].Header.Slot) - uint64(len(blocks[0].StateRootDiffs))
-	if parent != nil {
-		firstSlot--
-	}
+	firstSlot = uint64(parentHeader.Slot)
+	parentStateRoot := parentHeader.StateRoot
 	rootCount := uint64(blocks[len(blocks)-1].Header.Slot) - firstSlot
 	//fmt.Println("blockAndStateRoots", blocks[0].Header.Slot, len(blocks[0].StateRootDiffs), firstSlot, rootCount)
 	blockRoots, stateRoots = make(MerkleValues, rootCount), make(MerkleValues, rootCount)
 	var rootIndex int
 	for _, block := range blocks {
-		if parent != nil {
-			blockRoots[rootIndex] = MerkleValue(block.Header.ParentRoot)
-			stateRoots[rootIndex] = MerkleValue(parent.StateRoot)
-			rootIndex++
-		}
-		parent = block
+		blockRoots[rootIndex] = MerkleValue(block.Header.ParentRoot)
+		stateRoots[rootIndex] = MerkleValue(parentStateRoot)
+		rootIndex++
 		for _, stateRoot := range block.StateRootDiffs {
 			blockRoots[rootIndex] = MerkleValue(block.Header.ParentRoot)
 			stateRoots[rootIndex] = stateRoot
 			rootIndex++
 		}
+		parentStateRoot = block.StateRoot
 		//fmt.Println(" rootIndex", rootIndex, block.Header.Slot, len(block.StateRootDiffs), block.ParentSlotDiff)
 	}
 	if rootIndex != len(blockRoots) {

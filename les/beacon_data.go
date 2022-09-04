@@ -536,12 +536,10 @@ func (bn *beaconNodeApiSource) getBlockState(block *beacon.BlockData) error {
 	return nil
 }
 
-func (bn *beaconNodeApiSource) GetBlocksFromHead(ctx context.Context, header beacon.Header, amount uint64) (blocks []*beacon.BlockData, err error) {
+//TODO check corner cases
+func (bn *beaconNodeApiSource) GetBlocksFromHead(ctx context.Context, header beacon.Header, amount uint64) (parentHeader beacon.Header, blocks []*beacon.BlockData, err error) {
 	blocks = make([]*beacon.BlockData, int(amount))
 	blockPtr := int(amount)
-	if err != nil {
-		return nil, err
-	}
 	blockRoot := header.Hash()
 	var firstSlot uint64
 	if uint64(header.Slot) >= amount {
@@ -564,7 +562,7 @@ func (bn *beaconNodeApiSource) GetBlocksFromHead(ctx context.Context, header bea
 			block.ParentSlotDiff = block.Header.Slot - uint64(parentHeader.Slot)
 			block.ProofFormat = beacon.ProofFormatForBlock(block)
 			if err := bn.getBlockState(block); err != nil {
-				return nil, err
+				return beacon.Header{}, nil, err
 			}
 			//fmt.Println("GetBlocksFromHead", block.Header.Slot, block.ParentSlotDiff, block.StateRootDiffs)
 			blockRoot = header.ParentRoot
@@ -572,7 +570,7 @@ func (bn *beaconNodeApiSource) GetBlocksFromHead(ctx context.Context, header bea
 		} else {
 			block.ProofFormat = beacon.HspFormatCount - 1
 			if err := bn.getBlockState(block); err != nil {
-				return nil, err
+				return beacon.Header{}, nil, err
 			}
 			break
 		}
@@ -580,7 +578,7 @@ func (bn *beaconNodeApiSource) GetBlocksFromHead(ctx context.Context, header bea
 			break
 		}
 	}
-	blocks = blocks[blockPtr:]
+	parentHeader, blocks = header, blocks[blockPtr:]
 	return
 }
 
@@ -726,32 +724,32 @@ func (bn *beaconNodeApiSource) GetInitBlock(ctx context.Context, checkpoint comm
 
 type odrDataSource LesOdr
 
-func (od *odrDataSource) GetHistoricBlocks(ctx context.Context, head beacon.Header, lastSlot, amount uint64) (blocks []*beacon.BlockData, tailProof beacon.MultiProof, err error) {
+func (od *odrDataSource) GetHistoricBlocks(ctx context.Context, head beacon.Header, lastSlot, amount uint64) (parentHeader beacon.Header, blocks []*beacon.BlockData, tailProof beacon.MultiProof, err error) {
 	req := &light.BeaconDataRequest{
 		LastSlot: lastSlot,
 		Length:   amount,
 		//TODO TailShortTerm
 	}
 	if err := (*LesOdr)(od).RetrieveWithBeaconHeader(ctx, head, req); err != nil {
-		return nil, beacon.MultiProof{}, err
+		return beacon.Header{}, nil, beacon.MultiProof{}, err
 	}
-	return req.Blocks, req.TailProof, nil
+	return req.ParentHeader, req.Blocks, req.TailProof, nil
 }
 
 func (od *odrDataSource) AvailableTailSlots() (uint64, uint64) {
 	return (*LesOdr)(od).BeaconTailSlots()
 }
 
-func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head beacon.Header, amount uint64) (blocks []*beacon.BlockData, err error) {
+func (od *odrDataSource) GetBlocksFromHead(ctx context.Context, head beacon.Header, amount uint64) (parentHeader beacon.Header, blocks []*beacon.BlockData, err error) {
 	req := &light.BeaconDataRequest{
 		LastSlot: uint64(head.Slot),
 		Length:   amount,
 		//TODO TailShortTerm
 	}
 	if err := (*LesOdr)(od).RetrieveWithBeaconHeader(ctx, head, req); err != nil {
-		return nil, err
+		return beacon.Header{}, nil, err
 	}
-	return req.Blocks, nil
+	return req.ParentHeader, req.Blocks, nil
 }
 
 func (od *odrDataSource) GetInitBlock(ctx context.Context, checkpoint common.Hash) (block *beacon.BlockData, err error) {

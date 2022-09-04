@@ -66,10 +66,10 @@ func (bc *BeaconChain) SyncToHead(head Header, syncedCh chan bool) {
 	bc.syncHeader = head
 	bc.latestHeadCounter++
 	cs := &chainSection{
-		headCounter: bc.latestHeadCounter,
-		tailSlot:    uint64(head.Slot) + 1,
-		headSlot:    uint64(head.Slot),
-		parentHash:  head.Hash(),
+		headCounter:  bc.latestHeadCounter,
+		tailSlot:     uint64(head.Slot) + 1,
+		headSlot:     uint64(head.Slot),
+		parentHeader: head,
 	}
 	if bc.syncHeadSection != nil && bc.syncHeadSection.prev != nil {
 		bc.syncHeadSection.prev.next = cs
@@ -124,9 +124,10 @@ func (bc *BeaconChain) syncWorker() {
 			bc.debugPrint("after nextRequest")
 			head := bc.syncHeader
 			var (
-				blocks []*BlockData
-				proof  MultiProof
-				err    error
+				parentHeader Header
+				blocks       []*BlockData
+				proof        MultiProof
+				err          error
 			)
 			newHeadCh := bc.newHeadCh
 			cb := bc.constraintCallbacks()
@@ -134,10 +135,10 @@ func (bc *BeaconChain) syncWorker() {
 			cb()
 			if bc.dataSource != nil && cs.tailSlot+MaxHeaderFetch-1 >= uint64(head.Slot) {
 				//fmt.Println("SYNC dataSource request", head.Slot, cs.tailSlot, cs.headSlot)
-				blocks, err = bc.dataSource.GetBlocksFromHead(ctx, head, uint64(head.Slot)+1-cs.tailSlot)
+				parentHeader, blocks, err = bc.dataSource.GetBlocksFromHead(ctx, head, uint64(head.Slot)+1-cs.tailSlot)
 			} else if bc.historicSource != nil {
 				//fmt.Println("SYNC historicSource request", head.Slot, cs.tailSlot, cs.headSlot)
-				blocks, proof, err = bc.historicSource.GetHistoricBlocks(ctx, head, cs.headSlot, cs.headSlot+1-cs.tailSlot)
+				parentHeader, blocks, proof, err = bc.historicSource.GetHistoricBlocks(ctx, head, cs.headSlot, cs.headSlot+1-cs.tailSlot)
 			} else {
 				log.Error("Historic data source not available") //TODO print only once, ?reset chain?
 			}
@@ -167,7 +168,7 @@ func (bc *BeaconChain) syncWorker() {
 			if blocks != nil {
 				cs.requesting = false
 				bc.debugPrint("before addBlocksToSection")
-				bc.addBlocksToSection(cs, blocks, proof)
+				bc.addBlocksToSection(cs, parentHeader, blocks, proof)
 				bc.debugPrint("after addBlocksToSection")
 			} else {
 				bc.debugPrint("before remove")
@@ -261,7 +262,7 @@ func (bc *BeaconChain) blockRootAt(slot uint64) common.Hash {
 	if slot+1 == bc.tailLongTerm {
 		for s := slot + 1; s <= bc.headTree.HeadBlock.Header.Slot; s++ {
 			if block := bc.GetBlockData(s, bc.headTree.GetStateRoot(s), false); block != nil {
-				if block.Header.Slot+1-block.ParentSlotDiff == slot {
+				if block.Header.Slot-block.ParentSlotDiff == slot {
 					return block.Header.ParentRoot
 				}
 				log.Error("Could not find parent of tail block")
@@ -277,11 +278,11 @@ func (bc *BeaconChain) blockRootAt(slot uint64) common.Hash {
 }
 
 type chainSection struct {
-	headSlot, tailSlot, headCounter uint64 // tail is parent slot + 1 or 0 if no parent (genesis)
+	headSlot, tailSlot, headCounter uint64 // tail is parentHeader.Slot+1 or 0 if no parent (genesis)
 	requesting                      bool
 	blocks                          []*BlockData // nil for stored section, sync head section and sections being requested
 	tailProof                       MultiProof   // optional merkle proof including path leading to the first root in the historical_roots structure
-	parentHash                      common.Hash  // empty for stored section, section starting at genesis and sections being requested
+	parentHeader                    Header       // empty for stored section, section starting at genesis and sections being requested
 	prev, next                      *chainSection
 }
 
@@ -293,7 +294,7 @@ func (cs *chainSection) blockIndex(slot uint64) int {
 	min, max := 0, len(cs.blocks)-1
 	for min < max {
 		mid := (min + max) / 2
-		if uint64(cs.blocks[min].Header.Slot) < slot {
+		if uint64(cs.blocks[mid].Header.Slot) < slot {
 			min = mid + 1
 		} else {
 			max = mid
@@ -305,7 +306,7 @@ func (cs *chainSection) blockIndex(slot uint64) int {
 // returns empty hash for missed slots and slots outside the parent..head range
 func (cs *chainSection) blockRootAt(slot uint64) common.Hash {
 	if slot+1 == cs.tailSlot {
-		return cs.parentHash
+		return cs.parentHeader.Hash()
 	}
 	if index := cs.blockIndex(slot); index != -1 {
 		block := cs.blocks[index]
@@ -316,8 +317,15 @@ func (cs *chainSection) blockRootAt(slot uint64) common.Hash {
 	return common.Hash{}
 }
 
-func (cs *chainSection) blockRange(begin, end uint64) []*BlockData {
-	return cs.blocks[cs.blockIndex(begin) : cs.blockIndex(end)+1]
+func (cs *chainSection) blockRange(begin, end uint64) (Header, []*BlockData) {
+	b, e := cs.blockIndex(begin), cs.blockIndex(end)
+	var parentHeader Header
+	if b > 0 {
+		parentHeader = cs.blocks[b-1].FullHeader()
+	} else {
+		parentHeader = cs.parentHeader
+	}
+	return parentHeader, cs.blocks[b : e+1]
 }
 
 func (cs *chainSection) trim(front bool) {
@@ -411,7 +419,7 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 }
 
 // assumes continuity; overwrite allowed
-func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData, setHead bool, tailProof MultiProof) {
+func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockData, setHead bool, tailProof MultiProof) {
 	//fmt.Println("SYNC addCanonicalBlocks", len(blocks), blocks[0].Header.Slot, blocks[len(blocks)-1].Header.Slot, setHead, tailProof.Format != nil)
 	eh, ok := blocks[len(blocks)-1].GetStateValue(BsiExecHead)
 	if !ok { // should not happen, backend should check proof format
@@ -446,11 +454,7 @@ func (bc *BeaconChain) addCanonicalBlocks(blocks []*BlockData, setHead bool, tai
 		}
 	}
 
-	parent := bc.GetParent(blocks[0])
-	firstSlot, blockRoots, stateRoots := blockAndStateRoots(parent, blocks)
-	if parent == nil && blocks[0].Header.Slot > bc.tailLongTerm {
-		log.Error("Missing parent block", "slot", blocks[0].Header.Slot)
-	}
+	firstSlot, blockRoots, stateRoots := blockAndStateRoots(parentHeader, blocks)
 	tailSlot := blocks[0].Header.Slot - uint64(len(blocks[0].StateRootDiffs))
 	//fmt.Println("addCanonicalBlocks", tailSlot, bc.tailLongTerm)
 	if tailSlot < bc.tailLongTerm {
@@ -513,7 +517,7 @@ func (bc *BeaconChain) initWithSection(cs *chainSection) bool { // ha a result t
 			return false
 		}
 	}
-	bc.addCanonicalBlocks(cs.blocks, true, MultiProof{})
+	bc.addCanonicalBlocks(cs.parentHeader, cs.blocks, true, MultiProof{})
 	bc.storedSection = cs
 	cs.blocks, cs.tailProof = nil, MultiProof{}
 	//fmt.Println(" init success")
@@ -539,7 +543,8 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 	if cs.tailSlot < bc.storedSection.tailSlot {
 		if cs.blockRootAt(bc.storedSection.tailSlot-1) == bc.blockRootAt(bc.storedSection.tailSlot-1) {
 			//bc.addToTail(cs.blockRange(cs.tailSlot, bc.storedSection.tailSlot-1), cs.tailProof)
-			bc.addCanonicalBlocks(cs.blockRange(cs.tailSlot, bc.storedSection.tailSlot-1), false, cs.tailProof)
+			parentHeader, blocks := cs.blockRange(cs.tailSlot, bc.storedSection.tailSlot-1)
+			bc.addCanonicalBlocks(parentHeader, blocks, false, cs.tailProof)
 		} else {
 			if cs.headCounter <= bc.storedSection.headCounter {
 				//fmt.Println(" 2 true")
@@ -554,7 +559,8 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 	if cs.headCounter <= bc.storedSection.headCounter {
 		if cs.headSlot > bc.storedSection.headSlot && cs.blockRootAt(bc.storedSection.headSlot) == bc.blockRootAt(bc.storedSection.headSlot) {
 			//bc.addToHead(cs.blockRange(bc.storedSection.headSlot+1, cs.headSlot))
-			bc.addCanonicalBlocks(cs.blockRange(bc.storedSection.headSlot+1, cs.headSlot), true, MultiProof{})
+			parentHeader, blocks := cs.blockRange(bc.storedSection.headSlot+1, cs.headSlot)
+			bc.addCanonicalBlocks(parentHeader, blocks, true, MultiProof{})
 			bc.storedSection.headCounter = cs.headCounter
 			bc.nextRollback = firstRollback
 		}
@@ -586,21 +592,22 @@ func (bc *BeaconChain) mergeWithStoredSection(cs *chainSection) bool { // ha a r
 	}
 	if lastCommon < cs.headSlot {
 		//bc.addToHead(cs.blockRange(lastCommon+1, cs.headSlot))
-		bc.addCanonicalBlocks(cs.blockRange(lastCommon+1, cs.headSlot), true, MultiProof{})
+		parentHeader, blocks := cs.blockRange(lastCommon+1, cs.headSlot)
+		bc.addCanonicalBlocks(parentHeader, blocks, true, MultiProof{})
 		bc.nextRollback = firstRollback
 	}
 	//fmt.Println(" 6 true")
 	return true
 }
 
-func (bc *BeaconChain) addBlocksToSection(cs *chainSection, blocks []*BlockData, tailProof MultiProof) {
+func (bc *BeaconChain) addBlocksToSection(cs *chainSection, parentHeader Header, blocks []*BlockData, tailProof MultiProof) {
 	//fmt.Println("SYNC addBlocksToSection", cs.tailSlot, cs.headSlot, len(blocks), blocks[0].Header.Slot, blocks[len(blocks)-1].Header.Slot, tailProof.Format != nil)
 	headSlot, tailSlot := blocks[len(blocks)-1].Header.Slot, blocks[0].Header.Slot+1-blocks[0].ParentSlotDiff
 	if headSlot < cs.headSlot || tailSlot > cs.tailSlot {
 		panic(nil)
 	}
 	cs.headSlot, cs.tailSlot = headSlot, tailSlot
-	cs.blocks, cs.parentHash, cs.tailProof = blocks, blocks[0].Header.ParentRoot, tailProof
+	cs.blocks, cs.parentHeader, cs.tailProof = blocks, parentHeader, tailProof
 
 	for {
 		if bc.storedSection == nil && (bc.syncHeadSection == nil || bc.syncHeadSection.prev == nil || !bc.initWithSection(bc.syncHeadSection.prev)) {

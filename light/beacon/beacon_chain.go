@@ -110,13 +110,13 @@ func init() {
 }
 
 type BeaconDataSource interface { // supported by beacon node API
-	GetBlocksFromHead(ctx context.Context, head Header, amount uint64) ([]*BlockData, error)
+	GetBlocksFromHead(ctx context.Context, head Header, amount uint64) (Header, []*BlockData, error)
 	GetRootsProof(ctx context.Context, block *BlockData) (MultiProof, MultiProof, error)
 	GetHistoricRootsProof(ctx context.Context, block *BlockData, period uint64) (MultiProof, error)
 }
 
 type HistoricDataSource interface { // supported by ODR
-	GetHistoricBlocks(ctx context.Context, head Header, lastSlot, amount uint64) ([]*BlockData, MultiProof, error)
+	GetHistoricBlocks(ctx context.Context, head Header, lastSlot, amount uint64) (Header, []*BlockData, MultiProof, error)
 	AvailableTailSlots() (uint64, uint64)
 }
 
@@ -182,6 +182,10 @@ type BlockData struct {
 	StateProof     MerkleValues
 	ParentSlotDiff uint64       // slot-parentSlot; 0 if not initialized
 	StateRootDiffs MerkleValues // only valid if ParentSlotDiff is initialized
+}
+
+func (block *BlockData) FullHeader() Header {
+	return block.Header.FullHeader(block.StateRoot)
 }
 
 func (block *BlockData) firstInPeriod() bool {
