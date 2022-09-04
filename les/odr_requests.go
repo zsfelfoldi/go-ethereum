@@ -615,7 +615,7 @@ func (r *BeaconDataRequest) GetCost(peer *peer) uint64 {
 
 // CanSend tells if a certain peer is suitable for serving the given request
 func (r *BeaconDataRequest) CanSend(beaconHeader beacon.Header, peer *peer) bool {
-	return false //peer.version >= lpv5 && peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
+	return peer.version >= lpv5 && peer.ulcInfo.HasBeaconHead(beaconHeader.Hash())
 }
 
 // Request sends an ODR request to the LES network (implementation of LesOdrRequest)
@@ -709,7 +709,7 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 		return errors.New("Number of returned headers do not match non-empty state proofs")
 	}
 
-	//fmt.Println("*** len(reply.StateProofFormats)", len(reply.StateProofFormats), "len(reply.ProofValues)", len(reply.ProofValues))
+	fmt.Println("*** len(reply.StateProofFormats)", len(reply.StateProofFormats), "len(reply.ProofValues)", len(reply.ProofValues))
 	format := beacon.SlotRangeFormat(uint64(beaconHeader.Slot), firstSlot, reply.StateProofFormats)
 	reader := beacon.MultiProof{Format: format, Values: reply.ProofValues}.Reader(nil)
 	target := make([]*beacon.MerkleValues, len(reply.StateProofFormats))

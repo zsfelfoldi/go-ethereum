@@ -658,13 +658,13 @@ func NewMultiProofWriter(format ProofFormat, target *MerkleValues, subtrees func
 }
 
 func (mpw multiProofWriter) children() (left, right ProofWriter) {
+	if mpw.subtrees != nil {
+		if subtree := mpw.subtrees(mpw.index); subtree != nil {
+			return subtree.children()
+		}
+	}
 	lf, rf := mpw.format.children()
 	if lf == nil {
-		if mpw.subtrees != nil {
-			if subtree := mpw.subtrees(mpw.index); subtree != nil {
-				return subtree.children()
-			}
-		}
 		return nil, nil
 	}
 	return multiProofWriter{format: lf, values: mpw.values, index: mpw.index * 2, subtrees: mpw.subtrees},
