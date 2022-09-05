@@ -123,12 +123,6 @@ func (h *handler) runPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter) error
 func (h *handler) handle(p *peer) error {
 	p.Log().Debug("Light Ethereum peer connected", "name", p.Name())
 
-	h.wg.Add(1)
-	defer func() {
-		p.wg.Wait()
-		h.wg.Done()
-	}()
-
 	p.connectedAt = mclock.Now()
 	if err := p.handshake(h.handshakeModules); err != nil {
 		p.Log().Debug("Light Ethereum handshake failed", "err", err)
@@ -158,9 +152,12 @@ func (h *handler) handle(p *peer) error {
 		return err
 	}
 
+	h.wg.Add(1)
 	defer func() {
+		p.wg.Wait()
 		h.peers.unregister(p.ID())
 		connectionTimer.Update(time.Duration(mclock.Now() - p.connectedAt))
+		h.wg.Done()
 	}()
 
 	for {
