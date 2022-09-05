@@ -18,7 +18,7 @@ package beacon
 
 import (
 	"context"
-	//"fmt"
+	"fmt"
 
 	//"errors"
 	//"math/bits"
@@ -422,6 +422,7 @@ func (hr historicRootsReader) readNode() (MerkleValue, bool) {
 }
 
 func SlotRangeFormat(headSlot, begin uint64, stateProofFormatTypes []byte) ProofFormat {
+	fmt.Println("SlotRangeFormat", headSlot, begin, len(stateProofFormatTypes))
 	end := begin + uint64(len(stateProofFormatTypes)) - 1
 	if end > headSlot {
 		panic(nil)
@@ -431,23 +432,30 @@ func SlotRangeFormat(headSlot, begin uint64, stateProofFormatTypes []byte) Proof
 	headStateFormat := ProofFormat(format)
 	if end == headSlot {
 		// last state is the head state, prove directly in headStateFormat
-		headStateFormat = MergedFormat{format, StateProofFormats[stateProofFormatTypes[len(stateProofFormatTypes)-1]]}
+		headSlotFormat := StateProofFormats[stateProofFormatTypes[len(stateProofFormatTypes)-1]]
+		if begin == end {
+			return headSlotFormat
+		}
+		headStateFormat = MergedFormat{format, headSlotFormat}
 		stateProofFormatTypes = stateProofFormatTypes[:len(stateProofFormatTypes)-1]
 		end--
 	}
 	//TODO ?? ha a state_roots-ba belelog, de nem fer bele, viszont az utolso historic-ba igen, akkor onnan bizonyitsuk?
 	if end+0x2000 >= headSlot { //TODO check, ha csak a head-et kerjuk, vagy 0 hosszu a kert range
+		fmt.Println(" end+0x2000 >= headSlot")
 		var i int
 		lpBegin := begin
 		if begin+0x2000 < headSlot {
 			i = int(headSlot - begin - 0x2000)
 			lpBegin = headSlot - 0x2000
 		}
+		fmt.Println(" stateProofsRangeFormat", lpBegin, end, i, len(stateProofFormatTypes))
 		format.AddLeaf(BsiStateRoots, stateProofsRangeFormat(lpBegin, end, stateProofFormatTypes[i:]))
 		stateProofFormatTypes = stateProofFormatTypes[:i]
 		end = lpBegin - 1
 	}
-	if end >= begin {
+	if len(stateProofFormatTypes) > 0 {
+		fmt.Println(" historicRootsRangeFormat", begin, end, len(stateProofFormatTypes))
 		format.AddLeaf(BsiHistoricRoots, historicRootsRangeFormat(begin, end, stateProofFormatTypes))
 	}
 	return headStateFormat
@@ -491,11 +499,11 @@ func StateRootsRangeFormat(begin, end uint64, subtreeFn func(uint64) ProofFormat
 func historicRootsRangeFormat(begin, end uint64, stateProofFormatTypes []byte) ProofFormat {
 	beginPeriod := begin >> 13
 	endPeriod := end >> 13
-	return NewRangeFormat(beginPeriod*2+0x2000001, endPeriod*2+0x2000001, func(index uint64) ProofFormat {
+	return NewRangeFormat(beginPeriod*2+0x4000001, endPeriod*2+0x4000001, func(index uint64) ProofFormat {
 		if index&1 == 0 {
 			return nil // block_roots entry
 		}
-		period := (index - 0x2000001) / 2
+		period := (index - 0x4000001) / 2
 		if period < beginPeriod || period > endPeriod {
 			return nil
 		}
