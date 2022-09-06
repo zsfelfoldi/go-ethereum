@@ -309,7 +309,7 @@ func (h *beaconServerHandler) start(wg *sync.WaitGroup, closeCh chan struct{}) {
 		for {
 			select {
 			case ev := <-headCh:
-				h.beaconChain.ProcessedExecHead(ev.Block.Header().Hash())
+				h.beaconChain.ProcessedExecHead(ev.Block.Header())
 				if h.beaconNodeApi != nil {
 					h.beaconNodeApi.newHead()
 				}

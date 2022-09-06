@@ -650,17 +650,61 @@ func (bc *BeaconChain) processedHead(beaconHead, execHead common.Hash) bool {
 	return false
 }
 
-func (bc *BeaconChain) ProcessedExecHead(execHead common.Hash) {
-	if bc.processedCallback == nil || !bc.waitForExecHead {
+func (bc *BeaconChain) initExecNumberIndex(headExecNumber uint64) {
+	execNumber, block := headExecNumber, bc.storedHead
+	if block == nil {
 		return
 	}
+	bc.storeBlockDataByExecNumber(execNumber, block)
+	bc.execNumberIndexTail, bc.execNumberIndexInitialized = block.Header.Slot, true
+	bc.syncWg.Add(1)
+	go func() {
+		bc.chainMu.Lock()
+	loop:
+		for {
+			if block.Header.Slot <= bc.tailLongTerm || execNumber == 0 {
+				bc.execNumberIndexTailReached = true
+				bc.chainMu.Unlock()
+				log.Info("Finished indexing beacon blocks by exec block number")
+				break loop
+			}
+			if execNumber%1000 == 0 {
+				bc.chainMu.Unlock()
+				select {
+				case <-time.After(time.Millisecond * 10):
+				case <-bc.stopSyncCh:
+					break loop
+				}
+				bc.chainMu.Lock()
+			}
+			block = bc.GetParent(block)
+			if block == nil {
+				bc.chainMu.Unlock()
+				log.Error("Missing beacon block after chain tail")
+				break loop
+			}
+			execNumber--
+			bc.storeBlockDataByExecNumber(execNumber, block)
+			bc.execNumberIndexTail = block.Header.Slot
+		}
+		bc.syncWg.Done()
+	}()
+}
+
+func (bc *BeaconChain) ProcessedExecHead(header *types.Header) {
 	bc.chainMu.Lock()
-	var reportHead common.Hash
-	if bc.expectedExecHead == execHead && bc.lastReportedBeaconHead != bc.lastProcessedBeaconHead {
-		reportHead = bc.lastProcessedBeaconHead
-		bc.lastReportedBeaconHead = reportHead
+	execHead := header.Hash()
+	if !bc.execNumberIndexInitialized && bc.expectedExecHead == execHead {
+		bc.initExecNumberIndex(header.Number.Uint64())
 	}
-	bc.lastProcessedExecHead = execHead
+	if bc.processedCallback != nil && bc.waitForExecHead {
+		var reportHead common.Hash
+		if bc.expectedExecHead == execHead && bc.lastReportedBeaconHead != bc.lastProcessedBeaconHead {
+			reportHead = bc.lastProcessedBeaconHead
+			bc.lastReportedBeaconHead = reportHead
+		}
+		bc.lastProcessedExecHead = execHead
+	}
 	bc.chainMu.Unlock()
 
 	if reportHead != (common.Hash{}) {
