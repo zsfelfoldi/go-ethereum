@@ -19,6 +19,7 @@ package beacon
 import (
 	"context"
 	//"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -48,6 +49,7 @@ type beaconSyncer struct {
 	processedCallback                               func(common.Hash)
 	waitForExecHead                                 bool
 	lastProcessedBeaconHead, lastReportedBeaconHead common.Hash
+	lastProcessedExecNumber                         uint64
 	lastProcessedExecHead, expectedExecHead         common.Hash
 
 	stopSyncCh chan struct{}
@@ -418,39 +420,27 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 	return nil
 }
 
+var unknownExecNumber math.MaxUint64
+
 // assumes continuity; overwrite allowed
-func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockData, setHead bool, tailProof MultiProof) {
+func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockData, lastExecNumber uint64, setHead bool, tailProof MultiProof) {
 	//fmt.Println("SYNC addCanonicalBlocks", len(blocks), blocks[0].Header.Slot, blocks[len(blocks)-1].Header.Slot, setHead, tailProof.Format != nil)
-	eh, ok := blocks[len(blocks)-1].GetStateValue(BsiExecHead)
-	if !ok { // should not happen, backend should check proof format
-		log.Error("exec header root not found in beacon state", "slot", blocks[0].Header.Slot)
-	}
-	var (
-		execHeader     *types.Header
-		lastExecNumber uint64
-	)
-	if eh != (MerkleValue{}) {
-		if execHeader = bc.execChain.GetHeaderByHash(common.Hash(eh)); execHeader != nil {
-			lastExecNumber = execHeader.Number.Uint64()
-		} else {
-			log.Error("Exec block header not found", "slot", blocks[len(blocks)-1].Header.Slot) //TODO is it too wasteful to always look up by hash?
-		}
-	}
+
 	for i, block := range blocks {
 		if !bc.pruneBlockFormat(block) {
 			log.Error("fetched state proofs insufficient", "slot", block.Header.Slot)
 		}
 		bc.storeBlockData(block)
 		bc.storeSlotByBlockRoot(block)
-		if execHeader == nil && (eh != MerkleValue{}) {
-			if execHeader = bc.execChain.GetHeaderByHash(common.Hash(eh)); execHeader != nil {
-				lastExecNumber = execHeader.Number.Uint64()
-			} else {
-				log.Error("Exec block header not found", "slot", block.Header.Slot) //TODO is it too wasteful to always look up by hash?
+		if bc.execNumberIndexHeadPresent && lastExecNumber != unknownExecNumber && lastExecNumber >= uint64(len(blocks)-1-i) {
+			execNumber := lastExecNumber - uint64(len(blocks)-1-i)
+			bc.storeExecNumberIndex(execNumber, block)
+			if execNumber > bc.execNumberIndexHeadNumber {
+				bc.execNumberIndexHeadNumber = execNumber
 			}
-		}
-		if execHeader != nil { //TODO do not store pre-TTD entries
-			bc.storeBlockDataByExecNumber(lastExecNumber-uint64(len(blocks)-1-i), block)
+			if execNumber < bc.execNumberIndexTailNumber {
+				bc.execNumberIndexTailNumber = execNumber
+			}
 		}
 	}
 
@@ -483,8 +473,16 @@ func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockDa
 	if bc.storedSection != nil {
 		bc.storedSection.tailSlot, bc.storedSection.headSlot = bc.tailLongTerm, bc.storedHead.Header.Slot
 	}
-	if execHeader != nil && bc.processedHead(blocks[len(blocks)-1].BlockRoot, execHeader.Hash()) {
-		bc.callProcessedBeaconHead = blocks[len(blocks)-1].BlockRoot
+
+	if setHead {
+		if lastExecHash, ok := blocks[len(blocks)-1].GetStateValue(BsiExecHead); ok {
+			if lastExecHash != (MerkleValue{}) && bc.processedBeaconHead(blocks[len(blocks)-1].BlockRoot, common.Hash(lastExecHash)) {
+				bc.callProcessedBeaconHead = blocks[len(blocks)-1].BlockRoot
+			}
+		} else {
+			// should not happen, backend should check proof format
+			log.Error("exec header root not found in beacon state", "slot", blocks[0].Header.Slot)
+		}
 	}
 	log.Info("Successful beacon chain insert", "firstSlot", firstSlot, "lastSlot", afterLastSlot-1)
 }
@@ -637,8 +635,11 @@ func (bc *BeaconChain) SubscribeToProcessedHeads(processedCallback func(common.H
 
 // called under chainMu
 // returns true if cb should be called with beaconHead as parameter after releasing lock
-func (bc *BeaconChain) processedHead(beaconHead, execHead common.Hash) bool {
-	//fmt.Println("processedHead", beaconHead, execHead)
+func (bc *BeaconChain) processedBeaconHead(beaconHead, execHead common.Hash) bool {
+	//fmt.Println("processedBeaconHead", beaconHead, execHead)
+	if !bc.execNumberIndexHeadPresent && bc.lastProcessedExecHead == execHead {
+		bc.startExecNumberIndexFromHead(bc.lastProcessedExecNumber)
+	}
 	if bc.processedCallback == nil {
 		return false
 	}
@@ -650,52 +651,11 @@ func (bc *BeaconChain) processedHead(beaconHead, execHead common.Hash) bool {
 	return false
 }
 
-func (bc *BeaconChain) initExecNumberIndex(headExecNumber uint64) {
-	execNumber, block := headExecNumber, bc.storedHead
-	if block == nil {
-		return
-	}
-	bc.storeBlockDataByExecNumber(execNumber, block)
-	bc.execNumberIndexTail, bc.execNumberIndexInitialized = block.Header.Slot, true
-	bc.syncWg.Add(1)
-	go func() {
-		bc.chainMu.Lock()
-	loop:
-		for {
-			if block.Header.Slot <= bc.tailLongTerm || execNumber == 0 {
-				bc.execNumberIndexTailReached = true
-				bc.chainMu.Unlock()
-				log.Info("Finished indexing beacon blocks by exec block number")
-				break loop
-			}
-			if execNumber%1000 == 0 {
-				bc.chainMu.Unlock()
-				select {
-				case <-time.After(time.Millisecond * 10):
-				case <-bc.stopSyncCh:
-					break loop
-				}
-				bc.chainMu.Lock()
-			}
-			block = bc.GetParent(block)
-			if block == nil {
-				bc.chainMu.Unlock()
-				log.Error("Missing beacon block after chain tail")
-				break loop
-			}
-			execNumber--
-			bc.storeBlockDataByExecNumber(execNumber, block)
-			bc.execNumberIndexTail = block.Header.Slot
-		}
-		bc.syncWg.Done()
-	}()
-}
-
 func (bc *BeaconChain) ProcessedExecHead(header *types.Header) {
 	bc.chainMu.Lock()
-	execHead := header.Hash()
-	if !bc.execNumberIndexInitialized && bc.expectedExecHead == execHead {
-		bc.initExecNumberIndex(header.Number.Uint64())
+	execNumber, execHead := header.Number.Uint64(), header.Hash()
+	if !bc.execNumberIndexHeadPresent && bc.expectedExecHead == execHead {
+		bc.startExecNumberIndexFromHead(execNumber)
 	}
 	if bc.processedCallback != nil && bc.waitForExecHead {
 		var reportHead common.Hash
@@ -703,7 +663,7 @@ func (bc *BeaconChain) ProcessedExecHead(header *types.Header) {
 			reportHead = bc.lastProcessedBeaconHead
 			bc.lastReportedBeaconHead = reportHead
 		}
-		bc.lastProcessedExecHead = execHead
+		bc.lastProcessedExecNumber, bc.lastProcessedExecHead = execNumber, execHead
 	}
 	bc.chainMu.Unlock()
 
@@ -729,4 +689,131 @@ func (bc *BeaconChain) debugPrint(id string) {
 		}
 		//fmt.Println("***", id, "*** tail", bc.tailLongTerm)
 	*/
+}
+
+func (bc *BeaconChain) startExecNumberIndexFromHead(headExecNumber uint64) {
+	if bc.storedHead == nil {
+		return
+	}
+	bc.storeExecNumberIndex(headExecNumber, bc.storedHead)
+	bc.execNumberIndexTailSlot, bc.execNumberIndexTailNumber = bc.storedHead.Header.Slot, headExecNumber
+	bc.execNumberIndexHeadPresent, bc.execNumberIndexHeadNumber = true, headExecNumber
+	bc.expandExecNumberIndex(headExecNumber, bc.storedHead)
+}
+
+func (bc *BeaconChain) expandExecNumberIndex(execNumber uint64, block *BlockData) {
+	bc.syncWg.Add(1)
+	go func() {
+		bc.chainMu.Lock()
+	loop:
+		for {
+			if bc.execNumberIndexTailSlot <= bc.tailLongTerm || execNumber == 0 {
+				bc.chainMu.Unlock()
+				log.Info("Finished indexing beacon blocks by exec block number")
+				break loop
+			}
+			if execNumber%1000 == 0 {
+				bc.chainMu.Unlock()
+				select {
+				case <-time.After(time.Millisecond * 10):
+				case <-bc.stopSyncCh:
+					break loop
+				}
+				bc.chainMu.Lock()
+			}
+			block = bc.GetParent(block)
+			if block == nil {
+				bc.chainMu.Unlock()
+				log.Error("Missing beacon block after chain tail")
+				break loop
+			}
+			execNumber--
+			bc.storeExecNumberIndex(execNumber, block)
+			bc.execNumberIndexTailSlot = block.Header.Slot - uint64(len(block.StateRootDiffs))
+		}
+		bc.syncWg.Done()
+	}()
+}
+
+func (bc *BeaconChain) initExecNumberIndex() {
+	bc.chainMu.Lock()
+	defer bc.chainMu.Unlock()
+
+	if bc.headTree == nil {
+		return
+	}
+	tailNumber, tailBlock := bc.firstCanonicalBlockWithExecNumber(0)
+	if tailBlock == nil {
+		return
+	}
+	tailSlot := tailBlock.Header.Slot - uint64(len(tailBlock.StateRootDiffs))
+	if tailSlot < bc.tailLongTerm {
+		log.Warn("Exec number index entry found before beacon chain tail", "exec number index tail", tailSlot, "beacon chain tail", bc.tailLongTerm)
+		for tailSlot < bc.tailLongTerm {
+			bc.deleteExecNumberIndex(tailNumber, tailBlock.StateRoot)
+			tailNumber, tailBlock = bc.firstCanonicalBlockWithExecNumber(0)
+			if tailBlock == nil {
+				return
+			}
+			tailSlot = tailBlock.Header.Slot - uint64(len(tailBlock.StateRootDiffs))
+		}
+	}
+	bc.execNumberIndexTailSlot, bc.execNumberIndexTailNumber = tailSlot, tailNumber
+
+	// find entry for head slot
+	minNumber, minBlock := tailNumber, tailBlock
+	maxNumber := tailNumber + uint64(bc.storedHead.Header.Slot-tailBlock.Header.Slot) // firstCanonicalBlockWithExecNumber ensures that the slot diff is not negative
+	for maxNumber > minNumber {
+		m := (minNumber + maxNumber + 1) / 2
+		if number, block := bc.firstCanonicalBlockWithExecNumber(m); block != nil {
+			minNumber, minBlock = m, block
+		} else {
+			maxNumber = m - 1
+		}
+	}
+	bc.execNumberIndexHeadPresent, bc.execNumberIndexHeadNumber = true, maxNumber
+
+	if !bc.execNumberIndexTailPresent {
+		bc.expandExecNumberIndex(tailNumber, tailBlock)
+	}
+}
+
+func (bc *BeaconChain) firstCanonicalBlockWithExecNumber(start uint64) (execNumber uint64, block *BlockData) {
+	if bc.headTree == nil {
+		return 0, nil
+	}
+	var startEnc [8]byte
+	binary.BigEndian.PutUint64(startEnc[:], start)
+	iter := bc.db.NewIterator(execNumberKey, startEnc[:])
+	defer iter.Release()
+
+	p := len(execNumberKey)
+	for iter.Next() {
+		if len(iter.Key()) != p+40 {
+			log.Error("Invalid exec number entry key length", "length", len(iter.Key()), "expected", p+40)
+			continue
+		}
+		var (
+			slot      uint64
+			stateRoot common.Hash
+		)
+		if err := rlp.DecodeBytes(iter.Value(), &slot); err != nil {
+			log.Error("Error decoding stored exec number entry", "error", err)
+			continue
+		}
+		if slot < bc.tailLongTerm {
+			continue
+		}
+		if slot > bc.headTree.HeadBlock.Header.Slot {
+			return 0, nil
+		}
+		copy(stateRoot[:], iter.Key()[p+8:p+40])
+		if bc.headTree.GetStateRoot(slot) == stateRoot {
+			if block = bc.GetBlockData(slot, stateRoot, false); block != nil {
+				return binary.BigEndian.Uint64(iter.Key()[p : p+8]), block
+			}
+			log.Error("Canonical beacon block missing", "slot", slot, "stateRoot", stateRoot)
+		}
+	}
+	return 0, nil
 }

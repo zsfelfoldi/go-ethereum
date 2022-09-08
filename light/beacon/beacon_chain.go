@@ -39,7 +39,7 @@ var (
 	beaconHeadTailKey       = []byte("ht")  // -> head slot and block root, tail slot values (short term, long term, init data)
 	blockDataKey            = []byte("b-")  // bigEndian64(slot) + stateRoot -> RLP(BlockData)  (available starting from tailLongTerm)
 	blockDataByBlockRootKey = []byte("bb-") // bigEndian64(slot) + blockRoot -> RLP(BlockData)  (not stored in db, only for caching)
-	execNumberKey           = []byte("e-")  // bigEndian64(execNumber) + stateRoot -> RLP(slot)  (available starting from tailLongTerm)
+	execNumberKey           = []byte("e-")  // bigEndian64(execNumber) + stateRoot -> RLP(slot)  (available starting from tailLongTerm after successful init)
 	slotByBlockRootKey      = []byte("sb-") // blockRoot -> RLP(slot)  (available for init data blocks and all blocks starting from tailShortTerm)
 
 	StateProofFormats   [HspFormatCount]indexMapFormat
@@ -239,6 +239,12 @@ type BeaconChain struct {
 
 	execNumberCacheMu sync.RWMutex //TODO ???
 	execNumberCache   *lru.Cache   // uint64(execNumber) -> []struct{slot, stateRoot}
+	// execNumberIndex fields are locked by chainMu and are always consistent with storedHead, headTree and TailLongTerm
+	// These fields are not explicitly stored but initialized at startup based on the first canonical exec number index entry found in the db.
+	execNumberIndexHeadPresent bool   // index available for storedHead (== head of storedSection == headTree.HeadBlock)
+	execNumberIndexHeadNumber  uint64 // exec block number belonging to storedHead (valid if execNumberIndexHeadPresent is true)
+	execNumberIndexTailSlot    uint64 // index available for all slots >= execNumberIndexTailSlot of the canonical chain defined by headTree (valid if execNumberIndexHeadPresent is true)
+	execNumberIndexTailNumber  uint64 // exec block number belonging to execNumberIndexTailSlot (valid if execNumberIndexHeadPresent is true)
 
 	chainMu                               sync.RWMutex
 	storedHead                            *BlockData
@@ -299,6 +305,7 @@ func NewBeaconChain(dataSource BeaconDataSource, historicSource HistoricDataSour
 		// clear everything if head info is missing to ensure that the chain is not initialized with partially remaining data
 		bc.clearDb()
 	}
+	bc.initExecNumberIndex()
 	return bc
 }
 
@@ -499,10 +506,15 @@ func (bc *BeaconChain) GetBlockDataByExecNumber(ht *HistoricTree, execNumber uin
 	return nil
 }
 
-func (bc *BeaconChain) storeBlockDataByExecNumber(execNumber uint64, blockData *BlockData) {
+func (bc *BeaconChain) storeExecNumberIndex(execNumber uint64, blockData *BlockData) {
 	bc.execNumberCache.Remove(execNumber)
 	slotEnc, _ := rlp.EncodeToBytes(&blockData.Header.Slot)
 	bc.db.Put(getExecNumberKey(execNumber, blockData.StateRoot, true), slotEnc)
+}
+
+func (bc *BeaconChain) deleteExecNumberIndex(execNumber uint64, stateRoot common.Hash) {
+	bc.execNumberCache.Remove(execNumber)
+	bc.db.Delete(getExecNumberKey(execNumber, stateRoot, true))
 }
 
 func getSlotByBlockRootKey(blockRoot common.Hash) []byte {
