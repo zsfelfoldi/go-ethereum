@@ -148,7 +148,7 @@ func (bc *BeaconChain) syncWorker() {
 			}
 			if err != nil /*&& err != light.ErrNoPeers && err != context.Canceled*/ {
 				blocks = nil
-				log.Warn("Beacon data source failed", "error", err)
+				log.Warn("Beacon block data request failed", "tail", cs.tailSlot, "head", cs.headSlot, "error", err)
 			}
 			if blocks != nil && (len(blocks) == 0 || blocks[0].Header.Slot+1-blocks[0].ParentSlotDiff > cs.tailSlot || blocks[len(blocks)-1].Header.Slot < cs.headSlot) {
 				blocks = nil
@@ -524,7 +524,7 @@ func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockDa
 			log.Error("exec header root not found in beacon state", "slot", blocks[0].Header.Slot)
 		}
 	}
-	log.Info("Successful beacon chain insert", "firstSlot", firstSlot, "lastSlot", afterLastSlot-1)
+	log.Info("Inserted beacon blocks", "first", firstSlot, "last", afterLastSlot-1, "tail", bc.tailLongTerm, "head", bc.storedHead.Header.Slot)
 }
 
 func (bc *BeaconChain) initWithSection(cs *chainSection) bool { // ha a result true, a chain inicializalva van, storedSection != nil

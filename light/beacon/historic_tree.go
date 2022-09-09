@@ -228,10 +228,10 @@ func (bc *BeaconChain) updateTreeMap() {
 }
 
 func blockAndStateRoots(parentHeader Header, blocks []*BlockData) (firstSlot uint64, blockRoots, stateRoots MerkleValues) {
-	if len(blocks) == 0 {
-		return uint64(parentHeader.Slot), nil, nil
-	}
 	firstSlot = uint64(parentHeader.Slot)
+	if len(blocks) == 0 {
+		return
+	}
 	parentStateRoot := parentHeader.StateRoot
 	rootCount := uint64(blocks[len(blocks)-1].Header.Slot) - firstSlot
 	//fmt.Println("blockAndStateRoots", blocks[0].Header.Slot, len(blocks[0].StateRootDiffs), firstSlot, rootCount)

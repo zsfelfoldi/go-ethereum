@@ -315,7 +315,7 @@ func NewBeaconChain(dataSource BeaconDataSource, historicSource HistoricDataSour
 					break
 				}
 				if tailParent := bc.GetParent(tailBlock); tailParent != nil {
-					bc.tailParentHeader = tailBlock.FullHeader()
+					bc.tailParentHeader = tailParent.FullHeader()
 					tailSlot = uint64(bc.tailParentHeader.Slot) + 1
 					if tailSlot != bc.tailLongTerm {
 						log.Error("Beacon chain tail does not match stored tail slot", "stored", bc.tailLongTerm, "found", tailSlot)
