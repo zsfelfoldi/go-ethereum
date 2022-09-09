@@ -493,21 +493,19 @@ func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockDa
 
 	headTree := bc.makeChildTree()
 	headTree.addRoots(firstSlot, blockRoots, stateRoots, setHead, tailProof)
-	afterLastSlot := firstSlot + uint64(len(blockRoots))
+	lastSlot := blocks[len(blocks)-1].Header.Slot
 	if setHead {
 		bc.storedHead = blocks[len(blocks)-1]
 		if bc.storedSection != nil {
 			bc.storedSection.headSlot = bc.storedHead.Header.Slot
 		}
-		if uint64(bc.storedHead.Header.Slot) > afterLastSlot {
-			afterLastSlot = uint64(bc.storedHead.Header.Slot)
+		if uint64(bc.storedHead.Header.Slot) > lastSlot {
+			lastSlot = uint64(bc.storedHead.Header.Slot)
 		}
 		headTree.HeadBlock = bc.storedHead
 	}
 	headTree.verifyRoots()
-	if afterLastSlot > firstSlot {
-		bc.updateConstraints(firstSlot, afterLastSlot-1)
-	}
+	bc.updateConstraints(tailSlot, lastSlot)
 	batch := bc.db.NewBatch()
 	bc.commitHistoricTree(batch, headTree)
 	bc.storeHeadTail(batch)
@@ -524,7 +522,7 @@ func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockDa
 			log.Error("exec header root not found in beacon state", "slot", blocks[0].Header.Slot)
 		}
 	}
-	log.Info("Inserted beacon blocks", "first", firstSlot, "last", afterLastSlot-1, "tail", bc.tailLongTerm, "head", bc.storedHead.Header.Slot)
+	log.Info("Inserted beacon blocks", "section tail", tailSlot, "section head", lastSlot, "chain tail", bc.tailLongTerm, "chain head", bc.storedHead.Header.Slot)
 }
 
 func (bc *BeaconChain) initWithSection(cs *chainSection) bool { // ha a result true, a chain inicializalva van, storedSection != nil
