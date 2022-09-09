@@ -143,7 +143,7 @@ func (ht *HistoricTree) addRoots(firstSlot uint64, blockRoots, stateRoots Merkle
 func (ht *HistoricTree) verifyRoots() {
 	if stateRootsRoot, ok := ht.HeadBlock.GetStateValue(BsiStateRoots); ok {
 		if ht.state.get(ht.HeadBlock.Header.Slot>>13, 1) != stateRootsRoot {
-			log.Error("State roots root hash does not match", "local tree root", common.Hash(ht.state.get(ht.HeadBlock.Header.Slot>>13, 1)), "head block historicRoots", common.Hash(stateRootsRoot))
+			log.Error("State roots root hash does not match", "local tree root", common.Hash(ht.state.get(ht.HeadBlock.Header.Slot>>13, 1)), "head block stateRoots", common.Hash(stateRootsRoot))
 		} else {
 			//fmt.Println("*** state root match ***")
 		}
