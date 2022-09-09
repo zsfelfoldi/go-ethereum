@@ -19,6 +19,7 @@ package beacon
 import (
 	"context"
 	//"fmt"
+	"encoding/binary"
 	"math"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 const (
@@ -420,11 +422,34 @@ func (bc *BeaconChain) nextRequest() *chainSection {
 	return nil
 }
 
-var unknownExecNumber math.MaxUint64
+var unknownExecNumber = uint64(math.MaxUint64)
 
 // assumes continuity; overwrite allowed
-func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockData, lastExecNumber uint64, setHead bool, tailProof MultiProof) {
+func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockData, setHead bool, tailProof MultiProof) {
 	//fmt.Println("SYNC addCanonicalBlocks", len(blocks), blocks[0].Header.Slot, blocks[len(blocks)-1].Header.Slot, setHead, tailProof.Format != nil)
+
+	lastExecNumber := unknownExecNumber
+	if bc.execNumberIndexHeadPresent {
+		if setHead {
+			lastRemainingNumber := bc.execNumberIndexHeadNumber // last remaining exec number of the old chain
+			block := bc.storedHead
+			for block != nil && block.Header.Slot > uint64(parentHeader.Slot) {
+				block = bc.GetParent(block)
+				lastRemainingNumber--
+				if lastRemainingNumber < bc.execNumberIndexTailNumber {
+					bc.execNumberIndexHeadPresent = false // de-initialize exec number index if rolled back before tail
+					block = nil
+				}
+			}
+			if block != nil && block.BlockRoot == parentHeader.Hash() {
+				lastExecNumber = lastRemainingNumber + uint64(len(blocks))
+			}
+		} else {
+			if bc.execNumberIndexTailSlot == bc.tailLongTerm && bc.storedSection.parentHeader.Hash() == blocks[len(blocks)-1].BlockRoot && bc.execNumberIndexTailNumber > 0 {
+				lastExecNumber = bc.execNumberIndexTailNumber - 1
+			}
+		}
+	}
 
 	for i, block := range blocks {
 		if !bc.pruneBlockFormat(block) {
@@ -432,7 +457,7 @@ func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockDa
 		}
 		bc.storeBlockData(block)
 		bc.storeSlotByBlockRoot(block)
-		if bc.execNumberIndexHeadPresent && lastExecNumber != unknownExecNumber && lastExecNumber >= uint64(len(blocks)-1-i) {
+		if lastExecNumber != unknownExecNumber && lastExecNumber >= uint64(len(blocks)-1-i) {
 			execNumber := lastExecNumber - uint64(len(blocks)-1-i)
 			bc.storeExecNumberIndex(execNumber, block)
 			if execNumber > bc.execNumberIndexHeadNumber {
@@ -657,8 +682,8 @@ func (bc *BeaconChain) ProcessedExecHead(header *types.Header) {
 	if !bc.execNumberIndexHeadPresent && bc.expectedExecHead == execHead {
 		bc.startExecNumberIndexFromHead(execNumber)
 	}
+	var reportHead common.Hash
 	if bc.processedCallback != nil && bc.waitForExecHead {
-		var reportHead common.Hash
 		if bc.expectedExecHead == execHead && bc.lastReportedBeaconHead != bc.lastProcessedBeaconHead {
 			reportHead = bc.lastProcessedBeaconHead
 			bc.lastReportedBeaconHead = reportHead
@@ -698,10 +723,10 @@ func (bc *BeaconChain) startExecNumberIndexFromHead(headExecNumber uint64) {
 	bc.storeExecNumberIndex(headExecNumber, bc.storedHead)
 	bc.execNumberIndexTailSlot, bc.execNumberIndexTailNumber = bc.storedHead.Header.Slot, headExecNumber
 	bc.execNumberIndexHeadPresent, bc.execNumberIndexHeadNumber = true, headExecNumber
-	bc.expandExecNumberIndex(headExecNumber, bc.storedHead)
+	bc.extendExecNumberIndex(headExecNumber, bc.storedHead)
 }
 
-func (bc *BeaconChain) expandExecNumberIndex(execNumber uint64, block *BlockData) {
+func (bc *BeaconChain) extendExecNumberIndex(execNumber uint64, block *BlockData) {
 	bc.syncWg.Add(1)
 	go func() {
 		bc.chainMu.Lock()
@@ -720,6 +745,11 @@ func (bc *BeaconChain) expandExecNumberIndex(execNumber uint64, block *BlockData
 					break loop
 				}
 				bc.chainMu.Lock()
+			}
+			if !bc.execNumberIndexHeadPresent {
+				// index has been de-initialized by a rollback, next init starts a new goroutine
+				bc.chainMu.Unlock()
+				break loop
 			}
 			block = bc.GetParent(block)
 			if block == nil {
@@ -761,20 +791,19 @@ func (bc *BeaconChain) initExecNumberIndex() {
 	bc.execNumberIndexTailSlot, bc.execNumberIndexTailNumber = tailSlot, tailNumber
 
 	// find entry for head slot
-	minNumber, minBlock := tailNumber, tailBlock
-	maxNumber := tailNumber + uint64(bc.storedHead.Header.Slot-tailBlock.Header.Slot) // firstCanonicalBlockWithExecNumber ensures that the slot diff is not negative
+	minNumber, maxNumber := tailNumber, tailNumber+uint64(bc.storedHead.Header.Slot-tailBlock.Header.Slot) // firstCanonicalBlockWithExecNumber ensures that the slot diff is not negative
 	for maxNumber > minNumber {
 		m := (minNumber + maxNumber + 1) / 2
 		if number, block := bc.firstCanonicalBlockWithExecNumber(m); block != nil {
-			minNumber, minBlock = m, block
+			minNumber = number
 		} else {
 			maxNumber = m - 1
 		}
 	}
 	bc.execNumberIndexHeadPresent, bc.execNumberIndexHeadNumber = true, maxNumber
 
-	if !bc.execNumberIndexTailPresent {
-		bc.expandExecNumberIndex(tailNumber, tailBlock)
+	if bc.execNumberIndexTailSlot > bc.tailLongTerm {
+		bc.extendExecNumberIndex(tailNumber, tailBlock)
 	}
 }
 
