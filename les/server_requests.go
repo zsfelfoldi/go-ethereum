@@ -885,10 +885,10 @@ func (s *BeaconRequestServer) handleGetBeaconData(msg Decoder) (serveRequestFn, 
 
 		var firstSlot uint64
 		tailSlot, _ := bc.GetTailSlots()
-		if lastSlot > r.Length+tailSlot {
+		if lastSlot >= r.Length+tailSlot {
 			firstSlot = lastSlot - r.Length + 1
 		} else {
-			firstSlot = tailSlot + 1
+			firstSlot = tailSlot
 		}
 
 		var lastBlock *beacon.BlockData

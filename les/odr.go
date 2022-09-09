@@ -18,6 +18,7 @@ package les
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -384,5 +385,6 @@ func (odr *LesOdr) BeaconTailSlots() (uint64, uint64) {
 	beaconTailLongTerm, beaconTailShortTerm := odr.beaconTailLongTerm, odr.beaconTailShortTerm
 	odr.beaconTailLock.RUnlock()
 
+	fmt.Println("BeaconTailSlots:", beaconTailLongTerm, beaconTailShortTerm)
 	return beaconTailLongTerm, beaconTailShortTerm
 }
