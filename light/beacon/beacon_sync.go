@@ -91,7 +91,7 @@ func (bc *BeaconChain) SyncToHead(head Header, syncedCh chan bool) {
 
 func (bc *BeaconChain) StartSyncing() {
 	if bc.storedHead != nil {
-		bc.storedSection = &chainSection{headSlot: uint64(bc.storedHead.Header.Slot), tailSlot: bc.tailLongTerm}
+		bc.storedSection = &chainSection{headSlot: uint64(bc.storedHead.Header.Slot), tailSlot: bc.tailLongTerm, parentHeader: bc.tailParentHeader}
 		bc.updateConstraints(bc.tailLongTerm, uint64(bc.storedHead.Header.Slot))
 	}
 	bc.newHeadCh = make(chan struct{})
@@ -474,6 +474,21 @@ func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockDa
 	//fmt.Println("addCanonicalBlocks", tailSlot, bc.tailLongTerm)
 	if tailSlot < bc.tailLongTerm {
 		bc.tailLongTerm = tailSlot
+		if bc.storedSection != nil {
+			bc.storedSection.tailSlot, bc.storedSection.parentHeader = bc.tailLongTerm, parentHeader
+		}
+		bc.storeBlockData(&BlockData{
+			Header: HeaderWithoutState{
+				Slot:          uint64(parentHeader.Slot),
+				ProposerIndex: uint(parentHeader.ProposerIndex),
+				ParentRoot:    parentHeader.ParentRoot,
+				BodyRoot:      parentHeader.BodyRoot,
+			},
+			ProofFormat: 0,
+			StateProof:  MerkleValues{MerkleValue(parentHeader.StateRoot)},
+			BlockRoot:   parentHeader.Hash(),
+			StateRoot:   parentHeader.StateRoot,
+		})
 	}
 
 	headTree := bc.makeChildTree()
@@ -481,6 +496,9 @@ func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockDa
 	afterLastSlot := firstSlot + uint64(len(blockRoots))
 	if setHead {
 		bc.storedHead = blocks[len(blocks)-1]
+		if bc.storedSection != nil {
+			bc.storedSection.headSlot = bc.storedHead.Header.Slot
+		}
 		if uint64(bc.storedHead.Header.Slot) > afterLastSlot {
 			afterLastSlot = uint64(bc.storedHead.Header.Slot)
 		}
@@ -495,9 +513,6 @@ func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockDa
 	bc.storeHeadTail(batch)
 	batch.Write()
 	bc.updateTreeMap()
-	if bc.storedSection != nil {
-		bc.storedSection.tailSlot, bc.storedSection.headSlot = bc.tailLongTerm, bc.storedHead.Header.Slot
-	}
 
 	if setHead {
 		if lastExecHash, ok := blocks[len(blocks)-1].GetStateValue(BsiExecHead); ok {

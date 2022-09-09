@@ -250,6 +250,7 @@ type BeaconChain struct {
 	storedHead                            *BlockData
 	headTree                              *HistoricTree
 	tailShortTerm, tailLongTerm           uint64 // shortTerm >= longTerm
+	tailParentHeader                      Header // Slot == tailLongTerm-1 (empty if tailLongTerm == 0)
 	blockRoots, stateRoots, historicRoots *merkleListVersion
 
 	historicMu    sync.RWMutex
@@ -304,6 +305,34 @@ func NewBeaconChain(dataSource BeaconDataSource, historicSource HistoricDataSour
 	if bc.storedHead == nil {
 		// clear everything if head info is missing to ensure that the chain is not initialized with partially remaining data
 		bc.clearDb()
+	}
+	if bc.storedHead != nil {
+		//var tailParent *BlockData
+		tailSlot := bc.tailLongTerm
+		for {
+			if tailBlock := bc.firstCanonicalBlock(tailSlot); tailBlock != nil {
+				if tailBlock.Header.Slot == 0 {
+					break
+				}
+				if tailParent := bc.GetParent(tailBlock); tailParent != nil {
+					bc.tailParentHeader = tailBlock.FullHeader()
+					tailSlot = uint64(bc.tailParentHeader.Slot) + 1
+					if tailSlot != bc.tailLongTerm {
+						log.Error("Beacon chain tail does not match stored tail slot")
+						bc.tailLongTerm = tailSlot
+						if bc.tailShortTerm < tailSlot {
+							bc.tailShortTerm = tailSlot
+						}
+					}
+					break
+				}
+				tailSlot = tailBlock.Header.Slot + 1
+			} else {
+				log.Error("Beacon chain tail not found, resetting database")
+				bc.clearDb()
+				break
+			}
+		}
 	}
 	bc.initExecNumberIndex()
 	return bc
@@ -728,6 +757,24 @@ func (bc *BeaconChain) getGenesisData() (genesisData, bool) {
 		}
 	}
 	return genesisData{}, false
+}
+
+func (bc *BeaconChain) firstCanonicalBlock(startSlot uint64) *BlockData {
+	var slotEnc [8]byte
+	binary.BigEndian.PutUint64(slotEnc[:], startSlot)
+	iter := bc.db.NewIterator(blockDataKey, slotEnc[:])
+	for iter.Next() {
+		block := new(BlockData)
+		if err := rlp.DecodeBytes(iter.Value(), block); err == nil {
+			block.CalculateRoots()
+			if bc.isCanonical(block) {
+				return block
+			}
+		} else {
+			log.Error("Error decoding beacon block found by iterator", "key", iter.Key(), "value", iter.Value(), "error", err)
+		}
+	}
+	return nil
 }
 
 func (bc *BeaconChain) isCanonical(block *BlockData) bool {
