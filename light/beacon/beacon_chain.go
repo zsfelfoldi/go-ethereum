@@ -614,6 +614,7 @@ func (bc *BeaconChain) pruneBlockFormat(block *BlockData) bool {
 		return false
 	}
 	format := bc.proofFormatForBlock(block)
+	//fmt.Println("Pruning block at slot", block.Header.Slot, "old format", block.ProofFormat, "pruned format", format, "tailLongTerm", bc.tailLongTerm, "tailShortTerm", bc.tailShortTerm)
 	if format == block.ProofFormat {
 		return true
 	}

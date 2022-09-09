@@ -451,24 +451,6 @@ func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockDa
 		}
 	}
 
-	for i, block := range blocks {
-		if !bc.pruneBlockFormat(block) {
-			log.Error("fetched state proofs insufficient", "slot", block.Header.Slot)
-		}
-		bc.storeBlockData(block)
-		bc.storeSlotByBlockRoot(block)
-		if lastExecNumber != unknownExecNumber && lastExecNumber >= uint64(len(blocks)-1-i) {
-			execNumber := lastExecNumber - uint64(len(blocks)-1-i)
-			bc.storeExecNumberIndex(execNumber, block)
-			if execNumber > bc.execNumberIndexHeadNumber {
-				bc.execNumberIndexHeadNumber = execNumber
-			}
-			if execNumber < bc.execNumberIndexTailNumber {
-				bc.execNumberIndexTailNumber = execNumber
-			}
-		}
-	}
-
 	firstSlot, blockRoots, stateRoots := blockAndStateRoots(parentHeader, blocks)
 	tailSlot := blocks[0].Header.Slot - uint64(len(blocks[0].StateRootDiffs))
 	//fmt.Println("addCanonicalBlocks", tailSlot, bc.tailLongTerm)
@@ -489,6 +471,24 @@ func (bc *BeaconChain) addCanonicalBlocks(parentHeader Header, blocks []*BlockDa
 			BlockRoot:   parentHeader.Hash(),
 			StateRoot:   parentHeader.StateRoot,
 		})
+	}
+
+	for i, block := range blocks {
+		if !bc.pruneBlockFormat(block) {
+			log.Error("fetched state proofs insufficient", "slot", block.Header.Slot)
+		}
+		bc.storeBlockData(block)
+		bc.storeSlotByBlockRoot(block)
+		if lastExecNumber != unknownExecNumber && lastExecNumber >= uint64(len(blocks)-1-i) {
+			execNumber := lastExecNumber - uint64(len(blocks)-1-i)
+			bc.storeExecNumberIndex(execNumber, block)
+			if execNumber > bc.execNumberIndexHeadNumber {
+				bc.execNumberIndexHeadNumber = execNumber
+			}
+			if execNumber < bc.execNumberIndexTailNumber {
+				bc.execNumberIndexTailNumber = execNumber
+			}
+		}
 	}
 
 	headTree := bc.makeChildTree()

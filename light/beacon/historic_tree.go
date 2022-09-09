@@ -237,6 +237,7 @@ func blockAndStateRoots(parentHeader Header, blocks []*BlockData) (firstSlot uin
 	//fmt.Println("blockAndStateRoots", blocks[0].Header.Slot, len(blocks[0].StateRootDiffs), firstSlot, rootCount)
 	blockRoots, stateRoots = make(MerkleValues, rootCount), make(MerkleValues, rootCount)
 	var rootIndex int
+	fmt.Println("blockAndStateRoots   parent slot", parentHeader.Slot, "rootCount", rootCount)
 	for _, block := range blocks {
 		blockRoots[rootIndex] = MerkleValue(block.Header.ParentRoot)
 		stateRoots[rootIndex] = MerkleValue(parentStateRoot)
@@ -246,6 +247,7 @@ func blockAndStateRoots(parentHeader Header, blocks []*BlockData) (firstSlot uin
 			stateRoots[rootIndex] = stateRoot
 			rootIndex++
 		}
+		//fmt.Println(" block slot", block.Header.Slot, "stateRootDiffs", len(block.StateRootDiffs), "rootIndex", rootIndex)
 		parentStateRoot = block.StateRoot
 		//fmt.Println(" rootIndex", rootIndex, block.Header.Slot, len(block.StateRootDiffs), block.ParentSlotDiff)
 	}

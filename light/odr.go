@@ -209,7 +209,7 @@ type BeaconDataRequest struct {
 	LastSlot uint64 // last slot of requested range (reference block is used if LastSlot is higher than its slot number)
 	Length   uint64 // number of requested slots
 
-	RefBeaconHead beacon.Header
+	//RefBeaconHead beacon.Header
 	TailShortTerm uint64 // HspShortTerm state data is expected to be available and returned in Blocks starting from this slot
 	// Note that for the first block ParentSlotDiff and StateRootDiffs are not proven; retrieving the
 	// range ending with the previous slot will update it if necessary, therefore they are guaranteed valid
@@ -235,9 +235,9 @@ type ExecHeadersRequest struct {
 	Amount         uint64 // number of requested exec headers
 	FullBlocks     bool
 
-	RefBeaconHead beacon.Header
-	ExecHeaders   []*types.Header
-	ExecBlocks    []*types.Block
+	//RefBeaconHead beacon.Header
+	ExecHeaders []*types.Header
+	ExecBlocks  []*types.Block
 }
 
 func (req *ExecHeadersRequest) StoreResult(db ethdb.Database) {}

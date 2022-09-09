@@ -640,6 +640,10 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 	}
 	reply := msg.Obj.(BeaconDataResponse)
 
+	/*fmt.Println("Validating BeaconDataRequest")
+	fmt.Println(" refHead:", beaconHeader)
+	fmt.Println(" request:", request)
+	fmt.Println(" reply:", reply)*/
 	var (
 		firstSlot       uint64      // first slot of returned range
 		firstParentRoot common.Hash // parent root of first returned block
@@ -761,7 +765,7 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 	slot := firstSlot
 	//fmt.Println("*** slot range")
 	for i, format := range reply.StateProofFormats {
-		//fmt.Println(" proofFormat", format, "proofLen", len(*target[i]))
+		//fmt.Println(" proofFormat", format, "proofLen", len(*target[i]), "len(stateRootDiffs)", len(stateRootDiffs))
 		if format == 0 {
 			stateRootDiffs = append(stateRootDiffs, (*target[i])[0])
 		} else {
@@ -787,10 +791,10 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 		slot++
 	}
 
-	//fmt.Println("*** blocks")
-	//for _, block := range blocks {
-	//fmt.Println(" slot", block.Header.Slot, "proofFormat", block.ProofFormat, "proofLen", len(block.StateProof))
-	//}
+	/*fmt.Println("*** blocks")
+	for _, block := range blocks {
+		fmt.Println(" slot", block.Header.Slot, "proofFormat", block.ProofFormat, "len(stateRootDiffs)", len(block.StateRootDiffs), "parentSlotDiff", block.ParentSlotDiff)
+	}*/
 
 	// compare latest_header root in last block's state with the reconstructed header
 	lastBlock := blocks[len(blocks)-1]
@@ -804,6 +808,7 @@ func (request *BeaconDataRequest) Validate(db ethdb.Database, beaconHeader beaco
 	}
 
 	request.ParentHeader, request.Blocks = reply.ParentHeader, blocks
+	//fmt.Println(" request after validation:", request)
 	return nil
 }
 
