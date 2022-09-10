@@ -333,6 +333,7 @@ func NewBeaconChain(dataSource BeaconDataSource, historicSource HistoricDataSour
 				break
 			}
 		}
+		log.Info("Beacon chain initialized", "tailSlot", bc.tailLongTerm, "headSlot", bc.storedHead.Header.Slot)
 	}
 	bc.initExecNumberIndex()
 	return bc
