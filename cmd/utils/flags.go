@@ -47,12 +47,14 @@ import (
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethdb/remotedb"
-	"github.com/ethereum/go-ethereum/ethstats"
+
+	//"github.com/ethereum/go-ethereum/ethstats"
 	"github.com/ethereum/go-ethereum/graphql"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/internal/flags"
 	"github.com/ethereum/go-ethereum/les"
-	lescatalyst "github.com/ethereum/go-ethereum/les/catalyst"
+
+	//	lescatalyst "github.com/ethereum/go-ethereum/les/catalyst"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/metrics/exp"
@@ -298,23 +300,6 @@ var (
 		Value:    ethconfig.Defaults.LightPeers,
 		Category: flags.LightCategory,
 	}
-	UltraLightServersFlag = &cli.StringFlag{
-		Name:     "ulc.servers",
-		Usage:    "List of trusted ultra-light servers",
-		Value:    strings.Join(ethconfig.Defaults.UltraLightServers, ","),
-		Category: flags.LightCategory,
-	}
-	UltraLightFractionFlag = &cli.IntFlag{
-		Name:     "ulc.fraction",
-		Usage:    "Minimum % of trusted ultra-light servers required to announce a new head",
-		Value:    ethconfig.Defaults.UltraLightFraction,
-		Category: flags.LightCategory,
-	}
-	UltraLightOnlyAnnounceFlag = &cli.BoolFlag{
-		Name:     "ulc.onlyannounce",
-		Usage:    "Ultra light server sends announcements only",
-		Category: flags.LightCategory,
-	}
 	LightNoPruneFlag = &cli.BoolFlag{
 		Name:     "light.nopruning",
 		Usage:    "Disable ancient light chain data pruning",
@@ -325,7 +310,18 @@ var (
 		Usage:    "Enables serving light clients before syncing",
 		Category: flags.LightCategory,
 	}
-
+	BeaconConfigFlag = &cli.StringFlag{
+		Name:  "beacon.config",
+		Usage: "Beacon chain config YAML file",
+	}
+	BeaconCheckpointFlag = &cli.StringFlag{
+		Name:  "beacon.checkpoint",
+		Usage: "Beacon chain weak subjectivity checkpoint block hash",
+	}
+	BeaconApiFlag = &cli.StringFlag{
+		Name:  "beacon.api",
+		Usage: "Beacon node light client API URL (currently only supports LodeStar)",
+	}
 	// Ethash settings
 	EthashCacheDirFlag = &flags.DirectoryFlag{
 		Name:     "ethash.cachedir",
@@ -1265,24 +1261,20 @@ func setLes(ctx *cli.Context, cfg *ethconfig.Config) {
 	if ctx.IsSet(LightMaxPeersFlag.Name) {
 		cfg.LightPeers = ctx.Int(LightMaxPeersFlag.Name)
 	}
-	if ctx.IsSet(UltraLightServersFlag.Name) {
-		cfg.UltraLightServers = strings.Split(ctx.String(UltraLightServersFlag.Name), ",")
-	}
-	if ctx.IsSet(UltraLightFractionFlag.Name) {
-		cfg.UltraLightFraction = ctx.Int(UltraLightFractionFlag.Name)
-	}
-	if cfg.UltraLightFraction <= 0 && cfg.UltraLightFraction > 100 {
-		log.Error("Ultra light fraction is invalid", "had", cfg.UltraLightFraction, "updated", ethconfig.Defaults.UltraLightFraction)
-		cfg.UltraLightFraction = ethconfig.Defaults.UltraLightFraction
-	}
-	if ctx.IsSet(UltraLightOnlyAnnounceFlag.Name) {
-		cfg.UltraLightOnlyAnnounce = ctx.Bool(UltraLightOnlyAnnounceFlag.Name)
-	}
 	if ctx.IsSet(LightNoPruneFlag.Name) {
 		cfg.LightNoPrune = ctx.Bool(LightNoPruneFlag.Name)
 	}
 	if ctx.IsSet(LightNoSyncServeFlag.Name) {
 		cfg.LightNoSyncServe = ctx.Bool(LightNoSyncServeFlag.Name)
+	}
+	if ctx.IsSet(BeaconConfigFlag.Name) {
+		cfg.BeaconConfig = ctx.String(BeaconConfigFlag.Name)
+	}
+	if ctx.IsSet(BeaconCheckpointFlag.Name) {
+		cfg.BeaconCheckpoint = ctx.String(BeaconCheckpointFlag.Name)
+	}
+	if ctx.IsSet(BeaconApiFlag.Name) {
+		cfg.BeaconApi = ctx.String(BeaconApiFlag.Name)
 	}
 }
 
@@ -1993,9 +1985,9 @@ func RegisterEthService(stack *node.Node, cfg *ethconfig.Config) (ethapi.Backend
 			Fatalf("Failed to register the Ethereum service: %v", err)
 		}
 		stack.RegisterAPIs(tracers.APIs(backend.ApiBackend))
-		if err := lescatalyst.Register(stack, backend); err != nil {
-			Fatalf("Failed to register the Engine API service: %v", err)
-		}
+		/*		if err := lescatalyst.Register(stack, backend); err != nil {
+				Fatalf("Failed to register the Engine API service: %v", err)
+			}*/
 		return backend.ApiBackend, nil
 	}
 	backend, err := eth.New(stack, cfg)
@@ -2017,9 +2009,9 @@ func RegisterEthService(stack *node.Node, cfg *ethconfig.Config) (ethapi.Backend
 
 // RegisterEthStatsService configures the Ethereum Stats daemon and adds it to the node.
 func RegisterEthStatsService(stack *node.Node, backend ethapi.Backend, url string) {
-	if err := ethstats.New(stack, backend, backend.Engine(), url); err != nil {
+	/*if err := ethstats.New(stack, backend, backend.Engine(), url); err != nil {
 		Fatalf("Failed to register the Ethereum Stats service: %v", err)
-	}
+	}*/
 }
 
 // RegisterGraphQLService adds the GraphQL API to the node.

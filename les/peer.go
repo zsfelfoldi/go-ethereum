@@ -34,6 +34,7 @@ import (
 	vfc "github.com/ethereum/go-ethereum/les/vflux/client"
 	vfs "github.com/ethereum/go-ethereum/les/vflux/server"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -147,9 +148,10 @@ type peer struct {
 	// fields related to provided service
 
 	// Status fields
-	chainSince, chainRecent uint64 // The range of chain server peer can serve.		//TODO remove "recent"?
-	stateSince, stateRecent uint64 // The range of state server peer can serve.
-	txHistory               uint64 // The length of available tx history, 0 means all, 1 means disabled
+	chainSince, chainRecent                 uint64 // The range of chain server peer can serve.		//TODO remove "recent"?
+	stateSince, stateRecent                 uint64 // The range of state server peer can serve.
+	txHistory                               uint64 // The length of available tx history, 0 means all, 1 means disabled
+	beaconTailLongTerm, beaconTailShortTerm uint64
 
 	// Advertised checkpoint fields
 	checkpointNumber uint64                   // The block height which the checkpoint is registered.
@@ -166,6 +168,9 @@ type peer struct {
 
 	// Test callback hooks
 	hasBlockHook func(common.Hash, uint64, bool) bool // Used to determine whether the server has the specified block.
+
+	updateInfo *beacon.UpdateInfo
+	ulcInfo    light.UlcPeerInfo
 
 	// fields related to received service
 
@@ -534,6 +539,32 @@ func (p *peer) sendTxs(reqID uint64, amount int, txs rlp.RawValue) error {
 	return p.sendRequest(SendTxV2Msg, reqID, txs, amount)
 }
 
+func (p *peer) requestBeaconInit(reqID uint64, checkpoint common.Hash) error {
+	p.Log().Debug("Requesting beacon init data")
+	return p.sendRequest(GetBeaconInitMsg, reqID, checkpoint, 1)
+}
+
+func (p *peer) requestBeaconData(packet GetBeaconDataPacket) error {
+	p.Log().Debug("Requesting beacon block data", "length", packet.Length)
+	return p.sendRequestPacket(GetBeaconDataMsg, packet.ReqID, packet, int(packet.Length))
+}
+
+func (p *peer) requestExecHeaders(packet GetExecHeadersPacket) error {
+	p.Log().Debug("Requesting exec headers", "amount", packet.Amount)
+	return p.sendRequestPacket(GetExecHeadersMsg, packet.ReqID, packet, int(packet.Amount))
+}
+
+func (p *peer) requestCommitteeProofs(id uint64, req beacon.CommitteeRequest) error {
+	p.Log().Debug("Requesting committee proofs", "updates", len(req.UpdatePeriods), "committees", len(req.CommitteePeriods))
+	return p.sendRequestPacket(GetCommitteeProofsMsg, id, GetCommitteeProofsPacket{
+		ReqID: id,
+		CommitteeRequest: beacon.CommitteeRequest{
+			UpdatePeriods:    req.UpdatePeriods,
+			CommitteePeriods: req.CommitteePeriods,
+		},
+	}, len(req.UpdatePeriods)+len(req.CommitteePeriods)*CommitteeCostFactor)
+}
+
 // waitBefore implements distPeer interface
 func (p *peer) waitBefore(maxCost uint64) (time.Duration, float64) {
 	return p.fcServer.CanSend(maxCost)
@@ -597,6 +628,47 @@ func (p *peer) HasBlock(hash common.Hash, number uint64, hasState bool) bool {
 	//fmt.Println("HasBlock  number", number, "head", head, "since", since, "recent", recent, "result", head >= number && number >= since && (recent == 0 || number+recent+4 > head))
 	return head >= number && number >= since && (recent == 0 || number+recent+4 > head)
 }
+
+/*func (p *peer) HasBeaconBlock(hash common.Hash) bool {
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+
+	for _, h := range p.announcedBeaconBlocks {
+		if h == hash {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *peer) updateHeadInfo(execNumber uint64, execHash common.Hash) {
+	if execNumber > p.headInfo.Number {
+		p.headInfo = blockInfo{
+			Number: execNumber,
+			Hash:   execHash,
+			Td:     common.Big0,
+		}
+	}
+}
+
+func (p *peer) AnnouncedBeaconHead(beaconHead common.Hash, execHeader *types.Header) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	for _, h := range p.announcedBeaconBlocks {
+		if h == beaconHead {
+			return
+		}
+	}
+	p.announcedBeaconBlocks[p.announcedBeaconBlockPtr] = beaconHead
+	p.announcedBeaconBlockPtr++
+	if p.announcedBeaconBlockPtr == len(p.announcedBeaconBlocks) {
+		p.announcedBeaconBlockPtr = 0
+	}
+	if execHeader != nil {
+		p.updateHeadInfo(execHeader.Number.Uint64(), execHeader.Hash())
+	}
+}*/
 
 // updateFlowControl updates the flow control parameters belonging to the server
 // node if the announced key/value set contains relevant fields
@@ -834,6 +906,30 @@ func (p *peer) replyTxStatus(reqID uint64, stats []light.TxStatus) *reply {
 	return &reply{p.rw, TxStatusMsg, reqID, data}
 }
 
+//TODO
+func (p *peer) replyBeaconInit(reqID uint64, resp BeaconInitResponse) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, BeaconInitMsg, reqID, data}
+}
+
+//TODO
+func (p *peer) replyBeaconData(reqID uint64, resp BeaconDataResponse) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, BeaconDataMsg, reqID, data}
+}
+
+//TODO
+func (p *peer) replyExecHeaders(reqID uint64, resp ExecHeadersResponse) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, ExecHeadersMsg, reqID, data}
+}
+
+//TODO
+func (p *peer) replyCommitteeProofs(reqID uint64, resp beacon.CommitteeReply) *reply {
+	data, _ := rlp.EncodeToBytes(resp)
+	return &reply{p.rw, CommitteeProofsMsg, reqID, data}
+}
+
 // sendAnnounce announces the availability of a number of blocks through
 // a hash notification.
 func (p *peer) sendAnnounce(request announceData) error {
@@ -924,6 +1020,22 @@ func (p *peer) getInvalid() uint64 {
 // Disconnect implements vfs.peer
 func (p *peer) Disconnect() {
 	p.Peer.Disconnect(p2p.DiscRequested)
+}
+
+func (p *peer) SendSignedHeads(heads []beacon.SignedHead) {
+	fmt.Println("*** Sending signed heads to", p.id, "len", len(heads))
+	for _, head := range heads {
+		fmt.Println(" slot", head.Header.Slot)
+	}
+
+	//	//fmt.Println(" err", p2p.Send(p.rw, SignedBeaconHeadsMsg, heads)) //TODO ?exec queue
+	p2p.Send(p.rw, SignedBeaconHeadsMsg, heads) //TODO ?exec queue
+}
+
+func (p *peer) SendUpdateInfo(updateInfo *beacon.UpdateInfo) {
+	//	//fmt.Println("Sending update info")
+	//	//fmt.Println(" err", p2p.Send(p.rw, AdvertiseCommitteeProofsMsg, updateInfo)) //TODO ?exec queue
+	p2p.Send(p.rw, AdvertiseCommitteeProofsMsg, updateInfo) //TODO ?exec queue
 }
 
 // peerSubscriber is an interface to notify services about added or removed peers
