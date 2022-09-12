@@ -18,9 +18,7 @@
 package les
 
 import (
-	"context"
 	"fmt"
-	"math/big"
 	"strings"
 	"time"
 
@@ -244,8 +242,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		if leth.checkpoint != nil {
 			height = (leth.checkpoint.SectionIndex+1)*params.CHTFrequency - 1
 		}
-		leth.fetcher = newLightFetcher(leth.blockchain.(*light.LightChain), leth.engine, leth.peers, chainDb, leth.reqDist, leth.synchronise)
-		leth.downloader = downloader.New(height, chainDb, leth.eventMux, nil, leth.blockchain.(*light.LightChain), leth.peers.unregisterStringId)
+		leth.fetcher = newLightFetcher(leth.blockchain, leth.engine, leth.peers, chainDb, leth.reqDist, leth.synchronise)
+		leth.downloader = downloader.New(height, chainDb, leth.eventMux, nil, leth.blockchain, leth.peers.unregisterStringId)
 		leth.peers.subscribe(&downloaderPeerNotify{
 			downloader: leth.downloader,
 			retriever:  leth.retriever,
