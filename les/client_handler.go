@@ -41,7 +41,7 @@ import (
 // responses.
 type clientHandler struct {
 	forkFilter forkid.Filter
-	blockchain *light.LightChain
+	blockchain lightChain //clientHandlerChain
 	peers      *peerSet
 	retriever  *retrieveManager
 
@@ -561,7 +561,8 @@ func (h *beaconClientHandler) handleSignedBeaconHeads(p *peer, msg p2p.Msg) erro
 	fmt.Println("*** Received signed heads from", p.id, "len", len(heads))
 	for _, head := range heads {
 		fmt.Println(" slot", head.Header.Slot)
-		p.ulcInfo.AddBeaconHead(head.Header.Hash())
+		hash := head.Header.Hash()
+		p.ulcInfo.AddBeaconHead(hash)
 	}
 	h.syncCommitteeTracker.AddSignedHeads(sctServerPeer{peer: p, retriever: h.retriever}, heads)
 	return nil

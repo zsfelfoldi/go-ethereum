@@ -22,7 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/nodestate"
 )
 
-type peerWrapper struct{ peer } // the NodeStateMachine type system needs this wrapper
+type peerWrapper struct{ clientPeer } // the NodeStateMachine type system needs this wrapper
 
 // serverSetup is a wrapper of the node state machine setup, which contains
 // all the created flags and fields used in the vflux server side.

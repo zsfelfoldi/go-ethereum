@@ -175,7 +175,7 @@ func (s *LightEthereum) synchronise(peer *peer) {
 				s.peers.unregisterStringId(peer.id)
 				return
 			}
-			s.blockchain.AddTrustedCheckpoint(checkpoint)
+			s.blockchain.(*light.LightChain).AddTrustedCheckpoint(checkpoint)
 		}
 		log.Debug("Checkpoint syncing start", "peer", peer.id, "checkpoint", checkpoint.SectionIndex)
 
@@ -188,7 +188,7 @@ func (s *LightEthereum) synchronise(peer *peer) {
 		// of the latest epoch covered by checkpoint.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		defer cancel()
-		if !checkpoint.Empty() && !s.blockchain.SyncCheckpoint(ctx, checkpoint) {
+		if !checkpoint.Empty() && !s.blockchain.(*light.LightChain).SyncCheckpoint(ctx, checkpoint) {
 			log.Debug("Sync checkpoint failed")
 			s.peers.unregisterStringId(peer.id)
 			return

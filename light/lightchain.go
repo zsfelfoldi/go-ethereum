@@ -36,13 +36,14 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rlp"
 	lru "github.com/hashicorp/golang-lru"
 )
 
 var (
-	bodyCacheLimit  = 256
-	blockCacheLimit = 256
+	headerCacheLimit         = 1024
+	headerByNumberCacheLimit = 1024
+	bodyCacheLimit           = 256
+	blockCacheLimit          = 256
 )
 
 // LightChain represents a canonical chain that by default only handles block
@@ -230,7 +231,7 @@ func (lc *LightChain) StateCache() state.Database {
 
 // GetBody retrieves a block body (transactions and uncles) from the database
 // or ODR service by hash, caching it if found.
-func (lc *LightChain) GetBody(ctx context.Context, hash common.Hash) (*types.Body, error) {
+/*func (lc *LightChain) GetBody(ctx context.Context, hash common.Hash) (*types.Body, error) {
 	// Short circuit if the body's already in the cache, retrieve otherwise
 	if cached, ok := lc.bodyCache.Get(hash); ok {
 		body := cached.(*types.Body)
@@ -267,7 +268,7 @@ func (lc *LightChain) GetBodyRLP(ctx context.Context, hash common.Hash) (rlp.Raw
 	// Cache the found body for next time and return
 	lc.bodyRLPCache.Add(hash, body)
 	return body, nil
-}
+}*/
 
 // HasBlock checks if a block is fully present in the database or not, caching
 // it if present.
@@ -283,7 +284,11 @@ func (lc *LightChain) GetBlock(ctx context.Context, hash common.Hash, number uin
 	if block, ok := lc.blockCache.Get(hash); ok {
 		return block.(*types.Block), nil
 	}
-	block, err := GetBlock(ctx, lc.odr, hash, number)
+	header := lc.hc.GetHeader(hash, number)
+	if header == nil {
+		return nil, errNoHeader
+	}
+	block, err := GetBlock(ctx, lc.odr, header)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +310,7 @@ func (lc *LightChain) GetBlockByHash(ctx context.Context, hash common.Hash) (*ty
 // GetBlockByNumber retrieves a block from the database or ODR service by
 // number, caching it (associated with its hash) if found.
 func (lc *LightChain) GetBlockByNumber(ctx context.Context, number uint64) (*types.Block, error) {
-	hash, err := GetCanonicalHash(ctx, lc.odr, number)
+	hash, err := GetCanonicalHashV4(ctx, lc.odr, number)
 	if hash == (common.Hash{}) || err != nil {
 		return nil, err
 	}
@@ -447,6 +452,14 @@ func (lc *LightChain) CurrentHeader() *types.Header {
 	return lc.hc.CurrentHeader()
 }
 
+func (lc *LightChain) CurrentHeaderOdr(ctx context.Context) (*types.Header, error) {
+	return lc.hc.CurrentHeader(), nil
+}
+
+func (lc *LightChain) FinalizedHeaderOdr(ctx context.Context) (*types.Header, error) {
+	return nil, errors.New("No finalized header in PoW mode")
+}
+
 // GetTd retrieves a block's total difficulty in the canonical chain from the
 // database by hash and number, caching it if found.
 func (lc *LightChain) GetTd(hash common.Hash, number uint64) *big.Int {
@@ -476,6 +489,13 @@ func (lc *LightChain) GetHeaderByHash(hash common.Hash) *types.Header {
 	return lc.hc.GetHeaderByHash(hash)
 }
 
+func (lc *LightChain) GetHeaderByHashOdr(ctx context.Context, hash common.Hash) (*types.Header, error) {
+	if header := lc.hc.GetHeaderByHash(hash); header != nil {
+		return header, nil
+	}
+	return GetHeaderByHash(ctx, lc.odr, hash)
+}
+
 // HasHeader checks if a block header is present in the database or not, caching
 // it if present.
 func (lc *LightChain) HasHeader(hash common.Hash, number uint64) bool {
@@ -483,8 +503,19 @@ func (lc *LightChain) HasHeader(hash common.Hash, number uint64) bool {
 }
 
 // GetCanonicalHash returns the canonical hash for a given block number
-func (bc *LightChain) GetCanonicalHash(number uint64) common.Hash {
-	return bc.hc.GetCanonicalHash(number)
+func (lc *LightChain) GetCanonicalHash(number uint64) common.Hash {
+	return lc.hc.GetCanonicalHash(number)
+}
+
+func (lc *LightChain) GetCanonicalHashOdr(ctx context.Context, number uint64) (common.Hash, error) {
+	if hash := lc.hc.GetCanonicalHash(number); hash != (common.Hash{}) {
+		return hash, nil
+	}
+	if header, err := lc.GetHeaderByNumberOdr(ctx, number); header != nil { //TODO do this with zero header request? or not needed if the header is cached?
+		return header.Hash(), nil
+	} else {
+		return common.Hash{}, err
+	}
 }
 
 // GetAncestor retrieves the Nth ancestor of a given block. It assumes that either the given block or
@@ -508,7 +539,7 @@ func (lc *LightChain) GetHeaderByNumberOdr(ctx context.Context, number uint64) (
 	if header := lc.hc.GetHeaderByNumber(number); header != nil {
 		return header, nil
 	}
-	return GetHeaderByNumber(ctx, lc.odr, number)
+	return GetHeaderByNumberV4(ctx, lc.odr, number)
 }
 
 // Config retrieves the header chain's chain configuration.
@@ -531,7 +562,7 @@ func (lc *LightChain) SyncCheckpoint(ctx context.Context, checkpoint *params.Tru
 		return true
 	}
 	// Retrieve the latest useful header and update to it
-	if header, err := GetHeaderByNumber(ctx, lc.odr, latest); header != nil && err == nil {
+	if header, err := GetHeaderByNumberV4(ctx, lc.odr, latest); header != nil && err == nil {
 		lc.chainmu.Lock()
 		defer lc.chainmu.Unlock()
 

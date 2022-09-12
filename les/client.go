@@ -18,7 +18,9 @@
 package les
 
 import (
+	"context"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
@@ -62,7 +64,7 @@ type LightEthereum struct {
 	relay              *lesTxRelay
 	handler            *handler
 	txPool             *light.TxPool
-	blockchain         *light.LightChain
+	blockchain         lightChain
 	serverPool         *vfc.ServerPool
 	serverPoolIterator enode.Iterator
 	pruner             *pruner
@@ -94,6 +96,34 @@ type LightEthereum struct {
 	udpEnabled bool
 
 	shutdownTracker *shutdowncheck.ShutdownTracker // Tracks if and when the node has shutdown ungracefully
+}
+
+type lightChain interface {
+	Odr() light.OdrBackend
+	Config() *params.ChainConfig
+	Engine() consensus.Engine
+	Genesis() *types.Block
+	Stop()
+	CurrentHeader() *types.Header // returns last known header in ultralight mode
+	CurrentHeaderOdr(ctx context.Context) (*types.Header, error)
+	FinalizedHeaderOdr(ctx context.Context) (*types.Header, error)
+	SetHead(head uint64) error // returns error in ultralight mode
+	GetCanonicalHashOdr(ctx context.Context, number uint64) (common.Hash, error)
+	GetHeader(hash common.Hash, number uint64) *types.Header // returns cached headers only in ultralight mode
+	GetHeaderByNumber(number uint64) *types.Header
+	GetHeaderByNumberOdr(ctx context.Context, number uint64) (*types.Header, error)
+	GetHeaderByHash(hash common.Hash) *types.Header //returns cached headers only in ultralight mode
+	GetHeaderByHashOdr(ctx context.Context, hash common.Hash) (*types.Header, error)
+	GetBlock(ctx context.Context, hash common.Hash, number uint64) (*types.Block, error)
+	GetBlockByNumber(ctx context.Context, number uint64) (*types.Block, error) //returns cached headers only in ultralight mode
+	GetBlockByHash(ctx context.Context, hash common.Hash) (*types.Block, error)
+	GetTd(hash common.Hash, number uint64) *big.Int                         // returns zero in ultralight (PoS) mode
+	GetTdOdr(ctx context.Context, hash common.Hash, number uint64) *big.Int // returns zero in ultralight (PoS) mode
+	SubscribeChainEvent(ch chan<- core.ChainEvent) event.Subscription
+	SubscribeChainHeadEvent(ch chan<- core.ChainHeadEvent) event.Subscription
+	SubscribeChainSideEvent(ch chan<- core.ChainSideEvent) event.Subscription
+	SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscription
+	SubscribeRemovedLogsEvent(ch chan<- core.RemovedLogsEvent) event.Subscription
 }
 
 // New creates an instance of the light client.
@@ -167,6 +197,11 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		if forks, err := beacon.LoadForks(config.BeaconConfig); err == nil {
 			//fmt.Println("Forks", forks)
 
+			chain, err := light.NewUltraLightChain(leth.odr, leth.chainConfig, leth.engine)
+			if err != nil {
+				return nil, err
+			}
+			leth.blockchain = chain
 			var beaconCheckpoint common.Hash
 			if config.BeaconCheckpoint != "" {
 				if c, err := hexutil.Decode(config.BeaconCheckpoint); err == nil && len(c) <= 32 {
@@ -179,46 +214,46 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 				return nil, fmt.Errorf("No beacon chain checkpoint")
 			}
 			leth.syncCommitteeTracker = beacon.NewSyncCommitteeTracker(chainDb, forks, leth.syncCommitteeCheckpoint, &mclock.System{})
-			//leth.syncCommitteeTracker.SubscribeToNewHeads(chain.SetBeaconHead)
+			leth.syncCommitteeTracker.SubscribeToNewHeads(chain.SetBeaconHead)
 			leth.syncCommitteeTracker.SubscribeToNewHeads(leth.odr.SetBeaconHead)
 		} else {
 			log.Error("Could not load beacon chain config file", "error", err)
 			return nil, fmt.Errorf("Could not load beacon chain config file: %v", err)
 		}
-	}
-
-	leth.chtIndexer = light.NewChtIndexer(chainDb, leth.odr, params.CHTFrequency, params.HelperTrieConfirmations, config.LightNoPrune)
-	leth.bloomTrieIndexer = light.NewBloomTrieIndexer(chainDb, leth.odr, params.BloomBitsBlocksClient, params.BloomTrieFrequency, config.LightNoPrune)
-	leth.odr.SetIndexers(leth.chtIndexer, leth.bloomTrieIndexer, leth.bloomIndexer)
-
-	leth.checkpoint = config.Checkpoint
-	if leth.checkpoint == nil {
-		leth.checkpoint = params.TrustedCheckpoints[genesisHash]
-	}
-	// Note: NewLightChain adds the trusted checkpoint so it needs an ODR with
-	// indexers already set but not started yet
-	if chain, err := light.NewLightChain(leth.odr, leth.chainConfig, leth.engine, leth.checkpoint); err == nil {
-		leth.blockchain = chain
-		leth.chainReader = chain
 	} else {
-		return nil, err
-	}
-	// Set up checkpoint oracle.
-	leth.oracle = leth.setupOracle(stack, genesisHash, config)
+		leth.chtIndexer = light.NewChtIndexer(chainDb, leth.odr, params.CHTFrequency, params.HelperTrieConfirmations, config.LightNoPrune)
+		leth.bloomTrieIndexer = light.NewBloomTrieIndexer(chainDb, leth.odr, params.BloomBitsBlocksClient, params.BloomTrieFrequency, config.LightNoPrune)
+		leth.odr.SetIndexers(leth.chtIndexer, leth.bloomTrieIndexer, leth.bloomIndexer)
 
-	// Note: AddChildIndexer starts the update process for the child
-	leth.bloomIndexer.AddChildIndexer(leth.bloomTrieIndexer)
-	leth.chtIndexer.Start(leth.blockchain)
-	leth.bloomIndexer.Start(leth.blockchain)
+		leth.checkpoint = config.Checkpoint
+		if leth.checkpoint == nil {
+			leth.checkpoint = params.TrustedCheckpoints[genesisHash]
+		}
+		// Note: NewLightChain adds the trusted checkpoint so it needs an ODR with
+		// indexers already set but not started yet
+		if chain, err := light.NewLightChain(leth.odr, leth.chainConfig, leth.engine, leth.checkpoint); err == nil {
+			leth.blockchain = chain
+			leth.chainReader = chain
+		} else {
+			return nil, err
+		}
+		// Set up checkpoint oracle.
+		leth.oracle = leth.setupOracle(stack, genesisHash, config)
 
-	// Start a light chain pruner to delete useless historical data.
-	leth.pruner = newPruner(chainDb, leth.chtIndexer, leth.bloomTrieIndexer)
+		// Note: AddChildIndexer starts the update process for the child
+		leth.bloomIndexer.AddChildIndexer(leth.bloomTrieIndexer)
+		leth.chtIndexer.Start(leth.blockchain)
+		leth.bloomIndexer.Start(leth.blockchain)
 
-	// Rewind the chain in case of an incompatible config upgrade.
-	if compat, ok := genesisErr.(*params.ConfigCompatError); ok {
-		log.Warn("Rewinding chain to upgrade configuration", "err", compat)
-		leth.blockchain.SetHead(compat.RewindTo)
-		rawdb.WriteChainConfig(chainDb, genesisHash, chainConfig)
+		// Start a light chain pruner to delete useless historical data.
+		leth.pruner = newPruner(chainDb, leth.chtIndexer, leth.bloomTrieIndexer)
+
+		// Rewind the chain in case of an incompatible config upgrade.
+		if compat, ok := genesisErr.(*params.ConfigCompatError); ok {
+			log.Warn("Rewinding chain to upgrade configuration", "err", compat)
+			leth.blockchain.SetHead(compat.RewindTo)
+			rawdb.WriteChainConfig(chainDb, genesisHash, chainConfig)
+		}
 	}
 	leth.txPool = light.NewTxPool(leth.chainConfig, leth.blockchain, leth.relay)
 
@@ -242,8 +277,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		if leth.checkpoint != nil {
 			height = (leth.checkpoint.SectionIndex+1)*params.CHTFrequency - 1
 		}
-		leth.fetcher = newLightFetcher(leth.blockchain, leth.engine, leth.peers, chainDb, leth.reqDist, leth.synchronise)
-		leth.downloader = downloader.New(height, chainDb, leth.eventMux, nil, leth.blockchain, leth.peers.unregisterStringId)
+		leth.fetcher = newLightFetcher(leth.blockchain.(*light.LightChain), leth.engine, leth.peers, chainDb, leth.reqDist, leth.synchronise)
+		leth.downloader = downloader.New(height, chainDb, leth.eventMux, nil, leth.blockchain.(*light.LightChain), leth.peers.unregisterStringId)
 		leth.peers.subscribe(&downloaderPeerNotify{
 			downloader: leth.downloader,
 			retriever:  leth.retriever,
