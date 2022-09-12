@@ -73,8 +73,6 @@ type Ethereum struct {
 	snapDialCandidates enode.Iterator
 	merger             *consensus.Merger
 
-	ConsensusAPI interface{} //TODO ugly hack
-
 	// DB interfaces
 	chainDb ethdb.Database // Block chain database
 

@@ -107,7 +107,6 @@ var (
 		utils.BeaconConfigFlag,
 		utils.BeaconCheckpointFlag,
 		utils.BeaconApiFlag,
-		utils.BlipFlag,
 		utils.BloomFilterSizeFlag,
 		utils.CacheFlag,
 		utils.CacheDatabaseFlag,
