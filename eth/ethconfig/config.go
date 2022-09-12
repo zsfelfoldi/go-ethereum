@@ -156,6 +156,7 @@ type Config struct {
 	BeaconConfig     string `toml:",omitempty"`
 	BeaconCheckpoint string `toml:",omitempty"`
 	BeaconApi        string `toml:",omitempty"`
+	Blip             bool
 
 	// Database options
 	SkipBcVersionCheck bool `toml:"-"`

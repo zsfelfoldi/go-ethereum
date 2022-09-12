@@ -37,6 +37,7 @@ func (c Config) MarshalTOML() (interface{}, error) {
 		BeaconConfig                          string                 `toml:",omitempty"`
 		BeaconCheckpoint                      string                 `toml:",omitempty"`
 		BeaconApi                             string                 `toml:",omitempty"`
+		Blip                                  bool                   //TODO ???
 		SkipBcVersionCheck                    bool                   `toml:"-"`
 		DatabaseHandles                       int                    `toml:"-"`
 		DatabaseCache                         int
@@ -83,6 +84,7 @@ func (c Config) MarshalTOML() (interface{}, error) {
 	enc.BeaconConfig = c.BeaconConfig
 	enc.BeaconCheckpoint = c.BeaconCheckpoint
 	enc.BeaconApi = c.BeaconApi
+	enc.Blip = c.Blip
 	enc.SkipBcVersionCheck = c.SkipBcVersionCheck
 	enc.DatabaseHandles = c.DatabaseHandles
 	enc.DatabaseCache = c.DatabaseCache
@@ -133,6 +135,7 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 		BeaconConfig                          *string                `toml:",omitempty"`
 		BeaconCheckpoint                      *string                `toml:",omitempty"`
 		BeaconApi                             *string                `toml:",omitempty"`
+		Blip                                  *bool                  //TODO ???
 		SkipBcVersionCheck                    *bool                  `toml:"-"`
 		DatabaseHandles                       *int                   `toml:"-"`
 		DatabaseCache                         *int
@@ -219,6 +222,9 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 	}
 	if dec.BeaconApi != nil {
 		c.BeaconApi = *dec.BeaconApi
+	}
+	if dec.Blip != nil {
+		c.Blip = *dec.Blip
 	}
 	if dec.SkipBcVersionCheck != nil {
 		c.SkipBcVersionCheck = *dec.SkipBcVersionCheck
