@@ -351,7 +351,7 @@ func (s *ServerPool) Stop() {
 	s.vt.Stop()
 }
 
-// RegisterNode implements serverPeerSubscriber
+// RegisterNode implements peerSubscriber
 func (s *ServerPool) RegisterNode(node *enode.Node) (*NodeValueTracker, error) {
 	if atomic.LoadUint32(&s.started) == 0 {
 		return nil, errors.New("server pool not started yet")
@@ -367,7 +367,7 @@ func (s *ServerPool) RegisterNode(node *enode.Node) (*NodeValueTracker, error) {
 	return nvt, nil
 }
 
-// UnregisterNode implements serverPeerSubscriber
+// UnregisterNode implements peerSubscriber
 func (s *ServerPool) UnregisterNode(node *enode.Node) {
 	s.ns.Operation(func() {
 		s.setRedialWait(node, dialCost, dialWaitStep)

@@ -71,8 +71,8 @@ type ClientPool struct {
 	capReqNode *enode.Node // node that is requesting capacity change; only used inside NSM operation
 }
 
-// clientPeer represents a peer in the client pool. None of the callbacks should block.
-type clientPeer interface {
+// peer represents a peer in the client pool. None of the callbacks should block.
+type peer interface {
 	Node() *enode.Node
 	FreeClientId() string                         // unique id for non-priority clients (typically a prefix of the network address)
 	InactiveAllowance() time.Duration             // disconnection timeout for inactive non-priority peers
@@ -99,7 +99,7 @@ func NewClientPool(balanceDb ethdb.KeyValueStore, minCap uint64, connectedBias t
 		if newState.Equals(setup.inactiveFlag) {
 			// set timeout for non-priority inactive client
 			var timeout time.Duration
-			if c, ok := ns.GetField(node, setup.clientField).(clientPeer); ok {
+			if c, ok := ns.GetField(node, setup.clientField).(peer); ok {
 				timeout = c.InactiveAllowance()
 			}
 			ns.AddTimeout(node, setup.inactiveFlag, timeout)
@@ -115,14 +115,14 @@ func NewClientPool(balanceDb ethdb.KeyValueStore, minCap uint64, connectedBias t
 			}
 		}
 		if newState.Equals(nodestate.Flags{}) {
-			if c, ok := ns.GetField(node, setup.clientField).(clientPeer); ok {
+			if c, ok := ns.GetField(node, setup.clientField).(peer); ok {
 				c.Disconnect()
 			}
 		}
 	})
 
 	ns.SubscribeField(setup.capacityField, func(node *enode.Node, state nodestate.Flags, oldValue, newValue interface{}) {
-		if c, ok := ns.GetField(node, setup.clientField).(clientPeer); ok {
+		if c, ok := ns.GetField(node, setup.clientField).(peer); ok {
 			newCap, _ := newValue.(uint64)
 			c.UpdateCapacity(newCap, node == cp.capReqNode)
 		}
@@ -155,7 +155,7 @@ func (cp *ClientPool) Start() {
 	cp.ns.Start()
 }
 
-// Stop shuts the client pool down. The clientPeer interface callbacks will not be called
+// Stop shuts the client pool down. The peer interface callbacks will not be called
 // after Stop. Register calls will return nil.
 func (cp *ClientPool) Stop() {
 	cp.balanceTracker.stop()
@@ -164,15 +164,15 @@ func (cp *ClientPool) Stop() {
 
 // Register registers the peer into the client pool. If the peer has insufficient
 // priority and remains inactive for longer than the allowed timeout then it will be
-// disconnected by calling the Disconnect function of the clientPeer interface.
-func (cp *ClientPool) Register(peer clientPeer) ConnectedBalance {
+// disconnected by calling the Disconnect function of the peer interface.
+func (cp *ClientPool) Register(peer peer) ConnectedBalance {
 	cp.ns.SetField(peer.Node(), cp.setup.clientField, peerWrapper{peer})
 	balance, _ := cp.ns.GetField(peer.Node(), cp.setup.balanceField).(*nodeBalance)
 	return balance
 }
 
 // Unregister removes the peer from the client pool
-func (cp *ClientPool) Unregister(peer clientPeer) {
+func (cp *ClientPool) Unregister(peer peer) {
 	cp.ns.SetField(peer.Node(), cp.setup.clientField, nil)
 }
 

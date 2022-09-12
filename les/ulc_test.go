@@ -100,15 +100,15 @@ func testULCAnnounceThreshold(t *testing.T, protocol int) {
 	}
 }
 
-func connect(server *serverHandler, serverId enode.ID, client *clientHandler, protocol int, noInitAnnounce bool) (*serverPeer, *clientPeer, error) {
+func connect(server *serverHandler, serverId enode.ID, client *clientHandler, protocol int, noInitAnnounce bool) (*peer, *peer, error) {
 	// Create a message pipe to communicate through
 	app, net := p2p.MsgPipe()
 
 	var id enode.ID
 	rand.Read(id[:])
 
-	peer1 := newServerPeer(protocol, NetworkId, true, p2p.NewPeer(serverId, "", nil), net) // Mark server as trusted
-	peer2 := newClientPeer(protocol, NetworkId, p2p.NewPeer(id, "", nil), app)
+	peer1 := newPeer(protocol, NetworkId, true, p2p.NewPeer(serverId, "", nil), net) // Mark server as trusted
+	peer2 := newPeer(protocol, NetworkId, p2p.NewPeer(id, "", nil), app)
 
 	// Start the peerLight on a new thread
 	errc1 := make(chan error, 1)
