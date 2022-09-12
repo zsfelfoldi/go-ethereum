@@ -18,7 +18,9 @@
 package les
 
 import (
+	"context"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
@@ -41,6 +43,7 @@ import (
 	"github.com/ethereum/go-ethereum/les/vflux"
 	vfc "github.com/ethereum/go-ethereum/les/vflux/client"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -67,6 +70,8 @@ type LightEthereum struct {
 	pruner             *pruner
 	merger             *consensus.Merger
 
+	v5 bool
+
 	fetcher    *lightFetcher
 	downloader *downloader.Downloader
 	// Hooks used in the testing
@@ -82,6 +87,9 @@ type LightEthereum struct {
 	engine         consensus.Engine
 	accountManager *accounts.Manager
 	netRPCService  *ethapi.NetAPI
+
+	syncCommitteeTracker    *beacon.SyncCommitteeTracker //TODO vegignezni, mi milyen esetben lehet nil es a handler nem okozhat-e panic-ot
+	syncCommitteeCheckpoint *beacon.WeakSubjectivityCheckpoint
 
 	p2pServer  *p2p.Server
 	p2pConfig  *p2p.Config
@@ -143,6 +151,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		p2pConfig:       &stack.Config().P2P,
 		udpEnabled:      stack.Config().P2P.DiscoveryV5,
 		shutdownTracker: shutdowncheck.NewShutdownTracker(chainDb),
+		v5:              config.BeaconConfig != "",
 	}
 
 	var prenegQuery vfc.QueryFunc
@@ -155,6 +164,30 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 	leth.retriever = newRetrieveManager(peers, leth.reqDist, leth.serverPool.GetTimeout)
 	leth.relay = newLesTxRelay(peers, leth.retriever)
 	leth.odr = NewLesOdr(chainDb, light.DefaultClientIndexerConfig, leth.peers, leth.retriever)
+
+	if leth.v5 {
+		if forks, err := beacon.LoadForks(config.BeaconConfig); err == nil {
+			//fmt.Println("Forks", forks)
+
+			var beaconCheckpoint common.Hash
+			if config.BeaconCheckpoint != "" {
+				if c, err := hexutil.Decode(config.BeaconCheckpoint); err == nil && len(c) <= 32 {
+					copy(beaconCheckpoint[:len(c)], c)
+				}
+			}
+			leth.syncCommitteeCheckpoint = beacon.NewWeakSubjectivityCheckpoint(chainDb, (*odrDataSource)(leth.odr), beaconCheckpoint, nil)
+			if leth.syncCommitteeCheckpoint == nil {
+				log.Error("No beacon chain checkpoint")
+				return nil, fmt.Errorf("No beacon chain checkpoint")
+			}
+			leth.syncCommitteeTracker = beacon.NewSyncCommitteeTracker(chainDb, forks, leth.syncCommitteeCheckpoint, &mclock.System{})
+			//leth.syncCommitteeTracker.SubscribeToNewHeads(chain.SetBeaconHead)
+			leth.syncCommitteeTracker.SubscribeToNewHeads(leth.odr.SetBeaconHead)
+		} else {
+			log.Error("Could not load beacon chain config file", "error", err)
+			return nil, fmt.Errorf("Could not load beacon chain config file: %v", err)
+		}
+	}
 
 	leth.chtIndexer = light.NewChtIndexer(chainDb, leth.odr, params.CHTFrequency, params.HelperTrieConfirmations, config.LightNoPrune)
 	leth.bloomTrieIndexer = light.NewBloomTrieIndexer(chainDb, leth.odr, params.BloomBitsBlocksClient, params.BloomTrieFrequency, config.LightNoPrune)
@@ -206,18 +239,29 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 		peers:      leth.peers,
 		retriever:  leth.retriever,
 	}
-	var height uint64
-	if leth.checkpoint != nil {
-		height = (leth.checkpoint.SectionIndex+1)*params.CHTFrequency - 1
+	if !leth.v5 {
+		var height uint64
+		if leth.checkpoint != nil {
+			height = (leth.checkpoint.SectionIndex+1)*params.CHTFrequency - 1
+		}
+		leth.fetcher = newLightFetcher(leth.blockchain.(*light.LightChain), leth.engine, leth.peers, chainDb, leth.reqDist, leth.synchronise)
+		leth.downloader = downloader.New(height, chainDb, leth.eventMux, nil, leth.blockchain.(*light.LightChain), leth.peers.unregisterStringId)
+		leth.peers.subscribe(&downloaderPeerNotify{
+			downloader: leth.downloader,
+			retriever:  leth.retriever,
+		})
+		clientHandler.fetcher, clientHandler.downloader = leth.fetcher, leth.downloader
 	}
-	leth.fetcher = newLightFetcher(leth.blockchain, leth.engine, leth.peers, chainDb, leth.reqDist, leth.synchronise)
-	leth.downloader = downloader.New(height, chainDb, leth.eventMux, nil, leth.blockchain, leth.peers.unregisterStringId)
-	leth.peers.subscribe(&downloaderPeerNotify{
-		downloader: leth.downloader,
-		retriever:  leth.retriever,
-	})
-	clientHandler.fetcher, clientHandler.downloader = leth.fetcher, leth.downloader
 	leth.handler.registerModule(clientHandler)
+
+	if leth.v5 {
+		beaconClientHandler := &beaconClientHandler{
+			syncCommitteeTracker:    leth.syncCommitteeTracker,
+			syncCommitteeCheckpoint: leth.syncCommitteeCheckpoint,
+			retriever:               leth.retriever,
+		}
+		leth.handler.registerModule(beaconClientHandler)
+	}
 
 	fcClientHandler := &fcClientHandler{
 		retriever: leth.retriever,
@@ -330,7 +374,7 @@ func (s *LightDummyAPI) Mining() bool {
 // NOTE, some of these services probably need to be moved to somewhere else.
 func (s *LightEthereum) APIs() []rpc.API {
 	apis := ethapi.GetAPIs(s.ApiBackend)
-	apis = append(apis, s.engine.APIs(s.BlockChain().HeaderChain())...)
+	apis = append(apis, s.engine.APIs(s.blockchain)...)
 	return append(apis, []rpc.API{
 		{
 			Namespace: "eth",
@@ -351,11 +395,11 @@ func (s *LightEthereum) APIs() []rpc.API {
 	}...)
 }
 
-func (s *LightEthereum) ResetWithGenesisBlock(gb *types.Block) {
+/*func (s *LightEthereum) ResetWithGenesisBlock(gb *types.Block) {
 	s.blockchain.ResetWithGenesisBlock(gb)
-}
+}*/
 
-func (s *LightEthereum) BlockChain() *light.LightChain      { return s.blockchain }
+//func (s *LightEthereum) BlockChain() *light.LightChain      { return s.blockchain }
 func (s *LightEthereum) TxPool() *light.TxPool              { return s.txPool }
 func (s *LightEthereum) Engine() consensus.Engine           { return s.engine }
 func (s *LightEthereum) LesVersion() int                    { return int(ClientProtocolVersions[0]) }
@@ -435,6 +479,12 @@ func (s *LightEthereum) Stop() error {
 
 	s.chainDb.Close()
 	s.lesDb.Close()
+	if s.syncCommitteeTracker != nil {
+		s.syncCommitteeTracker.Stop()
+	}
+	if s.syncCommitteeCheckpoint != nil {
+		s.syncCommitteeCheckpoint.Stop()
+	}
 	s.wg.Wait()
 	log.Info("Light ethereum stopped")
 	return nil

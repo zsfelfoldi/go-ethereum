@@ -35,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
 	vfs "github.com/ethereum/go-ethereum/les/vflux/server"
 	"github.com/ethereum/go-ethereum/light"
+	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -53,6 +54,8 @@ const (
 	MaxHelperTrieProofsFetch = 64  // Amount of helper tries to be fetched per retrieval request
 	MaxTxSend                = 64  // Amount of transactions to be send per request
 	MaxTxStatus              = 256 // Amount of transactions to queried per request
+	MaxCommitteeUpdateFetch  = beacon.MaxCommitteeUpdateFetch
+	CommitteeCostFactor      = beacon.CommitteeCostFactor
 )
 
 var (
@@ -209,7 +212,7 @@ func (h *serverHandler) receiveHandshake(p *peer, recv keyValueMap) error {
 	}
 
 	p.server = recv.get("serveHeaders", nil) == nil
-	if p.server {
+	if p.server || p.version >= lpv5 {
 		p.announceType = announceTypeNone // connected to another server, send no messages
 	} else {
 		if recv.get("announceType", &p.announceType) != nil {
@@ -284,6 +287,68 @@ func (h *serverHandler) GetHelperTrie(typ uint, index uint64) *trie.Trie {
 	}
 	trie, _ := trie.New(common.Hash{}, root, trie.NewDatabase(rawdb.NewTable(h.chainDb, prefix)))
 	return trie
+}
+
+type beaconServerHandler struct {
+	syncCommitteeTracker *beacon.SyncCommitteeTracker
+	beaconChain          *beacon.BeaconChain
+	blockChain           *core.BlockChain
+	fcWrapper            *fcRequestWrapper
+	beaconNodeApi        *beaconNodeApiSource
+}
+
+func (h *beaconServerHandler) start(wg *sync.WaitGroup, closeCh chan struct{}) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		headCh := make(chan core.ChainHeadEvent, 10)
+		headSub := h.blockChain.SubscribeChainHeadEvent(headCh)
+		defer headSub.Unsubscribe()
+
+		for {
+			select {
+			case ev := <-headCh:
+				h.beaconChain.ProcessedExecHead(ev.Block.Header())
+				if h.beaconNodeApi != nil {
+					h.beaconNodeApi.newHead()
+				}
+			case <-closeCh:
+				return
+			}
+		}
+	}()
+}
+
+func (h *beaconServerHandler) sendHandshake(p *peer, send *keyValueList) {
+	if p.version < lpv5 {
+		return
+	}
+	updateInfo := h.syncCommitteeTracker.GetUpdateInfo()
+	//fmt.Println("Adding update info", updateInfo)
+	send.add("beacon/updateInfo", updateInfo)
+	tailLongTerm, tailShortTerm := h.beaconChain.GetTailSlots()
+	send.add("beacon/tailLongTerm", tailLongTerm)
+	send.add("beacon/tailShortTerm", tailShortTerm)
+}
+
+func (h *beaconServerHandler) receiveHandshake(p *peer, recv keyValueMap) error {
+	return nil
+}
+
+func (h *beaconServerHandler) peerConnected(p *peer) (func(), error) {
+	if h.syncCommitteeTracker == nil {
+		return nil, nil
+	}
+	h.syncCommitteeTracker.Activate(p)
+
+	return func() {
+		h.syncCommitteeTracker.Deactivate(p, true)
+	}, nil
+}
+
+func (h *beaconServerHandler) messageHandlers() messageHandlers {
+	return h.fcWrapper.wrapMessageHandlers((&BeaconRequestServer{SyncCommitteeTracker: h.syncCommitteeTracker, BeaconChain: h.beaconChain, BlockChain: h.blockChain}).MessageHandlers())
 }
 
 type fcServerHandler struct {
