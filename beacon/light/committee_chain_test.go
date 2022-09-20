@@ -340,6 +340,10 @@ type testCommitteeChain struct {
 	config  types.ChainConfig
 }
 
+func (tc *testCommitteeChain) makeTestSignedHeader(header types.Header, signatureSlot uint64, signerCount int) types.SignedHeader {
+	return GenerateTestSignedHeader(header, &tc.config, tc.periods[types.SyncPeriod(signatureSlot)].committee, signatureSlot, signerCount)
+}
+
 func (tc *testCommitteeChain) fillCommittees(begin, end int) {
 	if len(tc.periods) <= end {
 		tc.periods = append(tc.periods, make([]testPeriod, end+1-len(tc.periods))...)
