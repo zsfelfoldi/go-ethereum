@@ -1,0 +1,340 @@
+// Copyright 2022 The go-ethereum Authors
+// This file is part of the go-ethereum library.
+//
+// The go-ethereum library is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// The go-ethereum library is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more detaiapi.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
+
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io/ioutil"
+	"math/big"
+	"net/http"
+	"strconv"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	cbeacon "github.com/ethereum/go-ethereum/core/beacon"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/light/beacon"
+)
+
+// RestApi implements LightClientApi by requesting information from a beacon node REST API.
+// Note: all required API endpoints are currently only implemented by Lodestar.
+type RestApi struct {
+	Url string
+}
+
+func (api *RestApi) GetBestUpdateAndCommittee(period uint64) (beacon.LightClientUpdate, []byte, error) {
+	c, err := api.getCommitteeUpdate(period)
+	if err != nil {
+		return beacon.LightClientUpdate{}, nil, err
+	}
+	committee, ok := c.NextSyncCommittee.serialize()
+	if !ok {
+		return beacon.LightClientUpdate{}, nil, errors.New("invalid sync committee")
+	}
+	update := beacon.LightClientUpdate{
+		Header:                  c.Header,
+		NextSyncCommitteeRoot:   beacon.SerializedCommitteeRoot(committee),
+		NextSyncCommitteeBranch: c.NextSyncCommitteeBranch,
+		FinalizedHeader:         c.FinalizedHeader,
+		FinalityBranch:          c.FinalityBranch,
+		SyncCommitteeBits:       c.Aggregate.BitMask,
+		SyncCommitteeSignature:  c.Aggregate.Signature,
+		ForkVersion:             c.ForkVersion,
+	}
+	return update, committee, nil
+}
+
+type syncAggregate struct {
+	BitMask   hexutil.Bytes `json:"sync_committee_bits"`
+	Signature hexutil.Bytes `json:"sync_committee_signature"`
+}
+
+func (api *RestApi) GetHeadUpdate() (beacon.SignedHead, error) {
+	resp, err := http.Get(api.Url + "/eth/v1/beacon/light_client/optimistic_update/")
+	if err != nil {
+		return beacon.SignedHead{}, err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return beacon.SignedHead{}, err
+	}
+
+	var data struct {
+		Data struct {
+			Aggregate syncAggregate `json:"sync_aggregate"`
+			Header    beacon.Header `json:"attested_header"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return beacon.SignedHead{}, err
+	}
+	if len(data.Data.Aggregate.BitMask) != 64 {
+		return beacon.SignedHead{}, errors.New("invalid sync_committee_bits length")
+	}
+	if len(data.Data.Aggregate.Signature) != 96 {
+		return beacon.SignedHead{}, errors.New("invalid sync_committee_signature length")
+	}
+	return beacon.SignedHead{
+		Header:    data.Data.Header,
+		BitMask:   data.Data.Aggregate.BitMask,
+		Signature: data.Data.Aggregate.Signature,
+	}, nil
+}
+
+type syncCommitteeJson struct {
+	Pubkeys   []hexutil.Bytes `json:"pubkeys"`
+	Aggregate hexutil.Bytes   `json:"aggregate_pubkey"`
+}
+
+func (s *syncCommitteeJson) serialize() ([]byte, bool) {
+	if len(s.Pubkeys) != 512 {
+		return nil, false
+	}
+	sk := make([]byte, 513*48)
+	for i, key := range s.Pubkeys {
+		if len(key) != 48 {
+			return nil, false
+		}
+		copy(sk[i*48:(i+1)*48], key[:])
+	}
+	if len(s.Aggregate) != 48 {
+		return nil, false
+	}
+	copy(sk[512*48:], s.Aggregate[:])
+	return sk, true
+}
+
+type committeeUpdate struct {
+	Header                  beacon.Header       `json:"attested_header"`
+	NextSyncCommittee       syncCommitteeJson   `json:"next_sync_committee"`
+	NextSyncCommitteeBranch beacon.MerkleValues `json:"next_sync_committee_branch"`
+	FinalizedHeader         beacon.Header       `json:"finalized_header"`
+	FinalityBranch          beacon.MerkleValues `json:"finality_branch"`
+	Aggregate               syncAggregate       `json:"sync_aggregate"`
+	ForkVersion             hexutil.Bytes       `json:"fork_version"`
+}
+
+func (api *RestApi) getCommitteeUpdate(period uint64) (committeeUpdate, error) {
+	periodStr := strconv.Itoa(int(period))
+	resp, err := http.Get(api.Url + "/eth/v1/beacon/light_client/updates?start_period=" + periodStr + "&count=1")
+	if err != nil {
+		return committeeUpdate{}, err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return committeeUpdate{}, err
+	}
+
+	var data struct {
+		Data []committeeUpdate `json:"data"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return committeeUpdate{}, err
+	}
+	if len(data.Data) != 1 {
+		return committeeUpdate{}, errors.New("invalid number of committee updates")
+	}
+	update := data.Data[0]
+	if len(update.NextSyncCommittee.Pubkeys) != 512 {
+		return committeeUpdate{}, errors.New("invalid number of pubkeys in next_sync_committee")
+	}
+	return update, nil
+}
+
+// null hash -> current head
+func (api *RestApi) GetHeader(blockRoot common.Hash) (beacon.Header, error) {
+	url := api.Url + "/eth/v1/beacon/headers/"
+	if blockRoot == (common.Hash{}) {
+		url += "head"
+	} else {
+		url += blockRoot.Hex()
+	}
+	resp, err := http.Get(url)
+	if err != nil {
+		return beacon.Header{}, err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return beacon.Header{}, err
+	}
+
+	var data struct {
+		Data struct {
+			Root      common.Hash `json:"root"`
+			Canonical bool        `json:"canonical"`
+			Header    struct {
+				Message   beacon.Header `json:"message"`
+				Signature hexutil.Bytes `json:"signature"`
+			} `json:"header"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return beacon.Header{}, err
+	}
+	header := data.Data.Header.Message
+	if blockRoot == (common.Hash{}) {
+		blockRoot = data.Data.Root
+	}
+	if header.Hash() != blockRoot {
+		return beacon.Header{}, errors.New("retrieved beacon header root does not match")
+	}
+	return header, nil
+}
+
+func (api *RestApi) GetStateProof(stateRoot common.Hash, paths []string, expFormat beacon.ProofFormat) (beacon.MultiProof, error) {
+	url := api.Url + "/eth/v1/beacon/light_client/proof/" + stateRoot.Hex() + "?paths=" + paths[0]
+	for i := 1; i < len(paths); i++ {
+		url += "&paths=" + paths[i]
+	}
+	resp, err := http.Get(url)
+	if err != nil {
+		return beacon.MultiProof{}, err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return beacon.MultiProof{}, err
+	}
+	proof, err := beacon.ParseMultiProof(body)
+	if err != nil {
+		return beacon.MultiProof{}, err
+	}
+	var values beacon.MerkleValues
+	root, ok := beacon.TraverseProof(proof.Reader(nil), beacon.NewMultiProofWriter(expFormat, &values, nil))
+	if !ok || root != stateRoot {
+		return beacon.MultiProof{}, errors.New("Invalid state proof")
+	}
+	return beacon.MultiProof{Format: expFormat, Values: values}, nil
+}
+
+func (api *RestApi) GetCheckpointData(ctx context.Context, checkpoint common.Hash) (beacon.Header, beacon.CheckpointData, []byte, error) {
+	resp, err := http.Get(api.Url + "/eth/v1/beacon/light_client/bootstrap/" + checkpoint.String())
+	if err != nil {
+		return beacon.Header{}, beacon.CheckpointData{}, nil, err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return beacon.Header{}, beacon.CheckpointData{}, nil, err
+	}
+
+	type bootstrapData struct {
+		Data struct {
+			Header          beacon.Header       `json:"header"`
+			Committee       syncCommitteeJson   `json:"current_sync_committee"`
+			CommitteeBranch beacon.MerkleValues `json:"current_sync_committee_branch"`
+		} `json:"data"`
+	}
+
+	var data bootstrapData
+	if err := json.Unmarshal(body, &data); err != nil {
+		return beacon.Header{}, beacon.CheckpointData{}, nil, err
+	}
+	committee, ok := data.Data.Committee.serialize()
+	if !ok {
+		return beacon.Header{}, beacon.CheckpointData{}, nil, errors.New("Invalid sync committee JSON")
+	}
+	committeeRoot := beacon.SerializedCommitteeRoot(committee)
+	expStateRoot, ok := beacon.VerifySingleProof(data.Data.CommitteeBranch, beacon.BsiSyncCommittee, beacon.MerkleValue(committeeRoot), 0)
+	if !ok || expStateRoot != data.Data.Header.StateRoot {
+		return beacon.Header{}, beacon.CheckpointData{}, nil, errors.New("Invalid sync committee Merkle proof")
+	}
+	checkpointData := beacon.CheckpointData{
+		Checkpoint:     checkpoint,
+		Period:         uint64(data.Data.Header.Slot) >> 13,
+		CommitteeRoots: []common.Hash{committeeRoot},
+	}
+	return data.Data.Header, checkpointData, committee, nil
+
+}
+
+// beacon block root -> exec block
+func (api *RestApi) GetExecutionPayload( /*ctx context.Context, */ blockRoot, execRoot common.Hash) (*types.Block, error) {
+	resp, err := http.Get(api.Url + "/eth/v2/beacon/blocks/" + blockRoot.Hex())
+	if err != nil {
+		return nil, err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	var beaconBlock struct {
+		Data struct {
+			Message struct {
+				Body struct {
+					Payload struct {
+						ParentHash    common.Hash     `json:"parent_hash"`
+						FeeRecipient  common.Address  `json:"fee_recipient"`
+						StateRoot     common.Hash     `json:"state_root"`
+						ReceiptsRoot  common.Hash     `json:"receipts_root"`
+						LogsBloom     hexutil.Bytes   `json:"logs_bloom"`
+						PrevRandao    common.Hash     `json:"prev_randao"`
+						BlockNumber   common.Decimal  `json:"block_number"`
+						GasLimit      common.Decimal  `json:"gas_limit"`
+						GasUsed       common.Decimal  `json:"gas_used"`
+						Timestamp     common.Decimal  `json:"timestamp"`
+						ExtraData     hexutil.Bytes   `json:"extra_data"`
+						BaseFeePerGas common.Decimal  `json:"base_fee_per_gas"`
+						BlockHash     common.Hash     `json:"block_hash"`
+						Transactions  []hexutil.Bytes `json:"transactions"`
+					} `json:"execution_payload"`
+				} `json:"body"`
+			} `json:"message"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &beaconBlock); err != nil {
+		return nil, err
+	}
+
+	payload := beaconBlock.Data.Message.Body.Payload
+	transactions := make([][]byte, len(payload.Transactions))
+	for i, tx := range payload.Transactions {
+		transactions[i] = tx
+	}
+	execData := cbeacon.ExecutableDataV1{
+		ParentHash:    payload.ParentHash,
+		FeeRecipient:  payload.FeeRecipient,
+		StateRoot:     payload.StateRoot,
+		ReceiptsRoot:  payload.ReceiptsRoot,
+		LogsBloom:     payload.LogsBloom,
+		Random:        payload.PrevRandao,
+		Number:        uint64(payload.BlockNumber),
+		GasLimit:      uint64(payload.GasLimit),
+		GasUsed:       uint64(payload.GasUsed),
+		Timestamp:     uint64(payload.Timestamp),
+		ExtraData:     payload.ExtraData,
+		BaseFeePerGas: big.NewInt(int64(payload.BaseFeePerGas)),
+		BlockHash:     payload.BlockHash,
+		Transactions:  transactions,
+	}
+	block, err := cbeacon.ExecutableDataToBlock(execData)
+	if err != nil {
+		return nil, err
+	}
+	if block.Hash() != execRoot {
+		return nil, errors.New("Exec block root does not match")
+	}
+	return block, nil
+}
