@@ -38,11 +38,46 @@ type RestApi struct {
 	Url string
 }
 
+// GetBestUpdateAndCommittee fetches and validates LightClientUpdate for given period and full serialized
+// committee for the next period (committee root hash equals update.NextSyncCommitteeRoot).
+// Note that the results are validated but the update signature should be verified by the caller as its
+// validity depends on the update chain.
 func (api *RestApi) GetBestUpdateAndCommittee(period uint64) (beacon.LightClientUpdate, []byte, error) {
-	c, err := api.getCommitteeUpdate(period)
+	periodStr := strconv.Itoa(int(period))
+	resp, err := http.Get(api.Url + "/eth/v1/beacon/light_client/updates?start_period=" + periodStr + "&count=1")
 	if err != nil {
 		return beacon.LightClientUpdate{}, nil, err
 	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return beacon.LightClientUpdate{}, nil, err
+	}
+
+	type committeeUpdate struct {
+		Header                  beacon.Header       `json:"attested_header"`
+		NextSyncCommittee       syncCommitteeJson   `json:"next_sync_committee"`
+		NextSyncCommitteeBranch beacon.MerkleValues `json:"next_sync_committee_branch"`
+		FinalizedHeader         beacon.Header       `json:"finalized_header"`
+		FinalityBranch          beacon.MerkleValues `json:"finality_branch"`
+		Aggregate               syncAggregate       `json:"sync_aggregate"`
+		ForkVersion             hexutil.Bytes       `json:"fork_version"`
+	}
+
+	var data struct {
+		Data []committeeUpdate `json:"data"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return beacon.LightClientUpdate{}, nil, err
+	}
+	if len(data.Data) != 1 {
+		return beacon.LightClientUpdate{}, nil, errors.New("invalid number of committee updates")
+	}
+	c := data.Data[0]
+	if len(c.NextSyncCommittee.Pubkeys) != 512 {
+		return beacon.LightClientUpdate{}, nil, errors.New("invalid number of pubkeys in next_sync_committee")
+	}
+
 	committee, ok := c.NextSyncCommittee.serialize()
 	if !ok {
 		return beacon.LightClientUpdate{}, nil, errors.New("invalid sync committee")
@@ -57,14 +92,24 @@ func (api *RestApi) GetBestUpdateAndCommittee(period uint64) (beacon.LightClient
 		SyncCommitteeSignature:  c.Aggregate.Signature,
 		ForkVersion:             c.ForkVersion,
 	}
+	if err := update.Validate(); err != nil {
+		return beacon.LightClientUpdate{}, nil, err
+	}
+	if beacon.SerializedCommitteeRoot(committee) != update.NextSyncCommitteeRoot {
+		return beacon.LightClientUpdate{}, nil, errors.New("sync committee root does not match")
+	}
 	return update, committee, nil
 }
 
+// syncAggregate represents an aggregated BLS signature with BitMask referring to a subset
+// of the corresponding sync committee
 type syncAggregate struct {
 	BitMask   hexutil.Bytes `json:"sync_committee_bits"`
 	Signature hexutil.Bytes `json:"sync_committee_signature"`
 }
 
+// GetHeadUpdate fetches the latest available signed header.
+// Note that the signature should be verified by the caller as its validity depends on the update chain.
 func (api *RestApi) GetHeadUpdate() (beacon.SignedHead, error) {
 	resp, err := http.Get(api.Url + "/eth/v1/beacon/light_client/optimistic_update/")
 	if err != nil {
@@ -98,11 +143,13 @@ func (api *RestApi) GetHeadUpdate() (beacon.SignedHead, error) {
 	}, nil
 }
 
+// syncCommitteeJson is the JSON representation of a sync committee
 type syncCommitteeJson struct {
 	Pubkeys   []hexutil.Bytes `json:"pubkeys"`
 	Aggregate hexutil.Bytes   `json:"aggregate_pubkey"`
 }
 
+// serialize returns the serialized version of the committee
 func (s *syncCommitteeJson) serialize() ([]byte, bool) {
 	if len(s.Pubkeys) != 512 {
 		return nil, false
@@ -121,45 +168,8 @@ func (s *syncCommitteeJson) serialize() ([]byte, bool) {
 	return sk, true
 }
 
-type committeeUpdate struct {
-	Header                  beacon.Header       `json:"attested_header"`
-	NextSyncCommittee       syncCommitteeJson   `json:"next_sync_committee"`
-	NextSyncCommitteeBranch beacon.MerkleValues `json:"next_sync_committee_branch"`
-	FinalizedHeader         beacon.Header       `json:"finalized_header"`
-	FinalityBranch          beacon.MerkleValues `json:"finality_branch"`
-	Aggregate               syncAggregate       `json:"sync_aggregate"`
-	ForkVersion             hexutil.Bytes       `json:"fork_version"`
-}
-
-func (api *RestApi) getCommitteeUpdate(period uint64) (committeeUpdate, error) {
-	periodStr := strconv.Itoa(int(period))
-	resp, err := http.Get(api.Url + "/eth/v1/beacon/light_client/updates?start_period=" + periodStr + "&count=1")
-	if err != nil {
-		return committeeUpdate{}, err
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		return committeeUpdate{}, err
-	}
-
-	var data struct {
-		Data []committeeUpdate `json:"data"`
-	}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return committeeUpdate{}, err
-	}
-	if len(data.Data) != 1 {
-		return committeeUpdate{}, errors.New("invalid number of committee updates")
-	}
-	update := data.Data[0]
-	if len(update.NextSyncCommittee.Pubkeys) != 512 {
-		return committeeUpdate{}, errors.New("invalid number of pubkeys in next_sync_committee")
-	}
-	return update, nil
-}
-
-// null hash -> current head
+// GetHead fetches and validates the beacon header with the given blockRoot.
+// If blockRoot is null hash then the latest head header is fetched.
 func (api *RestApi) GetHeader(blockRoot common.Hash) (beacon.Header, error) {
 	url := api.Url + "/eth/v1/beacon/headers/"
 	if blockRoot == (common.Hash{}) {
@@ -200,6 +210,10 @@ func (api *RestApi) GetHeader(blockRoot common.Hash) (beacon.Header, error) {
 	return header, nil
 }
 
+// GetStateProof fetches and validates a Merkle proof for the specified parts of the recent
+// beacon state referenced by stateRoot. If successful the returned multiproof has the format
+// specified by expFormat. The state subset specified by the list of string keys (paths) should
+// cover the subset specified by expFormat.
 func (api *RestApi) GetStateProof(stateRoot common.Hash, paths []string, expFormat beacon.ProofFormat) (beacon.MultiProof, error) {
 	url := api.Url + "/eth/v1/beacon/light_client/proof/" + stateRoot.Hex() + "?paths=" + paths[0]
 	for i := 1; i < len(paths); i++ {
@@ -226,6 +240,7 @@ func (api *RestApi) GetStateProof(stateRoot common.Hash, paths []string, expForm
 	return beacon.MultiProof{Format: expFormat, Values: values}, nil
 }
 
+// GetCheckpointData fetches and validates bootstrap data belonging to the given checkpoint.
 func (api *RestApi) GetCheckpointData(ctx context.Context, checkpoint common.Hash) (beacon.Header, beacon.CheckpointData, []byte, error) {
 	resp, err := http.Get(api.Url + "/eth/v1/beacon/light_client/bootstrap/" + checkpoint.String())
 	if err != nil {
@@ -267,9 +282,10 @@ func (api *RestApi) GetCheckpointData(ctx context.Context, checkpoint common.Has
 
 }
 
-// beacon block root -> exec block
-func (api *RestApi) GetExecutionPayload( /*ctx context.Context, */ blockRoot, execRoot common.Hash) (*types.Block, error) {
-	resp, err := http.Get(api.Url + "/eth/v2/beacon/blocks/" + blockRoot.Hex())
+// GetExecutionPayload fetches the execution block belonging to the beacon block specified
+// by beaconRoot and validates its block hash against the expected execRoot.
+func (api *RestApi) GetExecutionPayload(beaconRoot, execRoot common.Hash) (*types.Block, error) {
+	resp, err := http.Get(api.Url + "/eth/v2/beacon/blocks/" + beaconRoot.Hex())
 	if err != nil {
 		return nil, err
 	}

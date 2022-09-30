@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/binary"
 
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -252,38 +253,11 @@ func (s *SyncCommitteeTracker) deleteBestUpdate(period uint64) {
 	s.updateInfoChanged()
 }
 
-// verifyUpdate checks whether the sync committee Merkle proof and the header signature is
-// correct and the update fits into the specified constraints
+// verifyUpdate checks whether the header signature is correct and the update fits into the specified constraints
+// (assumes that the update has been successfully validated previously)
 func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
-	//fmt.Println("verify update", update)
-	if update.Header.Slot&0x1fff == 0x1fff {
-		// last slot of each period is not suitable for an update because it is signed by the next period's sync committee, proves the same committee it is signed by
-		return false
-	}
-	if !s.checkForksAndConstraints(update) {
-		return false
-	}
-	var checkRoot common.Hash
-	if update.hasFinality() {
-		if update.FinalizedHeader.Slot>>13 != update.Header.Slot>>13 {
-			// finalized header is from the previous period, proves the same committee it is signed by
-			return false
-		}
-		if root, ok := VerifySingleProof(update.FinalityBranch, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()), 0); !ok || root != update.Header.StateRoot {
-			return false
-		}
-		checkRoot = update.FinalizedHeader.StateRoot
-	} else {
-		checkRoot = update.Header.StateRoot
-	}
-	if root, ok := VerifySingleProof(update.NextSyncCommitteeBranch, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot), 0); !ok || root != checkRoot {
-		if ok && root == update.Header.StateRoot {
-			log.Warn("update.NextSyncCommitteeBranch rooted in update.Header.StateRoot  (Lodestar bug workaround applied)")
-		} else {
-			return false
-		}
-	}
-	return s.verifySignature(SignedHead{Header: update.Header, Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits})
+	return s.checkForksAndConstraints(update) &&
+		s.verifySignature(SignedHead{Header: update.Header, Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits})
 }
 
 const (
@@ -1024,6 +998,34 @@ type LightClientUpdate struct {
 	SyncCommitteeSignature  []byte
 	ForkVersion             []byte
 	score                   UpdateScore
+}
+
+func (update *LightClientUpdate) Validate() error {
+	//fmt.Println("verify update", update)
+	if update.Header.Slot&0x1fff == 0x1fff {
+		// last slot of each period is not suitable for an update because it is signed by the next period's sync committee, proves the same committee it is signed by
+		return errors.New("Last slot of period")
+	}
+	var checkRoot common.Hash
+	if update.hasFinality() {
+		if update.FinalizedHeader.Slot>>13 != update.Header.Slot>>13 {
+			return errors.New("FinalizedHeader is from previous period") // proves the same committee it is signed by
+		}
+		if root, ok := VerifySingleProof(update.FinalityBranch, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()), 0); !ok || root != update.Header.StateRoot {
+			return errors.New("Invalid FinalizedHeader merkle proof")
+		}
+		checkRoot = update.FinalizedHeader.StateRoot
+	} else {
+		checkRoot = update.Header.StateRoot
+	}
+	if root, ok := VerifySingleProof(update.NextSyncCommitteeBranch, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot), 0); !ok || root != checkRoot {
+		if ok && root == update.Header.StateRoot {
+			log.Warn("update.NextSyncCommitteeBranch rooted in update.Header.StateRoot  (Lodestar bug workaround applied)")
+		} else {
+			return errors.New("Invalid NextSyncCommittee merkle proof")
+		}
+	}
+	return nil
 }
 
 func (l *LightClientUpdate) hasFinality() bool {

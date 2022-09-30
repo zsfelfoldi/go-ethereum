@@ -32,6 +32,7 @@ const (
 	headPollCount     = 50
 )
 
+// CommitteeSyncer syncs committee updates and signed heads from RestApi to SyncCommitteeTracker
 type CommitteeSyncer struct {
 	api *RestApi
 
@@ -44,7 +45,8 @@ type CommitteeSyncer struct {
 	headTriggerCh, closedCh     chan struct{}
 }
 
-// genesisData is only needed when light syncing (using GetInitData for bootstrap)
+// NewCommitteeSyncer creates a new CommitteeSyncer
+// Note: genesisData is only needed when light syncing (using GetInitData for bootstrap)
 func NewCommitteeSyncer(api *RestApi, genesisData beacon.GenesisData) *CommitteeSyncer {
 	updateCache, _ := lru.New(beacon.MaxCommitteeUpdateFetch)
 	committeeCache, _ := lru.New(beacon.MaxCommitteeUpdateFetch / beacon.CommitteeCostFactor)
@@ -58,28 +60,23 @@ func NewCommitteeSyncer(api *RestApi, genesisData beacon.GenesisData) *Committee
 	}
 }
 
+// Start starts the syncing of the given SyncCommitteeTracker
 func (cs *CommitteeSyncer) Start(sct *beacon.SyncCommitteeTracker) {
 	cs.sct = sct
 	sct.SyncWithPeer(cs, nil)
 	go cs.headPollLoop()
 }
 
-func (cs *CommitteeSyncer) TriggerNewHead() {
-	cs.updateCache.Purge()
-	cs.committeeCache.Purge()
-
-	select {
-	case cs.headTriggerCh <- struct{}{}:
-	default:
-	}
-}
-
+// Stop stops the syncing process
 func (cs *CommitteeSyncer) Stop() {
 	cs.sct.Disconnect(cs)
 	close(cs.headTriggerCh)
 	<-cs.closedCh
 }
 
+// headPollLoop polls the signed head update endpoint and feeds signed heads into the tracker.
+// Twice each sync period (not long before the end of the period and after the end of each period)
+// it queries the best available committee update and advertises it to the tracker.
 func (cs *CommitteeSyncer) headPollLoop() {
 	//fmt.Println("Started headPollLoop()")
 	timer := time.NewTimer(0)
@@ -98,6 +95,8 @@ func (cs *CommitteeSyncer) headPollLoop() {
 			if head, err := cs.api.GetHeadUpdate(); err == nil {
 				//fmt.Println(" headPollLoop head update for slot", head.Header.Slot, nextAdvertiseSlot)
 				if !head.Equal(&lastHead) {
+					cs.updateCache.Purge()
+					cs.committeeCache.Purge()
 					//fmt.Println("head poll: new head", head.Header.Slot, nextAdvertiseSlot)
 					cs.sct.AddSignedHeads(cs, []beacon.SignedHead{head})
 					lastHead = head
@@ -134,6 +133,9 @@ func (cs *CommitteeSyncer) headPollLoop() {
 	}
 }
 
+// advertiseUpdates queries committee updates that the tracker does not have or might have
+// improved since the last query and advertises them to the tracker. The tracker might then
+// fetch the actual updates and committees via GetBestCommitteeProofs.
 func (cs *CommitteeSyncer) advertiseUpdates(lastPeriod uint64) bool {
 	nextPeriod := cs.sct.NextPeriod()
 	if nextPeriod < 1 {
@@ -161,6 +163,7 @@ func (cs *CommitteeSyncer) advertiseUpdates(lastPeriod uint64) bool {
 	return true
 }
 
+// GetBestCommitteeProofs fetches updates and committees for the specified periods
 func (cs *CommitteeSyncer) GetBestCommitteeProofs(ctx context.Context, req beacon.CommitteeRequest) (beacon.CommitteeReply, error) {
 	reply := beacon.CommitteeReply{
 		Updates:    make([]beacon.LightClientUpdate, len(req.UpdatePeriods)),
@@ -180,6 +183,7 @@ func (cs *CommitteeSyncer) GetBestCommitteeProofs(ctx context.Context, req beaco
 	return reply, nil
 }
 
+// getBestUpdate returns the best update for the given period
 func (cs *CommitteeSyncer) getBestUpdate(period uint64) (beacon.LightClientUpdate, error) {
 	if c, _ := cs.updateCache.Get(period); c != nil {
 		return c.(beacon.LightClientUpdate), nil
@@ -188,7 +192,9 @@ func (cs *CommitteeSyncer) getBestUpdate(period uint64) (beacon.LightClientUpdat
 	return update, err
 }
 
+// getCommittee returns the committee for the given period
 func (cs *CommitteeSyncer) getCommittee(period uint64) ([]byte, error) {
+	//TODO period 0 (same as period 1 if available?)
 	if cs.checkpointCommittee != nil && period == cs.checkpointPeriod {
 		return cs.checkpointCommittee, nil
 	}
@@ -199,6 +205,8 @@ func (cs *CommitteeSyncer) getCommittee(period uint64) ([]byte, error) {
 	return committee, err
 }
 
+// getBestUpdateAndCommittee fetches the best update for period and corresponding committee
+// for period+1 and caches the results until a new head is received by headPollLoop
 func (cs *CommitteeSyncer) getBestUpdateAndCommittee(period uint64) (beacon.LightClientUpdate, []byte, error) {
 	update, committee, err := cs.api.GetBestUpdateAndCommittee(period)
 	if err != nil {
@@ -209,6 +217,8 @@ func (cs *CommitteeSyncer) getBestUpdateAndCommittee(period uint64) (beacon.Ligh
 	return update, committee, nil
 }
 
+// GetInitData fetches the bootstrap data and returns LightClientInitData (the corresponding
+// committee is stored so that a subsequent GetBestCommitteeProofs can return it when requested)
 func (cs *CommitteeSyncer) GetInitData(ctx context.Context, checkpoint common.Hash) (beacon.Header, beacon.LightClientInitData, error) {
 	if cs.genesisData == (beacon.GenesisData{}) {
 		return beacon.Header{}, beacon.LightClientInitData{}, errors.New("missing genesis data")
@@ -221,10 +231,12 @@ func (cs *CommitteeSyncer) GetInitData(ctx context.Context, checkpoint common.Ha
 	return header, beacon.LightClientInitData{GenesisData: cs.genesisData, CheckpointData: checkpointData}, nil
 }
 
+// ClosedChannel returns a channel that is closed when the syncer is stopped
 func (cs *CommitteeSyncer) ClosedChannel() chan struct{} {
 	return cs.closedCh
 }
 
+// WrongReply is called by the tracker when the RestApi has provided wrong committee updates or signed heads
 func (cs *CommitteeSyncer) WrongReply(description string) {
 	log.Error("Beacon node API data source delivered wrong reply", "error", description)
 }
