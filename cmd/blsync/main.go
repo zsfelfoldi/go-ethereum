@@ -86,7 +86,7 @@ func blsync(ctx *cli.Context) error {
 	if syncCommitteeCheckpoint == nil {
 		utils.Fatalf("No beacon chain checkpoint")
 	}
-	syncCommitteeTracker := beacon.NewSyncCommitteeTracker(db, chainConfig.Forks, syncCommitteeCheckpoint, ctx.Int(utils.BeaconThresholdFlag.Name), &mclock.System{})
+	syncCommitteeTracker := beacon.NewSyncCommitteeTracker(db, chainConfig.Forks, syncCommitteeCheckpoint, ctx.Int(utils.BeaconThresholdFlag.Name), beacon.BLSVerifier{}, &mclock.System{})
 	cache, _ := lru.New(1000)
 	execSyncer := &execSyncer{
 		api:           beaconApi,

@@ -42,7 +42,6 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/minio/sha256-simd"
-	bls "github.com/protolambda/bls12-381-util"
 )
 
 var (
@@ -82,12 +81,6 @@ func (s *SignedHead) Equal(s2 *SignedHead) bool {
 	return s.Header == s2.Header && bytes.Equal(s.BitMask, s2.BitMask) && bytes.Equal(s.Signature, s2.Signature)
 }
 
-// syncCommittee is a set of sync committee signer pubkeys
-type syncCommittee struct {
-	keys      [512]*bls.Pubkey
-	aggregate *bls.Pubkey
-}
-
 // sctClient represents a peer that SyncCommitteeTracker sends signed heads and sync committee advertisements to
 type sctClient interface {
 	SendSignedHeads(heads []SignedHead)
@@ -113,6 +106,7 @@ const lastProcessedCount = 4
 type SyncCommitteeTracker struct {
 	lock                                                                              sync.RWMutex
 	db                                                                                ethdb.KeyValueStore
+	sigVerifier                                                                       committeeSigVerifier
 	clock                                                                             mclock.Clock
 	bestUpdateCache, serializedCommitteeCache, syncCommitteeCache, committeeRootCache *lru.Cache
 
@@ -140,9 +134,10 @@ type SyncCommitteeTracker struct {
 }
 
 // NewSyncCommitteeTracker creates a new SyncCommitteeTracker
-func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints SctConstraints, signerThreshold int, clock mclock.Clock) *SyncCommitteeTracker {
+func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints SctConstraints, signerThreshold int, sigVerifier committeeSigVerifier, clock mclock.Clock) *SyncCommitteeTracker {
 	s := &SyncCommitteeTracker{
 		db:              db,
+		sigVerifier:     sigVerifier,
 		clock:           clock,
 		forks:           forks,
 		constraints:     constraints,
@@ -372,30 +367,10 @@ func (s *SyncCommitteeTracker) storeSerializedSyncCommittee(period uint64, commi
 
 // caller should ensure that previous advertised committees are synced before checking signature
 func (s *SyncCommitteeTracker) verifySignature(head SignedHead) bool {
-	if len(head.Signature) != 96 || len(head.BitMask) != 64 {
-		//fmt.Println("wrong sig size")
-		return false
-	}
-	var signature bls.Signature
-	var sigBytes [96]byte
-	copy(sigBytes[:], head.Signature)
-	if err := signature.Deserialize(&sigBytes); err != nil {
-		//fmt.Println("sig deserialize error", err)
-		return false
-	}
-
 	committee := s.getSyncCommitteeLocked(uint64(head.Header.Slot+1) >> 13) // signed with the next slot's committee
 	if committee == nil {
 		//fmt.Println("sig check: committee not found", uint64(head.Header.Slot+1)>>13)
 		return false
-	}
-	var signerKeys [512]*bls.Pubkey
-	signerCount := 0
-	for i, key := range committee.keys {
-		if head.BitMask[i/8]&(byte(1)<<(i%8)) != 0 {
-			signerKeys[signerCount] = key
-			signerCount++
-		}
 	}
 
 	var signingRoot common.Hash
@@ -408,9 +383,7 @@ func (s *SyncCommitteeTracker) verifySignature(head SignedHead) bool {
 	hasher.Sum(signingRoot[:0])
 	//fmt.Println("signingRoot", signingRoot, "signerCount", signerCount)
 
-	vvv := bls.FastAggregateVerify(signerKeys[:signerCount], signingRoot[:], &signature)
-	//fmt.Println("sig bls check", vvv)
-	return vvv
+	return s.sigVerifier.verifySignature(committee, signingRoot, head.BitMask, head.Signature)
 }
 
 func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) MerkleValue {
@@ -462,29 +435,6 @@ func SerializedCommitteeRoot(enc []byte) common.Hash {
 	return data[0]
 }
 
-func deserializeSyncCommittee(enc []byte) *syncCommittee {
-	if len(enc) != 513*48 {
-		log.Error("Wrong input size for deserializeSyncCommittee", "expected", 513*48, "got", len(enc))
-		return nil
-	}
-	sc := new(syncCommittee)
-	for i := 0; i <= 512; i++ {
-		pk := new(bls.Pubkey)
-		var sk [48]byte
-		copy(sk[:], enc[i*48:(i+1)*48])
-		if err := pk.Deserialize(&sk); err != nil {
-			log.Error("bls.Pubkey.Deserialize failed", "error", err, "data", sk)
-			return nil
-		}
-		if i < 512 {
-			sc.keys[i] = pk
-		} else {
-			sc.aggregate = pk
-		}
-	}
-	return sc
-}
-
 func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) (root common.Hash) {
 	//fmt.Println("getSyncCommitteeRoot", period)
 	if v, ok := s.committeeRootCache.Get(period); ok {
@@ -518,17 +468,17 @@ func (s *SyncCommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
 	return s.getSyncCommitteeRoot(period)
 }
 
-func (s *SyncCommitteeTracker) getSyncCommitteeLocked(period uint64) *syncCommittee {
+func (s *SyncCommitteeTracker) getSyncCommitteeLocked(period uint64) syncCommittee {
 	//fmt.Println("sct.getSyncCommittee", period)
 	if committeeRoot := s.getSyncCommitteeRoot(period); committeeRoot != (common.Hash{}) {
 		key := string(getSyncCommitteeKey(period, committeeRoot))
 		if v, ok := s.syncCommitteeCache.Get(key); ok {
 			//fmt.Println(" cached")
-			sc, _ := v.(*syncCommittee)
+			sc, _ := v.(syncCommittee)
 			return sc
 		}
 		if sc := s.GetSerializedSyncCommittee(period, committeeRoot); sc != nil {
-			c := deserializeSyncCommittee(sc)
+			c := s.sigVerifier.deserializeSyncCommittee(sc)
 			s.syncCommitteeCache.Add(key, c)
 			return c
 		} else {
@@ -539,7 +489,7 @@ func (s *SyncCommitteeTracker) getSyncCommitteeLocked(period uint64) *syncCommit
 	return nil
 }
 
-func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) *syncCommittee {
+func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) syncCommittee {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 
