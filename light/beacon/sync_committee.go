@@ -63,6 +63,7 @@ type SignedHead struct {
 	BitMask   []byte
 	Signature []byte
 	Header    Header
+	//TODO include fork version here? add it to the protocol?
 }
 
 func (s *SignedHead) signerCount() int {
@@ -372,18 +373,7 @@ func (s *SyncCommitteeTracker) verifySignature(head SignedHead) bool {
 		//fmt.Println("sig check: committee not found", uint64(head.Header.Slot+1)>>13)
 		return false
 	}
-
-	var signingRoot common.Hash
-	hasher := sha256.New()
-	headerHash := head.Header.Hash()
-	hasher.Write(headerHash[:])
-	domain := s.forks.domain(uint64(head.Header.Slot) >> 5)
-	//fmt.Println("sig check domain", domain)
-	hasher.Write(domain[:])
-	hasher.Sum(signingRoot[:0])
-	//fmt.Println("signingRoot", signingRoot, "signerCount", signerCount)
-
-	return s.sigVerifier.verifySignature(committee, signingRoot, head.BitMask, head.Signature)
+	return s.sigVerifier.verifySignature(committee, s.forks.signingRoot(head.Header), head.BitMask, head.Signature)
 }
 
 func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) MerkleValue {
@@ -1365,13 +1355,26 @@ func (bf Forks) computeDomains(genesisValidatorsRoot common.Hash) {
 	}
 }
 
-func (bf Forks) epoch(name string) (uint64, bool) {
+func epoch(name string) (uint64, bool) {
 	for _, fork := range bf {
 		if fork.Name == name {
 			return fork.Epoch, true
 		}
 	}
 	return 0, false
+}
+
+func (bf Forks) signingRoot(header Header) common.Hash {
+	var signingRoot common.Hash
+	hasher := sha256.New()
+	headerHash := header.Hash()
+	hasher.Write(headerHash[:])
+	domain := bf.domain(uint64(header.Slot) >> 5)
+	//fmt.Println("sig check domain", domain)
+	hasher.Write(domain[:])
+	hasher.Sum(signingRoot[:0])
+	//fmt.Println("signingRoot", signingRoot, "signerCount", signerCount)
+	return signingRoot
 }
 
 func (f Forks) Len() int           { return len(f) }
