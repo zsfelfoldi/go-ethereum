@@ -286,7 +286,7 @@ var (
 	BeaconThresholdFlag = &cli.IntFlag{
 		Name:     "beacon.threshold",
 		Usage:    "Beacon sync committee participation threshold",
-		Value:    257,
+		Value:    342,
 		Category: flags.BeaconCategory,
 	}
 	BeaconNoFilterFlag = &cli.BoolFlag{
