@@ -65,14 +65,12 @@ func (BLSVerifier) deserializeSyncCommittee(enc []byte) syncCommittee {
 
 func (BLSVerifier) verifySignature(committee syncCommittee, signingRoot common.Hash, bitmask, signature []byte) bool {
 	if len(signature) != 96 || len(bitmask) != 64 {
-		////fmt.Println("wrong sig size")
 		return false
 	}
 	var sig bls.Signature
 	var sigBytes [96]byte
 	copy(sigBytes[:], signature)
 	if err := sig.Deserialize(&sigBytes); err != nil {
-		////fmt.Println("sig deserialize error", err)
 		return false
 	}
 	var signerKeys [512]*bls.Pubkey

@@ -78,7 +78,6 @@ func (cs *CommitteeSyncer) Stop() {
 // Twice each sync period (not long before the end of the period and after the end of each period)
 // it queries the best available committee update and advertises it to the tracker.
 func (cs *CommitteeSyncer) headPollLoop() {
-	////fmt.Println("Started headPollLoop()")
 	timer := time.NewTimer(0)
 	var (
 		counter      int
@@ -91,13 +90,10 @@ func (cs *CommitteeSyncer) headPollLoop() {
 		select {
 		case <-timer.C:
 			timerStarted = false
-			////fmt.Println(" headPollLoop timer")
 			if head, err := cs.api.GetHeadUpdate(); err == nil {
-				////fmt.Println(" headPollLoop head update for slot", head.Header.Slot, nextAdvertiseSlot)
 				if !head.Equal(&lastHead) {
 					cs.updateCache.Purge()
 					cs.committeeCache.Purge()
-					////fmt.Println("head poll: new head", head.Header.Slot, nextAdvertiseSlot)
 					cs.sct.AddSignedHeads(cs, []beacon.SignedHead{head})
 					lastHead = head
 					if uint64(head.Header.Slot) >= nextAdvertiseSlot {
@@ -111,12 +107,10 @@ func (cs *CommitteeSyncer) headPollLoop() {
 					}
 				}
 				if counter < headPollCount {
-					//counter++
 					timer.Reset(headPollFrequency)
 					timerStarted = true
 				}
 			} else {
-				////fmt.Println(" getHeadUpdate failed:", err)
 			}
 		case _, ok := <-cs.headTriggerCh:
 			if !ok {
@@ -141,7 +135,6 @@ func (cs *CommitteeSyncer) advertiseUpdates(lastPeriod uint64) bool {
 	if nextPeriod < 1 {
 		nextPeriod = 1 // we are advertising the range starting from nextPeriod-1
 	}
-	////fmt.Println("advertiseUpdates", nextPeriod, lastPeriod)
 	if nextPeriod-1 > lastPeriod {
 		return true
 	}
@@ -166,7 +159,6 @@ func (cs *CommitteeSyncer) advertiseUpdates(lastPeriod uint64) bool {
 		log.Error("Could not fetch last committee update")
 		return false
 	}
-	////fmt.Println("advertiseUpdates", lastPeriod, updateInfo, len(updateInfo.Scores))
 	cs.sct.SyncWithPeer(cs, updateInfo)
 	return true
 }

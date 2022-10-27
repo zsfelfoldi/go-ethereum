@@ -144,11 +144,7 @@ func runSctTest(t *testing.T, testCase sctTestCase) {
 				}
 				constraints[i] = &testConstraints{}
 				trackers[i] = NewSyncCommitteeTracker(dbs[i], ts.forks, constraints[i], ts.signerThreshold, true, dummyVerifier{}, clock, func() int64 { return int64(clock.Now()) })
-			} /* else {
-				if s == 0 || ts.forks != testCase[s-1].trackers[i].forks || ts.signerThreshold != testCase[s-1].trackers[i].signerThreshold {
-					panic(nil)
-				}
-			}*/
+			}
 			constraints[i].setRoots(ts.constraintsTc, ts.constraintsFirst, ts.constraintsAfterFixed, ts.constraintsAfterLast)
 		}
 		for syncIndex, ss := range step.sync {
@@ -173,16 +169,12 @@ func runSctTest(t *testing.T, testCase sctTestCase) {
 				if sct.GetBestUpdate(ts.expFirst-1) != nil {
 					t.Errorf("Step %d tracker %d: update found in synced chain before the expected range (period %d)", stepIndex, i, ts.expFirst-1)
 				}
-				/*if sct.GetSyncCommitteeRoot(ts.expFirst-1) != (common.Hash{}) {
-					t.Errorf("Step %d tracker %d: committee found in synced chain before the expected range (period %d)", stepIndex, i, ts.expFirst-1)
-				}*/
 			}
 			for period := ts.expFirst; period < ts.expAfterLast; period++ {
 				if update := sct.GetBestUpdate(period); update == nil {
 					t.Errorf("Step %d tracker %d: update missing from synced chain (period %d)", stepIndex, i, period)
 				} else if update.CalculateScore() != ts.expTc.periods[period].update.CalculateScore() {
 					t.Errorf("Step %d tracker %d: wrong update found in synced chain (period %d)", stepIndex, i, period)
-					//fmt.Println("Score:", update.CalculateScore(), "exp:", ts.expTc.periods[period].update.CalculateScore())
 				}
 			}
 			for period := ts.expFirst; period <= ts.expAfterLast; period++ {
@@ -193,9 +185,6 @@ func runSctTest(t *testing.T, testCase sctTestCase) {
 			if sct.GetBestUpdate(ts.expAfterLast) != nil {
 				t.Errorf("Step %d tracker %d: update found in synced chain after the expected range (period %d)", stepIndex, i, ts.expAfterLast)
 			}
-			/*if sct.GetSyncCommitteeRoot(ts.expAfterLast+1) != (common.Hash{}) {
-				t.Errorf("Step %d tracker %d: committee found in synced chain after the expected range (period %d)", stepIndex, i, ts.expAfterLast+1)
-			}*/
 		}
 	}
 	for _, sct := range trackers {
@@ -225,10 +214,6 @@ func newTestChain(parent *testChain, genesisData GenesisData, forks Forks, newCo
 		tc.periods = make([]testPeriod, len(parent.periods))
 		copy(tc.periods, parent.periods)
 	}
-	/*if signerCount == 0 {
-		// remove periods starting from begin
-		tc.periods
-	}*/
 	if newCommittees {
 		if begin == 0 {
 			tc.fillCommittees(begin, end+1)
@@ -333,7 +318,6 @@ type tcSyncer struct {
 }
 
 func (s *tcSyncer) GetBestCommitteeProofs(ctx context.Context, req CommitteeRequest) (CommitteeReply, error) {
-	//fmt.Println("testChain.GetBestCommitteeProofs", req)
 	reply := CommitteeReply{
 		Updates:    make([]LightClientUpdate, len(req.UpdatePeriods)),
 		Committees: make([][]byte, len(req.CommitteePeriods)),
@@ -352,7 +336,6 @@ func (s *tcSyncer) ClosedChannel() chan struct{} {
 }
 
 func (s *tcSyncer) WrongReply(description string) {
-	//fmt.Println("*** wrong reply (testChain):", description)
 	s.failed = true
 }
 
@@ -364,7 +347,6 @@ func (tc *testChain) makeUpdateInfo(firstPeriod int) *UpdateInfo {
 	for i := range u.Scores {
 		u.Scores[i] = tc.periods[firstPeriod+i].update.CalculateScore()
 	}
-	//fmt.Println("makeUpdateInfo", u)
 	return u
 }
 
@@ -379,7 +361,6 @@ type sctSyncer struct {
 }
 
 func (s *sctSyncer) GetBestCommitteeProofs(ctx context.Context, req CommitteeRequest) (CommitteeReply, error) {
-	//fmt.Println("sctSyncer.GetBestCommitteeProofs", req)
 	reply := CommitteeReply{
 		Updates:    make([]LightClientUpdate, len(req.UpdatePeriods)),
 		Committees: make([][]byte, len(req.CommitteePeriods)),
@@ -400,9 +381,7 @@ func (s *sctSyncer) ClosedChannel() chan struct{} {
 }
 
 func (s *sctSyncer) WrongReply(description string) {
-	//fmt.Println("*** wrong reply (sctSyncer):", description)
 	s.failed = true
-	//close(s.closedCh)
 }
 
 func (s *sctSyncer) syncTracker(sct *SyncCommitteeTracker) {
@@ -436,7 +415,6 @@ func (tcs *testConstraints) SetCallbacks(initCallback func(GenesisData), updateC
 	if tcs.genesisData == (GenesisData{}) {
 		tcs.initCallback = initCallback
 	} else {
-		//fmt.Println("init 2")
 		initCallback(tcs.genesisData)
 	}
 	tcs.updateCallback = updateCallback
@@ -451,7 +429,6 @@ func (tcs *testConstraints) setRoots(tc *testChain, first, afterFixed, afterLast
 	if tcs.genesisData == (GenesisData{}) {
 		tcs.genesisData = tc.genesisData
 		if tcs.initCallback != nil {
-			//fmt.Println("init 1")
 			tcs.initCallback(tcs.genesisData)
 		}
 	}
