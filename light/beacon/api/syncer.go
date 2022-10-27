@@ -94,7 +94,9 @@ func (cs *CommitteeSyncer) headPollLoop() {
 				if !head.Equal(&lastHead) {
 					cs.updateCache.Purge()
 					cs.committeeCache.Purge()
-					cs.sct.AddSignedHeads(cs, []beacon.SignedHead{head})
+					if cs.sct.NextPeriod() > uint64(head.Header.Slot)>>13 {
+						cs.sct.AddSignedHeads(cs, []beacon.SignedHead{head})
+					}
 					lastHead = head
 					if uint64(head.Header.Slot) >= nextAdvertiseSlot {
 						lastPeriod := uint64(head.Header.Slot-1) >> 13
@@ -110,7 +112,6 @@ func (cs *CommitteeSyncer) headPollLoop() {
 					timer.Reset(headPollFrequency)
 					timerStarted = true
 				}
-			} else {
 			}
 		case _, ok := <-cs.headTriggerCh:
 			if !ok {
