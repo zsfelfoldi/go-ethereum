@@ -160,7 +160,7 @@ func (e *execSyncer) newHead(head beacon.Header) {
 		}
 		blocks = append(blocks, block)
 		finalizedRoots = append(finalizedRoots, finalizedBeaconRoot)
-		e.execRootCache.Add(beaconRoot, block.Hash())
+		e.execRootCache.Add(beaconRoot, execBlockRoot)
 
 		if _, ok := e.execRootCache.Get(head.ParentRoot); ok {
 			parentFound = true
@@ -179,9 +179,34 @@ func (e *execSyncer) newHead(head beacon.Header) {
 	if blocks == nil {
 		return
 	}
-	if !parentFound {
+	if !parentFound && count == 0 {
 		blocks = blocks[:1]
 		finalizedRoots = finalizedRoots[:1]
+		// iterate further back as far as possible (or max 256 steps) just to collect beacon -> exec root associations
+		count = 256
+		for {
+			proof, err := e.api.GetStateProof(head.StateRoot, statePaths, stateProofFormat)
+			if err != nil {
+				// exit silently because we expect running into an error
+				break
+			}
+			execBlockRoot := common.Hash(proof.Values[stateIndexMap[beacon.BsiExecHead]])
+			beaconRoot := head.Hash()
+			e.execRootCache.Add(beaconRoot, execBlockRoot)
+			if beaconRoot == finalizedRoots[0] {
+				break // this is what we were looking for, earlier associations won't be needed
+			}
+			if _, ok := e.execRootCache.Get(head.ParentRoot); ok {
+				break
+			}
+			count--
+			if count == 0 {
+				break
+			}
+			if head, err = e.api.GetHeader(head.ParentRoot); err != nil {
+				break
+			}
+		}
 	}
 	for i := len(blocks) - 1; i >= 0; i-- {
 		blockRoot := blocks[i].Hash()
