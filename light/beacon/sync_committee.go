@@ -63,9 +63,9 @@ type SignedHead struct {
 	BitMask   []byte
 	Signature []byte
 	Header    Header
-	//TODO include fork version here? add it to the protocol?
 }
 
+// signerCount returns the number of individual signers in the signature aggregate
 func (s *SignedHead) signerCount() int {
 	if len(s.BitMask) != 64 {
 		return 0 // signature check will filter it out later but we calculate this before sig check
@@ -338,7 +338,7 @@ func getSyncCommitteeKey(period uint64, committeeRoot common.Hash) []byte {
 	return key
 }
 
-// GetSerializedSyncCommittee
+// GetSerializedSyncCommittee fetches the serialized version of a sync committee from cache or database
 func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committeeRoot common.Hash) []byte {
 	key := getSyncCommitteeKey(period, committeeRoot)
 	if v, ok := s.serializedCommitteeCache.Get(string(key)); ok {
@@ -360,6 +360,7 @@ func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committ
 	return nil
 }
 
+// storeSerializedSyncCommittee stores the serialized version of a sync committee to cache and database
 func (s *SyncCommitteeTracker) storeSerializedSyncCommittee(period uint64, committeeRoot common.Hash, committee []byte) {
 	key := getSyncCommitteeKey(period, committeeRoot)
 	s.serializedCommitteeCache.Add(string(key), committee)
@@ -367,7 +368,12 @@ func (s *SyncCommitteeTracker) storeSerializedSyncCommittee(period uint64, commi
 	s.db.Put(key, committee)
 }
 
-// caller should ensure that previous advertised committees are synced before checking signature
+// verifySignature returns true if the given signed head has a valid signature according to the local
+// committee chain. The caller should ensure that the committees advertised by the same source where
+// the signed head came from are synced before verifying the signature.
+// The age of the header is also returned (the time elapsed since the beginning of the given slot,
+// according to the local system clock). If enforceTime is true then negative age (future) headers
+// are rejected.
 func (s *SyncCommitteeTracker) verifySignature(head SignedHead) (bool, time.Duration) {
 	slotTime := int64(time.Second) * int64(s.genesisTime+uint64(head.Header.Slot)*12)
 	age := time.Duration(s.unixNano() - slotTime)
@@ -381,6 +387,7 @@ func (s *SyncCommitteeTracker) verifySignature(head SignedHead) (bool, time.Dura
 	return s.sigVerifier.verifySignature(committee, s.forks.signingRoot(head.Header), head.BitMask, head.Signature), age
 }
 
+// computeDomain returns the signature domain based on the given fork version and genesis validator set root
 func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) MerkleValue {
 	var forkVersion32, forkDataRoot, domain MerkleValue
 	hasher := sha256.New()
@@ -393,6 +400,8 @@ func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) Merkle
 	return domain
 }
 
+// SerializedCommitteeRoot calculates the root hash of the binary tree representation
+// of a sync committee provided in serialized format
 func SerializedCommitteeRoot(enc []byte) common.Hash {
 	if len(enc) != 513*48 {
 		return common.Hash{}
@@ -429,6 +438,8 @@ func SerializedCommitteeRoot(enc []byte) common.Hash {
 	return data[0]
 }
 
+// getSyncCommitteeRoot returns the sync committee root at the given period of the current
+// local committee root constraints or update chain (tracker mutex lock expected).
 func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) (root common.Hash) {
 	if v, ok := s.committeeRootCache.Get(period); ok {
 		return v.(common.Hash)
@@ -449,6 +460,8 @@ func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) (root common.
 	return common.Hash{}
 }
 
+// GetSyncCommitteeRoot returns the sync committee root at the given period of the current
+// local committee root constraints or update chain (tracker mutex locked).
 func (s *SyncCommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
@@ -456,6 +469,8 @@ func (s *SyncCommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
 	return s.getSyncCommitteeRoot(period)
 }
 
+// getSyncCommitteeLocked returns the deserialized sync committee at the given period of the
+// current local committee chain (tracker mutex lock expected).
 func (s *SyncCommitteeTracker) getSyncCommitteeLocked(period uint64) syncCommittee {
 	if committeeRoot := s.getSyncCommitteeRoot(period); committeeRoot != (common.Hash{}) {
 		key := string(getSyncCommitteeKey(period, committeeRoot))
@@ -474,6 +489,8 @@ func (s *SyncCommitteeTracker) getSyncCommitteeLocked(period uint64) syncCommitt
 	return nil
 }
 
+// getSyncCommittee returns the deserialized sync committee at the given period of the
+// current local committee chain (tracker mutex locked).
 func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) syncCommittee {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
@@ -481,21 +498,30 @@ func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) syncCommittee {
 	return s.getSyncCommitteeLocked(period)
 }
 
+// UpdateScore allows the comparison between updates at the same period in order to find the best
+// update chain that provides the strongest proof of being canonical.
 type UpdateScore struct {
 	signerCount, subPeriodIndex uint32
 	finalizedHeader             bool // update is considered finalized if has finalized header and 2/3 signatures
 }
 
-type UpdateScores []UpdateScore //TODO RLP encode to single []byte
+type UpdateScores []UpdateScore
 
+// isFinalized returns true if the update has a header signed by at least 2/3 of the committee,
+// referring to a finalized header that refers to the next sync committee. This condition is a
+// close approximation of the actual finality condition that can only be verified by full beacon nodes.
 func (u *UpdateScore) isFinalized() bool {
 	return u.finalizedHeader && u.signerCount > 341
 }
 
+// reorgRiskPenalty returns a modifier that approximates the risk of a non-finalized update header being reorged.
+// It should be subtracted from the signer participation count when comparing non-finaized updates.
+// This risk is assumed to be dropping exponentially as the update header is further away from the beginning of the period.
 func (u *UpdateScore) reorgRiskPenalty() uint32 {
 	return uint32(math.Pow(2, 10-float64(u.subPeriodIndex)/32))
 }
 
+// betterThan returns true if update u is considered better than w.
 func (u *UpdateScore) betterThan(w UpdateScore) bool {
 	uFinalized, wFinalized := u.isFinalized(), w.isFinalized()
 	if uFinalized || wFinalized {
@@ -509,6 +535,7 @@ func (u *UpdateScore) betterThan(w UpdateScore) bool {
 	return u.signerCount+w.reorgRiskPenalty() > w.signerCount+u.reorgRiskPenalty()
 }
 
+// Encode encodes the update score data in a compact form for in-protocol advertisement
 func (u *UpdateScore) Encode(data []byte) {
 	v := u.signerCount + u.subPeriodIndex<<10
 	if u.finalizedHeader {
@@ -519,6 +546,7 @@ func (u *UpdateScore) Encode(data []byte) {
 	copy(data, enc[:3])
 }
 
+// Decode decodes the update score data
 func (u *UpdateScore) Decode(data []byte) {
 	var enc [4]byte
 	copy(enc[:3], data)
@@ -528,12 +556,14 @@ func (u *UpdateScore) Decode(data []byte) {
 	u.finalizedHeader = (v & 0x800000) != 0
 }
 
+// UpdateInfo contains scores for an advertised update chain. Note that the most recent updates are always
+// advertised but earliest ones might not because of length limitation.
 type UpdateInfo struct {
 	AfterLastPeriod uint64
 	Scores          UpdateScores
 }
 
-// 0 if not initialized
+// NextPeriod returns the period after the last update
 func (s *SyncCommitteeTracker) NextPeriod() uint64 {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -541,6 +571,7 @@ func (s *SyncCommitteeTracker) NextPeriod() uint64 {
 	return s.nextPeriod
 }
 
+// GetUpdateInfo returns and UpdateInfo based on the current local update chain (tracker mutex locked).
 func (s *SyncCommitteeTracker) GetUpdateInfo() *UpdateInfo {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -548,6 +579,7 @@ func (s *SyncCommitteeTracker) GetUpdateInfo() *UpdateInfo {
 	return s.getUpdateInfo()
 }
 
+// getUpdateInfo returns and UpdateInfo based on the current local update chain (tracker mutex expected).
 func (s *SyncCommitteeTracker) getUpdateInfo() *UpdateInfo {
 	if s.updateInfo != nil {
 		return s.updateInfo
@@ -575,19 +607,24 @@ func (s *SyncCommitteeTracker) getUpdateInfo() *UpdateInfo {
 	return u
 }
 
+// CommitteeRequest represents a request for fetching updates and committees at the given periods
 type CommitteeRequest struct {
 	UpdatePeriods, CommitteePeriods []uint64
 }
 
+// empty returns true if the request does not request anything
 func (req CommitteeRequest) empty() bool {
 	return req.UpdatePeriods == nil && req.CommitteePeriods == nil
 }
 
+// CommitteeReply is an answer to a CommitteeRequest, contains the updates and committees corresponding
+// to the period numbers in the request in the same order
 type CommitteeReply struct {
 	Updates    []LightClientUpdate
 	Committees [][]byte
 }
 
+// sctPeerInfo is the state of the syncing process from an individual server peer
 type sctPeerInfo struct {
 	peer               sctServer
 	remoteInfo         UpdateInfo
@@ -597,6 +634,9 @@ type sctPeerInfo struct {
 	doneSyncing        chan struct{}
 }
 
+// startRequest sends a new request to the given peer if there is anything to request; finishes the syncing
+// otherwise (processes deferred signed head advertisements and closes the doneSyncing channel).
+// Returns true if a new request has been sent.
 func (s *SyncCommitteeTracker) startRequest(sp *sctPeerInfo) bool {
 	req := s.nextRequest(sp)
 	if req.empty() {
@@ -643,6 +683,8 @@ func (s *SyncCommitteeTracker) startRequest(sp *sctPeerInfo) bool {
 	return true
 }
 
+// syncLoop is the global syncing loop starting requests to all peers where there is
+// something to sync according to the most recent advertisement.
 func (s *SyncCommitteeTracker) syncLoop() {
 	s.lock.Lock()
 	for {
@@ -675,7 +717,10 @@ func (s *SyncCommitteeTracker) syncLoop() {
 	}
 }
 
-// remoteInfo == nil does not start syncing but allows starting the init process if not initialized yet
+// SyncWithPeer starts or updates the syncing process with a given peer, based on the advertised
+// update scores.
+// Note that calling with remoteInfo == nil does not start syncing but allows attempting the init
+// process with the given peer if not initialized yet.
 func (s *SyncCommitteeTracker) SyncWithPeer(peer sctServer, remoteInfo *UpdateInfo) chan struct{} {
 	s.lock.Lock()
 	sp := s.connected[peer]
@@ -701,12 +746,15 @@ func (s *SyncCommitteeTracker) SyncWithPeer(peer sctServer, remoteInfo *UpdateIn
 	return doneSyncing
 }
 
+// Disconnect notifies the tracker about a peer being disconnected
 func (s *SyncCommitteeTracker) Disconnect(peer sctServer) {
 	s.lock.Lock()
 	delete(s.connected, peer)
 	s.lock.Unlock()
 }
 
+// retrySyncAllPeers re-triggers the syncing process (check if there is something new to request)
+// with all connected peers. Should be called when constraints are updated and might allow syncing further.
 func (s *SyncCommitteeTracker) retrySyncAllPeers() {
 	for _, sp := range s.connected {
 		if !sp.queued && !sp.requesting {
@@ -721,6 +769,8 @@ func (s *SyncCommitteeTracker) retrySyncAllPeers() {
 	}
 }
 
+// nextRequest creates the next request to be sent to the given peer, based on the difference between the
+// remote advertised and the local update chains.
 func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	if sp.remoteInfo.AfterLastPeriod < uint64(len(sp.remoteInfo.Scores)) {
 		return CommitteeRequest{}
@@ -832,6 +882,8 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	return request
 }
 
+// processReply processes the reply to a previous request, verifying received updates and committees
+// and extending/improving the local update chain if possible.
 func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest CommitteeRequest, reply CommitteeReply) bool {
 	if len(reply.Updates) != len(sentRequest.UpdatePeriods) || len(reply.Committees) != len(sentRequest.CommitteePeriods) {
 		return false
@@ -913,6 +965,9 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 	return true
 }
 
+// LightClientUpdate is a proof of the next sync committee root based on a header signed by the sync committee
+// of the given period. Optionally the update can prove quasi-finality by the signed header referring to a previous,
+// finalized header from the same period, and the finalized header referring to the next sync committee root.
 type LightClientUpdate struct {
 	Header                  Header
 	NextSyncCommitteeRoot   common.Hash
@@ -925,6 +980,7 @@ type LightClientUpdate struct {
 	score                   UpdateScore
 }
 
+// Validate verifies the validity of the update
 func (update *LightClientUpdate) Validate() error {
 	if update.Header.Slot&0x1fff == 0x1fff {
 		// last slot of each period is not suitable for an update because it is signed by the next period's sync committee, proves the same committee it is signed by
@@ -953,10 +1009,15 @@ func (update *LightClientUpdate) Validate() error {
 	return nil
 }
 
+// hasFinalizedHeader returns true if the update has a finalized header referred by the signed header
+// and referring to the next sync committee.
+// Note that in addition to this, a sufficient signer participation is also needed in order to fulfill
+// the quasi-finality condition (see UpdateScore.isFinalized).
 func (l *LightClientUpdate) hasFinalizedHeader() bool {
 	return l.FinalizedHeader.BodyRoot != (common.Hash{})
 }
 
+// CalculateScore returns the UpdateScore describing the proof strength of the update
 func (l *LightClientUpdate) CalculateScore() UpdateScore {
 	l.score.signerCount = 0
 	for _, v := range l.SyncCommitteeBits {
@@ -967,6 +1028,7 @@ func (l *LightClientUpdate) CalculateScore() UpdateScore {
 	return l.score
 }
 
+// trimZeroes removes zero bytes from the end of a byte slice
 func trimZeroes(data []byte) []byte {
 	l := len(data)
 	for l > 0 && data[l-1] == 0 {
@@ -975,10 +1037,12 @@ func trimZeroes(data []byte) []byte {
 	return data[:l]
 }
 
+// checkForkVersion returns true if the fork version of the update matches the forks defined in the chain config
 func (l *LightClientUpdate) checkForkVersion(forks Forks) bool {
 	return bytes.Equal(trimZeroes(l.ForkVersion), trimZeroes(forks.version(uint64(l.Header.Slot>>5))))
 }
 
+// headInfo contains the best signed header and the state of propagation belonging to a given block root
 type headInfo struct {
 	head         SignedHead
 	hash         common.Hash
@@ -988,15 +1052,21 @@ type headInfo struct {
 	processed    bool
 }
 
+// headList is a list of best known heads for the few most recent slots
+// Note: usually only the highest slot is interesting but in case of low signer participation or
+// slow propagation/aggregation of signatures it might make sense to keep track of multiple heads
+// as different clients might have different tradeoff preferences between delay and security.
 type headList struct {
 	list  []*headInfo // highest slot first
 	limit int
 }
 
+// newHeadList creates a new headList
 func newHeadList(limit int) headList {
 	return headList{limit: limit}
 }
 
+// getHead returns the headInfo belonging to the given block root
 func (h *headList) getHead(hash common.Hash) *headInfo {
 	//return h.hashMap[hash]
 	for _, headInfo := range h.list {
@@ -1007,6 +1077,7 @@ func (h *headList) getHead(hash common.Hash) *headInfo {
 	return nil
 }
 
+// updateHead adds or updates the given headInfo in the list
 func (h *headList) updateHead(head *headInfo) {
 	for i, hh := range h.list {
 		if hh.head.Header.Slot <= head.head.Header.Slot {
@@ -1025,6 +1096,8 @@ func (h *headList) updateHead(head *headInfo) {
 	}
 }
 
+// AddSignedHeads adds signed heads to the tracker if the syncing process has been finished;
+// adds them to a deferred list otherwise that is processed when the syncing is finished.
 func (s *SyncCommitteeTracker) AddSignedHeads(peer sctServer, heads []SignedHead) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -1036,6 +1109,8 @@ func (s *SyncCommitteeTracker) AddSignedHeads(peer sctServer, heads []SignedHead
 	s.addSignedHeads(peer, heads)
 }
 
+// addSignedHeads adds signed heads to the tracker after a successful verification
+// (it is assumed that the local update chain has been synced with the given peer)
 func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead) {
 	var (
 		broadcast   bool
@@ -1432,6 +1507,8 @@ type sctInitBackend interface {
 // WeakSubjectivityCheckpoint implements SctConstraints in a way that it fixes the committee belonging to the checkpoint and allows
 // forward extending the committee chain indefinitely. If a parent constraint is specified then it is applied for committee periods
 // older than the checkpoint period, also allowing backward syncing the committees.
+// Note that light clients typically do not need to backward sync, this feature is intended for nodes serving other clients that might
+// have an earlier checkpoint.
 type WeakSubjectivityCheckpoint struct {
 	lock sync.RWMutex
 
