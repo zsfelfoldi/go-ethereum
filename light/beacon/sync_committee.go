@@ -105,12 +105,15 @@ const lastProcessedCount = 4
 // Sync committee chain is either initialized from a weak subjectivity checkpoint or controlled by a BeaconChain
 // that is driven by a trusted source (beacon node API).
 type SyncCommitteeTracker struct {
-	lock                                                                              sync.RWMutex
-	db                                                                                ethdb.KeyValueStore
-	sigVerifier                                                                       committeeSigVerifier
-	clock                                                                             mclock.Clock
-	bestUpdateCache, serializedCommitteeCache, syncCommitteeCache, committeeRootCache *lru.Cache
-	unixNano                                                                          func() int64
+	lock                     sync.RWMutex
+	db                       ethdb.KeyValueStore
+	sigVerifier              committeeSigVerifier
+	clock                    mclock.Clock
+	bestUpdateCache          *lru.Cache
+	serializedCommitteeCache *lru.Cache
+	syncCommitteeCache       *lru.Cache
+	committeeRootCache       *lru.Cache
+	unixNano                 func() int64
 
 	forks              Forks
 	constraints        SctConstraints

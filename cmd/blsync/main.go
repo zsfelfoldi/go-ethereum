@@ -80,7 +80,7 @@ func blsync(ctx *cli.Context) error {
 	if !ctx.IsSet(utils.BeaconApiFlag.Name) {
 		utils.Fatalf("Beacon node light client API URL not specified")
 	}
-	beaconApi := &api.RestApi{Url: ctx.String(utils.BeaconApiFlag.Name)}
+	beaconApi := &api.BeaconLightApi{Url: ctx.String(utils.BeaconApiFlag.Name)}
 	committeeSyncer := api.NewCommitteeSyncer(beaconApi, chainConfig.GenesisData)
 	db := memorydb.New() //TODO or real db
 	syncCommitteeCheckpoint := beacon.NewWeakSubjectivityCheckpoint(db, committeeSyncer, chainConfig.Checkpoint, nil)
@@ -122,7 +122,7 @@ func callForkchoiceUpdatedV1(client *rpc.Client, headHash, finalizedHash common.
 }
 
 type execSyncer struct {
-	api           *api.RestApi
+	api           *api.BeaconLightApi
 	client        *rpc.Client
 	execRootCache *lru.Cache // beacon block root -> execution block root
 }

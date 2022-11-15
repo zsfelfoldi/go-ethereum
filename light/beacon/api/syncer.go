@@ -32,9 +32,9 @@ const (
 	headPollCount     = 50
 )
 
-// CommitteeSyncer syncs committee updates and signed heads from RestApi to SyncCommitteeTracker
+// CommitteeSyncer syncs committee updates and signed heads from BeaconLightApi to SyncCommitteeTracker
 type CommitteeSyncer struct {
-	api *RestApi
+	api *BeaconLightApi
 
 	genesisData         beacon.GenesisData
 	checkpointPeriod    uint64
@@ -47,7 +47,7 @@ type CommitteeSyncer struct {
 
 // NewCommitteeSyncer creates a new CommitteeSyncer
 // Note: genesisData is only needed when light syncing (using GetInitData for bootstrap)
-func NewCommitteeSyncer(api *RestApi, genesisData beacon.GenesisData) *CommitteeSyncer {
+func NewCommitteeSyncer(api *BeaconLightApi, genesisData beacon.GenesisData) *CommitteeSyncer {
 	updateCache, _ := lru.New(beacon.MaxCommitteeUpdateFetch)
 	committeeCache, _ := lru.New(beacon.MaxCommitteeUpdateFetch / beacon.CommitteeCostFactor)
 	return &CommitteeSyncer{
@@ -237,7 +237,7 @@ func (cs *CommitteeSyncer) ClosedChannel() chan struct{} {
 	return cs.closedCh
 }
 
-// WrongReply is called by the tracker when the RestApi has provided wrong committee updates or signed heads
+// WrongReply is called by the tracker when the BeaconLightApi has provided wrong committee updates or signed heads
 func (cs *CommitteeSyncer) WrongReply(description string) {
 	log.Error("Beacon node API data source delivered wrong reply", "error", description)
 }
