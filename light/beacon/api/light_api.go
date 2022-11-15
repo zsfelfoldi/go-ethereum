@@ -24,6 +24,7 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -35,7 +36,36 @@ import (
 // BeaconLightApi requests light client information from a beacon node REST API.
 // Note: all required API endpoints are currently only implemented by Lodestar.
 type BeaconLightApi struct {
-	Url string
+	url           string
+	client        *http.Client
+	customHeaders map[string]string
+}
+
+func NewBeaconLightApi(url string, customHeaders map[string]string) *BeaconLightApi {
+	return &BeaconLightApi{
+		url: url,
+		client: &http.Client{
+			Timeout: time.Second * 10,
+		},
+		customHeaders: customHeaders,
+	}
+}
+
+func (api *BeaconLightApi) httpGet(path string) ([]byte, error) {
+	req, err := http.NewRequest("GET", api.url+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range api.customHeaders {
+		req.Header.Set(k, v)
+	}
+	if resp, err := api.client.Do(req); err == nil {
+		data, err := ioutil.ReadAll(resp.Body)
+		resp.Body.Close()
+		return data, err
+	} else {
+		return nil, err
+	}
 }
 
 // GetBestUpdateAndCommittee fetches and validates LightClientUpdate for given period and full serialized
@@ -44,12 +74,7 @@ type BeaconLightApi struct {
 // validity depends on the update chain.
 func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.LightClientUpdate, []byte, error) {
 	periodStr := strconv.Itoa(int(period))
-	resp, err := http.Get(api.Url + "/eth/v1/beacon/light_client/updates?start_period=" + periodStr + "&count=1")
-	if err != nil {
-		return beacon.LightClientUpdate{}, nil, err
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
+	resp, err := api.httpGet("/eth/v1/beacon/light_client/updates?start_period=" + periodStr + "&count=1")
 	if err != nil {
 		return beacon.LightClientUpdate{}, nil, err
 	}
@@ -67,7 +92,7 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 	var data struct {
 		Data []committeeUpdate `json:"data"`
 	}
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err := json.Unmarshal(resp, &data); err != nil {
 		return beacon.LightClientUpdate{}, nil, err
 	}
 	if len(data.Data) != 1 {
@@ -111,12 +136,7 @@ type syncAggregate struct {
 // GetHeadUpdate fetches the latest available signed header.
 // Note that the signature should be verified by the caller as its validity depends on the update chain.
 func (api *BeaconLightApi) GetHeadUpdate() (beacon.SignedHead, error) {
-	resp, err := http.Get(api.Url + "/eth/v1/beacon/light_client/optimistic_update/")
-	if err != nil {
-		return beacon.SignedHead{}, err
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
+	resp, err := api.httpGet("/eth/v1/beacon/light_client/optimistic_update/")
 	if err != nil {
 		return beacon.SignedHead{}, err
 	}
@@ -127,7 +147,7 @@ func (api *BeaconLightApi) GetHeadUpdate() (beacon.SignedHead, error) {
 			Header    beacon.Header `json:"attested_header"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err := json.Unmarshal(resp, &data); err != nil {
 		return beacon.SignedHead{}, err
 	}
 	if len(data.Data.Aggregate.BitMask) != 64 {
@@ -171,18 +191,13 @@ func (s *syncCommitteeJson) serialize() ([]byte, bool) {
 // GetHead fetches and validates the beacon header with the given blockRoot.
 // If blockRoot is null hash then the latest head header is fetched.
 func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (beacon.Header, error) {
-	url := api.Url + "/eth/v1/beacon/headers/"
+	path := "/eth/v1/beacon/headers/"
 	if blockRoot == (common.Hash{}) {
-		url += "head"
+		path += "head"
 	} else {
-		url += blockRoot.Hex()
+		path += blockRoot.Hex()
 	}
-	resp, err := http.Get(url)
-	if err != nil {
-		return beacon.Header{}, err
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
+	resp, err := api.httpGet(path)
 	if err != nil {
 		return beacon.Header{}, err
 	}
@@ -197,7 +212,7 @@ func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (beacon.Header, erro
 			} `json:"header"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err := json.Unmarshal(resp, &data); err != nil {
 		return beacon.Header{}, err
 	}
 	header := data.Data.Header.Message
@@ -215,20 +230,15 @@ func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (beacon.Header, erro
 // specified by expFormat. The state subset specified by the list of string keys (paths) should
 // cover the subset specified by expFormat.
 func (api *BeaconLightApi) GetStateProof(stateRoot common.Hash, paths []string, expFormat beacon.ProofFormat) (beacon.MultiProof, error) {
-	url := api.Url + "/eth/v1/beacon/light_client/proof/" + stateRoot.Hex() + "?paths=" + paths[0]
+	path := "/eth/v1/beacon/light_client/proof/" + stateRoot.Hex() + "?paths=" + paths[0]
 	for i := 1; i < len(paths); i++ {
-		url += "&paths=" + paths[i]
+		path += "&paths=" + paths[i]
 	}
-	resp, err := http.Get(url)
+	resp, err := api.httpGet(path)
 	if err != nil {
 		return beacon.MultiProof{}, err
 	}
-	body, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		return beacon.MultiProof{}, err
-	}
-	proof, err := beacon.ParseSSZMultiProof(body)
+	proof, err := beacon.ParseSSZMultiProof(resp)
 	if err != nil {
 		return beacon.MultiProof{}, err
 	}
@@ -243,12 +253,7 @@ func (api *BeaconLightApi) GetStateProof(stateRoot common.Hash, paths []string, 
 
 // GetCheckpointData fetches and validates bootstrap data belonging to the given checkpoint.
 func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint common.Hash) (beacon.Header, beacon.CheckpointData, []byte, error) {
-	resp, err := http.Get(api.Url + "/eth/v1/beacon/light_client/bootstrap/" + checkpoint.String())
-	if err != nil {
-		return beacon.Header{}, beacon.CheckpointData{}, nil, err
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
+	resp, err := api.httpGet("/eth/v1/beacon/light_client/bootstrap/" + checkpoint.String())
 	if err != nil {
 		return beacon.Header{}, beacon.CheckpointData{}, nil, err
 	}
@@ -262,7 +267,7 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 	}
 
 	var data bootstrapData
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err := json.Unmarshal(resp, &data); err != nil {
 		return beacon.Header{}, beacon.CheckpointData{}, nil, err
 	}
 	committee, ok := data.Data.Committee.serialize()
@@ -286,12 +291,7 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 // GetExecutionPayload fetches the execution block belonging to the beacon block specified
 // by beaconRoot and validates its block hash against the expected execRoot.
 func (api *BeaconLightApi) GetExecutionPayload(beaconRoot, execRoot common.Hash) (*types.Block, error) {
-	resp, err := http.Get(api.Url + "/eth/v2/beacon/blocks/" + beaconRoot.Hex())
-	if err != nil {
-		return nil, err
-	}
-	body, err := ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
+	resp, err := api.httpGet("/eth/v2/beacon/blocks/" + beaconRoot.Hex())
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +321,7 @@ func (api *BeaconLightApi) GetExecutionPayload(beaconRoot, execRoot common.Hash)
 		} `json:"data"`
 	}
 
-	if err := json.Unmarshal(body, &beaconBlock); err != nil {
+	if err := json.Unmarshal(resp, &beaconBlock); err != nil {
 		return nil, err
 	}
 

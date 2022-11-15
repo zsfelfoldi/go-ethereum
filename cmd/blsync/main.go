@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/cmd/utils"
@@ -42,6 +43,7 @@ func main() {
 	app := flags.NewApp("beacon light syncer tool")
 	app.Flags = []cli.Flag{
 		utils.BeaconApiFlag,
+		utils.BeaconApiHeaderFlag,
 		utils.BeaconThresholdFlag,
 		utils.BeaconNoFilterFlag,
 		utils.BeaconConfigFlag,
@@ -80,7 +82,15 @@ func blsync(ctx *cli.Context) error {
 	if !ctx.IsSet(utils.BeaconApiFlag.Name) {
 		utils.Fatalf("Beacon node light client API URL not specified")
 	}
-	beaconApi := &api.BeaconLightApi{Url: ctx.String(utils.BeaconApiFlag.Name)}
+	customHeader := make(map[string]string)
+	for _, s := range utils.SplitAndTrim(ctx.String(utils.BeaconApiHeaderFlag.Name)) {
+		kv := strings.Split(s, ":")
+		if len(kv) != 2 {
+			utils.Fatalf("Invalid custom API header entry: %s", s)
+		}
+		customHeader[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
+	}
+	beaconApi := api.NewBeaconLightApi(ctx.String(utils.BeaconApiFlag.Name), customHeader)
 	committeeSyncer := api.NewCommitteeSyncer(beaconApi, chainConfig.GenesisData)
 	db := memorydb.New() //TODO or real db
 	syncCommitteeCheckpoint := beacon.NewWeakSubjectivityCheckpoint(db, committeeSyncer, chainConfig.Checkpoint, nil)
