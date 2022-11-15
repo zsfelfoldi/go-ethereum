@@ -166,7 +166,7 @@ func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Sc
 	s.syncCommitteeCache, _ = lru.New(100)
 	s.committeeRootCache, _ = lru.New(100)
 
-	iter := s.db.NewIterator(bestUpdateKey, nil) //np[:])
+	iter := s.db.NewIterator(bestUpdateKey, nil)
 	kl := len(bestUpdateKey)
 	// iterate through them all for simplicity; at most a few hundred items
 	for iter.Next() {
@@ -1182,6 +1182,7 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 	}
 }
 
+// SubscribeToNewHeads subscribes the given callback function to head beacon headers with a verified valid sync committee signature.
 func (s *SyncCommitteeTracker) SubscribeToNewHeads(subFn func(Header)) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -1189,7 +1190,10 @@ func (s *SyncCommitteeTracker) SubscribeToNewHeads(subFn func(Header)) {
 	s.headSubs = append(s.headSubs, subFn)
 }
 
-func (s *SyncCommitteeTracker) ProcessedBeaconHead(hash common.Hash) {
+// CanBroadcastHead should be called when given head can be broadcast to other peers. Depending on the setup further data retrieval and/or
+// processing might be needed for a new head before it is propagated further.
+// Note that a signed head is broadcast when both addSignedHeads and CanBroadcastHead has been called for the given head (in any order).
+func (s *SyncCommitteeTracker) CanBroadcastHead(hash common.Hash) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -1205,6 +1209,7 @@ func (s *SyncCommitteeTracker) ProcessedBeaconHead(hash common.Hash) {
 	}
 }
 
+// Activate allows broadcasting heads to the given peer
 func (s *SyncCommitteeTracker) Activate(peer sctClient) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -1213,6 +1218,7 @@ func (s *SyncCommitteeTracker) Activate(peer sctClient) {
 	s.broadcastHeadsTo(peer, true)
 }
 
+// Deactivate stops broadcasting heads to the given peer
 func (s *SyncCommitteeTracker) Deactivate(peer sctClient, remove bool) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -1225,7 +1231,9 @@ func (s *SyncCommitteeTracker) Deactivate(peer sctClient, remove bool) {
 	}
 }
 
-// frequency limited
+// broadcastHeads broadcasts new heads to all active peers unless they have been broadcast very recently,
+// in which case it schedules a broadcast for a little bit later. The frequency of broadcasts is limited
+// by the broadcastFrequencyLimit constant.
 func (s *SyncCommitteeTracker) broadcastHeads() {
 	now := s.clock.Now()
 	sinceLast := time.Duration(now - s.lastBroadcast)
@@ -1245,13 +1253,15 @@ func (s *SyncCommitteeTracker) broadcastHeads() {
 	s.lastBroadcast = now
 }
 
+// broadcastHeadsNow broadcasts new heads to all active peers.
 func (s *SyncCommitteeTracker) broadcastHeadsNow() {
 	for peer := range s.broadcastTo {
 		s.broadcastHeadsTo(peer, false)
 	}
 }
 
-// broadcast to all if peer == nil
+// broadcastHeadsTo broadcasts new heads to the given peer. If sendEmpty is true then an empty
+// broadcast message is sent even if there are no new signed heads to send.
 func (s *SyncCommitteeTracker) broadcastHeadsTo(peer sctClient, sendEmpty bool) {
 	heads := make([]SignedHead, 0, len(s.processedList.list))
 	for _, headInfo := range s.processedList.list {
@@ -1268,6 +1278,9 @@ func (s *SyncCommitteeTracker) broadcastHeadsTo(peer sctClient, sendEmpty bool) 
 	}
 }
 
+// updateInfoChanged should be called whenever the committee update chain is changed. It schedules a call to
+// advertiseCommitteesNow in the near future (after advertiseDelay) unless it is already scheduled. This delay
+// ensures that advertisements are not sent too frequently.
 func (s *SyncCommitteeTracker) updateInfoChanged() {
 	s.updateInfo = nil
 	if s.advertiseScheduled {
@@ -1284,6 +1297,7 @@ func (s *SyncCommitteeTracker) updateInfoChanged() {
 	})
 }
 
+// advertiseCommitteesNow sends committee update chain advertisements to all active peers.
 func (s *SyncCommitteeTracker) advertiseCommitteesNow() {
 	info := s.getUpdateInfo()
 	for peer := range s.broadcastTo {
@@ -1293,6 +1307,7 @@ func (s *SyncCommitteeTracker) advertiseCommitteesNow() {
 	}
 }
 
+// advertiseCommitteesTo sends committee update chain advertisements to the given peer.
 func (s *SyncCommitteeTracker) advertiseCommitteesTo(peer sctClient) {
 	peer.SendUpdateInfo(s.getUpdateInfo())
 	if s.advertisedTo == nil {
@@ -1301,6 +1316,8 @@ func (s *SyncCommitteeTracker) advertiseCommitteesTo(peer sctClient) {
 	s.advertisedTo[peer] = struct{}{}
 }
 
+// checkForksAndConstraints checks whether the signed headers of the given committee update is
+// on the right fork and the proven NextSyncCommitteeRoot matches the update chain constraints.
 func (s *SyncCommitteeTracker) checkForksAndConstraints(update *LightClientUpdate) bool {
 	if !s.genesisInit {
 		log.Error("SyncCommitteeTracker not initialized")
@@ -1313,12 +1330,16 @@ func (s *SyncCommitteeTracker) checkForksAndConstraints(update *LightClientUpdat
 	return matchAll || root == update.NextSyncCommitteeRoot
 }
 
+// EnforceForksAndConstraints rolls back committee updates that do not match the tracker's forks
+// and constraints and also starts new requests if possible (tracker mutex locked)
 func (s *SyncCommitteeTracker) EnforceForksAndConstraints() {
 	s.lock.Lock()
 	s.enforceForksAndConstraints()
 	s.lock.Unlock()
 }
 
+// enforceForksAndConstraints rolls back committee updates that do not match the tracker's forks
+// and constraints and also starts new requests if possible (tracker mutex expected)
 func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
 	if !s.genesisInit || !s.chainInit {
 		return
@@ -1343,6 +1364,8 @@ func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
 	s.retrySyncAllPeers()
 }
 
+// Init initializes the tracker with the given GenesisData and starts the update syncing process.
+// Note that Init may be called either at startup or later if it has to be fetched from the network based on a checkpoint hash.
 func (s *SyncCommitteeTracker) Init(GenesisData GenesisData) {
 	s.lock.Lock()
 	s.forks.computeDomains(GenesisData.GenesisValidatorsRoot)
@@ -1354,12 +1377,14 @@ func (s *SyncCommitteeTracker) Init(GenesisData GenesisData) {
 	go s.syncLoop()
 }
 
+// ChainConfig contains built-in chain configuration presets for certain networks
 type ChainConfig struct {
 	GenesisData
 	Forks      Forks
 	Checkpoint common.Hash
 }
 
+// Fork describes a single beacon chain fork and also stores the calculated signature domain used after this fork.
 type Fork struct {
 	Epoch   uint64
 	Name    string
@@ -1367,8 +1392,10 @@ type Fork struct {
 	domain  MerkleValue
 }
 
+// Forks is the list of all beacon chain forks in the chain configuration.
 type Forks []Fork
 
+// version returns the fork version at the given epoch.
 func (bf Forks) version(epoch uint64) []byte {
 	for i := len(bf) - 1; i >= 0; i-- {
 		if epoch >= bf[i].Epoch {
@@ -1379,6 +1406,7 @@ func (bf Forks) version(epoch uint64) []byte {
 	return nil
 }
 
+// domain returns the signature domain for the given epoch (assumes that domains have already been calculated).
 func (bf Forks) domain(epoch uint64) MerkleValue {
 	for i := len(bf) - 1; i >= 0; i-- {
 		if epoch >= bf[i].Epoch {
@@ -1389,12 +1417,14 @@ func (bf Forks) domain(epoch uint64) MerkleValue {
 	return MerkleValue{}
 }
 
+// computeDomains calculates and stores signature domains for each fork in the list.
 func (bf Forks) computeDomains(genesisValidatorsRoot common.Hash) {
 	for i := range bf {
 		bf[i].domain = computeDomain(bf[i].Version, genesisValidatorsRoot)
 	}
 }
 
+// epoch returns the starting epoch of the fork identified by the given name.
 func (bf Forks) epoch(name string) (uint64, bool) {
 	for _, fork := range bf {
 		if fork.Name == name {
@@ -1404,6 +1434,7 @@ func (bf Forks) epoch(name string) (uint64, bool) {
 	return 0, false
 }
 
+// signingRoot calculates the signing root of the given header.
 func (bf Forks) signingRoot(header Header) common.Hash {
 	var signingRoot common.Hash
 	hasher := sha256.New()
@@ -1419,14 +1450,21 @@ func (f Forks) Len() int           { return len(f) }
 func (f Forks) Swap(i, j int)      { f[i], f[j] = f[j], f[i] }
 func (f Forks) Less(i, j int) bool { return f[i].Epoch < f[j].Epoch }
 
+// fieldValue checks if the given fork parameter field is present in the given line
+// and if it is then returns the field value and the name of the fork it belongs to.
 func fieldValue(line, field string) (name, value string, ok bool) {
 	if pos := strings.Index(line, field); pos >= 0 {
-		return line[:pos], strings.TrimSpace(line[pos+len(field):]), true
+		cutFrom := strings.Index(line, "#") // cut in-line comments
+		if cutFrom < 0 {
+			cutFrom = len(line)
+		}
+		return line[:pos], strings.TrimSpace(line[pos+len(field) : cutFrom]), true
 	}
 	return "", "", false
 }
 
-func LoadForks(fileName string) (Forks, error) { //TODO ignore in-line comments
+// LoadForks parses the beacon chain configuration file (config.yaml) and extracts the list of forks
+func LoadForks(fileName string) (Forks, error) {
 	file, err := os.Open(fileName)
 	if err != nil {
 		return nil, fmt.Errorf("Error opening beacon chain config file: %v", err)
@@ -1478,28 +1516,44 @@ func LoadForks(fileName string) (Forks, error) { //TODO ignore in-line comments
 	return forks, nil
 }
 
+// SctConstraints defines constraints on the synced update chain. These constraints include
+// the GenesisData, a range of periods (first <= period < afterFixed) where committe roots
+// are fixed and another "free" range (afterFixed <= period < afterLast) where committee roots
+// are determined by the best known update chain.
+// An implementation of SctConstraints should call initCallback to pass GenesisData whenever
+// it is available (either during SetCallbacks or later). If the constraints are changed then
+// it should call updateCallback.
+//
+// Note: this interface can be used either for light syncing mode (in which case only the
+// checkpoint is fixed and any valid update chain can be synced starting from there) or full
+// syncing light service mode (in which case a full beacon header chain is synced based on the
+// externally driven consensus and the update chain is fully restricted based on that).
 type SctConstraints interface {
 	PeriodRange() (first, afterFixed, afterLast uint64)
-	CommitteeRoot(period uint64) (root common.Hash, matchAll bool)
+	CommitteeRoot(period uint64) (root common.Hash, matchAll bool) // matchAll is true in the free range where any committee root matches the constraints
 	SetCallbacks(initCallback func(GenesisData), updateCallback func())
 }
 
+// GenesisData is required for signature verification and is set by the SyncCommitteeTracker.Init function.
 type GenesisData struct {
 	GenesisTime           uint64
 	GenesisValidatorsRoot common.Hash
 }
 
+// CheckpointData contains known committee roots based on a weak subjectivity checkpoint
 type CheckpointData struct {
 	Checkpoint     common.Hash
 	Period         uint64
 	CommitteeRoots []common.Hash
 }
 
+// LightClientInitData contains light sync initialization data based on a weak subjectivity checkpoint
 type LightClientInitData struct {
 	GenesisData
 	CheckpointData
 }
 
+// sctInitBackend retrieves light sync initialization data based on a weak subjectivity checkpoint hash
 type sctInitBackend interface {
 	GetInitData(ctx context.Context, checkpoint common.Hash) (Header, LightClientInitData, error)
 }
