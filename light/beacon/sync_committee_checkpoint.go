@@ -76,41 +76,43 @@ func NewWeakSubjectivityCheckpoint(db ethdb.KeyValueStore, backend sctInitBacken
 		wsc.parentInitCh = make(chan struct{})
 	}
 
-	var haveInitData bool
+	var storedInitData bool
 	if enc, err := db.Get(initDataKey); err == nil {
 		var initData LightClientInitData
 		if err := rlp.DecodeBytes(enc, &initData); err == nil {
 			if initData.Checkpoint == checkpoint || initData.Checkpoint == (common.Hash{}) {
 				log.Info("Beacon chain initialized with stored checkpoint", "checkpoint", initData.Checkpoint)
 				wsc.initData = initData
-				haveInitData = true
+				storedInitData = true
 			}
 		} else {
 			log.Error("Error decoding stored beacon checkpoint", "error", err)
 		}
 	}
-	if !haveInitData && checkpoint == (common.Hash{}) {
+	if !storedInitData && checkpoint == (common.Hash{}) {
 		return nil
 	}
 	go func() {
 		var initData LightClientInitData
-		if !haveInitData {
+		if !storedInitData {
 		loop:
 			for {
 				select {
 				case <-wsc.stopCh:
 					return
 				case <-wsc.initTriggerCh:
-					ctx, _ := context.WithTimeout(context.Background(), time.Second*20)
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 					log.Info("Requesting beacon init data", "checkpoint", checkpoint)
 					var (
 						header Header
 						err    error
 					)
 					if header, initData, err = backend.GetInitData(ctx, checkpoint); err == nil {
+						cancel()
 						log.Info("Successfully initialized beacon chain", "checkpoint", checkpoint, "slot", header.Slot)
 						break loop
 					} else {
+						cancel()
 						log.Warn("Failed to retrieve beacon init data", "error", err)
 					}
 				}
@@ -123,26 +125,20 @@ func NewWeakSubjectivityCheckpoint(db ethdb.KeyValueStore, backend sctInitBacken
 			case <-wsc.parentInitCh:
 			}
 		}
-		wsc.lock.Lock()
-		wsc.initData = initData
-		wsc.initialized = true
-		initCallback := wsc.initCallback
-		wsc.initCallback = nil
-		wsc.lock.Unlock()
-		if initCallback != nil {
-			initCallback(initData.GenesisData)
-		}
+		wsc.init(initData, !storedInitData)
 	}()
 	return wsc
 }
 
 // init initializes the checkpoint with the given init data
-func (wsc *WeakSubjectivityCheckpoint) init(initData LightClientInitData) {
+func (wsc *WeakSubjectivityCheckpoint) init(initData LightClientInitData, store bool) {
 	wsc.lock.Lock()
-	if enc, err := rlp.EncodeToBytes(&initData); err == nil {
-		wsc.db.Put(initDataKey, enc)
-	} else {
-		log.Error("Error encoding initData", "error", err)
+	if store {
+		if enc, err := rlp.EncodeToBytes(&initData); err == nil {
+			wsc.db.Put(initDataKey, enc)
+		} else {
+			log.Error("Error encoding initData", "error", err)
+		}
 	}
 	wsc.initData, wsc.initialized = initData, true
 	updateCallback, initCallback := wsc.updateCallback, wsc.initCallback

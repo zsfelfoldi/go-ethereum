@@ -52,7 +52,7 @@ type GenesisData struct {
 }
 
 // SctConstraints defines constraints on the synced update chain. These constraints include
-// the GenesisData, a range of periods (first <= period < afterFixed) where committe roots
+// the GenesisData, a range of periods (first <= period < afterFixed) where committee roots
 // are fixed and another "free" range (afterFixed <= period < afterLast) where committee roots
 // are determined by the best known update chain.
 // An implementation of SctConstraints should call initCallback to pass GenesisData whenever
@@ -420,9 +420,9 @@ func (s *SyncCommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
 	return s.getSyncCommitteeRoot(period)
 }
 
-// getSyncCommitteeLocked returns the deserialized sync committee at the given period of the
+// getSyncCommittee returns the deserialized sync committee at the given period of the
 // current local committee chain (tracker mutex lock expected).
-func (s *SyncCommitteeTracker) getSyncCommitteeLocked(period uint64) syncCommittee {
+func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) syncCommittee {
 	if committeeRoot := s.getSyncCommitteeRoot(period); committeeRoot != (common.Hash{}) {
 		key := string(getSyncCommitteeKey(period, committeeRoot))
 		if v, ok := s.syncCommitteeCache.Get(key); ok {
@@ -438,15 +438,6 @@ func (s *SyncCommitteeTracker) getSyncCommitteeLocked(period uint64) syncCommitt
 		}
 	}
 	return nil
-}
-
-// getSyncCommittee returns the deserialized sync committee at the given period of the
-// current local committee chain (tracker mutex locked).
-func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) syncCommittee {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
-
-	return s.getSyncCommitteeLocked(period)
 }
 
 // EnforceForksAndConstraints rolls back committee updates that do not match the tracker's forks
@@ -475,7 +466,7 @@ func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
 		s.deleteBestUpdate(s.nextPeriod)
 	}
 	if s.nextPeriod == s.firstPeriod {
-		if root, matchAll := s.constraints.CommitteeRoot(s.firstPeriod); matchAll || s.getSyncCommitteeRoot(s.firstPeriod) != root || s.getSyncCommitteeLocked(s.firstPeriod) == nil {
+		if root, matchAll := s.constraints.CommitteeRoot(s.firstPeriod); matchAll || s.getSyncCommitteeRoot(s.firstPeriod) != root || s.getSyncCommittee(s.firstPeriod) == nil {
 			s.nextPeriod, s.firstPeriod, s.chainInit = 0, 0, false
 		}
 	}

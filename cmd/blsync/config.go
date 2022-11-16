@@ -153,7 +153,6 @@ func makeChainConfig(ctx *cli.Context) beacon.ChainConfig {
 		} else {
 			utils.Fatalf("Invalid hex string", "beacon.checkpoint", ctx.String(utils.BeaconCheckpointFlag.Name), "error", err)
 		}
-
 	}
 	return config
 }

@@ -122,7 +122,6 @@ func TraverseProof(reader ProofReader, writer ProofWriter) (common.Hash, bool) {
 	if nodeAvailable && wl == nil {
 		if writer != nil {
 			writer.writeNode(node)
-		} else {
 		}
 		return common.Hash(node), true
 	}
@@ -145,9 +144,6 @@ func TraverseProof(reader ProofReader, writer ProofWriter) (common.Hash, bool) {
 		hasher.Sum(node[:0])
 	}
 	if writer != nil {
-		if wl != nil {
-		} else {
-		}
 		writer.writeNode(node)
 	}
 	return common.Hash(node), true

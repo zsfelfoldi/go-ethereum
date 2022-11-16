@@ -114,8 +114,9 @@ func blsync(ctx *cli.Context) error {
 
 func callNewPayloadV1(client *rpc.Client, block *types.Block) (string, error) {
 	var resp cbeacon.PayloadStatusV1
-	ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	err := client.CallContext(ctx, &resp, "engine_newPayloadV1", *cbeacon.BlockToExecutableData(block))
+	cancel()
 	return resp.Status, err
 }
 
@@ -126,8 +127,9 @@ func callForkchoiceUpdatedV1(client *rpc.Client, headHash, finalizedHash common.
 		SafeBlockHash:      finalizedHash,
 		FinalizedBlockHash: finalizedHash,
 	}
-	ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	err := client.CallContext(ctx, &resp, "engine_forkchoiceUpdatedV1", update, nil)
+	cancel()
 	return resp.PayloadStatus.Status, err
 }
 

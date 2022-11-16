@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/ioutil"
+	"io"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -60,7 +60,7 @@ func (api *BeaconLightApi) httpGet(path string) ([]byte, error) {
 		req.Header.Set(k, v)
 	}
 	if resp, err := api.client.Do(req); err == nil {
-		data, err := ioutil.ReadAll(resp.Body)
+		data, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		return data, err
 	} else {
@@ -285,7 +285,6 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 		CommitteeRoots: []common.Hash{committeeRoot},
 	}
 	return data.Data.Header, checkpointData, committee, nil
-
 }
 
 // GetExecutionPayload fetches the execution block belonging to the beacon block specified

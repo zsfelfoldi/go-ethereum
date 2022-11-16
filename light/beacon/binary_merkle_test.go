@@ -130,7 +130,7 @@ func TestSingleProof(t *testing.T) {
 		proof := make(MerkleValues, 63-bits.LeadingZeros64(index))
 		writer := NewCallbackWriter(NewIndexMapFormat().AddLeaf(index, nil), func(i uint64, v MerkleValue) {
 			shift := bits.LeadingZeros64(i) - bits.LeadingZeros64(index)
-			if i^(uint64(index)>>shift) == 1 {
+			if i^(index>>shift) == 1 {
 				proof[shift] = v
 			}
 		})

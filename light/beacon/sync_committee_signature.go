@@ -194,16 +194,6 @@ func (bf Forks) computeDomains(genesisValidatorsRoot common.Hash) {
 	}
 }
 
-// epoch returns the starting epoch of the fork identified by the given name.
-func (bf Forks) epoch(name string) (uint64, bool) {
-	for _, fork := range bf {
-		if fork.Name == name {
-			return fork.Epoch, true
-		}
-	}
-	return 0, false
-}
-
 // signingRoot calculates the signing root of the given header.
 func (bf Forks) signingRoot(header Header) common.Hash {
 	var signingRoot common.Hash

@@ -246,8 +246,9 @@ func (s *SyncCommitteeTracker) startRequest(sp *sctPeerInfo) bool {
 	}
 	sp.requesting = true
 	go func() {
-		ctx, _ := context.WithTimeout(context.Background(), time.Second*20)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 		reply, err := sp.peer.GetBestCommitteeProofs(ctx, req) // expected to return with error in case of shutdown
+		cancel()
 		if err != nil {
 			s.lock.Lock()
 			sp.requesting = false
@@ -508,7 +509,7 @@ func (s *SyncCommitteeTracker) getUpdateInfo() *UpdateInfo {
 	}
 
 	for period := firstPeriod; period < s.nextPeriod; period++ {
-		if update := s.GetBestUpdate(uint64(period)); update != nil {
+		if update := s.GetBestUpdate(period); update != nil {
 			u.Scores[period-firstPeriod] = update.score
 		} else {
 			log.Error("Update missing from database", "period", period)
@@ -541,18 +542,13 @@ func (s *SyncCommitteeTracker) updateInfoChanged() {
 // advertiseCommitteesNow sends committee update chain advertisements to all active peers.
 func (s *SyncCommitteeTracker) advertiseCommitteesNow() {
 	info := s.getUpdateInfo()
-	for peer := range s.broadcastTo {
-		if _, ok := s.advertisedTo[peer]; !ok {
-			peer.SendUpdateInfo(info)
-		}
-	}
-}
-
-// advertiseCommitteesTo sends committee update chain advertisements to the given peer.
-func (s *SyncCommitteeTracker) advertiseCommitteesTo(peer sctClient) {
-	peer.SendUpdateInfo(s.getUpdateInfo())
 	if s.advertisedTo == nil {
 		s.advertisedTo = make(map[sctClient]struct{})
 	}
-	s.advertisedTo[peer] = struct{}{}
+	for peer := range s.broadcastTo {
+		if _, ok := s.advertisedTo[peer]; !ok {
+			peer.SendUpdateInfo(info)
+			s.advertisedTo[peer] = struct{}{}
+		}
+	}
 }
