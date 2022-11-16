@@ -82,7 +82,7 @@ var (
 				Version: []byte{144, 0, 0, 113},
 			},
 		},
-		Checkpoint: common.HexToHash("0x84b71369d8a5c6a43580bf35c783618916c906298a9cb0a863403c7b9cf9649e"),
+		Checkpoint: common.HexToHash("0x1005a6d9175e96bfbce4d35b80f468e9bff0b674e1e861d16e09e10005a58e81"),
 	}
 
 	GoerliConfig = beacon.ChainConfig{
