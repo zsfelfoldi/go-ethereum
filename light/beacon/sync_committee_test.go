@@ -311,9 +311,8 @@ func (tc *testChain) fillUpdates(begin, end int, subPeriodIndex uint64, signerCo
 }
 
 type tcSyncer struct {
-	tc       *testChain
-	failed   bool
-	closedCh chan struct{}
+	tc     *testChain
+	failed bool
 }
 
 func (s *tcSyncer) GetBestCommitteeProofs(ctx context.Context, req CommitteeRequest) (CommitteeReply, error) {
@@ -328,10 +327,6 @@ func (s *tcSyncer) GetBestCommitteeProofs(ctx context.Context, req CommitteeRequ
 		reply.Committees[i] = serializeDummySyncCommittee(s.tc.periods[period].committee)
 	}
 	return reply, nil
-}
-
-func (s *tcSyncer) ClosedChannel() chan struct{} {
-	return s.closedCh
 }
 
 func (s *tcSyncer) WrongReply(description string) {
@@ -354,9 +349,8 @@ func (s *tcSyncer) syncTracker(sct *SyncCommitteeTracker) {
 }
 
 type sctSyncer struct {
-	sct      *SyncCommitteeTracker
-	failed   bool
-	closedCh chan struct{}
+	sct    *SyncCommitteeTracker
+	failed bool
 }
 
 func (s *sctSyncer) GetBestCommitteeProofs(ctx context.Context, req CommitteeRequest) (CommitteeReply, error) {
@@ -373,10 +367,6 @@ func (s *sctSyncer) GetBestCommitteeProofs(ctx context.Context, req CommitteeReq
 		reply.Committees[i] = s.sct.GetSerializedSyncCommittee(period, s.sct.GetSyncCommitteeRoot(period))
 	}
 	return reply, nil
-}
-
-func (s *sctSyncer) ClosedChannel() chan struct{} {
-	return s.closedCh
 }
 
 func (s *sctSyncer) WrongReply(description string) {

@@ -60,7 +60,6 @@ type sctClient interface {
 // sctServer represents a peer that SyncCommitteeTracker can request sync committee update proofs from
 type sctServer interface {
 	GetBestCommitteeProofs(ctx context.Context, req CommitteeRequest) (CommitteeReply, error)
-	ClosedChannel() chan struct{} //TODO ???
 	WrongReply(description string)
 }
 

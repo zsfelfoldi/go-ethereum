@@ -194,8 +194,11 @@ func (cs *CommitteeSyncer) getBestUpdate(period uint64) (beacon.LightClientUpdat
 }
 
 // getCommittee returns the committee for the given period
+// Note: cannot return committee altair fork period; this is always same as the committee of the next period
 func (cs *CommitteeSyncer) getCommittee(period uint64) ([]byte, error) {
-	//TODO period 0 (same as period 1 if available?)
+	if period == 0 {
+		return nil, errors.New("No committee available for period 0")
+	}
 	if cs.checkpointCommittee != nil && period == cs.checkpointPeriod {
 		return cs.checkpointCommittee, nil
 	}
@@ -230,11 +233,6 @@ func (cs *CommitteeSyncer) GetInitData(ctx context.Context, checkpoint common.Ha
 	}
 	cs.checkpointPeriod, cs.checkpointCommittee = checkpointData.Period, committee
 	return header, beacon.LightClientInitData{GenesisData: cs.genesisData, CheckpointData: checkpointData}, nil
-}
-
-// ClosedChannel returns a channel that is closed when the syncer is stopped
-func (cs *CommitteeSyncer) ClosedChannel() chan struct{} {
-	return cs.closedCh
 }
 
 // WrongReply is called by the tracker when the BeaconLightApi has provided wrong committee updates or signed heads

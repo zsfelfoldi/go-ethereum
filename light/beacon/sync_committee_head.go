@@ -77,7 +77,6 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 		if signerCount < s.signerThreshold {
 			continue
 		}
-		//TODO if coming from an untrusted source and signerCount is lower than 2/3 then add to pending list first
 		sigOk, age := s.verifySignature(head)
 		if age < 0 {
 			log.Warn("Future signed head received", "age", age)

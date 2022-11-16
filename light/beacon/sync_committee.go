@@ -107,7 +107,7 @@ type SyncCommitteeTracker struct {
 	lastBroadcast                          mclock.AbsTime
 	advertiseScheduled, broadcastScheduled bool
 	triggerCh, stopCh                      chan struct{}
-	acceptedList, processedList            headList //TODO add pendingList
+	acceptedList, processedList            headList
 	lastProcessed                          [lastProcessedCount]common.Hash
 	lastProcessedIndex                     int
 
@@ -194,7 +194,7 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommi
 	update.CalculateScore()
 	var rollback bool
 	if period+1 == s.firstPeriod {
-		if update.NextSyncCommitteeRoot != s.getSyncCommitteeRoot(period+1) { //TODO is this check needed here?
+		if update.NextSyncCommitteeRoot != s.getSyncCommitteeRoot(period+1) {
 			return sciWrongUpdate
 		}
 	} else if period < s.nextPeriod {

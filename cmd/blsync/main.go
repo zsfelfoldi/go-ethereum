@@ -92,7 +92,7 @@ func blsync(ctx *cli.Context) error {
 	}
 	beaconApi := api.NewBeaconLightApi(ctx.String(utils.BeaconApiFlag.Name), customHeader)
 	committeeSyncer := api.NewCommitteeSyncer(beaconApi, chainConfig.GenesisData)
-	db := memorydb.New() //TODO or real db
+	db := memorydb.New()
 	syncCommitteeCheckpoint := beacon.NewWeakSubjectivityCheckpoint(db, committeeSyncer, chainConfig.Checkpoint, nil)
 	if syncCommitteeCheckpoint == nil {
 		utils.Fatalf("No beacon chain checkpoint")
