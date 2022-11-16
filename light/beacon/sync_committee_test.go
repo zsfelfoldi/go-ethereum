@@ -315,6 +315,8 @@ type tcSyncer struct {
 	failed bool
 }
 
+func (s *tcSyncer) CanRequest(updateCount, committeeCount int) bool { return true }
+
 func (s *tcSyncer) GetBestCommitteeProofs(ctx context.Context, req CommitteeRequest) (CommitteeReply, error) {
 	reply := CommitteeReply{
 		Updates:    make([]LightClientUpdate, len(req.UpdatePeriods)),
@@ -352,6 +354,8 @@ type sctSyncer struct {
 	sct    *SyncCommitteeTracker
 	failed bool
 }
+
+func (s *sctSyncer) CanRequest(updateCount, committeeCount int) bool { return true }
 
 func (s *sctSyncer) GetBestCommitteeProofs(ctx context.Context, req CommitteeRequest) (CommitteeReply, error) {
 	reply := CommitteeReply{

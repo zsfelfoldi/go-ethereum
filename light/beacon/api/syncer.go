@@ -30,6 +30,7 @@ import (
 const (
 	headPollFrequency = time.Millisecond * 200
 	headPollCount     = 50
+	maxRequest        = 8
 )
 
 // CommitteeSyncer syncs committee updates and signed heads from BeaconLightApi to SyncCommitteeTracker
@@ -48,8 +49,8 @@ type CommitteeSyncer struct {
 // NewCommitteeSyncer creates a new CommitteeSyncer
 // Note: genesisData is only needed when light syncing (using GetInitData for bootstrap)
 func NewCommitteeSyncer(api *BeaconLightApi, genesisData beacon.GenesisData) *CommitteeSyncer {
-	updateCache, _ := lru.New(beacon.MaxCommitteeUpdateFetch)
-	committeeCache, _ := lru.New(beacon.MaxCommitteeUpdateFetch / beacon.CommitteeCostFactor)
+	updateCache, _ := lru.New(maxRequest)
+	committeeCache, _ := lru.New(maxRequest)
 	return &CommitteeSyncer{
 		api:            api,
 		genesisData:    genesisData,
@@ -182,6 +183,11 @@ func (cs *CommitteeSyncer) GetBestCommitteeProofs(ctx context.Context, req beaco
 		}
 	}
 	return reply, nil
+}
+
+// CanRequest returns true if a request for the given amount of items can be processed
+func (cs *CommitteeSyncer) CanRequest(updateCount, committeeCount int) bool {
+	return updateCount <= maxRequest && committeeCount <= maxRequest
 }
 
 // getBestUpdate returns the best update for the given period

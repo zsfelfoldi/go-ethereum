@@ -27,8 +27,6 @@ import (
 
 const (
 	maxUpdateInfoLength     = 128
-	MaxCommitteeUpdateFetch = 128
-	CommitteeCostFactor     = 16
 	broadcastFrequencyLimit = time.Millisecond * 200
 	advertiseDelay          = time.Second * 10
 	lastProcessedCount      = 4
@@ -60,6 +58,7 @@ type sctClient interface {
 // sctServer represents a peer that SyncCommitteeTracker can request sync committee update proofs from
 type sctServer interface {
 	GetBestCommitteeProofs(ctx context.Context, req CommitteeRequest) (CommitteeReply, error)
+	CanRequest(updateCount, committeeCount int) bool
 	WrongReply(description string)
 }
 
@@ -313,10 +312,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		return CommitteeRequest{}
 	}
 
-	var (
-		request  CommitteeRequest
-		reqCount int
-	)
+	var request CommitteeRequest
 	localFirst, localAfterLast := s.firstPeriod, s.nextPeriod
 	if sp.forkPeriod < localAfterLast {
 		localAfterLast = sp.forkPeriod
@@ -324,7 +320,6 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	localInfoFirst := localInfo.AfterLastPeriod - uint64(len(localInfo.Scores))
 	if !s.chainInit {
 		request.CommitteePeriods = []uint64{syncAfterFixed}
-		reqCount = CommitteeCostFactor
 		localFirst, localAfterLast = syncAfterFixed, syncAfterFixed
 	}
 
@@ -340,20 +335,19 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		sharedAfterLast = syncAfterLast
 	}
 	for period := sharedFirst; period < sharedAfterLast; period++ {
-		if reqCount >= MaxCommitteeUpdateFetch {
+		if !sp.peer.CanRequest(len(request.UpdatePeriods)+1, len(request.CommitteePeriods)) {
 			break
 		}
 		localScore := localInfo.Scores[period-localFirst]
 		remoteScore := sp.remoteInfo.Scores[period-remoteFirst]
 		if remoteScore.betterThan(localScore) {
 			request.UpdatePeriods = append(request.UpdatePeriods, period)
-			reqCount++
 		}
 	}
 
 	// future range: fetch update and next committee as long as remote score reaches required minimum
 	for period := sharedAfterLast; period < syncAfterLast; period++ {
-		if reqCount+CommitteeCostFactor >= MaxCommitteeUpdateFetch {
+		if !sp.peer.CanRequest(len(request.UpdatePeriods)+1, len(request.CommitteePeriods)+1) {
 			break // cannot fetch update + committee any more
 		}
 		// Note: we might try syncing before remote advertised range here is local known chain head is older than that; in this case we skip
@@ -366,12 +360,11 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		}
 		request.UpdatePeriods = append(request.UpdatePeriods, period)
 		request.CommitteePeriods = append(request.CommitteePeriods, period+1)
-		reqCount += CommitteeCostFactor + 1
 	}
 
 	// past range: fetch update and committee for periods before the locally stored range that are covered by the constraints (known committee roots)
 	for nextPeriod := localFirst; nextPeriod > constraintsFirst && nextPeriod > remoteFirst; nextPeriod-- { // loop variable is nextPeriod == period+1 to avoid uint64 underflow
-		if reqCount+CommitteeCostFactor >= MaxCommitteeUpdateFetch {
+		if !sp.peer.CanRequest(len(request.UpdatePeriods)+1, len(request.CommitteePeriods)+1) {
 			break // cannot fetch update + committee any more
 		}
 		period := nextPeriod - 1
@@ -387,7 +380,6 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		// requested here already so update for localFirst-1 can always be inserted if it matches our chain)
 		request.UpdatePeriods = append(request.UpdatePeriods, period)
 		request.CommitteePeriods = append(request.CommitteePeriods, period)
-		reqCount += CommitteeCostFactor + 1
 	}
 	return request
 }
