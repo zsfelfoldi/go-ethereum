@@ -17,7 +17,6 @@
 package beacon
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"math/bits"
@@ -242,7 +241,7 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommi
 // verifyUpdate checks whether the header signature is correct and the update fits into the specified constraints
 // (assumes that the update has been successfully validated previously)
 func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
-	if !s.checkForksAndConstraints(update) {
+	if !s.checkConstraints(update) {
 		return false
 	}
 	ok, age := s.verifySignature(SignedHead{Header: update.Header, Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits})
@@ -456,7 +455,7 @@ func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
 	}
 	s.committeeRootCache.Purge()
 	for s.nextPeriod > s.firstPeriod {
-		if update := s.GetBestUpdate(s.nextPeriod - 1); update == nil || s.checkForksAndConstraints(update) {
+		if update := s.GetBestUpdate(s.nextPeriod - 1); update == nil || s.verifyUpdate(update) { // check constraints and signature
 			if update == nil {
 				log.Error("Sync committee update missing", "period", s.nextPeriod-1)
 			}
@@ -474,14 +473,11 @@ func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
 	s.retrySyncAllPeers()
 }
 
-// checkForksAndConstraints checks whether the signed headers of the given committee update is
+// checkConstraints checks whether the signed headers of the given committee update is
 // on the right fork and the proven NextSyncCommitteeRoot matches the update chain constraints.
-func (s *SyncCommitteeTracker) checkForksAndConstraints(update *LightClientUpdate) bool {
+func (s *SyncCommitteeTracker) checkConstraints(update *LightClientUpdate) bool {
 	if !s.genesisInit {
 		log.Error("SyncCommitteeTracker not initialized")
-		return false
-	}
-	if !update.checkForkVersion(s.forks) {
 		return false
 	}
 	root, matchAll := s.constraints.CommitteeRoot(uint64(update.Header.Slot)>>13 + 1)
@@ -499,7 +495,6 @@ type LightClientUpdate struct {
 	FinalityBranch          MerkleValues
 	SyncCommitteeBits       []byte
 	SyncCommitteeSignature  []byte
-	ForkVersion             []byte
 	score                   UpdateScore
 }
 
@@ -509,7 +504,6 @@ func (update *LightClientUpdate) Validate() error {
 		// last slot of each period is not suitable for an update because it is signed by the next period's sync committee, proves the same committee it is signed by
 		return errors.New("Last slot of period")
 	}
-	var checkRoot common.Hash
 	if update.hasFinalizedHeader() {
 		if update.FinalizedHeader.Slot>>13 != update.Header.Slot>>13 {
 			return errors.New("FinalizedHeader is from previous period") // proves the same committee it is signed by
@@ -517,17 +511,9 @@ func (update *LightClientUpdate) Validate() error {
 		if root, ok := VerifySingleProof(update.FinalityBranch, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()), 0); !ok || root != update.Header.StateRoot {
 			return errors.New("Invalid FinalizedHeader merkle proof")
 		}
-		checkRoot = update.FinalizedHeader.StateRoot
-	} else {
-		checkRoot = update.Header.StateRoot
 	}
-	if root, ok := VerifySingleProof(update.NextSyncCommitteeBranch, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot), 0); !ok || root != checkRoot {
-		if ok && root == update.Header.StateRoot {
-			// See https://github.com/ChainSafe/lodestar/issues/4574
-			log.Warn("update.NextSyncCommitteeBranch rooted in update.Header.StateRoot  (Lodestar bug workaround applied)")
-		} else {
-			return errors.New("Invalid NextSyncCommittee merkle proof")
-		}
+	if root, ok := VerifySingleProof(update.NextSyncCommitteeBranch, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot), 0); !ok || root != update.Header.StateRoot {
+		return errors.New("Invalid NextSyncCommittee merkle proof")
 	}
 	return nil
 }
@@ -537,7 +523,7 @@ func (update *LightClientUpdate) Validate() error {
 // Note that in addition to this, a sufficient signer participation is also needed in order to fulfill
 // the quasi-finality condition (see UpdateScore.isFinalized).
 func (l *LightClientUpdate) hasFinalizedHeader() bool {
-	return l.FinalizedHeader.BodyRoot != (common.Hash{})
+	return l.FinalizedHeader.BodyRoot != (common.Hash{}) && l.FinalizedHeader.Slot>>13 == l.Header.Slot>>13
 }
 
 // CalculateScore returns the UpdateScore describing the proof strength of the update
@@ -558,9 +544,4 @@ func trimZeroes(data []byte) []byte {
 		l--
 	}
 	return data[:l]
-}
-
-// checkForkVersion returns true if the fork version of the update matches the forks defined in the chain config
-func (l *LightClientUpdate) checkForkVersion(forks Forks) bool {
-	return bytes.Equal(trimZeroes(l.ForkVersion), trimZeroes(forks.version(uint64(l.Header.Slot>>5))))
 }

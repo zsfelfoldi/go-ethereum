@@ -86,7 +86,6 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 		FinalizedHeader         beacon.Header       `json:"finalized_header"`
 		FinalityBranch          beacon.MerkleValues `json:"finality_branch"`
 		Aggregate               syncAggregate       `json:"sync_aggregate"`
-		ForkVersion             hexutil.Bytes       `json:"fork_version"`
 	}
 
 	var data struct {
@@ -115,7 +114,6 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 		FinalityBranch:          c.FinalityBranch,
 		SyncCommitteeBits:       c.Aggregate.BitMask,
 		SyncCommitteeSignature:  c.Aggregate.Signature,
-		ForkVersion:             c.ForkVersion,
 	}
 	if err := update.Validate(); err != nil {
 		return beacon.LightClientUpdate{}, nil, err
@@ -136,7 +134,7 @@ type syncAggregate struct {
 // GetHeadUpdate fetches the latest available signed header.
 // Note that the signature should be verified by the caller as its validity depends on the update chain.
 func (api *BeaconLightApi) GetHeadUpdate() (beacon.SignedHead, error) {
-	resp, err := api.httpGet("/eth/v1/beacon/light_client/optimistic_update/")
+	resp, err := api.httpGet("/eth/v1/beacon/light_client/optimistic_update")
 	if err != nil {
 		return beacon.SignedHead{}, err
 	}

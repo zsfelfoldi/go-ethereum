@@ -290,7 +290,6 @@ func (tc *testChain) makeTestUpdate(period, subPeriodIndex uint64, signerCount i
 	}
 	signedHead := tc.makeTestSignedHead(update.Header, signerCount)
 	update.SyncCommitteeBits, update.SyncCommitteeSignature = signedHead.BitMask, signedHead.Signature
-	update.ForkVersion = tc.forks.version(uint64(update.Header.Slot) >> 5)
 	return update
 }
 
