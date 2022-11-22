@@ -203,7 +203,7 @@ func (cs *CommitteeSyncer) getBestUpdate(period uint64) (beacon.LightClientUpdat
 // Note: cannot return committee altair fork period; this is always same as the committee of the next period
 func (cs *CommitteeSyncer) getCommittee(period uint64) ([]byte, error) {
 	if period == 0 {
-		return nil, errors.New("No committee available for period 0")
+		return nil, errors.New("no committee available for period 0")
 	}
 	if cs.checkpointCommittee != nil && period == cs.checkpointPeriod {
 		return cs.checkpointCommittee, nil

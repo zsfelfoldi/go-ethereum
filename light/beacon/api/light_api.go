@@ -244,7 +244,7 @@ func (api *BeaconLightApi) GetStateProof(stateRoot common.Hash, paths []string, 
 	reader := proof.Reader(nil)
 	root, ok := beacon.TraverseProof(reader, beacon.NewMultiProofWriter(expFormat, &values, nil))
 	if !ok || !reader.Finished() || root != stateRoot {
-		return beacon.MultiProof{}, errors.New("Invalid state proof")
+		return beacon.MultiProof{}, errors.New("invalid state proof")
 	}
 	return beacon.MultiProof{Format: expFormat, Values: values}, nil
 }
@@ -270,12 +270,12 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 	}
 	committee, ok := data.Data.Committee.serialize()
 	if !ok {
-		return beacon.Header{}, beacon.CheckpointData{}, nil, errors.New("Invalid sync committee JSON")
+		return beacon.Header{}, beacon.CheckpointData{}, nil, errors.New("invalid sync committee JSON")
 	}
 	committeeRoot := beacon.SerializedCommitteeRoot(committee)
 	expStateRoot, ok := beacon.VerifySingleProof(data.Data.CommitteeBranch, beacon.BsiSyncCommittee, beacon.MerkleValue(committeeRoot), 0)
 	if !ok || expStateRoot != data.Data.Header.StateRoot {
-		return beacon.Header{}, beacon.CheckpointData{}, nil, errors.New("Invalid sync committee Merkle proof")
+		return beacon.Header{}, beacon.CheckpointData{}, nil, errors.New("invalid sync committee Merkle proof")
 	}
 	checkpointData := beacon.CheckpointData{
 		Checkpoint:     checkpoint,
@@ -348,7 +348,7 @@ func (api *BeaconLightApi) GetExecutionPayload(beaconRoot, execRoot common.Hash)
 		return nil, err
 	}
 	if block.Hash() != execRoot {
-		return nil, errors.New("Exec block root does not match")
+		return nil, errors.New("exec block root does not match")
 	}
 	return block, nil
 }

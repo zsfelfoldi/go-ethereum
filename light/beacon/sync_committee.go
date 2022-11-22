@@ -499,18 +499,18 @@ type LightClientUpdate struct {
 func (update *LightClientUpdate) Validate() error {
 	if update.Header.Slot&0x1fff == 0x1fff {
 		// last slot of each period is not suitable for an update because it is signed by the next period's sync committee, proves the same committee it is signed by
-		return errors.New("Last slot of period")
+		return errors.New("last slot of period")
 	}
 	if update.hasFinalizedHeader() {
 		if update.FinalizedHeader.Slot>>13 != update.Header.Slot>>13 {
-			return errors.New("FinalizedHeader is from previous period") // proves the same committee it is signed by
+			return errors.New("finalizedHeader is from previous period") // proves the same committee it is signed by
 		}
 		if root, ok := VerifySingleProof(update.FinalityBranch, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()), 0); !ok || root != update.Header.StateRoot {
-			return errors.New("Invalid FinalizedHeader merkle proof")
+			return errors.New("invalid FinalizedHeader merkle proof")
 		}
 	}
 	if root, ok := VerifySingleProof(update.NextSyncCommitteeBranch, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot), 0); !ok || root != update.Header.StateRoot {
-		return errors.New("Invalid NextSyncCommittee merkle proof")
+		return errors.New("invalid NextSyncCommittee merkle proof")
 	}
 	return nil
 }
