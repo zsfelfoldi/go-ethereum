@@ -59,13 +59,12 @@ func (api *BeaconLightApi) httpGet(path string) ([]byte, error) {
 	for k, v := range api.customHeaders {
 		req.Header.Set(k, v)
 	}
-	if resp, err := api.client.Do(req); err == nil {
-		data, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return data, err
-	} else {
+	resp, err := api.client.Do(req)
+	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
 }
 
 // GetBestUpdateAndCommittee fetches and validates LightClientUpdate for given period and full serialized
@@ -73,8 +72,7 @@ func (api *BeaconLightApi) httpGet(path string) ([]byte, error) {
 // Note that the results are validated but the update signature should be verified by the caller as its
 // validity depends on the update chain.
 func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.LightClientUpdate, []byte, error) {
-	periodStr := strconv.Itoa(int(period))
-	resp, err := api.httpGet("/eth/v1/beacon/light_client/updates?start_period=" + periodStr + "&count=1")
+	resp, err := api.httpGet("/eth/v1/beacon/light_client/updates?start_period=" + strconv.Itoa(int(period)) + "&count=1")
 	if err != nil {
 		return beacon.LightClientUpdate{}, nil, err
 	}
@@ -117,9 +115,6 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 	}
 	if err := update.Validate(); err != nil {
 		return beacon.LightClientUpdate{}, nil, err
-	}
-	if beacon.SerializedCommitteeRoot(committee) != update.NextSyncCommitteeRoot {
-		return beacon.LightClientUpdate{}, nil, errors.New("sync committee root does not match")
 	}
 	return update, committee, nil
 }
