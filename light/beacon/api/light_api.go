@@ -263,6 +263,9 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 	if err := json.Unmarshal(resp, &data); err != nil {
 		return beacon.Header{}, beacon.CheckpointData{}, nil, err
 	}
+	if data.Data.Header.Hash() != checkpoint {
+		return beacon.Header{}, beacon.CheckpointData{}, nil, errors.New("invalid checkpoint block header")
+	}
 	committee, ok := data.Data.Committee.serialize()
 	if !ok {
 		return beacon.Header{}, beacon.CheckpointData{}, nil, errors.New("invalid sync committee JSON")
