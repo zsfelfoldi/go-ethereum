@@ -106,9 +106,7 @@ type SyncCommitteeTracker struct {
 	lastBroadcast                          mclock.AbsTime
 	advertiseScheduled, broadcastScheduled bool
 	triggerCh, stopCh                      chan struct{}
-	acceptedList, processedList            headList
-	lastProcessed                          [lastProcessedCount]common.Hash
-	lastProcessedIndex                     int
+	acceptedList                           headList
 
 	headSubs []func(Header)
 }
@@ -128,12 +126,11 @@ func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Sc
 			signerCount:    uint32(signerThreshold),
 			subPeriodIndex: 512,
 		},
-		connected:     make(map[sctServer]*sctPeerInfo),
-		broadcastTo:   make(map[sctClient]struct{}),
-		triggerCh:     make(chan struct{}, 1),
-		stopCh:        make(chan struct{}),
-		acceptedList:  newHeadList(4),
-		processedList: newHeadList(2),
+		connected:    make(map[sctServer]*sctPeerInfo),
+		broadcastTo:  make(map[sctClient]struct{}),
+		triggerCh:    make(chan struct{}, 1),
+		stopCh:       make(chan struct{}),
+		acceptedList: newHeadList(4),
 	}
 	s.bestUpdateCache, _ = lru.New(1000)
 	s.serializedCommitteeCache, _ = lru.New(100)

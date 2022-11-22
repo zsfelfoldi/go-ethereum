@@ -29,7 +29,6 @@ const (
 	maxUpdateInfoLength     = 128
 	broadcastFrequencyLimit = time.Millisecond * 200
 	advertiseDelay          = time.Second * 10
-	lastProcessedCount      = 4
 )
 
 // CommitteeRequest represents a request for fetching updates and committees at the given periods

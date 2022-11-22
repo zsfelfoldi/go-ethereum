@@ -65,10 +65,7 @@ func (s *SyncCommitteeTracker) AddSignedHeads(peer sctServer, heads []SignedHead
 // addSignedHeads adds signed heads to the tracker after a successful verification
 // (it is assumed that the local update chain has been synced with the given peer)
 func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead) {
-	var (
-		broadcast   bool
-		oldHeadHash common.Hash
-	)
+	var oldHeadHash common.Hash
 	if len(s.acceptedList.list) > 0 {
 		oldHeadHash = s.acceptedList.list[0].hash
 	}
@@ -96,35 +93,16 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 				h.signerCount = signerCount
 				h.sentTo = nil
 				s.acceptedList.updateHead(h)
-				if h.processed {
-					s.processedList.updateHead(h)
-					broadcast = true
-				}
 			}
 		} else {
-			var processed bool
-			for _, p := range s.lastProcessed {
-				if p == hash {
-					processed = true
-					break
-				}
-			}
 			h := &headInfo{
 				head:         head,
 				hash:         hash,
 				sentTo:       make(map[sctClient]struct{}),
 				receivedFrom: map[sctServer]struct{}{peer: struct{}{}},
-				processed:    processed,
 			}
 			s.acceptedList.updateHead(h)
-			if h.processed {
-				s.processedList.updateHead(h)
-				broadcast = true
-			}
 		}
-	}
-	if broadcast {
-		s.broadcastHeads()
 	}
 	if len(s.acceptedList.list) > 0 && oldHeadHash != s.acceptedList.list[0].hash {
 		head := s.acceptedList.list[0].head.Header
@@ -159,94 +137,6 @@ func (s *SyncCommitteeTracker) SubscribeToNewHeads(subFn func(Header)) {
 	defer s.lock.Unlock()
 
 	s.headSubs = append(s.headSubs, subFn)
-}
-
-// AllowBroadcast should be called when given head can be broadcast to other peers. Depending on the setup further data retrieval and/or
-// processing might be needed for a new head before it is propagated further.
-// Note that a signed head is broadcast when both addSignedHeads and AllowBroadcast has been called for the given head (in any order).
-func (s *SyncCommitteeTracker) AllowBroadcast(hash common.Hash) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	if headInfo := s.acceptedList.getHead(hash); headInfo != nil {
-		headInfo.processed = true
-		s.processedList.updateHead(headInfo)
-		s.broadcastHeads()
-	}
-	s.lastProcessed[s.lastProcessedIndex] = hash
-	s.lastProcessedIndex++
-	if s.lastProcessedIndex == lastProcessedCount {
-		s.lastProcessedIndex = 0
-	}
-}
-
-// Activate allows broadcasting heads to the given peer
-func (s *SyncCommitteeTracker) Activate(peer sctClient) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	s.broadcastTo[peer] = struct{}{}
-	s.broadcastHeadsTo(peer, true)
-}
-
-// Deactivate stops broadcasting heads to the given peer
-func (s *SyncCommitteeTracker) Deactivate(peer sctClient, remove bool) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	delete(s.broadcastTo, peer)
-	if remove {
-		for _, headInfo := range s.processedList.list {
-			delete(headInfo.sentTo, peer)
-		}
-	}
-}
-
-// broadcastHeads broadcasts new heads to all active peers unless they have been broadcast very recently,
-// in which case it schedules a broadcast for a little bit later. The frequency of broadcasts is limited
-// by the broadcastFrequencyLimit constant.
-func (s *SyncCommitteeTracker) broadcastHeads() {
-	now := s.clock.Now()
-	sinceLast := time.Duration(now - s.lastBroadcast)
-	if sinceLast < broadcastFrequencyLimit {
-		if !s.broadcastScheduled {
-			s.broadcastScheduled = true
-			s.clock.AfterFunc(broadcastFrequencyLimit-sinceLast, func() {
-				s.lock.Lock()
-				s.broadcastHeadsNow()
-				s.broadcastScheduled = false
-				s.lock.Unlock()
-			})
-		}
-		return
-	}
-	s.broadcastHeadsNow()
-	s.lastBroadcast = now
-}
-
-// broadcastHeadsNow broadcasts new heads to all active peers.
-func (s *SyncCommitteeTracker) broadcastHeadsNow() {
-	for peer := range s.broadcastTo {
-		s.broadcastHeadsTo(peer, false)
-	}
-}
-
-// broadcastHeadsTo broadcasts new heads to the given peer. If sendEmpty is true then an empty
-// broadcast message is sent even if there are no new signed heads to send.
-func (s *SyncCommitteeTracker) broadcastHeadsTo(peer sctClient, sendEmpty bool) {
-	heads := make([]SignedHead, 0, len(s.processedList.list))
-	for _, headInfo := range s.processedList.list {
-		if _, ok := headInfo.sentTo[peer]; !ok {
-			heads = append(heads, headInfo.head)
-			headInfo.sentTo[peer] = struct{}{}
-		}
-		if headInfo.signerCount > 341 {
-			break
-		}
-	}
-	if sendEmpty || len(heads) > 0 {
-		peer.SendSignedHeads(heads)
-	}
 }
 
 // headInfo contains the best signed header and the state of propagation belonging to a given block root
