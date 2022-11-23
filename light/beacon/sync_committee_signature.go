@@ -152,17 +152,6 @@ type Fork struct {
 // Forks is the list of all beacon chain forks in the chain configuration.
 type Forks []Fork
 
-// version returns the fork version at the given epoch.
-func (bf Forks) version(epoch uint64) []byte {
-	for i := len(bf) - 1; i >= 0; i-- {
-		if epoch >= bf[i].Epoch {
-			return bf[i].Version
-		}
-	}
-	log.Error("Fork version unknown", "epoch", epoch)
-	return nil
-}
-
 // domain returns the signature domain for the given epoch (assumes that domains have already been calculated).
 func (bf Forks) domain(epoch uint64) MerkleValue {
 	for i := len(bf) - 1; i >= 0; i-- {

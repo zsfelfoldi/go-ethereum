@@ -58,7 +58,7 @@ type Header struct {
 // Hash calculates the block root of the header
 func (bh *Header) Hash() common.Hash {
 	var values [8]MerkleValue
-	binary.LittleEndian.PutUint64(values[0][:8], uint64(bh.Slot))
+	binary.LittleEndian.PutUint64(values[0][:8], bh.Slot)
 	binary.LittleEndian.PutUint64(values[1][:8], uint64(bh.ProposerIndex))
 	values[2] = MerkleValue(bh.ParentRoot)
 	values[3] = MerkleValue(bh.StateRoot)
@@ -68,12 +68,12 @@ func (bh *Header) Hash() common.Hash {
 
 // Epoch returns the epoch the header belongs to
 func (bh *Header) Epoch() uint64 {
-	return uint64(bh.Slot) >> 5
+	return bh.Slot >> 5
 }
 
 // SyncPeriod returns the sync period the header belongs to
 func (bh *Header) SyncPeriod() uint64 {
-	return uint64(bh.Slot) >> 13
+	return bh.Slot >> 13
 }
 
 // PeriodStart returns the first slot of the given period

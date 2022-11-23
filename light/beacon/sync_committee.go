@@ -99,14 +99,13 @@ type SyncCommitteeTracker struct {
 	// and committees for periods between firstPeriod to nextPeriod are available
 	firstPeriod, nextPeriod uint64
 
-	updateInfo                             *UpdateInfo
-	connected                              map[sctServer]*sctPeerInfo
-	requestQueue                           []*sctPeerInfo
-	broadcastTo, advertisedTo              map[sctClient]struct{}
-	lastBroadcast                          mclock.AbsTime
-	advertiseScheduled, broadcastScheduled bool
-	triggerCh, stopCh                      chan struct{}
-	acceptedList                           headList
+	updateInfo                *UpdateInfo
+	connected                 map[sctServer]*sctPeerInfo
+	requestQueue              []*sctPeerInfo
+	broadcastTo, advertisedTo map[sctClient]struct{}
+	advertiseScheduled        bool
+	triggerCh, stopCh         chan struct{}
+	acceptedList              headList
 
 	headSubs []func(Header)
 }
@@ -241,7 +240,7 @@ func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
 	if !s.checkConstraints(update) {
 		return false
 	}
-	ok, age := s.verifySignature(SignedHead{Header: update.Header, Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits}, uint64(update.Header.Slot))
+	ok, age := s.verifySignature(SignedHead{Header: update.Header, Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits}, update.Header.Slot)
 	if age < 0 {
 		log.Warn("Future committee update received", "age", age)
 	}
@@ -528,13 +527,4 @@ func (l *LightClientUpdate) CalculateScore() UpdateScore {
 	l.score.subPeriodIndex = uint32(l.Header.Slot & 0x1fff)
 	l.score.finalizedHeader = l.hasFinalizedHeader()
 	return l.score
-}
-
-// trimZeroes removes zero bytes from the end of a byte slice
-func trimZeroes(data []byte) []byte {
-	l := len(data)
-	for l > 0 && data[l-1] == 0 {
-		l--
-	}
-	return data[:l]
 }

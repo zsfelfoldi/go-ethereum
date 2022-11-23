@@ -273,7 +273,7 @@ func (tc *testChain) makeTestSignedHead(header Header, signerCount int) SignedHe
 	return SignedHead{
 		Header:    header,
 		BitMask:   bitmask,
-		Signature: makeDummySignature(tc.periods[PeriodOfSlot(uint64(header.Slot+1))].committee, tc.forks.signingRoot(header), bitmask),
+		Signature: makeDummySignature(tc.periods[PeriodOfSlot(header.Slot+1)].committee, tc.forks.signingRoot(header), bitmask),
 	}
 }
 

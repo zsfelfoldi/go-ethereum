@@ -99,11 +99,11 @@ func (cs *CommitteeSyncer) headPollLoop() {
 						cs.sct.AddSignedHeads(cs, []beacon.SignedHead{head})
 					}
 					lastHead = head
-					if uint64(head.Header.Slot) >= nextAdvertiseSlot {
-						lastPeriod := uint64(head.Header.Slot-1) >> 13
+					if head.Header.Slot >= nextAdvertiseSlot {
+						lastPeriod := beacon.PeriodOfSlot(head.Header.Slot - 1)
 						if cs.advertiseUpdates(lastPeriod) {
-							nextAdvertiseSlot = (lastPeriod + 1) << 13
-							if uint64(head.Header.Slot) >= nextAdvertiseSlot {
+							nextAdvertiseSlot = beacon.PeriodStart(lastPeriod + 1)
+							if head.Header.Slot >= nextAdvertiseSlot {
 								nextAdvertiseSlot += 8000
 							}
 						}

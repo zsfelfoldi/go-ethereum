@@ -74,7 +74,7 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 		if signerCount < s.signerThreshold {
 			continue
 		}
-		sigOk, age := s.verifySignature(head, uint64(head.Header.Slot)+1)
+		sigOk, age := s.verifySignature(head, head.Header.Slot+1)
 		if age < 0 {
 			log.Warn("Future signed head received", "age", age)
 		}
@@ -119,7 +119,7 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 // according to the local system clock). If enforceTime is true then negative age (future) headers
 // are rejected.
 func (s *SyncCommitteeTracker) verifySignature(head SignedHead, signatureSlot uint64) (bool, time.Duration) {
-	slotTime := int64(time.Second) * int64(s.genesisTime+uint64(head.Header.Slot)*12)
+	slotTime := int64(time.Second) * int64(s.genesisTime+head.Header.Slot*12)
 	age := time.Duration(s.unixNano() - slotTime)
 	if s.enforceTime && age < 0 {
 		return false, age
@@ -146,7 +146,6 @@ type headInfo struct {
 	signerCount  int
 	receivedFrom map[sctServer]struct{}
 	sentTo       map[sctClient]struct{}
-	processed    bool
 }
 
 // headList is a list of best known heads for the few most recent slots
