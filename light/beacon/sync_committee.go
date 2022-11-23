@@ -178,7 +178,7 @@ const (
 // insertUpdate verifies the update and stores it in the update chain if possible. The serialized version
 // of the next committee should also be supplied if it is not already stored in the database.
 func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommittee []byte) int {
-	period := uint64(update.Header.Slot) >> 13
+	period := update.Header.SyncPeriod()
 	if !s.verifyUpdate(update) {
 		return sciWrongUpdate
 	}
@@ -262,7 +262,7 @@ func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
 	if v, ok := s.bestUpdateCache.Get(period); ok {
 		update, _ := v.(*LightClientUpdate)
 		if update != nil {
-			if uint64(update.Header.Slot>>13) != period {
+			if update.Header.SyncPeriod() != period {
 				log.Error("Best update from wrong period found in cache")
 			}
 		}
@@ -273,7 +273,7 @@ func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
 		if err := rlp.DecodeBytes(updateEnc, update); err == nil {
 			update.CalculateScore()
 			s.bestUpdateCache.Add(period, update)
-			if uint64(update.Header.Slot>>13) != period {
+			if update.Header.SyncPeriod() != period {
 				log.Error("Best update from wrong period found in database")
 			}
 			return update
@@ -287,7 +287,7 @@ func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
 
 // storeBestUpdate stores a sync committee update in the canonical update chain
 func (s *SyncCommitteeTracker) storeBestUpdate(update *LightClientUpdate) {
-	period := uint64(update.Header.Slot) >> 13
+	period := update.Header.SyncPeriod()
 	updateEnc, err := rlp.EncodeToBytes(update)
 	if err != nil {
 		log.Error("Error encoding LightClientUpdate", "error", err)
@@ -477,7 +477,7 @@ func (s *SyncCommitteeTracker) checkConstraints(update *LightClientUpdate) bool 
 		log.Error("SyncCommitteeTracker not initialized")
 		return false
 	}
-	root, matchAll := s.constraints.CommitteeRoot(uint64(update.Header.Slot)>>13 + 1)
+	root, matchAll := s.constraints.CommitteeRoot(update.Header.SyncPeriod() + 1)
 	return matchAll || root == update.NextSyncCommitteeRoot
 }
 
@@ -498,7 +498,7 @@ type LightClientUpdate struct {
 // Validate verifies the validity of the update
 func (update *LightClientUpdate) Validate() error {
 	if update.hasFinalizedHeader() {
-		if update.FinalizedHeader.Slot>>13 != update.Header.Slot>>13 {
+		if update.FinalizedHeader.SyncPeriod() != update.Header.SyncPeriod() {
 			return errors.New("finalizedHeader is from previous period") // proves the same committee it is signed by
 		}
 		if root, ok := VerifySingleProof(update.FinalityBranch, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()), 0); !ok || root != update.Header.StateRoot {
@@ -516,7 +516,7 @@ func (update *LightClientUpdate) Validate() error {
 // Note that in addition to this, a sufficient signer participation is also needed in order to fulfill
 // the quasi-finality condition (see UpdateScore.isFinalized).
 func (l *LightClientUpdate) hasFinalizedHeader() bool {
-	return l.FinalizedHeader.BodyRoot != (common.Hash{}) && l.FinalizedHeader.Slot>>13 == l.Header.Slot>>13
+	return l.FinalizedHeader.BodyRoot != (common.Hash{}) && l.FinalizedHeader.SyncPeriod() == l.Header.SyncPeriod()
 }
 
 // CalculateScore returns the UpdateScore describing the proof strength of the update

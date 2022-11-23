@@ -124,7 +124,7 @@ func (s *SyncCommitteeTracker) verifySignature(head SignedHead, signatureSlot ui
 	if s.enforceTime && age < 0 {
 		return false, age
 	}
-	committee := s.getSyncCommittee(signatureSlot >> 13) // signed with the next slot's committee
+	committee := s.getSyncCommittee(PeriodOfSlot(signatureSlot)) // signed with the next slot's committee
 	if committee == nil {
 		return false, age
 	}

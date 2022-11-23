@@ -200,7 +200,7 @@ func (bf Forks) signingRoot(header Header) common.Hash {
 	hasher := sha256.New()
 	headerHash := header.Hash()
 	hasher.Write(headerHash[:])
-	domain := bf.domain(uint64(header.Slot) >> 5)
+	domain := bf.domain(header.Epoch())
 	hasher.Write(domain[:])
 	hasher.Sum(signingRoot[:0])
 	return signingRoot

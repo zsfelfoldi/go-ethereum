@@ -66,6 +66,26 @@ func (bh *Header) Hash() common.Hash {
 	return MultiProof{Format: NewRangeFormat(8, 15, nil), Values: values[:]}.rootHash()
 }
 
+// Epoch returns the epoch the header belongs to
+func (bh *Header) Epoch() uint64 {
+	return uint64(bh.Slot) >> 5
+}
+
+// SyncPeriod returns the sync period the header belongs to
+func (bh *Header) SyncPeriod() uint64 {
+	return uint64(bh.Slot) >> 13
+}
+
+// PeriodStart returns the first slot of the given period
+func PeriodStart(period uint64) uint64 {
+	return period << 13
+}
+
+// PeriodOfSlot returns the sync period that the given slot belongs to
+func PeriodOfSlot(slot uint64) uint64 {
+	return slot >> 13
+}
+
 // HeaderWithoutState stores beacon header fields except the state root which can be
 // reconstructed from a partial beacon state proof stored alongside the header
 type HeaderWithoutState struct {

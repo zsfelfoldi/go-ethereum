@@ -277,7 +277,7 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 	}
 	checkpointData := beacon.CheckpointData{
 		Checkpoint:     checkpoint,
-		Period:         uint64(data.Data.Header.Slot) >> 13,
+		Period:         data.Data.Header.SyncPeriod(),
 		CommitteeRoots: []common.Hash{committeeRoot},
 	}
 	return data.Data.Header, checkpointData, committee, nil

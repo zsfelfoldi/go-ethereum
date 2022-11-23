@@ -273,7 +273,7 @@ func (tc *testChain) makeTestSignedHead(header Header, signerCount int) SignedHe
 	return SignedHead{
 		Header:    header,
 		BitMask:   bitmask,
-		Signature: makeDummySignature(tc.periods[(header.Slot+1)>>13].committee, tc.forks.signingRoot(header), bitmask),
+		Signature: makeDummySignature(tc.periods[PeriodOfSlot(uint64(header.Slot+1))].committee, tc.forks.signingRoot(header), bitmask),
 	}
 }
 
@@ -283,10 +283,10 @@ func (tc *testChain) makeTestUpdate(period, subPeriodIndex uint64, signerCount i
 	var update LightClientUpdate
 	update.NextSyncCommitteeRoot = tc.periods[period+1].committeeRoot
 	if subPeriodIndex == finalizedTestUpdate {
-		update.FinalizedHeader, update.NextSyncCommitteeBranch = makeTestHeaderWithSingleProof(period<<13+100, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot))
-		update.Header, update.FinalityBranch = makeTestHeaderWithSingleProof(period<<13+200, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()))
+		update.FinalizedHeader, update.NextSyncCommitteeBranch = makeTestHeaderWithSingleProof(PeriodStart(period)+100, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot))
+		update.Header, update.FinalityBranch = makeTestHeaderWithSingleProof(PeriodStart(period)+200, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()))
 	} else {
-		update.Header, update.NextSyncCommitteeBranch = makeTestHeaderWithSingleProof(period<<13+subPeriodIndex, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot))
+		update.Header, update.NextSyncCommitteeBranch = makeTestHeaderWithSingleProof(PeriodStart(period)+subPeriodIndex, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot))
 	}
 	signedHead := tc.makeTestSignedHead(update.Header, signerCount)
 	update.SyncCommitteeBits, update.SyncCommitteeSignature = signedHead.BitMask, signedHead.Signature

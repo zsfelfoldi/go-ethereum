@@ -95,7 +95,7 @@ func (cs *CommitteeSyncer) headPollLoop() {
 				if !head.Equal(&lastHead) {
 					cs.updateCache.Purge()
 					cs.committeeCache.Purge()
-					if cs.sct.NextPeriod() > uint64(head.Header.Slot)>>13 {
+					if cs.sct.NextPeriod() > head.Header.SyncPeriod() {
 						cs.sct.AddSignedHeads(cs, []beacon.SignedHead{head})
 					}
 					lastHead = head

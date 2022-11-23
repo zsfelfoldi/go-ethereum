@@ -427,7 +427,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 	firstPeriod := sp.remoteInfo.AfterLastPeriod - uint64(len(sp.remoteInfo.Scores))
 	for i, update := range reply.Updates {
 		update := update // updates are cached by reference, do not overwrite
-		period := uint64(update.Header.Slot) >> 13
+		period := update.Header.SyncPeriod()
 		if period != sentRequest.UpdatePeriods[i] {
 			return false
 		}
