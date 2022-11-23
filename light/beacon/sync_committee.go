@@ -241,7 +241,7 @@ func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
 	if !s.checkConstraints(update) {
 		return false
 	}
-	ok, age := s.verifySignature(SignedHead{Header: update.Header, Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits})
+	ok, age := s.verifySignature(SignedHead{Header: update.Header, Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits}, uint64(update.Header.Slot))
 	if age < 0 {
 		log.Warn("Future committee update received", "age", age)
 	}
@@ -497,10 +497,6 @@ type LightClientUpdate struct {
 
 // Validate verifies the validity of the update
 func (update *LightClientUpdate) Validate() error {
-	if update.Header.Slot&0x1fff == 0x1fff {
-		// last slot of each period is not suitable for an update because it is signed by the next period's sync committee, proves the same committee it is signed by
-		return errors.New("last slot of period")
-	}
 	if update.hasFinalizedHeader() {
 		if update.FinalizedHeader.Slot>>13 != update.Header.Slot>>13 {
 			return errors.New("finalizedHeader is from previous period") // proves the same committee it is signed by

@@ -74,7 +74,7 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 		if signerCount < s.signerThreshold {
 			continue
 		}
-		sigOk, age := s.verifySignature(head)
+		sigOk, age := s.verifySignature(head, uint64(head.Header.Slot)+1)
 		if age < 0 {
 			log.Warn("Future signed head received", "age", age)
 		}
@@ -118,13 +118,13 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 // The age of the header is also returned (the time elapsed since the beginning of the given slot,
 // according to the local system clock). If enforceTime is true then negative age (future) headers
 // are rejected.
-func (s *SyncCommitteeTracker) verifySignature(head SignedHead) (bool, time.Duration) {
+func (s *SyncCommitteeTracker) verifySignature(head SignedHead, signatureSlot uint64) (bool, time.Duration) {
 	slotTime := int64(time.Second) * int64(s.genesisTime+uint64(head.Header.Slot)*12)
 	age := time.Duration(s.unixNano() - slotTime)
 	if s.enforceTime && age < 0 {
 		return false, age
 	}
-	committee := s.getSyncCommittee(uint64(head.Header.Slot+1) >> 13) // signed with the next slot's committee
+	committee := s.getSyncCommittee(signatureSlot >> 13) // signed with the next slot's committee
 	if committee == nil {
 		return false, age
 	}
