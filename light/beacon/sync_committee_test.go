@@ -242,7 +242,7 @@ func makeTestHeaderWithSingleProof(slot, index uint64, value MerkleValue) (Heade
 		index /= 2
 		branch = append(branch, proofHash)
 	}
-	return Header{Slot: common.Decimal(slot), StateRoot: common.Hash(value)}, branch
+	return Header{Slot: slot, StateRoot: common.Hash(value)}, branch
 }
 
 func makeBitmask(signerCount int) []byte {

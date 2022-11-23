@@ -46,13 +46,13 @@ const (
 
 var BsiFinalExecHash = ChildIndex(ChildIndex(BsiFinalBlock, BhiStateRoot), BsiExecHead)
 
-// Header defined a beacon header and supports JSON encoding according to the standard beacon API format
+// Header defines a beacon header
 type Header struct {
-	Slot          common.Decimal `json:"slot"`
-	ProposerIndex common.Decimal `json:"proposer_index"`
-	ParentRoot    common.Hash    `json:"parent_root"`
-	StateRoot     common.Hash    `json:"state_root"`
-	BodyRoot      common.Hash    `json:"body_root"`
+	Slot          uint64
+	ProposerIndex uint
+	ParentRoot    common.Hash
+	StateRoot     common.Hash
+	BodyRoot      common.Hash
 }
 
 // Hash calculates the block root of the header
@@ -113,8 +113,8 @@ func (bh *HeaderWithoutState) Proof(stateRoot common.Hash) MultiProof {
 // FullHeader reconstructs a full Header from a HeaderWithoutState and a state root
 func (bh *HeaderWithoutState) FullHeader(stateRoot common.Hash) Header {
 	return Header{
-		Slot:          common.Decimal(bh.Slot),
-		ProposerIndex: common.Decimal(bh.ProposerIndex),
+		Slot:          bh.Slot,
+		ProposerIndex: bh.ProposerIndex,
 		ParentRoot:    bh.ParentRoot,
 		StateRoot:     stateRoot,
 		BodyRoot:      bh.BodyRoot,

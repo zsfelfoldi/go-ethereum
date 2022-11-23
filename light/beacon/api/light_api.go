@@ -67,6 +67,25 @@ func (api *BeaconLightApi) httpGet(path string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+// Header defines a beacon header and supports JSON encoding according to the standard beacon API format
+type jsonHeader struct {
+	Slot          common.Decimal `json:"slot"`
+	ProposerIndex common.Decimal `json:"proposer_index"`
+	ParentRoot    common.Hash    `json:"parent_root"`
+	StateRoot     common.Hash    `json:"state_root"`
+	BodyRoot      common.Hash    `json:"body_root"`
+}
+
+func (h *jsonHeader) header() beacon.Header {
+	return beacon.Header{
+		Slot:          uint64(h.Slot),
+		ProposerIndex: uint(h.ProposerIndex),
+		ParentRoot:    h.ParentRoot,
+		StateRoot:     h.StateRoot,
+		BodyRoot:      h.BodyRoot,
+	}
+}
+
 // GetBestUpdateAndCommittee fetches and validates LightClientUpdate for given period and full serialized
 // committee for the next period (committee root hash equals update.NextSyncCommitteeRoot).
 // Note that the results are validated but the update signature should be verified by the caller as its
@@ -78,10 +97,10 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 	}
 
 	type committeeUpdate struct {
-		Header                  beacon.Header       `json:"attested_header"`
+		Header                  jsonHeader          `json:"attested_header"`
 		NextSyncCommittee       syncCommitteeJson   `json:"next_sync_committee"`
 		NextSyncCommitteeBranch beacon.MerkleValues `json:"next_sync_committee_branch"`
-		FinalizedHeader         beacon.Header       `json:"finalized_header"`
+		FinalizedHeader         jsonHeader          `json:"finalized_header"`
 		FinalityBranch          beacon.MerkleValues `json:"finality_branch"`
 		Aggregate               syncAggregate       `json:"sync_aggregate"`
 	}
@@ -105,10 +124,10 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 		return beacon.LightClientUpdate{}, nil, errors.New("invalid sync committee")
 	}
 	update := beacon.LightClientUpdate{
-		Header:                  c.Header,
+		Header:                  c.Header.header(),
 		NextSyncCommitteeRoot:   beacon.SerializedCommitteeRoot(committee),
 		NextSyncCommitteeBranch: c.NextSyncCommitteeBranch,
-		FinalizedHeader:         c.FinalizedHeader,
+		FinalizedHeader:         c.FinalizedHeader.header(),
 		FinalityBranch:          c.FinalityBranch,
 		SyncCommitteeBits:       c.Aggregate.BitMask,
 		SyncCommitteeSignature:  c.Aggregate.Signature,
@@ -137,7 +156,7 @@ func (api *BeaconLightApi) GetHeadUpdate() (beacon.SignedHead, error) {
 	var data struct {
 		Data struct {
 			Aggregate syncAggregate `json:"sync_aggregate"`
-			Header    beacon.Header `json:"attested_header"`
+			Header    jsonHeader    `json:"attested_header"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(resp, &data); err != nil {
@@ -150,7 +169,7 @@ func (api *BeaconLightApi) GetHeadUpdate() (beacon.SignedHead, error) {
 		return beacon.SignedHead{}, errors.New("invalid sync_committee_signature length")
 	}
 	return beacon.SignedHead{
-		Header:    data.Data.Header,
+		Header:    data.Data.Header.header(),
 		BitMask:   data.Data.Aggregate.BitMask,
 		Signature: data.Data.Aggregate.Signature,
 	}, nil
@@ -200,7 +219,7 @@ func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (beacon.Header, erro
 			Root      common.Hash `json:"root"`
 			Canonical bool        `json:"canonical"`
 			Header    struct {
-				Message   beacon.Header `json:"message"`
+				Message   jsonHeader    `json:"message"`
 				Signature hexutil.Bytes `json:"signature"`
 			} `json:"header"`
 		} `json:"data"`
@@ -208,7 +227,7 @@ func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (beacon.Header, erro
 	if err := json.Unmarshal(resp, &data); err != nil {
 		return beacon.Header{}, err
 	}
-	header := data.Data.Header.Message
+	header := data.Data.Header.Message.header()
 	if blockRoot == (common.Hash{}) {
 		blockRoot = data.Data.Root
 	}
@@ -253,7 +272,7 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 
 	type bootstrapData struct {
 		Data struct {
-			Header          beacon.Header       `json:"header"`
+			Header          jsonHeader          `json:"header"`
 			Committee       syncCommitteeJson   `json:"current_sync_committee"`
 			CommitteeBranch beacon.MerkleValues `json:"current_sync_committee_branch"`
 		} `json:"data"`
@@ -263,7 +282,8 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 	if err := json.Unmarshal(resp, &data); err != nil {
 		return beacon.Header{}, beacon.CheckpointData{}, nil, err
 	}
-	if data.Data.Header.Hash() != checkpoint {
+	header := data.Data.Header.header()
+	if header.Hash() != checkpoint {
 		return beacon.Header{}, beacon.CheckpointData{}, nil, errors.New("invalid checkpoint block header")
 	}
 	committee, ok := data.Data.Committee.serialize()
@@ -277,10 +297,10 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 	}
 	checkpointData := beacon.CheckpointData{
 		Checkpoint:     checkpoint,
-		Period:         data.Data.Header.SyncPeriod(),
+		Period:         header.SyncPeriod(),
 		CommitteeRoots: []common.Hash{committeeRoot},
 	}
-	return data.Data.Header, checkpointData, committee, nil
+	return header, checkpointData, committee, nil
 }
 
 // GetExecutionPayload fetches the execution block belonging to the beacon block specified
