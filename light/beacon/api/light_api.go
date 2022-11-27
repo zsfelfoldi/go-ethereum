@@ -103,6 +103,7 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 		FinalizedHeader         jsonHeader          `json:"finalized_header"`
 		FinalityBranch          beacon.MerkleValues `json:"finality_branch"`
 		Aggregate               syncAggregate       `json:"sync_aggregate"`
+		SignatureSlot           common.Decimal      `json:"signature_slot"`
 	}
 
 	var data struct {
@@ -115,6 +116,13 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 		return beacon.LightClientUpdate{}, nil, errors.New("invalid number of committee updates")
 	}
 	c := data.Data[0]
+	header := c.Header.header()
+	if header.SyncPeriod() != period {
+		return beacon.LightClientUpdate{}, nil, errors.New("wrong committee update header period")
+	}
+	if beacon.PeriodOfSlot(uint64(c.SignatureSlot)) != period {
+		return beacon.LightClientUpdate{}, nil, errors.New("wrong committee update signature period")
+	}
 	if len(c.NextSyncCommittee.Pubkeys) != 512 {
 		return beacon.LightClientUpdate{}, nil, errors.New("invalid number of pubkeys in next_sync_committee")
 	}
@@ -124,7 +132,7 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 		return beacon.LightClientUpdate{}, nil, errors.New("invalid sync committee")
 	}
 	update := beacon.LightClientUpdate{
-		Header:                  c.Header.header(),
+		Header:                  header,
 		NextSyncCommitteeRoot:   beacon.SerializedCommitteeRoot(committee),
 		NextSyncCommitteeBranch: c.NextSyncCommitteeBranch,
 		FinalizedHeader:         c.FinalizedHeader.header(),

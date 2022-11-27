@@ -131,11 +131,11 @@ func makeChainConfig(ctx *cli.Context) beacon.ChainConfig {
 		utils.Fatalf("Cannot use custom beacon chain config flags in combination with pre-defined network config")
 	}
 	if ctx.IsSet(utils.BeaconConfigFlag.Name) {
-		if forks, err := beacon.LoadForks(ctx.String(utils.BeaconConfigFlag.Name)); err == nil {
-			config.Forks = forks
-		} else {
+		forks, err := beacon.LoadForks(ctx.String(utils.BeaconConfigFlag.Name))
+		if err != nil {
 			utils.Fatalf("Could not load beacon chain config file", "file name", ctx.String(utils.BeaconConfigFlag.Name), "error", err)
 		}
+		config.Forks = forks
 	}
 	if ctx.IsSet(utils.BeaconGenesisRootFlag.Name) {
 		if c, err := hexutil.Decode(ctx.String(utils.BeaconGenesisRootFlag.Name)); err == nil && len(c) <= 32 {

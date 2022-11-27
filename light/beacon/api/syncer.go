@@ -40,7 +40,7 @@ type CommitteeSyncer struct {
 	genesisData         beacon.GenesisData
 	checkpointPeriod    uint64
 	checkpointCommittee []byte
-	sct                 *beacon.SyncCommitteeTracker
+	committeeTracker                 *beacon.SyncCommitteeTracker
 
 	updateCache, committeeCache *lru.Cache
 	headTriggerCh, closedCh     chan struct{}
@@ -62,15 +62,15 @@ func NewCommitteeSyncer(api *BeaconLightApi, genesisData beacon.GenesisData) *Co
 }
 
 // Start starts the syncing of the given SyncCommitteeTracker
-func (cs *CommitteeSyncer) Start(sct *beacon.SyncCommitteeTracker) {
-	cs.sct = sct
-	sct.SyncWithPeer(cs, nil)
+func (cs *CommitteeSyncer) Start(committeeTracker *beacon.SyncCommitteeTracker) {
+	cs.committeeTracker = committeeTracker
+	committeeTracker.SyncWithPeer(cs, nil)
 	go cs.headPollLoop()
 }
 
 // Stop stops the syncing process
 func (cs *CommitteeSyncer) Stop() {
-	cs.sct.Disconnect(cs)
+	cs.committeeTracker.Disconnect(cs)
 	close(cs.headTriggerCh)
 	<-cs.closedCh
 }
@@ -95,8 +95,8 @@ func (cs *CommitteeSyncer) headPollLoop() {
 				if !head.Equal(&lastHead) {
 					cs.updateCache.Purge()
 					cs.committeeCache.Purge()
-					if cs.sct.NextPeriod() > head.Header.SyncPeriod() {
-						cs.sct.AddSignedHeads(cs, []beacon.SignedHead{head})
+					if cs.committeeTracker.NextPeriod() > head.Header.SyncPeriod() {
+						cs.committeeTracker.AddSignedHeads(cs, []beacon.SignedHead{head})
 					}
 					lastHead = head
 					if head.Header.Slot >= nextAdvertiseSlot {
@@ -133,7 +133,7 @@ func (cs *CommitteeSyncer) headPollLoop() {
 // improved since the last query and advertises them to the tracker. The tracker might then
 // fetch the actual updates and committees via GetBestCommitteeProofs.
 func (cs *CommitteeSyncer) advertiseUpdates(lastPeriod uint64) bool {
-	nextPeriod := cs.sct.NextPeriod()
+	nextPeriod := cs.committeeTracker.NextPeriod()
 	if nextPeriod < 1 {
 		nextPeriod = 1 // we are advertising the range starting from nextPeriod-1
 	}
@@ -161,7 +161,7 @@ func (cs *CommitteeSyncer) advertiseUpdates(lastPeriod uint64) bool {
 		log.Error("Could not fetch last committee update")
 		return false
 	}
-	cs.sct.SyncWithPeer(cs, updateInfo)
+	cs.committeeTracker.SyncWithPeer(cs, updateInfo)
 	return true
 }
 

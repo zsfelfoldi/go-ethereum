@@ -71,17 +71,15 @@ var (
 )
 
 func blsync(ctx *cli.Context) error {
+	if !ctx.IsSet(utils.BeaconApiFlag.Name) {
+		utils.Fatalf("Beacon node light client API URL not specified")
+	}
 	format := beacon.NewIndexMapFormat()
 	format.AddLeaf(beacon.BsiExecHead, nil)
 	format.AddLeaf(beacon.BsiFinalBlock, nil)
 	stateProofFormat = format
 	stateIndexMap = beacon.ProofFormatIndexMap(stateProofFormat)
-
 	chainConfig := makeChainConfig(ctx)
-
-	if !ctx.IsSet(utils.BeaconApiFlag.Name) {
-		utils.Fatalf("Beacon node light client API URL not specified")
-	}
 	customHeader := make(map[string]string)
 	for _, s := range utils.SplitAndTrim(ctx.String(utils.BeaconApiHeaderFlag.Name)) {
 		kv := strings.Split(s, ":")
@@ -107,7 +105,6 @@ func blsync(ctx *cli.Context) error {
 	syncCommitteeTracker.SubscribeToNewHeads(execSyncer.newHead)
 	committeeSyncer.Start(syncCommitteeTracker)
 	syncCommitteeCheckpoint.TriggerFetch()
-
 	<-ctx.Done()
 	return nil
 }
