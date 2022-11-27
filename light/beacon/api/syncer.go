@@ -22,9 +22,9 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
-	lru "github.com/hashicorp/golang-lru"
 )
 
 const (
@@ -40,24 +40,23 @@ type CommitteeSyncer struct {
 	genesisData         beacon.GenesisData
 	checkpointPeriod    uint64
 	checkpointCommittee []byte
-	committeeTracker                 *beacon.SyncCommitteeTracker
+	committeeTracker    *beacon.SyncCommitteeTracker
 
-	updateCache, committeeCache *lru.Cache
-	headTriggerCh, closedCh     chan struct{}
+	updateCache             *lru.Cache[uint64, beacon.LightClientUpdate]
+	committeeCache          *lru.Cache[uint64, []byte]
+	headTriggerCh, closedCh chan struct{}
 }
 
 // NewCommitteeSyncer creates a new CommitteeSyncer
 // Note: genesisData is only needed when light syncing (using GetInitData for bootstrap)
 func NewCommitteeSyncer(api *BeaconLightApi, genesisData beacon.GenesisData) *CommitteeSyncer {
-	updateCache, _ := lru.New(maxRequest)
-	committeeCache, _ := lru.New(maxRequest)
 	return &CommitteeSyncer{
 		api:            api,
 		genesisData:    genesisData,
 		headTriggerCh:  make(chan struct{}, 1),
 		closedCh:       make(chan struct{}),
-		updateCache:    updateCache,
-		committeeCache: committeeCache,
+		updateCache:    lru.NewCache[uint64, beacon.LightClientUpdate](maxRequest),
+		committeeCache: lru.NewCache[uint64, []byte](maxRequest),
 	}
 }
 
@@ -192,8 +191,8 @@ func (cs *CommitteeSyncer) CanRequest(updateCount, committeeCount int) bool {
 
 // getBestUpdate returns the best update for the given period
 func (cs *CommitteeSyncer) getBestUpdate(period uint64) (beacon.LightClientUpdate, error) {
-	if c, _ := cs.updateCache.Get(period); c != nil {
-		return c.(beacon.LightClientUpdate), nil
+	if c, ok := cs.updateCache.Get(period); ok {
+		return c, nil
 	}
 	update, _, err := cs.getBestUpdateAndCommittee(period)
 	return update, err
@@ -208,8 +207,8 @@ func (cs *CommitteeSyncer) getCommittee(period uint64) ([]byte, error) {
 	if cs.checkpointCommittee != nil && period == cs.checkpointPeriod {
 		return cs.checkpointCommittee, nil
 	}
-	if c, _ := cs.committeeCache.Get(period); c != nil {
-		return c.([]byte), nil
+	if c, ok := cs.committeeCache.Get(period); ok {
+		return c, nil
 	}
 	_, committee, err := cs.getBestUpdateAndCommittee(period - 1)
 	return committee, err
