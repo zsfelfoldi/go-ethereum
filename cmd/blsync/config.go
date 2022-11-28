@@ -18,11 +18,6 @@ package main
 
 import (
 	"context"
-	crand "crypto/rand"
-	"fmt"
-	"hash/crc32"
-	"os"
-	"strings"
 
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
@@ -167,31 +162,16 @@ func makeRPCClient(ctx *cli.Context) *rpc.Client {
 	}
 
 	engineApiUrl, jwtFileName := ctx.String(utils.BlsyncApiFlag.Name), ctx.String(utils.BlsyncJWTSecretFlag.Name)
-	jwtSecret := obtainJWTSecret(jwtFileName)
+	var jwtSecret [32]byte
+	if jwt, err := node.ObtainJWTSecret(jwtFileName); err == nil {
+		copy(jwtSecret[:], jwt)
+	} else {
+		utils.Fatalf("Error loading or generating JWT secret: %v", err)
+	}
 	auth := node.NewJWTAuth(jwtSecret)
 	cl, err := rpc.DialOptions(context.Background(), engineApiUrl, rpc.WithHTTPAuth(auth))
 	if err != nil {
 		utils.Fatalf("Could not create RPC client: %v", err)
 	}
 	return cl
-}
-
-func obtainJWTSecret(fileName string) (jwtSecret [32]byte) {
-	if hexData, err := os.ReadFile(fileName); err == nil {
-		data := common.FromHex(strings.TrimSpace(string(hexData)))
-		if len(data) == 32 {
-			copy(jwtSecret[:], data)
-			log.Info("Loaded JWT secret file", "path", fileName, "crc32", fmt.Sprintf("%#x", crc32.ChecksumIEEE(data)))
-			return
-		}
-		log.Error("Invalid JWT secret", "path", fileName, "length", len(data))
-		utils.Fatalf("invalid JWT secret")
-	}
-	// Need to generate one
-	crand.Read(jwtSecret[:])
-	if err := os.WriteFile(fileName, []byte(hexutil.Encode(jwtSecret[:])), 0600); err != nil {
-		utils.Fatalf("Could not write JWT secret file: %v", err)
-	}
-	log.Info("Generated JWT secret", "path", fileName)
-	return
 }
