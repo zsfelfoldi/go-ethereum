@@ -89,7 +89,7 @@ func blsync(ctx *cli.Context) error {
 		customHeader[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
 	}
 	beaconApi := api.NewBeaconLightApi(ctx.String(utils.BeaconApiFlag.Name), customHeader)
-	committeeSyncer := api.NewCommitteeSyncer(beaconApi, chainConfig.GenesisData)
+	committeeSyncer := api.NewCommitteeSyncer(beaconApi, chainConfig.GenesisData, false)
 	db := memorydb.New()
 	syncCommitteeCheckpoint := beacon.NewWeakSubjectivityCheckpoint(db, committeeSyncer, chainConfig.Checkpoint, nil)
 	if syncCommitteeCheckpoint == nil {

@@ -104,7 +104,7 @@ type SyncCommitteeTracker struct {
 	requestQueue              []*sctPeerInfo
 	broadcastTo, advertisedTo map[sctClient]struct{}
 	advertiseScheduled        bool
-	triggerCh, stopCh         chan struct{}
+	triggerCh, initCh, stopCh chan struct{}
 	acceptedList              headList
 
 	headSubs []func(Header)
@@ -128,6 +128,7 @@ func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Sc
 		connected:    make(map[sctServer]*sctPeerInfo),
 		broadcastTo:  make(map[sctClient]struct{}),
 		triggerCh:    make(chan struct{}, 1),
+		initCh:       make(chan struct{}),
 		stopCh:       make(chan struct{}),
 		acceptedList: newHeadList(4),
 	}
@@ -157,14 +158,24 @@ func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Sc
 // Init initializes the tracker with the given GenesisData and starts the update syncing process.
 // Note that Init may be called either at startup or later if it has to be fetched from the network based on a checkpoint hash.
 func (s *SyncCommitteeTracker) Init(GenesisData GenesisData) {
+	if s.genesisInit {
+		log.Error("SyncCommitteeTracker already initialized")
+		return
+	}
 	s.lock.Lock()
 	s.forks.computeDomains(GenesisData.GenesisValidatorsRoot)
 	s.genesisTime = GenesisData.GenesisTime
 	s.genesisInit = true
 	s.enforceForksAndConstraints()
 	s.lock.Unlock()
+	close(s.initCh)
 
 	go s.syncLoop()
+}
+
+// GetInitChannel returns a channel that gets closed when the tracker has been initialized
+func (s *SyncCommitteeTracker) GetInitChannel() chan struct{} {
+	return s.initCh
 }
 
 const (
@@ -240,7 +251,7 @@ func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
 	if !s.checkConstraints(update) {
 		return false
 	}
-	ok, age := s.verifySignature(SignedHead{Header: update.Header, Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits}, update.Header.Slot)
+	ok, age := s.verifySignature(SignedHead{Header: update.Header, Signature: update.SyncCommitteeSignature, BitMask: update.SyncCommitteeBits, SignatureSlot: update.Header.Slot})
 	if age < 0 {
 		log.Warn("Future committee update received", "age", age)
 	}

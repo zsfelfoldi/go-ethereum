@@ -18,6 +18,7 @@ package beacon
 
 import (
 	"bytes"
+	"errors"
 	"math/bits"
 	"time"
 
@@ -27,13 +28,14 @@ import (
 
 // SignedHead represents a beacon header signed by a sync committee
 type SignedHead struct {
-	BitMask   []byte
-	Signature []byte
-	Header    Header
+	Header        Header
+	BitMask       []byte
+	Signature     []byte
+	SignatureSlot uint64
 }
 
-// signerCount returns the number of individual signers in the signature aggregate
-func (s *SignedHead) signerCount() int {
+// SignerCount returns the number of individual signers in the signature aggregate
+func (s *SignedHead) SignerCount() int {
 	if len(s.BitMask) != 64 {
 		return 0 // signature check will filter it out later but we calculate this before sig check
 	}
@@ -51,30 +53,33 @@ func (s *SignedHead) Equal(s2 *SignedHead) bool {
 
 // AddSignedHeads adds signed heads to the tracker if the syncing process has been finished;
 // adds them to a deferred list otherwise that is processed when the syncing is finished.
-func (s *SyncCommitteeTracker) AddSignedHeads(peer sctServer, heads []SignedHead) {
+func (s *SyncCommitteeTracker) AddSignedHeads(peer sctServer, heads []SignedHead) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	if sp := s.connected[peer]; sp != nil && (sp.requesting || sp.queued) {
 		sp.deferredHeads = append(sp.deferredHeads, heads...)
-		return
+		return nil
 	}
-	s.addSignedHeads(peer, heads)
+	return s.addSignedHeads(peer, heads)
 }
 
 // addSignedHeads adds signed heads to the tracker after a successful verification
 // (it is assumed that the local update chain has been synced with the given peer)
-func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead) {
-	var oldHeadHash common.Hash
+func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead) error {
+	var (
+		oldHeadHash common.Hash
+		err         error
+	)
 	if len(s.acceptedList.list) > 0 {
 		oldHeadHash = s.acceptedList.list[0].hash
 	}
 	for _, head := range heads {
-		signerCount := head.signerCount()
+		signerCount := head.SignerCount()
 		if signerCount < s.signerThreshold {
 			continue
 		}
-		sigOk, age := s.verifySignature(head, head.Header.Slot+1)
+		sigOk, age := s.verifySignature(head)
 		if age < 0 {
 			log.Warn("Future signed head received", "age", age)
 		}
@@ -82,7 +87,7 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 			log.Warn("Old signed head received", "age", age)
 		}
 		if !sigOk {
-			peer.WrongReply("invalid header signature")
+			err = errors.New("invalid header signature")
 			continue
 		}
 		hash := head.Header.Hash()
@@ -110,6 +115,8 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 			subFn(head)
 		}
 	}
+	return err
+
 }
 
 // verifySignature returns true if the given signed head has a valid signature according to the local
@@ -118,13 +125,13 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 // The age of the header is also returned (the time elapsed since the beginning of the given slot,
 // according to the local system clock). If enforceTime is true then negative age (future) headers
 // are rejected.
-func (s *SyncCommitteeTracker) verifySignature(head SignedHead, signatureSlot uint64) (bool, time.Duration) {
+func (s *SyncCommitteeTracker) verifySignature(head SignedHead) (bool, time.Duration) {
 	slotTime := int64(time.Second) * int64(s.genesisTime+head.Header.Slot*12)
 	age := time.Duration(s.unixNano() - slotTime)
 	if s.enforceTime && age < 0 {
 		return false, age
 	}
-	committee := s.getSyncCommittee(PeriodOfSlot(signatureSlot)) // signed with the next slot's committee
+	committee := s.getSyncCommittee(PeriodOfSlot(head.SignatureSlot)) // signed with the next slot's committee
 	if committee == nil {
 		return false, age
 	}

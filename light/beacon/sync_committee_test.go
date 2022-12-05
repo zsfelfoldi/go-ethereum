@@ -271,9 +271,10 @@ type testChain struct {
 func (tc *testChain) makeTestSignedHead(header Header, signerCount int) SignedHead {
 	bitmask := makeBitmask(signerCount)
 	return SignedHead{
-		Header:    header,
-		BitMask:   bitmask,
-		Signature: makeDummySignature(tc.periods[PeriodOfSlot(header.Slot+1)].committee, tc.forks.signingRoot(header), bitmask),
+		Header:        header,
+		BitMask:       bitmask,
+		Signature:     makeDummySignature(tc.periods[PeriodOfSlot(header.Slot+1)].committee, tc.forks.signingRoot(header), bitmask),
+		SignatureSlot: header.Slot + 1,
 	}
 }
 

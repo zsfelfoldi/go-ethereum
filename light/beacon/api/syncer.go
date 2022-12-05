@@ -33,6 +33,8 @@ const (
 	maxRequest        = 8
 )
 
+var syncPeriodOffsets = []int{-256, -16, 64} // committee update syncing is initiated when slot (period+1)*8192+syncPeriodOffsets[offset] is reached
+
 // CommitteeSyncer syncs committee updates and signed heads from BeaconLightApi to SyncCommitteeTracker
 type CommitteeSyncer struct {
 	api *BeaconLightApi
@@ -42,18 +44,24 @@ type CommitteeSyncer struct {
 	checkpointCommittee []byte
 	committeeTracker    *beacon.SyncCommitteeTracker
 
-	updateCache             *lru.Cache[uint64, beacon.LightClientUpdate]
-	committeeCache          *lru.Cache[uint64, []byte]
-	headTriggerCh, closedCh chan struct{}
+	lastAdvertisedPeriod uint64
+	lastPeriodOffset     int
+
+	updateCache                      *lru.Cache[uint64, beacon.LightClientUpdate]
+	committeeCache                   *lru.Cache[uint64, []byte]
+	headTriggerCh, closeCh, closedCh chan struct{}
+	useHeadTrigger                   bool
 }
 
 // NewCommitteeSyncer creates a new CommitteeSyncer
 // Note: genesisData is only needed when light syncing (using GetInitData for bootstrap)
-func NewCommitteeSyncer(api *BeaconLightApi, genesisData beacon.GenesisData) *CommitteeSyncer {
+func NewCommitteeSyncer(api *BeaconLightApi, genesisData beacon.GenesisData, useHeadTrigger bool) *CommitteeSyncer {
 	return &CommitteeSyncer{
 		api:            api,
 		genesisData:    genesisData,
 		headTriggerCh:  make(chan struct{}, 1),
+		useHeadTrigger: useHeadTrigger,
+		closeCh:        make(chan struct{}),
 		closedCh:       make(chan struct{}),
 		updateCache:    lru.NewCache[uint64, beacon.LightClientUpdate](maxRequest),
 		committeeCache: lru.NewCache[uint64, []byte](maxRequest),
@@ -70,97 +78,171 @@ func (cs *CommitteeSyncer) Start(committeeTracker *beacon.SyncCommitteeTracker) 
 // Stop stops the syncing process
 func (cs *CommitteeSyncer) Stop() {
 	cs.committeeTracker.Disconnect(cs)
-	close(cs.headTriggerCh)
+	close(cs.closeCh)
 	<-cs.closedCh
 }
 
-// headPollLoop polls the signed head update endpoint and feeds signed heads into the tracker.
-// Twice each sync period (not long before the end of the period and after the end of each period)
-// it queries the best available committee update and advertises it to the tracker.
+// headPollLoop polls the instant updates, adds new signed headers to the sync committee tracker and
+// also ensures that the committee update chain is in sync with the remote updates. Polling frequency
+// is increased after encountering a new head and increased even further if a better signature aggregate
+// is encountered for the current head. This ensures that whenever the sufficient signature amount is
+// available the tracker is notified with a short delay but for most of the time the endpoint is not
+// polled with a high frequency.
 func (cs *CommitteeSyncer) headPollLoop() {
+	select {
+	case <-cs.committeeTracker.GetInitChannel():
+	case <-cs.closeCh:
+		return
+	}
 	timer := time.NewTimer(0)
 	var (
-		counter      int
-		lastHead     beacon.SignedHead
-		timerStarted bool
+		sinceLastNewHead, sinceLastNewSigner time.Duration
+		timerActive                          bool
+		lastHead                             beacon.Header
+		lastSignerCount                      int
 	)
-	nextAdvertiseSlot := uint64(1)
-
+	if !cs.useHeadTrigger {
+		cs.headTriggerCh <- struct{}{}
+	}
 	for {
 		select {
 		case <-timer.C:
-			timerStarted = false
-			if head, err := cs.api.GetHeadUpdate(); err == nil {
-				if !head.Equal(&lastHead) {
-					cs.updateCache.Purge()
-					cs.committeeCache.Purge()
-					if cs.committeeTracker.NextPeriod() > head.Header.SyncPeriod() {
-						cs.committeeTracker.AddSignedHeads(cs, []beacon.SignedHead{head})
-					}
-					lastHead = head
-					if head.Header.Slot >= nextAdvertiseSlot {
-						lastPeriod := beacon.PeriodOfSlot(head.Header.Slot - 1)
-						if cs.advertiseUpdates(lastPeriod) {
-							nextAdvertiseSlot = beacon.PeriodStart(lastPeriod + 1)
-							if head.Header.Slot >= nextAdvertiseSlot {
-								nextAdvertiseSlot += 8000
+		case <-cs.headTriggerCh:
+			if timerActive {
+				if !timer.Stop() {
+					<-timer.C
+				}
+			}
+			sinceLastNewHead = 0
+		case <-cs.closeCh:
+			close(cs.closedCh)
+			return
+		}
+		timerActive = false
+		if lastHead == (beacon.Header{}) {
+			lastHead, _ = cs.api.GetHeader(common.Hash{})
+			if lastHead != (beacon.Header{}) {
+				cs.syncUpdates(lastHead, false)
+				if lastHead.ParentRoot != (common.Hash{}) {
+					lastHead, _ = cs.api.GetHeader(lastHead.ParentRoot)
+				}
+			}
+		}
+		if lastHead != (beacon.Header{}) {
+			if signedHead, newHead, err := cs.api.GetInstantHeadUpdate(lastHead); err == nil {
+				if newHead != lastHead {
+					lastHead = newHead
+					sinceLastNewHead, lastSignerCount = 0, 0
+					cs.handleNewHead(newHead)
+				}
+				if signedHead.Signature != nil {
+					signerCount := signedHead.SignerCount()
+					if signerCount > lastSignerCount {
+						sinceLastNewSigner, lastSignerCount = 0, signerCount
+						if cs.committeeTracker.AddSignedHeads(cs, []beacon.SignedHead{signedHead}) != nil {
+							cs.syncUpdates(newHead, true)
+							if err := cs.committeeTracker.AddSignedHeads(cs, []beacon.SignedHead{signedHead}); err != nil {
+								log.Error("Error adding new signed head", "error", err)
 							}
 						}
 					}
 				}
-				if counter < headPollCount {
-					timer.Reset(headPollFrequency)
-					timerStarted = true
-				}
 			}
-		case _, ok := <-cs.headTriggerCh:
-			if !ok {
-				timer.Stop()
-				close(cs.closedCh)
-				return
-			}
-			if !timerStarted {
-				timer.Reset(headPollFrequency)
-				timerStarted = true
-			}
-			counter = 0
+		}
+		var delay time.Duration
+		if sinceLastNewSigner <= time.Millisecond*500 {
+			// poll with high frequency if a better signature for the current head has been received recently
+			delay = time.Millisecond * 100
+		} else if sinceLastNewHead <= time.Second*4 {
+			// poll with medium frequency in the first 4 to 4.5 seconds after receiving a new head
+			delay = time.Millisecond * 500
+		} else if sinceLastNewHead <= time.Second*15 {
+			// poll with low frequency in the first 13 to 14 seconds after receiving a new head
+			delay = time.Second
+		} else if !cs.useHeadTrigger {
+			// if external head trigger is not used (constant polling is required) then try polling once per
+			// slot until a new head is catched
+			delay = time.Second * 12
+		}
+		if delay > 0 {
+			sinceLastNewHead += delay
+			sinceLastNewSigner += delay
+			timerActive = true
+			timer.Reset(delay)
 		}
 	}
 }
 
-// advertiseUpdates queries committee updates that the tracker does not have or might have
-// improved since the last query and advertises them to the tracker. The tracker might then
-// fetch the actual updates and committees via GetBestCommitteeProofs.
-func (cs *CommitteeSyncer) advertiseUpdates(lastPeriod uint64) bool {
-	nextPeriod := cs.committeeTracker.NextPeriod()
-	if nextPeriod < 1 {
-		nextPeriod = 1 // we are advertising the range starting from nextPeriod-1
+// handleNewHead does the necessary operations when a new head is received
+func (cs *CommitteeSyncer) handleNewHead(head beacon.Header) {
+	cs.updateCache.Purge()
+	cs.committeeCache.Purge()
+
+	cs.syncUpdates(head, false)
+}
+
+// syncUpdates checks whether one of the syncPeriodOffsets for the latest period has been
+// reached by the current head and initiates az update sync if necessary. If retry is true
+// then syncing is tried again even if no new syncing offset point has been reached.
+func (cs *CommitteeSyncer) syncUpdates(head beacon.Header, retry bool) {
+	nextPeriod := beacon.PeriodOfSlot(head.Slot + uint64(-syncPeriodOffsets[0]))
+	if nextPeriod == 0 {
+		return
 	}
-	if nextPeriod-1 > lastPeriod {
-		return true
+	nextPeriodStart := beacon.PeriodStart(nextPeriod)
+	lastPeriod := nextPeriod - 1
+	offset := 1
+	for offset < len(syncPeriodOffsets) && head.Slot >= nextPeriodStart+uint64(syncPeriodOffsets[offset]) {
+		offset++
+	}
+	if (retry || lastPeriod != cs.lastAdvertisedPeriod || offset != cs.lastPeriodOffset) && cs.syncUpdatesUntil(lastPeriod) {
+		cs.lastAdvertisedPeriod, cs.lastPeriodOffset = lastPeriod, offset
+	}
+}
+
+// syncUpdatesUntil queries committee updates that the tracker does not have or might have
+// improved since the last query and advertises them to the tracker. The tracker can then
+// fetch the actual updates and committees via GetBestCommitteeProofs.
+func (cs *CommitteeSyncer) syncUpdatesUntil(lastPeriod uint64) bool {
+	ptr := int(beacon.MaxUpdateInfoLength)
+	if lastPeriod+1 < uint64(ptr) {
+		ptr = int(lastPeriod + 1)
 	}
 	updateInfo := &beacon.UpdateInfo{
 		AfterLastPeriod: lastPeriod + 1,
-		Scores:          make(beacon.UpdateScores, int(lastPeriod+2-nextPeriod)),
+		Scores:          make(beacon.UpdateScores, ptr),
 	}
-	ptr := len(updateInfo.Scores)
-	for period := lastPeriod; period+1 >= nextPeriod; period-- {
-		if update, err := cs.getBestUpdate(period); err == nil {
-			ptr--
-			updateInfo.Scores[ptr] = update.CalculateScore()
-		} else {
+	localNextPeriod := cs.committeeTracker.NextPeriod()
+	period := lastPeriod
+	for {
+		remoteUpdate, err := cs.getBestUpdate(period)
+		if err != nil {
 			break
 		}
-		if period == 0 {
+		ptr--
+		updateInfo.Scores[ptr] = remoteUpdate.CalculateScore()
+		if ptr == 0 || period == 0 {
 			break
 		}
+		if period < localNextPeriod {
+			localUpdate := cs.committeeTracker.GetBestUpdate(period)
+			if localUpdate == nil || localUpdate.NextSyncCommitteeRoot == remoteUpdate.NextSyncCommitteeRoot {
+				break
+			}
+		}
+		period--
 	}
 	updateInfo.Scores = updateInfo.Scores[ptr:]
+	log.Info("Fetched committee updates", "localNext", localNextPeriod, "count", len(updateInfo.Scores))
 	if len(updateInfo.Scores) == 0 {
 		log.Error("Could not fetch last committee update")
 		return false
 	}
-	cs.committeeTracker.SyncWithPeer(cs, updateInfo)
+	select {
+	case <-cs.committeeTracker.SyncWithPeer(cs, updateInfo):
+	case <-cs.closeCh:
+		return false
+	}
 	return true
 }
 

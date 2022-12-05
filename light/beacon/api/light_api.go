@@ -153,9 +153,32 @@ type syncAggregate struct {
 	Signature hexutil.Bytes `json:"sync_committee_signature"`
 }
 
-// GetHeadUpdate fetches the latest available signed header.
+// GetInstantHeadUpdate fetches the best available signature for the requested header and returns it as a SignedHead if
+// avaiable. The current head header is also returned.
+//
+// Note: this function will be implemented using the eth/v0/beacon/light_client/instant_update endpoint when available
+// See the description of the proposed endpoint here:
+// https://github.com/zsfelfoldi/beacon-APIs/blob/instant_update/apis/beacon/light_client/instant_update.yaml
+func (api *BeaconLightApi) GetInstantHeadUpdate(reqHead beacon.Header) (beacon.SignedHead, beacon.Header, error) {
+	// simulate instant update behavior using head header and optimistic update
+	//TODO use new endpoint when available and use the code below as a fallback option
+	signedHead, err := api.GetOptimisticHeadUpdate()
+	if err != nil {
+		return beacon.SignedHead{}, beacon.Header{}, err
+	}
+	newHead, err := api.GetHeader(common.Hash{})
+	if err != nil {
+		return beacon.SignedHead{}, beacon.Header{}, err
+	}
+	if signedHead.Header != reqHead {
+		return beacon.SignedHead{}, newHead, nil
+	}
+	return signedHead, newHead, nil
+}
+
+// GetOptimisticHeadUpdate fetches a signed header based on the latest available optimistic update.
 // Note that the signature should be verified by the caller as its validity depends on the update chain.
-func (api *BeaconLightApi) GetHeadUpdate() (beacon.SignedHead, error) {
+func (api *BeaconLightApi) GetOptimisticHeadUpdate() (beacon.SignedHead, error) {
 	resp, err := api.httpGet("/eth/v1/beacon/light_client/optimistic_update")
 	if err != nil {
 		return beacon.SignedHead{}, err
@@ -163,8 +186,9 @@ func (api *BeaconLightApi) GetHeadUpdate() (beacon.SignedHead, error) {
 
 	var data struct {
 		Data struct {
-			Aggregate syncAggregate `json:"sync_aggregate"`
-			Header    jsonHeader    `json:"attested_header"`
+			Header        jsonHeader     `json:"attested_header"`
+			Aggregate     syncAggregate  `json:"sync_aggregate"`
+			SignatureSlot common.Decimal `json:"signature_slot"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(resp, &data); err != nil {
@@ -177,9 +201,10 @@ func (api *BeaconLightApi) GetHeadUpdate() (beacon.SignedHead, error) {
 		return beacon.SignedHead{}, errors.New("invalid sync_committee_signature length")
 	}
 	return beacon.SignedHead{
-		Header:    data.Data.Header.header(),
-		BitMask:   data.Data.Aggregate.BitMask,
-		Signature: data.Data.Aggregate.Signature,
+		Header:        data.Data.Header.header(),
+		BitMask:       data.Data.Aggregate.BitMask,
+		Signature:     data.Data.Aggregate.Signature,
+		SignatureSlot: uint64(data.Data.SignatureSlot),
 	}, nil
 }
 

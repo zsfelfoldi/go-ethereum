@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	maxUpdateInfoLength     = 128
+	MaxUpdateInfoLength     = 128
 	broadcastFrequencyLimit = time.Millisecond * 200
 	advertiseDelay          = time.Second * 10
 )
@@ -466,11 +466,16 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 	return true
 }
 
-// NextPeriod returns the period after the last update
+// NextPeriod returns the next update period to be synced (the period after the last update if there
+// are updates or the first period fixed by the constraints if there are no updates yet)
 func (s *SyncCommitteeTracker) NextPeriod() uint64 {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
+	if s.nextPeriod == 0 {
+		first, _, _ := s.constraints.PeriodRange()
+		return first
+	}
 	return s.nextPeriod
 }
 
@@ -488,8 +493,8 @@ func (s *SyncCommitteeTracker) getUpdateInfo() *UpdateInfo {
 		return s.updateInfo
 	}
 	l := s.nextPeriod - s.firstPeriod
-	if l > maxUpdateInfoLength {
-		l = maxUpdateInfoLength
+	if l > MaxUpdateInfoLength {
+		l = MaxUpdateInfoLength
 	}
 	firstPeriod := s.nextPeriod - l
 

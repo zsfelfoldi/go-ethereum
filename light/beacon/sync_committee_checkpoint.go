@@ -107,12 +107,12 @@ func NewWeakSubjectivityCheckpoint(db ethdb.KeyValueStore, backend sctInitBacken
 						header Header
 						err    error
 					)
-					if header, initData, err = backend.GetInitData(ctx, checkpoint); err == nil {
-						cancel()
-						log.Info("Successfully initialized beacon chain", "checkpoint", checkpoint, "slot", header.Slot)
+					header, initData, err = backend.GetInitData(ctx, checkpoint)
+					cancel()
+					if err == nil {
+						log.Info("Successfully fetched checkpoint data", "checkpoint", checkpoint, "slot", header.Slot)
 						break loop
 					} else {
-						cancel()
 						log.Warn("Failed to retrieve beacon init data", "error", err)
 					}
 				}
@@ -125,6 +125,7 @@ func NewWeakSubjectivityCheckpoint(db ethdb.KeyValueStore, backend sctInitBacken
 			case <-wsc.parentInitCh:
 			}
 		}
+		log.Info("Initialized beacon chain", "checkpoint", checkpoint, "period", initData.CheckpointData.Period)
 		wsc.init(initData, !storedInitData)
 	}()
 	return wsc
