@@ -47,6 +47,9 @@ const (
 var BsiFinalExecHash = ChildIndex(ChildIndex(BsiFinalBlock, BhiStateRoot), BsiExecHead)
 
 // Header defines a beacon header
+//
+// See data structure definition here:
+// https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#beaconblockheader
 type Header struct {
 	Slot          uint64
 	ProposerIndex uint

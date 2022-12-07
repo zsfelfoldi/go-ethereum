@@ -68,6 +68,9 @@ func (api *BeaconLightApi) httpGet(path string) ([]byte, error) {
 }
 
 // Header defines a beacon header and supports JSON encoding according to the standard beacon API format
+//
+// See data structure definition here:
+// https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#beaconblockheader
 type jsonHeader struct {
 	Slot          common.Decimal `json:"slot"`
 	ProposerIndex common.Decimal `json:"proposer_index"`
@@ -96,6 +99,8 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 		return beacon.LightClientUpdate{}, nil, err
 	}
 
+	// See data structure definition here:
+	// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientupdate
 	type committeeUpdate struct {
 		Header                  jsonHeader          `json:"attested_header"`
 		NextSyncCommittee       syncCommitteeJson   `json:"next_sync_committee"`
@@ -148,6 +153,9 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 
 // syncAggregate represents an aggregated BLS signature with BitMask referring to a subset
 // of the corresponding sync committee
+//
+// See data structure definition here:
+// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/beacon-chain.md#syncaggregate
 type syncAggregate struct {
 	BitMask   hexutil.Bytes `json:"sync_committee_bits"`
 	Signature hexutil.Bytes `json:"sync_committee_signature"`
@@ -178,6 +186,9 @@ func (api *BeaconLightApi) GetInstantHeadUpdate(reqHead beacon.Header) (beacon.S
 
 // GetOptimisticHeadUpdate fetches a signed header based on the latest available optimistic update.
 // Note that the signature should be verified by the caller as its validity depends on the update chain.
+//
+// See data structure definition here:
+// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientoptimisticupdate
 func (api *BeaconLightApi) GetOptimisticHeadUpdate() (beacon.SignedHead, error) {
 	resp, err := api.httpGet("/eth/v1/beacon/light_client/optimistic_update")
 	if err != nil {
@@ -209,6 +220,9 @@ func (api *BeaconLightApi) GetOptimisticHeadUpdate() (beacon.SignedHead, error) 
 }
 
 // syncCommitteeJson is the JSON representation of a sync committee
+//
+// See data structure definition here:
+// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/beacon-chain.md#syncaggregate
 type syncCommitteeJson struct {
 	Pubkeys   []hexutil.Bytes `json:"pubkeys"`
 	Aggregate hexutil.Bytes   `json:"aggregate_pubkey"`
@@ -303,6 +317,8 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 		return beacon.Header{}, beacon.CheckpointData{}, nil, err
 	}
 
+	// See data structure definition here:
+	// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientbootstrap
 	type bootstrapData struct {
 		Data struct {
 			Header          jsonHeader          `json:"header"`
@@ -328,10 +344,11 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 	if !ok || expStateRoot != data.Data.Header.StateRoot {
 		return beacon.Header{}, beacon.CheckpointData{}, nil, errors.New("invalid sync committee Merkle proof")
 	}
+	nextCommitteeRoot := common.Hash(data.Data.CommitteeBranch[0])
 	checkpointData := beacon.CheckpointData{
 		Checkpoint:     checkpoint,
 		Period:         header.SyncPeriod(),
-		CommitteeRoots: []common.Hash{committeeRoot},
+		CommitteeRoots: []common.Hash{committeeRoot, nextCommitteeRoot},
 	}
 	return header, checkpointData, committee, nil
 }

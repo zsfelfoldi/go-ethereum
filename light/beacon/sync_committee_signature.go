@@ -44,6 +44,9 @@ type committeeSigVerifier interface {
 }
 
 // blsSyncCommittee is a set of sync committee signer pubkeys
+//
+// See data structure definition here:
+// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/beacon-chain.md#syncaggregate
 type blsSyncCommittee struct {
 	keys      [512]*bls.Pubkey
 	aggregate *bls.Pubkey
@@ -143,10 +146,12 @@ func makeDummySignature(committee dummySyncCommittee, signingRoot common.Hash, b
 
 // Fork describes a single beacon chain fork and also stores the calculated signature domain used after this fork.
 type Fork struct {
-	Epoch   uint64
-	Name    string
-	Version []byte
-	domain  MerkleValue
+	Epoch uint64 // epoch when given fork version is activated
+	Name  string // name of the fork in the chain config (config.yaml) file
+	// See fork version definition here:
+	//  https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#custom-types
+	Version []byte      // fork version
+	domain  MerkleValue // calculated by computeDomain, based on fork version and genesis validators root
 }
 
 // Forks is the list of all beacon chain forks in the chain configuration.

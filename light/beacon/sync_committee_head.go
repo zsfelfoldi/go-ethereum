@@ -27,11 +27,15 @@ import (
 )
 
 // SignedHead represents a beacon header signed by a sync committee
+//
+// Note: this structure is created from either an optimistic update or an instant update:
+//  https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientoptimisticupdate
+//  https://github.com/zsfelfoldi/beacon-APIs/blob/instant_update/apis/beacon/light_client/instant_update.yaml
 type SignedHead struct {
-	Header        Header
-	BitMask       []byte
-	Signature     []byte
-	SignatureSlot uint64
+	Header        Header // signed beacon header
+	BitMask       []byte // 512 bits long bit vector (64 bytes, LSB first) encoding the subset of the relevant sync committee that signed the header
+	Signature     []byte // BLS sync aggregate validating the signingRoot (Forks.signingRoot(Header))
+	SignatureSlot uint64 // slot in which the signature has been created (newer than Header.Slot, determines the signing sync committee)
 }
 
 // SignerCount returns the number of individual signers in the signature aggregate

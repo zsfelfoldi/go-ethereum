@@ -33,7 +33,8 @@ const (
 
 // CommitteeRequest represents a request for fetching updates and committees at the given periods
 type CommitteeRequest struct {
-	UpdatePeriods, CommitteePeriods []uint64
+	UpdatePeriods    []uint64 // list of periods where LightClientUpdates are requested (not including full sync committee, only the root)
+	CommitteePeriods []uint64 // list of periods where sync committees are requested
 }
 
 // empty returns true if the request does not request anything
@@ -44,8 +45,8 @@ func (req CommitteeRequest) empty() bool {
 // CommitteeReply is an answer to a CommitteeRequest, contains the updates and committees corresponding
 // to the period numbers in the request in the same order
 type CommitteeReply struct {
-	Updates    []LightClientUpdate
-	Committees [][]byte
+	Updates    []LightClientUpdate // list of requested LightClientUpdates
+	Committees [][]byte            // list of requested sync committees in serialized form
 }
 
 // sctClient represents a peer that SyncCommitteeTracker sends signed heads and sync committee advertisements to
@@ -64,15 +65,26 @@ type sctServer interface {
 // UpdateInfo contains scores for an advertised update chain. Note that the most recent updates are always
 // advertised but earliest ones might not because of length limitation.
 type UpdateInfo struct {
-	AfterLastPeriod uint64
-	Scores          UpdateScores
+	AfterLastPeriod uint64       // first period not covered by Scores
+	Scores          UpdateScores // Scores[i] is the UpdateScore of period AfterLastPeriod-len(Scores)+i
 }
 
 // UpdateScore allows the comparison between updates at the same period in order to find the best
 // update chain that provides the strongest proof of being canonical.
+//
+// UpdateScores have a tightly packed binary encoding format for efficient p2p protocol transmission:
+// Each UpdateScore is encoded in 3 bytes. When interpreted as a 24 bit little indian unsigned integer:
+//  - the lowest 10 bits contain the number of signers in the header signature aggregate
+//  - the next 13 bits contain the "sub-period index" which is he signed header's slot modulo 8192 (which
+//    is correlated with the risk of the chain being re-orged before the previous period boundary in case
+//    of non-finalized updates)
+//  - the highest bit is set when the update is finalized (meaning that the finality header referenced by
+//    the signed header is in the same period as the signed header, making reorgs before the period
+//    boundart impossible
 type UpdateScore struct {
-	signerCount, subPeriodIndex uint32
-	finalizedHeader             bool // update is considered finalized if has finalized header and 2/3 signatures
+	signerCount     uint32 // number of signers in the header signature aggregate
+	subPeriodIndex  uint32 // signed header's slot modulo 8192
+	finalizedHeader bool   // update is considered finalized if has finalized header from the same period and 2/3 signatures
 }
 
 type UpdateScores []UpdateScore
@@ -105,7 +117,7 @@ func (u *UpdateScore) betterThan(w UpdateScore) bool {
 	return u.signerCount+w.reorgRiskPenalty() > w.signerCount+u.reorgRiskPenalty()
 }
 
-// Encode encodes the update score data in a compact form for in-protocol advertisement
+// Encode encodes the update score data in a compact form for in-protocol advertisement.
 func (u *UpdateScore) Encode(data []byte) {
 	v := u.signerCount + u.subPeriodIndex<<10
 	if u.finalizedHeader {

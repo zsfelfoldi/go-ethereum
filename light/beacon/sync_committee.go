@@ -46,8 +46,8 @@ type ChainConfig struct {
 
 // GenesisData is required for signature verification and is set by the SyncCommitteeTracker.Init function.
 type GenesisData struct {
-	GenesisTime           uint64
-	GenesisValidatorsRoot common.Hash
+	GenesisTime           uint64      // unix time (in seconds) of slot 0
+	GenesisValidatorsRoot common.Hash // root hash of the genesis validator set, used for signature domain calculation
 }
 
 // SctConstraints defines constraints on the synced update chain. These constraints include
@@ -494,6 +494,9 @@ func (s *SyncCommitteeTracker) checkConstraints(update *LightClientUpdate) bool 
 // LightClientUpdate is a proof of the next sync committee root based on a header signed by the sync committee
 // of the given period. Optionally the update can prove quasi-finality by the signed header referring to a previous,
 // finalized header from the same period, and the finalized header referring to the next sync committee root.
+//
+// See data structure definition here:
+// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientupdate
 type LightClientUpdate struct {
 	Header                  Header
 	NextSyncCommitteeRoot   common.Hash
@@ -502,7 +505,7 @@ type LightClientUpdate struct {
 	FinalityBranch          MerkleValues
 	SyncCommitteeBits       []byte
 	SyncCommitteeSignature  []byte
-	score                   UpdateScore
+	score                   UpdateScore // not part of the encoding, calculated after decoding
 }
 
 // Validate verifies the validity of the update

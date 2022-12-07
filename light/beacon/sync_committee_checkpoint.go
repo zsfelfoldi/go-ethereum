@@ -29,10 +29,14 @@ import (
 )
 
 // CheckpointData contains known committee roots based on a weak subjectivity checkpoint
+//
+// Note: this structure is the result of a successfully validated light client bootstrap data structure which proves
+// CommitteeRoot and NextCommitteeRoot of the checkpoint header (committee roots for Period and Period+1):
+// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientbootstrap
 type CheckpointData struct {
-	Checkpoint     common.Hash
-	Period         uint64
-	CommitteeRoots []common.Hash
+	Checkpoint     common.Hash   // block root of the weak subjectivity checkpoint
+	Period         uint64        // period in which the checkpoint is located
+	CommitteeRoots []common.Hash // committee roots fixed by the checkpoint (CommitteeRoots[i] belongs to period Period+i)
 }
 
 // LightClientInitData contains light sync initialization data based on a weak subjectivity checkpoint
