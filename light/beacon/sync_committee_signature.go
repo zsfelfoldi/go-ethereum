@@ -190,11 +190,13 @@ func (bf Forks) computeDomains(genesisValidatorsRoot common.Hash) {
 
 // signingRoot calculates the signing root of the given header.
 func (bf Forks) signingRoot(header Header) common.Hash {
-	var signingRoot common.Hash
-	hasher := sha256.New()
-	headerHash := header.Hash()
+	var (
+		signingRoot common.Hash
+		headerHash  = header.Hash()
+		hasher      = sha256.New()
+		domain      = bf.domain(header.Epoch())
+	)
 	hasher.Write(headerHash[:])
-	domain := bf.domain(header.Epoch())
 	hasher.Write(domain[:])
 	hasher.Sum(signingRoot[:0])
 	return signingRoot

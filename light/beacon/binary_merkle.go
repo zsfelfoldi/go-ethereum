@@ -114,7 +114,10 @@ type ProofWriter interface {
 // At least the shape defined by the writer is traversed; subtrees not required by the writer are only traversed
 // (with writer == nil) if the hash of the internal tree node is not provided by the reader.
 func TraverseProof(reader ProofReader, writer ProofWriter) (common.Hash, bool) {
-	var wl, wr ProofWriter
+	var (
+		wl ProofWriter
+		wr ProofWriter
+	)
 	if writer != nil {
 		wl, wr = writer.children()
 	}
@@ -161,16 +164,18 @@ func ParseSSZMultiProof(proof []byte) (MultiProof, error) {
 	if len(proof) < 3 || proof[0] != 1 {
 		return MultiProof{}, errors.New("invalid proof length")
 	}
-	leafCount := int(binary.LittleEndian.Uint16(proof[1:3]))
+	var (
+		leafCount   = int(binary.LittleEndian.Uint16(proof[1:3]))
+		format      = NewIndexMapFormat()
+		values      = make(MerkleValues, leafCount)
+		valuesStart = leafCount*2 + 1
+	)
 	if len(proof) != leafCount*34+1 {
 		return MultiProof{}, errors.New("invalid proof length")
 	}
-	valuesStart := leafCount*2 + 1
-	format := NewIndexMapFormat()
 	if err := parseMultiProofFormat(format.leaves, 1, proof[3:valuesStart]); err != nil {
 		return MultiProof{}, err
 	}
-	values := make(MerkleValues, leafCount)
 	for i := range values {
 		copy(values[i][:], proof[valuesStart+i*32:valuesStart+(i+1)*32])
 	}
@@ -304,8 +309,10 @@ func (mpw multiProofWriter) writeNode(node MerkleValue) {
 // ProofFormatIndexMap creates a generalized tree index -> MultiProof value slice index
 // association map based on the given proof format.
 func ProofFormatIndexMap(f ProofFormat) map[uint64]int {
-	m := make(map[uint64]int)
-	var pos int
+	var (
+		m   = make(map[uint64]int)
+		pos int
+	)
 	addToIndexMap(m, f, &pos, 1)
 	return m
 }
@@ -383,8 +390,10 @@ func NewRangeFormat(begin, end uint64, subtree func(uint64) ProofFormat) rangeFo
 
 // children implements ProofFormat
 func (rf rangeFormat) children() (left, right ProofFormat) {
-	lzr := bits.LeadingZeros64(rf.begin)
-	lzi := bits.LeadingZeros64(rf.index)
+	var (
+		lzr = bits.LeadingZeros64(rf.begin)
+		lzi = bits.LeadingZeros64(rf.index)
+	)
 	if lzi < lzr {
 		return nil, nil
 	}
@@ -396,7 +405,10 @@ func (rf rangeFormat) children() (left, right ProofFormat) {
 		}
 		return nil, nil
 	}
-	i1, i2 := rf.index<<(lzi-lzr), ((rf.index+1)<<(lzi-lzr))-1
+	var (
+		i1 = rf.index << (lzi - lzr)
+		i2 = ((rf.index + 1) << (lzi - lzr)) - 1
+	)
 	if i1 <= rf.end && i2 >= rf.begin {
 		return rangeFormat{begin: rf.begin, end: rf.end, index: rf.index * 2, subtree: rf.subtree},
 			rangeFormat{begin: rf.begin, end: rf.end, index: rf.index*2 + 1, subtree: rf.subtree}
@@ -409,8 +421,10 @@ type MergedFormat []ProofFormat
 
 // children implements ProofFormat
 func (m MergedFormat) children() (left, right ProofFormat) {
-	l := make(MergedFormat, 0, len(m))
-	r := make(MergedFormat, 0, len(m))
+	var (
+		l = make(MergedFormat, 0, len(m))
+		r = make(MergedFormat, 0, len(m))
+	)
 	for _, f := range m {
 		if left, right := f.children(); left != nil {
 			l = append(l, left)
@@ -431,8 +445,10 @@ type MergedReader []ProofReader
 
 // children implements ProofReader
 func (m MergedReader) children() (left, right ProofReader) {
-	l := make(MergedReader, 0, len(m))
-	r := make(MergedReader, 0, len(m))
+	var (
+		l = make(MergedReader, 0, len(m))
+		r = make(MergedReader, 0, len(m))
+	)
 	for _, reader := range m {
 		if left, right := reader.children(); left != nil {
 			l = append(l, left)
@@ -469,8 +485,10 @@ type MergedWriter []ProofWriter
 
 // children implements ProofWriter
 func (m MergedWriter) children() (left, right ProofWriter) {
-	l := make(MergedWriter, 0, len(m))
-	r := make(MergedWriter, 0, len(m))
+	var (
+		l = make(MergedWriter, 0, len(m))
+		r = make(MergedWriter, 0, len(m))
+	)
 	for _, w := range m {
 		if left, right := w.children(); left != nil {
 			l = append(l, left)

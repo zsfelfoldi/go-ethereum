@@ -94,12 +94,13 @@ func (cs *CommitteeSyncer) headPollLoop() {
 	case <-cs.closeCh:
 		return
 	}
-	timer := time.NewTimer(0)
 	var (
-		sinceLastNewHead, sinceLastNewSigner time.Duration
-		timerActive                          bool
-		lastHead                             beacon.Header
-		lastSignerCount                      int
+		timer              = time.NewTimer(0)
+		sinceLastNewHead   time.Duration
+		sinceLastNewSigner time.Duration
+		timerActive        bool
+		lastHead           beacon.Header
+		lastSignerCount    int
 	)
 	if !cs.useHeadTrigger {
 		cs.headTriggerCh <- struct{}{}
@@ -177,7 +178,6 @@ func (cs *CommitteeSyncer) headPollLoop() {
 func (cs *CommitteeSyncer) handleNewHead(head beacon.Header) {
 	cs.updateCache.Purge()
 	cs.committeeCache.Purge()
-
 	cs.syncUpdates(head, false)
 }
 
@@ -189,9 +189,11 @@ func (cs *CommitteeSyncer) syncUpdates(head beacon.Header, retry bool) {
 	if nextPeriod == 0 {
 		return
 	}
-	nextPeriodStart := beacon.PeriodStart(nextPeriod)
-	lastPeriod := nextPeriod - 1
-	offset := 1
+	var (
+		nextPeriodStart = beacon.PeriodStart(nextPeriod)
+		lastPeriod      = nextPeriod - 1
+		offset          = 1
+	)
 	for offset < len(syncPeriodOffsets) && head.Slot >= nextPeriodStart+uint64(syncPeriodOffsets[offset]) {
 		offset++
 	}
@@ -208,12 +210,14 @@ func (cs *CommitteeSyncer) syncUpdatesUntil(lastPeriod uint64) bool {
 	if lastPeriod+1 < uint64(ptr) {
 		ptr = int(lastPeriod + 1)
 	}
-	updateInfo := &beacon.UpdateInfo{
-		AfterLastPeriod: lastPeriod + 1,
-		Scores:          make(beacon.UpdateScores, ptr),
-	}
-	localNextPeriod := cs.committeeTracker.NextPeriod()
-	period := lastPeriod
+	var (
+		updateInfo = &beacon.UpdateInfo{
+			AfterLastPeriod: lastPeriod + 1,
+			Scores:          make(beacon.UpdateScores, ptr),
+		}
+		localNextPeriod = cs.committeeTracker.NextPeriod()
+		period          = lastPeriod
+	)
 	for {
 		remoteUpdate, err := cs.getBestUpdate(period)
 		if err != nil {
