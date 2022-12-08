@@ -23,11 +23,11 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	lru "github.com/hashicorp/golang-lru"
 	"github.com/minio/sha256-simd"
 )
 
@@ -80,10 +80,10 @@ type SyncCommitteeTracker struct {
 	db                       ethdb.KeyValueStore
 	sigVerifier              committeeSigVerifier
 	clock                    mclock.Clock
-	bestUpdateCache          *lru.Cache
-	serializedCommitteeCache *lru.Cache
-	syncCommitteeCache       *lru.Cache
-	committeeRootCache       *lru.Cache
+	bestUpdateCache          *lru.Cache[uint64, *LightClientUpdate]
+	serializedCommitteeCache *lru.Cache[string, []byte]
+	syncCommitteeCache       *lru.Cache[string, syncCommittee]
+	committeeRootCache       *lru.Cache[uint64, common.Hash]
 	unixNano                 func() int64
 
 	forks              Forks
@@ -113,14 +113,18 @@ type SyncCommitteeTracker struct {
 // NewSyncCommitteeTracker creates a new SyncCommitteeTracker
 func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints SctConstraints, signerThreshold int, enforceTime bool, sigVerifier committeeSigVerifier, clock mclock.Clock, unixNano func() int64) *SyncCommitteeTracker {
 	s := &SyncCommitteeTracker{
-		db:              db,
-		sigVerifier:     sigVerifier,
-		clock:           clock,
-		unixNano:        unixNano,
-		forks:           forks,
-		constraints:     constraints,
-		signerThreshold: signerThreshold,
-		enforceTime:     enforceTime,
+		bestUpdateCache:          lru.NewCache[uint64, *LightClientUpdate](1000),
+		serializedCommitteeCache: lru.NewCache[string, []byte](100),
+		syncCommitteeCache:       lru.NewCache[string, syncCommittee](100),
+		committeeRootCache:       lru.NewCache[uint64, common.Hash](100),
+		db:                       db,
+		sigVerifier:              sigVerifier,
+		clock:                    clock,
+		unixNano:                 unixNano,
+		forks:                    forks,
+		constraints:              constraints,
+		signerThreshold:          signerThreshold,
+		enforceTime:              enforceTime,
 		minimumUpdateScore: UpdateScore{
 			signerCount:    uint32(signerThreshold),
 			subPeriodIndex: 512,
@@ -132,10 +136,6 @@ func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Sc
 		stopCh:       make(chan struct{}),
 		acceptedList: newHeadList(4),
 	}
-	s.bestUpdateCache, _ = lru.New(1000)
-	s.serializedCommitteeCache, _ = lru.New(100)
-	s.syncCommitteeCache, _ = lru.New(100)
-	s.committeeRootCache, _ = lru.New(100)
 
 	iter := s.db.NewIterator(bestUpdateKey, nil)
 	kl := len(bestUpdateKey)
@@ -269,8 +269,7 @@ func getBestUpdateKey(period uint64) []byte {
 
 // GetBestUpdate returns the best known canonical sync committee update at the given period
 func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
-	if v, ok := s.bestUpdateCache.Get(period); ok {
-		update, _ := v.(*LightClientUpdate)
+	if update, ok := s.bestUpdateCache.Get(period); ok {
 		if update != nil {
 			if update.Header.SyncPeriod() != period {
 				log.Error("Best update from wrong period found in cache")
@@ -330,8 +329,7 @@ func getSyncCommitteeKey(period uint64, committeeRoot common.Hash) []byte {
 // GetSerializedSyncCommittee fetches the serialized version of a sync committee from cache or database
 func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committeeRoot common.Hash) []byte {
 	key := getSyncCommitteeKey(period, committeeRoot)
-	if v, ok := s.serializedCommitteeCache.Get(string(key)); ok {
-		committee, _ := v.([]byte)
+	if committee, ok := s.serializedCommitteeCache.Get(string(key)); ok {
 		if len(committee) == 513*48 {
 			return committee
 		} else {
@@ -398,8 +396,8 @@ func SerializedCommitteeRoot(enc []byte) common.Hash {
 // getSyncCommitteeRoot returns the sync committee root at the given period of the current
 // local committee root constraints or update chain (tracker mutex lock expected).
 func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) (root common.Hash) {
-	if v, ok := s.committeeRootCache.Get(period); ok {
-		return v.(common.Hash)
+	if r, ok := s.committeeRootCache.Get(period); ok {
+		return r
 	}
 	defer func() {
 		s.committeeRootCache.Add(period, root)
@@ -431,8 +429,7 @@ func (s *SyncCommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
 func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) syncCommittee {
 	if committeeRoot := s.getSyncCommitteeRoot(period); committeeRoot != (common.Hash{}) {
 		key := string(getSyncCommitteeKey(period, committeeRoot))
-		if v, ok := s.syncCommitteeCache.Get(key); ok {
-			sc, _ := v.(syncCommittee)
+		if sc, ok := s.syncCommitteeCache.Get(key); ok {
 			return sc
 		}
 		if sc := s.GetSerializedSyncCommittee(period, committeeRoot); sc != nil {
