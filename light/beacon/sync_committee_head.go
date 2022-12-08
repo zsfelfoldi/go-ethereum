@@ -55,8 +55,9 @@ func (s *SignedHead) Equal(s2 *SignedHead) bool {
 	return s.Header == s2.Header && bytes.Equal(s.BitMask, s2.BitMask) && bytes.Equal(s.Signature, s2.Signature)
 }
 
-// AddSignedHeads adds signed heads to the tracker if the syncing process has been finished;
-// adds them to a deferred list otherwise that is processed when the syncing is finished.
+// AddSignedHeads adds signed heads to the tracker if the syncing process has
+// been finished; adds them to a deferred list otherwise that is processed when
+// the syncing is finished.
 func (s *SyncCommitteeTracker) AddSignedHeads(peer sctServer, heads []SignedHead) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -122,12 +123,13 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 	return err
 }
 
-// verifySignature returns true if the given signed head has a valid signature according to the local
-// committee chain. The caller should ensure that the committees advertised by the same source where
-// the signed head came from are synced before verifying the signature.
-// The age of the header is also returned (the time elapsed since the beginning of the given slot,
-// according to the local system clock). If enforceTime is true then negative age (future) headers
-// are rejected.
+// verifySignature returns true if the given signed head has a valid signature
+// according to the local committee chain. The caller should ensure that the
+// committees advertised by the same source where the signed head came from are
+// synced before verifying the signature.
+// The age of the header is also returned (the time elapsed since the beginning
+// of the given slot, according to the local system clock). If enforceTime is
+// true then negative age (future) headers are rejected.
 func (s *SyncCommitteeTracker) verifySignature(head SignedHead) (bool, time.Duration) {
 	var (
 		slotTime = int64(time.Second) * int64(s.genesisTime+head.Header.Slot*12)
@@ -151,7 +153,8 @@ func (s *SyncCommitteeTracker) SubscribeToNewHeads(subFn func(Header)) {
 	s.headSubs = append(s.headSubs, subFn)
 }
 
-// headInfo contains the best signed header and the state of propagation belonging to a given block root
+// headInfo contains the best signed header and the state of propagation belonging
+// to a given block root
 type headInfo struct {
 	head         SignedHead
 	hash         common.Hash
@@ -161,9 +164,10 @@ type headInfo struct {
 }
 
 // headList is a list of best known heads for the few most recent slots
-// Note: usually only the highest slot is interesting but in case of low signer participation or
-// slow propagation/aggregation of signatures it might make sense to keep track of multiple heads
-// as different clients might have different tradeoff preferences between delay and security.
+// Note: usually only the highest slot is interesting but in case of low signer
+// participation or slow propagation/aggregation of signatures it might make
+// sense to keep track of multiple heads as different clients might have
+// different tradeoff preferences between delay and security.
 type headList struct {
 	list  []*headInfo // highest slot first
 	limit int

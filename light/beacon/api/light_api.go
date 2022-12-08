@@ -67,7 +67,8 @@ func (api *BeaconLightApi) httpGet(path string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// Header defines a beacon header and supports JSON encoding according to the standard beacon API format
+// Header defines a beacon header and supports JSON encoding according to the
+// standard beacon API format
 //
 // See data structure definition here:
 // https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#beaconblockheader
@@ -89,10 +90,11 @@ func (h *jsonHeader) header() beacon.Header {
 	}
 }
 
-// GetBestUpdateAndCommittee fetches and validates LightClientUpdate for given period and full serialized
-// committee for the next period (committee root hash equals update.NextSyncCommitteeRoot).
-// Note that the results are validated but the update signature should be verified by the caller as its
-// validity depends on the update chain.
+// GetBestUpdateAndCommittee fetches and validates LightClientUpdate for given
+// period and full serialized committee for the next period (committee root hash
+// equals update.NextSyncCommitteeRoot).
+// Note that the results are validated but the update signature should be verified
+// by the caller as its validity depends on the update chain.
 func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.LightClientUpdate, []byte, error) {
 	resp, err := api.httpGet("/eth/v1/beacon/light_client/updates?start_period=" + strconv.Itoa(int(period)) + "&count=1")
 	if err != nil {
@@ -151,8 +153,8 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (beacon.Ligh
 	return update, committee, nil
 }
 
-// syncAggregate represents an aggregated BLS signature with BitMask referring to a subset
-// of the corresponding sync committee
+// syncAggregate represents an aggregated BLS signature with BitMask referring
+// to a subset of the corresponding sync committee
 //
 // See data structure definition here:
 // https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/beacon-chain.md#syncaggregate
@@ -161,10 +163,12 @@ type syncAggregate struct {
 	Signature hexutil.Bytes `json:"sync_committee_signature"`
 }
 
-// GetInstantHeadUpdate fetches the best available signature for the requested header and returns it as a SignedHead if
-// available. The current head header is also returned.
+// GetInstantHeadUpdate fetches the best available signature for the requested
+// header and returns it as a SignedHead if available. The current head header
+// is also returned.
 //
-// Note: this function will be implemented using the eth/v0/beacon/light_client/instant_update endpoint when available
+// Note: this function will be implemented using the
+// eth/v0/beacon/light_client/instant_update endpoint when available
 // See the description of the proposed endpoint here:
 // https://github.com/zsfelfoldi/beacon-APIs/blob/instant_update/apis/beacon/light_client/instant_update.yaml
 func (api *BeaconLightApi) GetInstantHeadUpdate(reqHead beacon.Header) (beacon.SignedHead, beacon.Header, error) {
@@ -184,8 +188,9 @@ func (api *BeaconLightApi) GetInstantHeadUpdate(reqHead beacon.Header) (beacon.S
 	return signedHead, newHead, nil
 }
 
-// GetOptimisticHeadUpdate fetches a signed header based on the latest available optimistic update.
-// Note that the signature should be verified by the caller as its validity depends on the update chain.
+// GetOptimisticHeadUpdate fetches a signed header based on the latest available
+// optimistic update. Note that the signature should be verified by the caller
+// as its validity depends on the update chain.
 //
 // See data structure definition here:
 // https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientoptimisticupdate
@@ -284,10 +289,10 @@ func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (beacon.Header, erro
 	return header, nil
 }
 
-// GetStateProof fetches and validates a Merkle proof for the specified parts of the recent
-// beacon state referenced by stateRoot. If successful the returned multiproof has the format
-// specified by expFormat. The state subset specified by the list of string keys (paths) should
-// cover the subset specified by expFormat.
+// GetStateProof fetches and validates a Merkle proof for the specified parts of
+// the recent beacon state referenced by stateRoot. If successful the returned
+// multiproof has the format specified by expFormat. The state subset specified by
+// the list of string keys (paths) should cover the subset specified by expFormat.
 func (api *BeaconLightApi) GetStateProof(stateRoot common.Hash, paths []string, expFormat beacon.ProofFormat) (beacon.MultiProof, error) {
 	path := "/eth/v1/beacon/light_client/proof/" + stateRoot.Hex() + "?paths=" + paths[0]
 	for i := 1; i < len(paths); i++ {
@@ -353,8 +358,8 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 	return header, checkpointData, committee, nil
 }
 
-// GetExecutionPayload fetches the execution block belonging to the beacon block specified
-// by beaconRoot and validates its block hash against the expected execRoot.
+// GetExecutionPayload fetches the execution block belonging to the beacon block
+// specified by beaconRoot and validates its block hash against the expected execRoot.
 func (api *BeaconLightApi) GetExecutionPayload(beaconRoot, execRoot common.Hash) (*types.Block, error) {
 	resp, err := api.httpGet("/eth/v2/beacon/blocks/" + beaconRoot.Hex())
 	if err != nil {

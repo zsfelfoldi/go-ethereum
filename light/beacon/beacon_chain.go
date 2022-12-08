@@ -89,8 +89,8 @@ func PeriodOfSlot(slot uint64) uint64 {
 	return slot >> 13
 }
 
-// HeaderWithoutState stores beacon header fields except the state root which can be
-// reconstructed from a partial beacon state proof stored alongside the header
+// HeaderWithoutState stores beacon header fields except the state root which can
+// be reconstructed from a partial beacon state proof stored alongside the header
 type HeaderWithoutState struct {
 	Slot                 uint64
 	ProposerIndex        uint

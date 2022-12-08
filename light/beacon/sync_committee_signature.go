@@ -37,7 +37,8 @@ import (
 // syncCommittee holds either a blsSyncCommittee or a fake dummySyncCommittee used for testing
 type syncCommittee interface{}
 
-// committeeSigVerifier verifies sync committee signatures (either proper BLS signatures or fake signatures used for testing)
+// committeeSigVerifier verifies sync committee signatures (either proper BLS
+// signatures or fake signatures used for testing)
 type committeeSigVerifier interface {
 	deserializeSyncCommittee(enc []byte) syncCommittee
 	verifySignature(committee syncCommittee, signedRoot common.Hash, bitmask, signature []byte) bool
@@ -146,7 +147,8 @@ func makeDummySignature(committee dummySyncCommittee, signingRoot common.Hash, b
 	return sig
 }
 
-// Fork describes a single beacon chain fork and also stores the calculated signature domain used after this fork.
+// Fork describes a single beacon chain fork and also stores the calculated
+// signature domain used after this fork.
 type Fork struct {
 	Epoch uint64 // epoch when given fork version is activated
 	Name  string // name of the fork in the chain config (config.yaml) file
@@ -159,7 +161,8 @@ type Fork struct {
 // Forks is the list of all beacon chain forks in the chain configuration.
 type Forks []Fork
 
-// domain returns the signature domain for the given epoch (assumes that domains have already been calculated).
+// domain returns the signature domain for the given epoch (assumes that domains
+// have already been calculated).
 func (bf Forks) domain(epoch uint64) MerkleValue {
 	for i := len(bf) - 1; i >= 0; i-- {
 		if epoch >= bf[i].Epoch {
@@ -170,7 +173,8 @@ func (bf Forks) domain(epoch uint64) MerkleValue {
 	return MerkleValue{}
 }
 
-// computeDomain returns the signature domain based on the given fork version and genesis validator set root
+// computeDomain returns the signature domain based on the given fork version
+// and genesis validator set root
 func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) MerkleValue {
 	var (
 		hasher        = sha256.New()
@@ -225,7 +229,8 @@ func fieldValue(line, field string) (name, value string, ok bool) {
 	return "", "", false
 }
 
-// LoadForks parses the beacon chain configuration file (config.yaml) and extracts the list of forks
+// LoadForks parses the beacon chain configuration file (config.yaml) and extracts
+// the list of forks
 func LoadForks(fileName string) (Forks, error) {
 	file, err := os.Open(fileName)
 	if err != nil {

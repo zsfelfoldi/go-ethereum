@@ -44,37 +44,42 @@ type ChainConfig struct {
 	Checkpoint common.Hash
 }
 
-// GenesisData is required for signature verification and is set by the SyncCommitteeTracker.Init function.
+// GenesisData is required for signature verification and is set by the
+// SyncCommitteeTracker.Init function.
 type GenesisData struct {
 	GenesisTime           uint64      // unix time (in seconds) of slot 0
 	GenesisValidatorsRoot common.Hash // root hash of the genesis validator set, used for signature domain calculation
 }
 
-// SctConstraints defines constraints on the synced update chain. These constraints include
-// the GenesisData, a range of periods (first <= period < afterFixed) where committee roots
-// are fixed and another "free" range (afterFixed <= period < afterLast) where committee roots
-// are determined by the best known update chain.
-// An implementation of SctConstraints should call initCallback to pass GenesisData whenever
-// it is available (either during SetCallbacks or later). If the constraints are changed then
-// it should call updateCallback.
+// SctConstraints defines constraints on the synced update chain. These constraints
+// include the GenesisData, a range of periods (first <= period < afterFixed)
+// where committee roots are fixed and another "free" range (afterFixed <= period < afterLast)
+// where committee roots are determined by the best known update chain.
+// An implementation of SctConstraints should call initCallback to pass
+// GenesisData whenever it is available (either during SetCallbacks or later).
+// If the constraints are changed then it should call updateCallback.
 //
-// Note: this interface can be used either for light syncing mode (in which case only the
-// checkpoint is fixed and any valid update chain can be synced starting from there) or full
-// syncing light service mode (in which case a full beacon header chain is synced based on the
-// externally driven consensus and the update chain is fully restricted based on that).
+// Note: this interface can be used either for light syncing mode (in which case
+// only the checkpoint is fixed and any valid update chain can be synced starting
+// from there) or full syncing light service mode (in which case a full beacon
+// header chain is synced based on the externally driven consensus and the update
+// chain is fully restricted based on that).
 type SctConstraints interface {
 	PeriodRange() (first, afterFixed, afterLast uint64)
 	CommitteeRoot(period uint64) (root common.Hash, matchAll bool) // matchAll is true in the free range where any committee root matches the constraints
 	SetCallbacks(initCallback func(GenesisData), updateCallback func())
 }
 
-// SyncCommitteeTracker maintains a chain of sync committee updates and a small set of best known signed heads.
-// It is used in all client configurations operating on a beacon chain. It can sync its update chain and receive
-// signed heads from either an ODR or beacon node API backend and propagate/serve this data to subscribed peers.
-// Received signed heads are validated based on the known sync committee chain and added to the local set if
-// valid or placed in a deferred queue if the committees are not synced up to the period of the new head yet.
-// Sync committee chain is either initialized from a weak subjectivity checkpoint or controlled by a BeaconChain
-// that is driven by a trusted source (beacon node API).
+// SyncCommitteeTracker maintains a chain of sync committee updates and a small
+// set of best known signed heads. It is used in all client configurations
+// operating on a beacon chain. It can sync its update chain and receive signed
+// heads from either an ODR or beacon node API backend and propagate/serve this
+// data to subscribed peers. Received signed heads are validated based on the
+// known sync committee chain and added to the local set if valid or placed in a
+// deferred queue if the committees are not synced up to the period of the new
+// head yet.
+// Sync committee chain is either initialized from a weak subjectivity checkpoint
+// or controlled by a BeaconChain that is driven by a trusted source (beacon node API).
 type SyncCommitteeTracker struct {
 	lock                     sync.RWMutex
 	db                       ethdb.KeyValueStore
@@ -156,8 +161,10 @@ func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Sc
 	return s
 }
 
-// Init initializes the tracker with the given GenesisData and starts the update syncing process.
-// Note that Init may be called either at startup or later if it has to be fetched from the network based on a checkpoint hash.
+// Init initializes the tracker with the given GenesisData and starts the update
+// syncing process.
+// Note that Init may be called either at startup or later if it has to be
+// fetched from the network based on a checkpoint hash.
 func (s *SyncCommitteeTracker) Init(GenesisData GenesisData) {
 	if s.genesisInit {
 		log.Error("SyncCommitteeTracker already initialized")
@@ -186,8 +193,9 @@ const (
 	sciUnexpectedError
 )
 
-// insertUpdate verifies the update and stores it in the update chain if possible. The serialized version
-// of the next committee should also be supplied if it is not already stored in the database.
+// insertUpdate verifies the update and stores it in the update chain if possible.
+// The serialized version of the next committee should also be supplied if it is
+// not already stored in the database.
 func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommittee []byte) int {
 	var (
 		period   = update.Header.SyncPeriod()
@@ -248,8 +256,9 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommi
 	return sciSuccess
 }
 
-// verifyUpdate checks whether the header signature is correct and the update fits into the specified constraints
-// (assumes that the update has been successfully validated previously)
+// verifyUpdate checks whether the header signature is correct and the update
+// fits into the specified constraints (assumes that the update has been
+// successfully validated previously)
 func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
 	if !s.checkConstraints(update) {
 		return false
@@ -261,7 +270,8 @@ func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
 	return ok
 }
 
-// getBestUpdateKey returns the database key for the canonical sync committee update at the given period
+// getBestUpdateKey returns the database key for the canonical sync committee
+// update at the given period
 func getBestUpdateKey(period uint64) []byte {
 	var (
 		kl  = len(bestUpdateKey)
@@ -333,7 +343,8 @@ func getSyncCommitteeKey(period uint64, committeeRoot common.Hash) []byte {
 	return key
 }
 
-// GetSerializedSyncCommittee fetches the serialized version of a sync committee from cache or database
+// GetSerializedSyncCommittee fetches the serialized version of a sync committee
+// from cache or database
 func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committeeRoot common.Hash) []byte {
 	key := getSyncCommitteeKey(period, committeeRoot)
 	if committee, ok := s.serializedCommitteeCache.Get(string(key)); ok {
@@ -354,7 +365,8 @@ func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committ
 	return nil
 }
 
-// storeSerializedSyncCommittee stores the serialized version of a sync committee to cache and database
+// storeSerializedSyncCommittee stores the serialized version of a sync committee
+// to cache and database
 func (s *SyncCommitteeTracker) storeSerializedSyncCommittee(period uint64, committeeRoot common.Hash, committee []byte) {
 	key := getSyncCommitteeKey(period, committeeRoot)
 	s.serializedCommitteeCache.Add(string(key), committee)
@@ -400,8 +412,9 @@ func SerializedCommitteeRoot(enc []byte) common.Hash {
 	return data[0]
 }
 
-// getSyncCommitteeRoot returns the sync committee root at the given period of the current
-// local committee root constraints or update chain (tracker mutex lock expected).
+// getSyncCommitteeRoot returns the sync committee root at the given period of
+// the current local committee root constraints or update chain (tracker mutex
+// lock expected).
 func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) (root common.Hash) {
 	if r, ok := s.committeeRootCache.Get(period); ok {
 		return r
@@ -422,8 +435,8 @@ func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) (root common.
 	return common.Hash{}
 }
 
-// GetSyncCommitteeRoot returns the sync committee root at the given period of the current
-// local committee root constraints or update chain (tracker mutex locked).
+// GetSyncCommitteeRoot returns the sync committee root at the given period of the
+// current local committee root constraints or update chain (tracker mutex locked).
 func (s *SyncCommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
@@ -431,8 +444,8 @@ func (s *SyncCommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
 	return s.getSyncCommitteeRoot(period)
 }
 
-// getSyncCommittee returns the deserialized sync committee at the given period of the
-// current local committee chain (tracker mutex lock expected).
+// getSyncCommittee returns the deserialized sync committee at the given period
+// of the current local committee chain (tracker mutex lock expected).
 func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) syncCommittee {
 	if committeeRoot := s.getSyncCommitteeRoot(period); committeeRoot != (common.Hash{}) {
 		key := string(getSyncCommitteeKey(period, committeeRoot))
@@ -450,16 +463,18 @@ func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) syncCommittee {
 	return nil
 }
 
-// EnforceForksAndConstraints rolls back committee updates that do not match the tracker's forks
-// and constraints and also starts new requests if possible (tracker mutex locked)
+// EnforceForksAndConstraints rolls back committee updates that do not match the
+// tracker's forks and constraints and also starts new requests if possible
+// (tracker mutex locked)
 func (s *SyncCommitteeTracker) EnforceForksAndConstraints() {
 	s.lock.Lock()
 	s.enforceForksAndConstraints()
 	s.lock.Unlock()
 }
 
-// enforceForksAndConstraints rolls back committee updates that do not match the tracker's forks
-// and constraints and also starts new requests if possible (tracker mutex expected)
+// enforceForksAndConstraints rolls back committee updates that do not match the
+// tracker's forks and constraints and also starts new requests if possible
+// (tracker mutex expected)
 func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
 	if !s.genesisInit || !s.chainInit {
 		return
@@ -484,8 +499,9 @@ func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
 	s.retrySyncAllPeers()
 }
 
-// checkConstraints checks whether the signed headers of the given committee update is
-// on the right fork and the proven NextSyncCommitteeRoot matches the update chain constraints.
+// checkConstraints checks whether the signed headers of the given committee
+// update is on the right fork and the proven NextSyncCommitteeRoot matches the
+// update chain constraints.
 func (s *SyncCommitteeTracker) checkConstraints(update *LightClientUpdate) bool {
 	if !s.genesisInit {
 		log.Error("SyncCommitteeTracker not initialized")
@@ -495,9 +511,11 @@ func (s *SyncCommitteeTracker) checkConstraints(update *LightClientUpdate) bool 
 	return matchAll || root == update.NextSyncCommitteeRoot
 }
 
-// LightClientUpdate is a proof of the next sync committee root based on a header signed by the sync committee
-// of the given period. Optionally the update can prove quasi-finality by the signed header referring to a previous,
-// finalized header from the same period, and the finalized header referring to the next sync committee root.
+// LightClientUpdate is a proof of the next sync committee root based on a header
+// signed by the sync committee of the given period. Optionally the update can
+// prove quasi-finality by the signed header referring to a previous, finalized
+// header from the same period, and the finalized header referring to the next
+// sync committee root.
 //
 // See data structure definition here:
 // https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientupdate
@@ -528,10 +546,10 @@ func (update *LightClientUpdate) Validate() error {
 	return nil
 }
 
-// hasFinalizedHeader returns true if the update has a finalized header referred by the signed header
-// and referring to the next sync committee.
-// Note that in addition to this, a sufficient signer participation is also needed in order to fulfill
-// the quasi-finality condition (see UpdateScore.isFinalized).
+// hasFinalizedHeader returns true if the update has a finalized header referred
+// by the signed header and referring to the next sync committee.
+// Note that in addition to this, a sufficient signer participation is also needed
+// in order to fulfill the quasi-finality condition (see UpdateScore.isFinalized).
 func (l *LightClientUpdate) hasFinalizedHeader() bool {
 	return l.FinalizedHeader.BodyRoot != (common.Hash{}) && l.FinalizedHeader.SyncPeriod() == l.Header.SyncPeriod()
 }

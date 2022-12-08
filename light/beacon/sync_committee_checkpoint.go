@@ -30,8 +30,9 @@ import (
 
 // CheckpointData contains known committee roots based on a weak subjectivity checkpoint
 //
-// Note: this structure is the result of a successfully validated light client bootstrap data structure which proves
-// CommitteeRoot and NextCommitteeRoot of the checkpoint header (committee roots for Period and Period+1):
+// Note: this structure is the result of a successfully validated light client
+// bootstrap data structure which proves CommitteeRoot and NextCommitteeRoot of
+// the checkpoint header (committee roots for Period and Period+1):
 // https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientbootstrap
 type CheckpointData struct {
 	Checkpoint     common.Hash    // block root of the weak subjectivity checkpoint
@@ -39,7 +40,8 @@ type CheckpointData struct {
 	CommitteeRoots [2]common.Hash // committee roots fixed by the checkpoint (CommitteeRoots[i] belongs to period Period+i)
 }
 
-// LightClientInitData contains light sync initialization data based on a weak subjectivity checkpoint
+// LightClientInitData contains light sync initialization data based on a
+// weak subjectivity checkpoint
 type LightClientInitData struct {
 	GenesisData
 	CheckpointData
@@ -50,11 +52,13 @@ type sctInitBackend interface {
 	GetInitData(ctx context.Context, checkpoint common.Hash) (Header, LightClientInitData, error)
 }
 
-// WeakSubjectivityCheckpoint implements SctConstraints in a way that it fixes the committee belonging to the checkpoint and allows
-// forward extending the committee chain indefinitely. If a parent constraint is specified then it is applied for committee periods
-// older than the checkpoint period, also allowing backward syncing the committees.
-// Note that light clients typically do not need to backward sync, this feature is intended for nodes serving other clients that might
-// have an earlier checkpoint.
+// WeakSubjectivityCheckpoint implements SctConstraints in a way that it fixes
+// the committee belonging to the checkpoint and allows forward extending the
+// committee chain indefinitely. If a parent constraint is specified then it is
+// applied for committee periods older than the checkpoint period, also allowing
+// backward syncing the committees.
+// Note that light clients typically do not need to backward sync, this feature is
+// intended for nodes serving other clients that might have an earlier checkpoint.
 type WeakSubjectivityCheckpoint struct {
 	lock sync.RWMutex
 
@@ -67,8 +71,9 @@ type WeakSubjectivityCheckpoint struct {
 	updateCallback                      func()
 }
 
-// NewWeakSubjectivityCheckpoint creates a WeakSubjectivityCheckpoint that either initializes itself from the specified
-// sctInitBackend based on the given checkpoint or from the database if the same checkpoint has been fetched before.
+// NewWeakSubjectivityCheckpoint creates a WeakSubjectivityCheckpoint that either
+// initializes itself from the specified sctInitBackend based on the given
+// checkpoint or from the database if the same checkpoint has been fetched before.
 func NewWeakSubjectivityCheckpoint(db ethdb.KeyValueStore, backend sctInitBackend, checkpoint common.Hash, parent SctConstraints) *WeakSubjectivityCheckpoint {
 	wsc := &WeakSubjectivityCheckpoint{
 		parent:        parent,
@@ -221,7 +226,8 @@ func (wsc *WeakSubjectivityCheckpoint) TriggerFetch() {
 	}
 }
 
-// Stop should be called after ODR backend shutdown to ensure that init request does not get stuck
+// Stop should be called after ODR backend shutdown to ensure that init request
+// does not get stuck
 func (wsc *WeakSubjectivityCheckpoint) Stop() {
 	close(wsc.stopCh)
 }

@@ -54,10 +54,12 @@ func (m *MerkleValue) UnmarshalJSON(input []byte) error {
 	return hexutil.UnmarshalFixedJSON(MerkleValueT, input, m[:])
 }
 
-// VerifySingleProof verifies a Merkle proof branch for a single value in a binary Merkle tree
-// Note: index is a generalized tree index; bottomLevel is optional (root being level 0) and if
-// greater than len(proof)-1 then the sibling subtrees closest to the root are not stored and
-// all-zero value subtrees are assumed (makes proofs for 24 bit arrays more efficient).
+// VerifySingleProof verifies a Merkle proof branch for a single value in a
+// binary Merkle tree
+// Note: index is a generalized tree index; bottomLevel is optional (root being
+// level 0) and if greater than len(proof)-1 then the sibling subtrees closest
+// to the root are not stored and all-zero value subtrees are assumed (makes
+// proofs for 24 bit arrays more efficient).
 func VerifySingleProof(proof MerkleValues, index uint64, value MerkleValue, bottomLevel int) (common.Hash, bool) {
 	hasher := sha256.New()
 	var proofIndex int
@@ -96,8 +98,9 @@ type ProofFormat interface {
 }
 
 // ProofReader allows traversing and reading a tree structure or a subset of it.
-// Note: the hash of each traversed node is always requested. If the internal hash is not available then subtrees are always
-// traversed (first left, then right). If internal hash is available then subtrees are only traversed if needed by the writer.
+// Note: the hash of each traversed node is always requested. If the internal
+// hash is not available then subtrees are always traversed (first left, then right).
+// If internal hash is available then subtrees are only traversed if needed by the writer.
 type ProofReader interface {
 	children() (left, right ProofReader) // subtrees accessible if not nil
 	readNode() (MerkleValue, bool)       // hash should be available if children are nil (leaf node), optional otherwise (internal node)
@@ -109,10 +112,11 @@ type ProofWriter interface {
 	writeNode(MerkleValue)               // called for every traversed tree node (both leaf and internal)
 }
 
-// TraverseProof traverses a reader and a writer defined on the same tree simultaneously, copies data from the reader to
-// the writer (if writer is not nil) and returns the root hash.
-// At least the shape defined by the writer is traversed; subtrees not required by the writer are only traversed
-// (with writer == nil) if the hash of the internal tree node is not provided by the reader.
+// TraverseProof traverses a reader and a writer defined on the same tree
+// simultaneously, copies data from the reader to the writer (if writer is not nil)
+// and returns the root hash. At least the shape defined by the writer is traversed;
+// subtrees not required by the writer are only traversed (with writer == nil)
+// if the hash of the internal tree node is not provided by the reader.
 func TraverseProof(reader ProofReader, writer ProofWriter) (common.Hash, bool) {
 	var (
 		wl ProofWriter
@@ -159,7 +163,8 @@ type MultiProof struct {
 }
 
 // ParseSSZMultiProof creates a MultiProof from a standard serialized format
-// (2 byte subtree sizes, then 32 byte leaf values and internal sibling hashes in depth-first, left-to-right order).
+// (2 byte subtree sizes, then 32 byte leaf values and internal sibling hashes
+// in depth-first, left-to-right order).
 func ParseSSZMultiProof(proof []byte) (MultiProof, error) {
 	if len(proof) < 3 || proof[0] != 1 {
 		return MultiProof{}, errors.New("invalid proof length")
@@ -201,8 +206,8 @@ func parseMultiProofFormat(leaves map[uint64]ProofFormat, index uint64, format [
 	return nil
 }
 
-// multiProofReader implements ProofReader based on a MultiProof and also allows attaching further
-// subtree readers at certain indices
+// multiProofReader implements ProofReader based on a MultiProof and also allows
+// attaching further subtree readers at certain indices
 type multiProofReader struct {
 	format   ProofFormat
 	values   *MerkleValues
@@ -235,16 +240,19 @@ func (mpr multiProofReader) readNode() (MerkleValue, bool) {
 	return MerkleValue{}, false
 }
 
-// Reader creates a multiProofReader for the given proof; if subtrees != nil then also
-// attaches subtree readers at indices where the function returns a non-nil reader.
-// Note that the reader can only be traversed once as the values slice is sequentially consumed.
+// Reader creates a multiProofReader for the given proof; if subtrees != nil
+// then also attaches subtree readers at indices where the function returns a
+// non-nil reader.
+// Note that the reader can only be traversed once as the values slice is
+// sequentially consumed.
 func (mp MultiProof) Reader(subtrees func(uint64) ProofReader) *multiProofReader {
 	values := mp.Values
 	return &multiProofReader{format: mp.Format, values: &values, index: 1, subtrees: subtrees}
 }
 
-// Finished returns true if all values have been consumed by the traversal. Should be checked after TraverseProof
-// if received from an untrusted source in order to prevent DoS attacks by excess proof values.
+// Finished returns true if all values have been consumed by the traversal.
+// Should be checked after TraverseProof if received from an untrusted source in
+// order to prevent DoS attacks by excess proof values.
 func (mpr multiProofReader) Finished() bool {
 	return len(*mpr.values) == 0
 }
@@ -259,8 +267,9 @@ func (mp MultiProof) rootHash() common.Hash {
 	return hash
 }
 
-// multiProofWriter implements ProofWriter and creates a MultiProof with the previously specified format.
-// Also allows attaching further subtree writers at certain indices.
+// multiProofWriter implements ProofWriter and creates a MultiProof with the
+// previously specified format. Also allows attaching further subtree writers at
+// certain indices.
 type multiProofWriter struct {
 	format   ProofFormat
 	values   *MerkleValues
@@ -268,11 +277,13 @@ type multiProofWriter struct {
 	subtrees func(uint64) ProofWriter
 }
 
-// NewMultiProofWriter creates a new multiproof writer with the specified format. If subtrees != nil then further
-// subtree writers are attached at indices where the function returns a non-nil writer. Note that the specified format
-// should not include these attached subtrees; they should be attached at leaf indices of the given format.
-// Also note that target can be nil in which case the nodes specified by the format are traversed but not stored;
-// subtree writers might still store tree data.
+// NewMultiProofWriter creates a new multiproof writer with the specified format.
+// If subtrees != nil then further subtree writers are attached at indices where
+// the function returns a non-nil writer.
+// Note that the specified format should not include these attached subtrees;
+// they should be attached at leaf indices of the given format.
+// Also note that target can be nil in which case the nodes specified by the format
+// are traversed but not stored; subtree writers might still store tree data.
 func NewMultiProofWriter(format ProofFormat, target *MerkleValues, subtrees func(uint64) ProofWriter) multiProofWriter {
 	return multiProofWriter{format: format, values: target, index: 1, subtrees: subtrees}
 }
@@ -306,8 +317,8 @@ func (mpw multiProofWriter) writeNode(node MerkleValue) {
 	}
 }
 
-// ProofFormatIndexMap creates a generalized tree index -> MultiProof value slice index
-// association map based on the given proof format.
+// ProofFormatIndexMap creates a generalized tree index -> MultiProof value
+// slice index association map based on the given proof format.
 func ProofFormatIndexMap(f ProofFormat) map[uint64]int {
 	var (
 		m   = make(map[uint64]int)
@@ -329,14 +340,15 @@ func addToIndexMap(m map[uint64]int, f ProofFormat, pos *int, index uint64) {
 	}
 }
 
-// ChildIndex returns the generalized tree index of a subtree node in terms of the main tree where
-// a is the main tree index of the subtree root and b is the subtree index of the node in question.
+// ChildIndex returns the generalized tree index of a subtree node in terms of
+// the main tree where a is the main tree index of the subtree root and b is the
+// subtree index of the node in question.
 func ChildIndex(a, b uint64) uint64 {
 	return (a-1)<<(63-bits.LeadingZeros64(b)) + b
 }
 
-// indexMapFormat implements ProofFormat based on an index map filled with AddLeaf calls. Subtree formats
-// can also be attached at certain indices.
+// indexMapFormat implements ProofFormat based on an index map filled with
+// AddLeaf calls. Subtree formats can also be attached at certain indices.
 type indexMapFormat struct {
 	leaves map[uint64]ProofFormat
 	index  uint64
@@ -370,15 +382,16 @@ func (f indexMapFormat) children() (left, right ProofFormat) {
 	return nil, nil
 }
 
-// rangeFormat defined a proof format with a continuous range of leaf indices. Attaching subtree
-// formats is also possible.
+// rangeFormat defined a proof format with a continuous range of leaf indices.
+// Attaching subtree formats is also possible.
 type rangeFormat struct {
 	begin, end, index uint64 // begin and end should be on the same level
 	subtree           func(uint64) ProofFormat
 }
 
-// NewRangeFormat creates a new rangeFormat with leafs in the begin..end range. If subtrees != nil then further
-// subtree formats are attached at indices where the function returns a non-nil format.
+// NewRangeFormat creates a new rangeFormat with leafs in the begin..end range.
+// If subtrees != nil then further subtree formats are attached at indices where
+// the function returns a non-nil format.
 func NewRangeFormat(begin, end uint64, subtree func(uint64) ProofFormat) rangeFormat {
 	return rangeFormat{
 		begin:   begin,
@@ -416,7 +429,8 @@ func (rf rangeFormat) children() (left, right ProofFormat) {
 	return nil, nil
 }
 
-// MergedFormat implements ProofFormat and realizes the union of the included individual formats.
+// MergedFormat implements ProofFormat and realizes the union of the included
+// individual formats.
 type MergedFormat []ProofFormat
 
 // children implements ProofFormat
@@ -437,10 +451,13 @@ func (m MergedFormat) children() (left, right ProofFormat) {
 	return nil, nil
 }
 
-// MergedReader implements ProofReader and realizes the union of the included individual readers.
-// Note that the readers belonging to the same structure (having the same root) is not checked by MergedReader.
-// Also note that fully consuming underlying sequential readers is not guaranteed (multiProofReader.Finalized will not
-// necessarily return true so if necessary then the well-formedness of individual multiproofs should be checked separately).
+// MergedReader implements ProofReader and realizes the union of the included
+// individual readers.
+// Note that the readers belonging to the same structure (having the same root)
+// is not checked by MergedReader.
+// Also note that fully consuming underlying sequential readers is not guaranteed
+// (MultiProofReader.Finalized will not necessarily return true so if necessary
+// then the well-formedness of individual multiproofs should be checked separately).
 type MergedReader []ProofReader
 
 // children implements ProofReader
@@ -479,8 +496,9 @@ func (m MergedReader) readNode() (value MerkleValue, ok bool) {
 	return
 }
 
-// MergedWriter implements ProofWriter and realizes the union of the included individual writers. The shape traversed
-// by MergedWriter is the union of the shapes traversed by individual writers.
+// MergedWriter implements ProofWriter and realizes the union of the included
+// individual writers. The shape traversed by MergedWriter is the union of the
+// shapes traversed by individual writers.
 type MergedWriter []ProofWriter
 
 // children implements ProofWriter
@@ -515,8 +533,8 @@ type callbackWriter struct {
 	storeCallback func(uint64, MerkleValue)
 }
 
-// NewCallbackWriter creates a callbackWriter that traverses the tree subset defined by the given
-// proof format and calls callbackWriter for each traversed node
+// NewCallbackWriter creates a callbackWriter that traverses the tree subset
+// defined by the given proof format and calls callbackWriter for each traversed node
 func NewCallbackWriter(format ProofFormat, storeCallback func(uint64, MerkleValue)) callbackWriter {
 	return callbackWriter{format: format, index: 1, storeCallback: storeCallback}
 }

@@ -33,7 +33,7 @@ const (
 
 // CommitteeRequest represents a request for fetching updates and committees at the given periods
 type CommitteeRequest struct {
-	UpdatePeriods    []uint64 // list of periods where LightClientUpdates are requested (not including full sync committee, only the root)
+	UpdatePeriods    []uint64 // list of periods where LightClientUpdates are requested (not including full sync committee)
 	CommitteePeriods []uint64 // list of periods where sync committees are requested
 }
 
@@ -42,14 +42,15 @@ func (req CommitteeRequest) empty() bool {
 	return req.UpdatePeriods == nil && req.CommitteePeriods == nil
 }
 
-// CommitteeReply is an answer to a CommitteeRequest, contains the updates and committees corresponding
-// to the period numbers in the request in the same order
+// CommitteeReply is an answer to a CommitteeRequest, contains the updates and
+// committees corresponding to the period numbers in the request in the same order
 type CommitteeReply struct {
 	Updates    []LightClientUpdate // list of requested LightClientUpdates
 	Committees [][]byte            // list of requested sync committees in serialized form
 }
 
-// sctClient represents a peer that SyncCommitteeTracker sends signed heads and sync committee advertisements to
+// sctClient represents a peer that SyncCommitteeTracker sends signed heads and
+// sync committee advertisements to
 type sctClient interface {
 	SendSignedHeads(heads []SignedHead)
 	SendUpdateInfo(updateInfo *UpdateInfo)
@@ -62,25 +63,27 @@ type sctServer interface {
 	WrongReply(description string)
 }
 
-// UpdateInfo contains scores for an advertised update chain. Note that the most recent updates are always
-// advertised but earliest ones might not because of length limitation.
+// UpdateInfo contains scores for an advertised update chain. Note that the most
+// recent updates are always advertised but earliest ones might not because of
+// length limitation.
 type UpdateInfo struct {
 	AfterLastPeriod uint64       // first period not covered by Scores
 	Scores          UpdateScores // Scores[i] is the UpdateScore of period AfterLastPeriod-len(Scores)+i
 }
 
-// UpdateScore allows the comparison between updates at the same period in order to find the best
-// update chain that provides the strongest proof of being canonical.
+// UpdateScore allows the comparison between updates at the same period in order
+// to find the best update chain that provides the strongest proof of being canonical.
 //
-// UpdateScores have a tightly packed binary encoding format for efficient p2p protocol transmission:
-// Each UpdateScore is encoded in 3 bytes. When interpreted as a 24 bit little indian unsigned integer:
+// UpdateScores have a tightly packed binary encoding format for efficient p2p
+// protocol transmission. Each UpdateScore is encoded in 3 bytes.
+// When interpreted as a 24 bit little indian unsigned integer:
 //  - the lowest 10 bits contain the number of signers in the header signature aggregate
-//  - the next 13 bits contain the "sub-period index" which is he signed header's slot modulo 8192 (which
-//    is correlated with the risk of the chain being re-orged before the previous period boundary in case
-//    of non-finalized updates)
-//  - the highest bit is set when the update is finalized (meaning that the finality header referenced by
-//    the signed header is in the same period as the signed header, making reorgs before the period
-//    boundary impossible
+//  - the next 13 bits contain the "sub-period index" which is he signed header's
+//    slot modulo 8192 (which is correlated with the risk of the chain being
+//    re-orged before the previous period boundary in case of non-finalized updates)
+//  - the highest bit is set when the update is finalized (meaning that the finality
+//    header referenced by the signed header is in the same period as the signed
+//    header, making reorgs before the period boundary impossible
 type UpdateScore struct {
 	signerCount     uint32 // number of signers in the header signature aggregate
 	subPeriodIndex  uint32 // signed header's slot modulo 8192
@@ -89,16 +92,19 @@ type UpdateScore struct {
 
 type UpdateScores []UpdateScore
 
-// isFinalized returns true if the update has a header signed by at least 2/3 of the committee,
-// referring to a finalized header that refers to the next sync committee. This condition is a
-// close approximation of the actual finality condition that can only be verified by full beacon nodes.
+// isFinalized returns true if the update has a header signed by at least 2/3 of
+// the committee, referring to a finalized header that refers to the next sync
+// committee. This condition is a close approximation of the actual finality
+// condition that can only be verified by full beacon nodes.
 func (u *UpdateScore) isFinalized() bool {
 	return u.finalizedHeader && u.signerCount > 341
 }
 
-// reorgRiskPenalty returns a modifier that approximates the risk of a non-finalized update header being reorged.
-// It should be subtracted from the signer participation count when comparing non-finaized updates.
-// This risk is assumed to be dropping exponentially as the update header is further away from the beginning of the period.
+// reorgRiskPenalty returns a modifier that approximates the risk of a
+// non-finalized update header being reorged. It should be subtracted from the
+// signer participation count when comparing non-finaized updates. This risk is
+// assumed to be dropping exponentially as the update header is further away
+// from the beginning of the period.
 func (u *UpdateScore) reorgRiskPenalty() uint32 {
 	return uint32(math.Pow(2, 10-float64(u.subPeriodIndex)/32))
 }
@@ -141,10 +147,10 @@ func (u *UpdateScore) Decode(data []byte) {
 	u.finalizedHeader = (v & 0x800000) != 0
 }
 
-// SyncWithPeer starts or updates the syncing process with a given peer, based on the advertised
-// update scores.
-// Note that calling with remoteInfo == nil does not start syncing but allows attempting the init
-// process with the given peer if not initialized yet.
+// SyncWithPeer starts or updates the syncing process with a given peer, based
+// on the advertised update scores.
+// Note that calling with remoteInfo == nil does not start syncing but allows
+// attempting the init process with the given peer if not initialized yet.
 func (s *SyncCommitteeTracker) SyncWithPeer(peer sctServer, remoteInfo *UpdateInfo) chan struct{} {
 	s.lock.Lock()
 	sp := s.connected[peer]
@@ -177,8 +183,9 @@ func (s *SyncCommitteeTracker) Disconnect(peer sctServer) {
 	s.lock.Unlock()
 }
 
-// retrySyncAllPeers re-triggers the syncing process (check if there is something new to request)
-// with all connected peers. Should be called when constraints are updated and might allow syncing further.
+// retrySyncAllPeers re-triggers the syncing process (check if there is something
+// new to request) with all connected peers. Should be called when constraints
+// are updated and might allow syncing further.
 func (s *SyncCommitteeTracker) retrySyncAllPeers() {
 	for _, sp := range s.connected {
 		if !sp.queued && !sp.requesting {
@@ -208,8 +215,8 @@ type sctPeerInfo struct {
 	doneSyncing        chan struct{}
 }
 
-// syncLoop is the global syncing loop starting requests to all peers where there is
-// something to sync according to the most recent advertisement.
+// syncLoop is the global syncing loop starting requests to all peers where there
+// is something to sync according to the most recent advertisement.
 func (s *SyncCommitteeTracker) syncLoop() {
 	s.lock.Lock()
 	for {
@@ -242,8 +249,9 @@ func (s *SyncCommitteeTracker) syncLoop() {
 	}
 }
 
-// startRequest sends a new request to the given peer if there is anything to request; finishes the syncing
-// otherwise (processes deferred signed head advertisements and closes the doneSyncing channel).
+// startRequest sends a new request to the given peer if there is anything to
+// request; finishes the syncing otherwise (processes deferred signed head
+// advertisements and closes the doneSyncing channel).
 // Returns true if a new request has been sent.
 func (s *SyncCommitteeTracker) startRequest(sp *sctPeerInfo) bool {
 	req := s.nextRequest(sp)
@@ -292,8 +300,8 @@ func (s *SyncCommitteeTracker) startRequest(sp *sctPeerInfo) bool {
 	return true
 }
 
-// nextRequest creates the next request to be sent to the given peer, based on the difference between the
-// remote advertised and the local update chains.
+// nextRequest creates the next request to be sent to the given peer, based on
+// the difference between the remote advertised and the local update chains.
 func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	if sp.remoteInfo.AfterLastPeriod < uint64(len(sp.remoteInfo.Scores)) {
 		return CommitteeRequest{}
@@ -373,8 +381,10 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		if !sp.peer.CanRequest(len(request.UpdatePeriods)+1, len(request.CommitteePeriods)+1) {
 			break // cannot fetch update + committee any more
 		}
-		// Note: we might try syncing before remote advertised range here is local known chain head is older than that; in this case we skip
-		// score check here and hope for the best (will be checked by processReply later; we drop the peer as useless if it cannot serve us)
+		// Note: we might try syncing before remote advertised range here is local known
+		// chain head is older than that; in this case we skip score check here and hope
+		// for the best (will be checked by processReply later; we drop the peer as
+		// useless if it cannot serve us)
 		if period >= remoteFirst {
 			remoteScore := sp.remoteInfo.Scores[period-remoteFirst]
 			if s.minimumUpdateScore.betterThan(remoteScore) {
@@ -384,7 +394,8 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		request.UpdatePeriods = append(request.UpdatePeriods, period)
 		request.CommitteePeriods = append(request.CommitteePeriods, period+1)
 	}
-	// past range: fetch update and committee for periods before the locally stored range that are covered by the constraints (known committee roots)
+	// past range: fetch update and committee for periods before the locally stored
+	// range that are covered by the constraints (known committee roots)
 	for nextPeriod := localFirst; nextPeriod > constraintsFirst && nextPeriod > remoteFirst; nextPeriod-- { // loop variable is nextPeriod == period+1 to avoid uint64 underflow
 		if !sp.peer.CanRequest(len(request.UpdatePeriods)+1, len(request.CommitteePeriods)+1) {
 			break // cannot fetch update + committee any more
@@ -397,17 +408,19 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		if s.minimumUpdateScore.betterThan(remoteScore) {
 			break // do not sync further if advertised score is less than our minimum requirement
 		}
-		// Note: updates are available from localFirst to localAfterLast-1 while committees are available from localFirst to localAfterLast
-		// so we extend backwards by requesting updates and committees for the same period (committee for localFirst should be available or
-		// requested here already so update for localFirst-1 can always be inserted if it matches our chain)
+		// Note: updates are available from localFirst to localAfterLast-1 while
+		// committees are available from localFirst to localAfterLast so we extend
+		// backwards by requesting updates and committees for the same period
+		// (committee for localFirst should be available or requested here already
+		// so update for localFirst-1 can always be inserted if it matches our chain)
 		request.UpdatePeriods = append(request.UpdatePeriods, period)
 		request.CommitteePeriods = append(request.CommitteePeriods, period)
 	}
 	return request
 }
 
-// processReply processes the reply to a previous request, verifying received updates and committees
-// and extending/improving the local update chain if possible.
+// processReply processes the reply to a previous request, verifying received
+// updates and committees and extending/improving the local update chain if possible.
 func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest CommitteeRequest, reply CommitteeReply) bool {
 	if len(reply.Updates) != len(sentRequest.UpdatePeriods) || len(reply.Committees) != len(sentRequest.CommitteePeriods) {
 		return false
@@ -478,7 +491,8 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 		case sciWrongUpdate:
 			return false
 		case sciNeedCommittee:
-			// remember that remote is on a different and more valuable fork; do not fail but construct next request accordingly
+			// remember that remote is on a different and more valuable fork;
+			// do not fail but construct next request accordingly
 			sp.forkPeriod = period
 			return true //continue
 		case sciUnexpectedError:
@@ -489,8 +503,9 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 	return true
 }
 
-// NextPeriod returns the next update period to be synced (the period after the last update if there
-// are updates or the first period fixed by the constraints if there are no updates yet)
+// NextPeriod returns the next update period to be synced (the period after the
+// last update if there are updates or the first period fixed by the constraints
+// if there are no updates yet)
 func (s *SyncCommitteeTracker) NextPeriod() uint64 {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -502,7 +517,8 @@ func (s *SyncCommitteeTracker) NextPeriod() uint64 {
 	return s.nextPeriod
 }
 
-// GetUpdateInfo returns and UpdateInfo based on the current local update chain (tracker mutex locked).
+// GetUpdateInfo returns and UpdateInfo based on the current local update chain
+// (tracker mutex locked).
 func (s *SyncCommitteeTracker) GetUpdateInfo() *UpdateInfo {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -510,7 +526,8 @@ func (s *SyncCommitteeTracker) GetUpdateInfo() *UpdateInfo {
 	return s.getUpdateInfo()
 }
 
-// getUpdateInfo returns and UpdateInfo based on the current local update chain (tracker mutex expected).
+// getUpdateInfo returns and UpdateInfo based on the current local update chain
+// (tracker mutex expected).
 func (s *SyncCommitteeTracker) getUpdateInfo() *UpdateInfo {
 	if s.updateInfo != nil {
 		return s.updateInfo
@@ -538,9 +555,10 @@ func (s *SyncCommitteeTracker) getUpdateInfo() *UpdateInfo {
 	return u
 }
 
-// updateInfoChanged should be called whenever the committee update chain is changed. It schedules a call to
-// advertiseCommitteesNow in the near future (after advertiseDelay) unless it is already scheduled. This delay
-// ensures that advertisements are not sent too frequently.
+// updateInfoChanged should be called whenever the committee update chain is
+// changed. It schedules a call to advertiseCommitteesNow in the near future
+// (after advertiseDelay) unless it is already scheduled. This delay ensures that
+// advertisements are not sent too frequently.
 func (s *SyncCommitteeTracker) updateInfoChanged() {
 	s.updateInfo = nil
 	if s.advertiseScheduled {

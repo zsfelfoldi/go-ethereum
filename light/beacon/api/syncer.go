@@ -33,9 +33,16 @@ const (
 	maxRequest        = 8
 )
 
-var syncPeriodOffsets = []int{-256, -16, 64} // committee update syncing is initiated when slot (period+1)*8192+syncPeriodOffsets[offset] is reached
+// committee update syncing is initiated in each period for each syncPeriodOffsets[i]
+// when slot (period+1)*8192+syncPeriodOffsets[i] has been reached.
+// This ensures that a close-to-best update for each period can be synced and
+// propagated well in advance before the next period begins but later (when it's
+// very unlikely that even a reorg could change the given period) the absolute
+// best update will also be propagated if it's different from the previous one.
+var syncPeriodOffsets = []int{-256, -16, 64}
 
-// CommitteeSyncer syncs committee updates and signed heads from BeaconLightApi to SyncCommitteeTracker
+// CommitteeSyncer syncs committee updates and signed heads from BeaconLightApi
+// to SyncCommitteeTracker
 type CommitteeSyncer struct {
 	api *BeaconLightApi
 
@@ -82,12 +89,13 @@ func (cs *CommitteeSyncer) Stop() {
 	<-cs.closedCh
 }
 
-// headPollLoop polls the instant updates, adds new signed headers to the sync committee tracker and
-// also ensures that the committee update chain is in sync with the remote updates. Polling frequency
-// is increased after encountering a new head and increased even further if a better signature aggregate
-// is encountered for the current head. This ensures that whenever the sufficient signature amount is
-// available the tracker is notified with a short delay but for most of the time the endpoint is not
-// polled with a high frequency.
+// headPollLoop polls the instant updates, adds new signed headers to the sync
+// committee tracker and also ensures that the committee update chain is in sync
+// with the remote updates. Polling frequency is increased after encountering a
+// new head and increased even further if a better signature aggregate is
+// encountered for the current head. This ensures that whenever the sufficient
+// signature amount is available the tracker is notified with a short delay but
+// for most of the time the endpoint is not polled with a high frequency.
 func (cs *CommitteeSyncer) headPollLoop() {
 	select {
 	case <-cs.committeeTracker.GetInitChannel():
@@ -181,9 +189,10 @@ func (cs *CommitteeSyncer) handleNewHead(head beacon.Header) {
 	cs.syncUpdates(head, false)
 }
 
-// syncUpdates checks whether one of the syncPeriodOffsets for the latest period has been
-// reached by the current head and initiates az update sync if necessary. If retry is true
-// then syncing is tried again even if no new syncing offset point has been reached.
+// syncUpdates checks whether one of the syncPeriodOffsets for the latest period
+// has been reached by the current head and initiates az update sync if necessary.
+// If retry is true then syncing is tried again even if no new syncing offset
+// point has been reached.
 func (cs *CommitteeSyncer) syncUpdates(head beacon.Header, retry bool) {
 	nextPeriod := beacon.PeriodOfSlot(head.Slot + uint64(-syncPeriodOffsets[0]))
 	if nextPeriod == 0 {
@@ -202,9 +211,9 @@ func (cs *CommitteeSyncer) syncUpdates(head beacon.Header, retry bool) {
 	}
 }
 
-// syncUpdatesUntil queries committee updates that the tracker does not have or might have
-// improved since the last query and advertises them to the tracker. The tracker can then
-// fetch the actual updates and committees via GetBestCommitteeProofs.
+// syncUpdatesUntil queries committee updates that the tracker does not have or
+// might have improved since the last query and advertises them to the tracker.
+// The tracker can then fetch the actual updates and committees via GetBestCommitteeProofs.
 func (cs *CommitteeSyncer) syncUpdatesUntil(lastPeriod uint64) bool {
 	ptr := int(beacon.MaxUpdateInfoLength)
 	if lastPeriod+1 < uint64(ptr) {
@@ -285,7 +294,8 @@ func (cs *CommitteeSyncer) getBestUpdate(period uint64) (beacon.LightClientUpdat
 }
 
 // getCommittee returns the committee for the given period
-// Note: cannot return committee altair fork period; this is always same as the committee of the next period
+// Note: cannot return committee altair fork period; this is always same as the
+// committee of the next period
 func (cs *CommitteeSyncer) getCommittee(period uint64) ([]byte, error) {
 	if period == 0 {
 		return nil, errors.New("no committee available for period 0")
@@ -300,8 +310,9 @@ func (cs *CommitteeSyncer) getCommittee(period uint64) ([]byte, error) {
 	return committee, err
 }
 
-// getBestUpdateAndCommittee fetches the best update for period and corresponding committee
-// for period+1 and caches the results until a new head is received by headPollLoop
+// getBestUpdateAndCommittee fetches the best update for period and corresponding
+// committee for period+1 and caches the results until a new head is received by
+// headPollLoop
 func (cs *CommitteeSyncer) getBestUpdateAndCommittee(period uint64) (beacon.LightClientUpdate, []byte, error) {
 	update, committee, err := cs.api.GetBestUpdateAndCommittee(period)
 	if err != nil {
@@ -312,8 +323,9 @@ func (cs *CommitteeSyncer) getBestUpdateAndCommittee(period uint64) (beacon.Ligh
 	return update, committee, nil
 }
 
-// GetInitData fetches the bootstrap data and returns LightClientInitData (the corresponding
-// committee is stored so that a subsequent GetBestCommitteeProofs can return it when requested)
+// GetInitData fetches the bootstrap data and returns LightClientInitData (the
+// corresponding committee is stored so that a subsequent GetBestCommitteeProofs
+// can return it when requested)
 func (cs *CommitteeSyncer) GetInitData(ctx context.Context, checkpoint common.Hash) (beacon.Header, beacon.LightClientInitData, error) {
 	if cs.genesisData == (beacon.GenesisData{}) {
 		return beacon.Header{}, beacon.LightClientInitData{}, errors.New("missing genesis data")
@@ -326,7 +338,8 @@ func (cs *CommitteeSyncer) GetInitData(ctx context.Context, checkpoint common.Ha
 	return header, beacon.LightClientInitData{GenesisData: cs.genesisData, CheckpointData: checkpointData}, nil
 }
 
-// WrongReply is called by the tracker when the BeaconLightApi has provided wrong committee updates or signed heads
+// WrongReply is called by the tracker when the BeaconLightApi has provided
+// wrong committee updates or signed heads
 func (cs *CommitteeSyncer) WrongReply(description string) {
 	log.Error("Beacon node API data source delivered wrong reply", "error", description)
 }
