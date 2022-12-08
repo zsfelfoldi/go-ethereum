@@ -136,9 +136,10 @@ func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Sc
 		stopCh:       make(chan struct{}),
 		acceptedList: newHeadList(4),
 	}
-
-	iter := s.db.NewIterator(bestUpdateKey, nil)
-	kl := len(bestUpdateKey)
+	var (
+		iter = s.db.NewIterator(bestUpdateKey, nil)
+		kl   = len(bestUpdateKey)
+	)
 	// iterate through them all for simplicity; at most a few hundred items
 	for iter.Next() {
 		period := binary.BigEndian.Uint64(iter.Key()[kl : kl+8])
@@ -188,7 +189,10 @@ const (
 // insertUpdate verifies the update and stores it in the update chain if possible. The serialized version
 // of the next committee should also be supplied if it is not already stored in the database.
 func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommittee []byte) int {
-	period := update.Header.SyncPeriod()
+	var (
+		period   = update.Header.SyncPeriod()
+		rollback bool
+	)
 	if !s.verifyUpdate(update) {
 		return sciWrongUpdate
 	}
@@ -198,7 +202,6 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommi
 		return sciUnexpectedError
 	}
 	update.CalculateScore()
-	var rollback bool
 	if period+1 == s.firstPeriod {
 		if update.NextSyncCommitteeRoot != s.getSyncCommitteeRoot(period+1) {
 			return sciWrongUpdate
@@ -260,8 +263,10 @@ func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
 
 // getBestUpdateKey returns the database key for the canonical sync committee update at the given period
 func getBestUpdateKey(period uint64) []byte {
-	kl := len(bestUpdateKey)
-	key := make([]byte, kl+8)
+	var (
+		kl  = len(bestUpdateKey)
+		key = make([]byte, kl+8)
+	)
 	copy(key[:kl], bestUpdateKey)
 	binary.BigEndian.PutUint64(key[kl:], period)
 	return key
@@ -318,8 +323,10 @@ func (s *SyncCommitteeTracker) deleteBestUpdate(period uint64) {
 
 // getSyncCommitteeKey returns the database key for the specified sync committee
 func getSyncCommitteeKey(period uint64, committeeRoot common.Hash) []byte {
-	kl := len(syncCommitteeKey)
-	key := make([]byte, kl+8+32)
+	var (
+		kl  = len(syncCommitteeKey)
+		key = make([]byte, kl+8+32)
+	)
 	copy(key[:kl], syncCommitteeKey)
 	binary.BigEndian.PutUint64(key[kl:kl+8], period)
 	copy(key[kl+8:], committeeRoot[:])
@@ -361,10 +368,11 @@ func SerializedCommitteeRoot(enc []byte) common.Hash {
 	if len(enc) != 513*48 {
 		return common.Hash{}
 	}
-	hasher := sha256.New()
 	var (
+		hasher  = sha256.New()
 		padding [16]byte
 		data    [512]common.Hash
+		l       = 512
 	)
 	for i := range data {
 		hasher.Reset()
@@ -372,7 +380,6 @@ func SerializedCommitteeRoot(enc []byte) common.Hash {
 		hasher.Write(padding[:])
 		hasher.Sum(data[i][:0])
 	}
-	l := 512
 	for l > 1 {
 		for i := 0; i < l/2; i++ {
 			hasher.Reset()

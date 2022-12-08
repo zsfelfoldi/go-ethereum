@@ -120,7 +120,6 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 		}
 	}
 	return err
-
 }
 
 // verifySignature returns true if the given signed head has a valid signature according to the local
@@ -130,8 +129,10 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 // according to the local system clock). If enforceTime is true then negative age (future) headers
 // are rejected.
 func (s *SyncCommitteeTracker) verifySignature(head SignedHead) (bool, time.Duration) {
-	slotTime := int64(time.Second) * int64(s.genesisTime+head.Header.Slot*12)
-	age := time.Duration(s.unixNano() - slotTime)
+	var (
+		slotTime = int64(time.Second) * int64(s.genesisTime+head.Header.Slot*12)
+		age      = time.Duration(s.unixNano() - slotTime)
+	)
 	if s.enforceTime && age < 0 {
 		return false, age
 	}

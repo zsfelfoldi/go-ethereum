@@ -162,7 +162,7 @@ type syncAggregate struct {
 }
 
 // GetInstantHeadUpdate fetches the best available signature for the requested header and returns it as a SignedHead if
-// avaiable. The current head header is also returned.
+// available. The current head header is also returned.
 //
 // Note: this function will be implemented using the eth/v0/beacon/light_client/instant_update endpoint when available
 // See the description of the proposed endpoint here:

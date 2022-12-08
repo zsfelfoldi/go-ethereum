@@ -84,15 +84,17 @@ func (BLSVerifier) verifySignature(committee syncCommittee, signingRoot common.H
 	if len(signature) != 96 || len(bitmask) != 64 {
 		return false
 	}
-	var sig bls.Signature
-	var sigBytes [96]byte
+	var (
+		sig          bls.Signature
+		sigBytes     [96]byte
+		signerKeys   [512]*bls.Pubkey
+		signerCount  int
+		blsCommittee = committee.(*blsSyncCommittee)
+	)
 	copy(sigBytes[:], signature)
 	if err := sig.Deserialize(&sigBytes); err != nil {
 		return false
 	}
-	var signerKeys [512]*bls.Pubkey
-	blsCommittee := committee.(*blsSyncCommittee)
-	signerCount := 0
 	for i, key := range blsCommittee.keys {
 		if bitmask[i/8]&(byte(1)<<(i%8)) != 0 {
 			signerKeys[signerCount] = key
@@ -170,8 +172,12 @@ func (bf Forks) domain(epoch uint64) MerkleValue {
 
 // computeDomain returns the signature domain based on the given fork version and genesis validator set root
 func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) MerkleValue {
-	var forkVersion32, forkDataRoot, domain MerkleValue
-	hasher := sha256.New()
+	var (
+		hasher        = sha256.New()
+		forkVersion32 MerkleValue
+		forkDataRoot  MerkleValue
+		domain        MerkleValue
+	)
 	copy(forkVersion32[:len(forkVersion)], forkVersion)
 	hasher.Write(forkVersion32[:])
 	hasher.Write(genesisValidatorsRoot[:])
@@ -226,10 +232,14 @@ func LoadForks(fileName string) (Forks, error) {
 		return nil, fmt.Errorf("Error opening beacon chain config file: %v", err)
 	}
 	defer file.Close()
+	var (
+		forks        Forks
+		forkVersions = make(map[string][]byte)
+		forkEpochs   = make(map[string]uint64)
+		reader       = bufio.NewReader(file)
+	)
+	forkEpochs["GENESIS"] = 0
 
-	forkVersions := make(map[string][]byte)
-	forkEpochs := make(map[string]uint64)
-	reader := bufio.NewReader(file)
 	for {
 		l, _, err := reader.ReadLine()
 		if err == io.EOF {
@@ -255,8 +265,6 @@ func LoadForks(fileName string) (Forks, error) {
 		}
 	}
 
-	var forks Forks
-	forkEpochs["GENESIS"] = 0
 	for name, epoch := range forkEpochs {
 		if version, ok := forkVersions[name]; ok {
 			delete(forkVersions, name)
@@ -265,6 +273,7 @@ func LoadForks(fileName string) (Forks, error) {
 			return nil, fmt.Errorf("Fork id missing for \"%s\" in beacon chain config file", name)
 		}
 	}
+
 	for name := range forkVersions {
 		return nil, fmt.Errorf("Epoch number missing for fork \"%s\" in beacon chain config file", name)
 	}

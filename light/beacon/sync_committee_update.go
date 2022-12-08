@@ -80,7 +80,7 @@ type UpdateInfo struct {
 //    of non-finalized updates)
 //  - the highest bit is set when the update is finalized (meaning that the finality header referenced by
 //    the signed header is in the same period as the signed header, making reorgs before the period
-//    boundart impossible
+//    boundary impossible
 type UpdateScore struct {
 	signerCount     uint32 // number of signers in the header signature aggregate
 	subPeriodIndex  uint32 // signed header's slot modulo 8192
@@ -105,7 +105,10 @@ func (u *UpdateScore) reorgRiskPenalty() uint32 {
 
 // betterThan returns true if update u is considered better than w.
 func (u *UpdateScore) betterThan(w UpdateScore) bool {
-	uFinalized, wFinalized := u.isFinalized(), w.isFinalized()
+	var (
+		uFinalized = u.isFinalized()
+		wFinalized = w.isFinalized()
+	)
 	if uFinalized || wFinalized {
 		// finalized update is always better than non-finalized; only signer count matters when both are finalized
 		if uFinalized && wFinalized {
@@ -295,8 +298,11 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	if sp.remoteInfo.AfterLastPeriod < uint64(len(sp.remoteInfo.Scores)) {
 		return CommitteeRequest{}
 	}
-	localInfo := s.getUpdateInfo()
-	remoteFirst, remoteAfterLast := sp.remoteInfo.AfterLastPeriod-uint64(len(sp.remoteInfo.Scores)), sp.remoteInfo.AfterLastPeriod
+	var (
+		localInfo       = s.getUpdateInfo()
+		remoteFirst     = sp.remoteInfo.AfterLastPeriod - uint64(len(sp.remoteInfo.Scores))
+		remoteAfterLast = sp.remoteInfo.AfterLastPeriod
+	)
 	constraintsFirst, constraintsAfterFixed, constraintsAfterLast := s.constraints.PeriodRange()
 
 	if constraintsAfterLast <= constraintsFirst || constraintsAfterFixed <= constraintsFirst {
@@ -322,20 +328,25 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	if syncAfterLast < syncFirst {
 		return CommitteeRequest{}
 	}
-
-	var request CommitteeRequest
-	localFirst, localAfterLast := s.firstPeriod, s.nextPeriod
+	var (
+		request        CommitteeRequest
+		localFirst     = s.firstPeriod
+		localAfterLast = s.nextPeriod
+		localInfoFirst = localInfo.AfterLastPeriod - uint64(len(localInfo.Scores))
+	)
 	if sp.forkPeriod < localAfterLast {
 		localAfterLast = sp.forkPeriod
 	}
-	localInfoFirst := localInfo.AfterLastPeriod - uint64(len(localInfo.Scores))
 	if !s.chainInit {
 		request.CommitteePeriods = []uint64{syncAfterFixed}
 		localFirst, localAfterLast = syncAfterFixed, syncAfterFixed
 	}
 
 	// shared range: both local and remote chain has updates; fetch only if remote score is better
-	sharedFirst, sharedAfterLast := localFirst, localAfterLast
+	var (
+		sharedFirst     = localFirst
+		sharedAfterLast = localAfterLast
+	)
 	if localInfoFirst > sharedFirst {
 		sharedFirst = localInfoFirst
 	}
@@ -349,13 +360,14 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		if !sp.peer.CanRequest(len(request.UpdatePeriods)+1, len(request.CommitteePeriods)) {
 			break
 		}
-		localScore := localInfo.Scores[period-localFirst]
-		remoteScore := sp.remoteInfo.Scores[period-remoteFirst]
+		var (
+			localScore  = localInfo.Scores[period-localFirst]
+			remoteScore = sp.remoteInfo.Scores[period-remoteFirst]
+		)
 		if remoteScore.betterThan(localScore) {
 			request.UpdatePeriods = append(request.UpdatePeriods, period)
 		}
 	}
-
 	// future range: fetch update and next committee as long as remote score reaches required minimum
 	for period := sharedAfterLast; period < syncAfterLast; period++ {
 		if !sp.peer.CanRequest(len(request.UpdatePeriods)+1, len(request.CommitteePeriods)+1) {
@@ -372,7 +384,6 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		request.UpdatePeriods = append(request.UpdatePeriods, period)
 		request.CommitteePeriods = append(request.CommitteePeriods, period+1)
 	}
-
 	// past range: fetch update and committee for periods before the locally stored range that are covered by the constraints (known committee roots)
 	for nextPeriod := localFirst; nextPeriod > constraintsFirst && nextPeriod > remoteFirst; nextPeriod-- { // loop variable is nextPeriod == period+1 to avoid uint64 underflow
 		if !sp.peer.CanRequest(len(request.UpdatePeriods)+1, len(request.CommitteePeriods)+1) {
@@ -401,9 +412,8 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 	if len(reply.Updates) != len(sentRequest.UpdatePeriods) || len(reply.Committees) != len(sentRequest.CommitteePeriods) {
 		return false
 	}
-
-	futureCommittees := make(map[uint64][]byte)
 	var (
+		futureCommittees    = make(map[uint64][]byte)
 		storedCommittee     bool
 		lastStoredCommittee uint64
 	)
@@ -438,16 +448,17 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 
 	firstPeriod := sp.remoteInfo.AfterLastPeriod - uint64(len(sp.remoteInfo.Scores))
 	for i, update := range reply.Updates {
-		update := update // updates are cached by reference, do not overwrite
-		period := update.Header.SyncPeriod()
+		var (
+			update          = update // updates are cached by reference, do not overwrite
+			period          = update.Header.SyncPeriod()
+			remoteInfoScore UpdateScore
+		)
 		if period != sentRequest.UpdatePeriods[i] {
 			return false
 		}
 		if period > s.nextPeriod { // a previous insertUpdate could have reduced nextPeriod since the request was created
 			continue // skip but do not fail because it is not the remote side's fault; retry with new request
 		}
-
-		var remoteInfoScore UpdateScore
 		if period >= firstPeriod {
 			remoteInfoScore = sp.remoteInfo.Scores[period-firstPeriod]
 		} else {
