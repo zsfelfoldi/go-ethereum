@@ -35,6 +35,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
+	bparams "github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/fdlimit"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -290,7 +291,7 @@ var (
 	BeaconThresholdFlag = &cli.IntFlag{
 		Name:     "beacon.threshold",
 		Usage:    "Beacon sync committee participation threshold",
-		Value:    342,
+		Value:    bparams.SyncCommitteeSupermajority,
 		Category: flags.BeaconCategory,
 	}
 	BeaconNoFilterFlag = &cli.BoolFlag{

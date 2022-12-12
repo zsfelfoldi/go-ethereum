@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package beacon
+package sync
 
 import (
 	"context"
@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/beacon/light/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
@@ -49,7 +50,7 @@ type LightClientInitData struct {
 
 // sctInitBackend retrieves light sync initialization data based on a weak subjectivity checkpoint hash
 type sctInitBackend interface {
-	GetInitData(ctx context.Context, checkpoint common.Hash) (Header, LightClientInitData, error)
+	GetInitData(ctx context.Context, checkpoint common.Hash) (types.Header, LightClientInitData, error)
 }
 
 // WeakSubjectivityCheckpoint implements SctConstraints in a way that it fixes
@@ -113,7 +114,7 @@ func NewWeakSubjectivityCheckpoint(db ethdb.KeyValueStore, backend sctInitBacken
 					ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 					log.Info("Requesting beacon init data", "checkpoint", checkpoint)
 					var (
-						header Header
+						header types.Header
 						err    error
 					)
 					header, initData, err = backend.GetInitData(ctx, checkpoint)

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package beacon
+package sync
 
 import (
 	"bytes"
@@ -22,6 +22,8 @@ import (
 	"math/bits"
 	"time"
 
+	"github.com/ethereum/go-ethereum/beacon/light/types"
+	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 )
@@ -32,15 +34,15 @@ import (
 //  https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientoptimisticupdate
 //  https://github.com/zsfelfoldi/beacon-APIs/blob/instant_update/apis/beacon/light_client/instant_update.yaml
 type SignedHead struct {
-	Header        Header // signed beacon header
-	BitMask       []byte // 512 bits long bit vector (64 bytes, LSB first) encoding the subset of the relevant sync committee that signed the header
-	Signature     []byte // BLS sync aggregate validating the signingRoot (Forks.signingRoot(Header))
-	SignatureSlot uint64 // slot in which the signature has been created (newer than Header.Slot, determines the signing sync committee)
+	Header        types.Header // signed beacon header
+	BitMask       []byte       // bit vector (LSB first) encoding the subset of the relevant sync committee that signed the header
+	Signature     []byte       // BLS sync aggregate validating the signingRoot (Forks.signintypes.Header))
+	SignatureSlot uint64       // slot in which the signature has been created (newertypes.Header.Slot, determines the signing sync committee)
 }
 
 // SignerCount returns the number of individual signers in the signature aggregate
 func (s *SignedHead) SignerCount() int {
-	if len(s.BitMask) != 64 {
+	if len(s.BitMask) != params.SyncCommitteeBitmaskSize {
 		return 0 // signature check will filter it out later but we calculate this before sig check
 	}
 	var signerCount int
@@ -138,7 +140,7 @@ func (s *SyncCommitteeTracker) verifySignature(head SignedHead) (bool, time.Dura
 	if s.enforceTime && age < 0 {
 		return false, age
 	}
-	committee := s.getSyncCommittee(PeriodOfSlot(head.SignatureSlot)) // signed with the next slot's committee
+	committee := s.getSyncCommittee(types.PeriodOfSlot(head.SignatureSlot)) // signed with the next slot's committee
 	if committee == nil {
 		return false, age
 	}
@@ -146,7 +148,7 @@ func (s *SyncCommitteeTracker) verifySignature(head SignedHead) (bool, time.Dura
 }
 
 // SubscribeToNewHeads subscribes the given callback function to head beacon headers with a verified valid sync committee signature.
-func (s *SyncCommitteeTracker) SubscribeToNewHeads(subFn func(Header)) {
+func (s *SyncCommitteeTracker) SubscribeToNewHeads(subFn func(types.Header)) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 

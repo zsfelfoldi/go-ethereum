@@ -14,14 +14,14 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package beacon
+package sync
 
 import (
 	"encoding/binary"
-	"errors"
-	"math/bits"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/beacon/light/types"
+	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -33,9 +33,11 @@ import (
 
 var (
 	initDataKey      = []byte("sct.init") // RLP(LightClientInitData)
-	bestUpdateKey    = []byte("sct.bu-")  // bigEndian64(syncPeriod) -> RLP(LightClientUpdate)  (nextCommittee only referenced by root hash)
+	bestUpdateKey    = []byte("sct.bu-")  // bigEndian64(syncPeriod) -> RLP(types.LightClientUpdate)  (nextCommittee only referenced by root hash)
 	syncCommitteeKey = []byte("sct.sc-")  // bigEndian64(syncPeriod) + committee root hash -> serialized committee
 )
+
+const SerializedCommitteeSize = (params.SyncCommitteeSize + 1) * params.BlsPubkeySize
 
 // ChainConfig contains built-in chain configuration presets for certain networks
 type ChainConfig struct {
@@ -56,7 +58,7 @@ type GenesisData struct {
 // where committee roots are fixed and another "free" range (afterFixed <= period < afterLast)
 // where committee roots are determined by the best known update chain.
 // An implementation of SctConstraints should call initCallback to pass
-// GenesisData whenever it is available (either during SetCallbacks or later).
+// GenesisData whenever it is available (either durinrg SetCallbacks or later).
 // If the constraints are changed then it should call updateCallback.
 //
 // Note: this interface can be used either for light syncing mode (in which case
@@ -85,7 +87,7 @@ type SyncCommitteeTracker struct {
 	db                       ethdb.KeyValueStore
 	sigVerifier              committeeSigVerifier
 	clock                    mclock.Clock
-	bestUpdateCache          *lru.Cache[uint64, *LightClientUpdate]
+	bestUpdateCache          *lru.Cache[uint64, *types.LightClientUpdate]
 	serializedCommitteeCache *lru.Cache[string, []byte]
 	syncCommitteeCache       *lru.Cache[string, syncCommittee]
 	committeeRootCache       *lru.Cache[uint64, common.Hash]
@@ -94,7 +96,7 @@ type SyncCommitteeTracker struct {
 	forks              Forks
 	constraints        SctConstraints
 	signerThreshold    int
-	minimumUpdateScore UpdateScore
+	minimumUpdateScore types.UpdateScore
 	enforceTime        bool
 
 	genesisInit bool   // genesis data initialized (signature check possible)
@@ -104,7 +106,7 @@ type SyncCommitteeTracker struct {
 	// and committees for periods between firstPeriod to nextPeriod are available
 	firstPeriod, nextPeriod uint64
 
-	updateInfo                *UpdateInfo
+	updateInfo                *types.UpdateInfo
 	connected                 map[sctServer]*sctPeerInfo
 	requestQueue              []*sctPeerInfo
 	broadcastTo, advertisedTo map[sctClient]struct{}
@@ -112,13 +114,13 @@ type SyncCommitteeTracker struct {
 	triggerCh, initCh, stopCh chan struct{}
 	acceptedList              headList
 
-	headSubs []func(Header)
+	headSubs []func(types.Header)
 }
 
 // NewSyncCommitteeTracker creates a new SyncCommitteeTracker
 func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints SctConstraints, signerThreshold int, enforceTime bool, sigVerifier committeeSigVerifier, clock mclock.Clock, unixNano func() int64) *SyncCommitteeTracker {
 	s := &SyncCommitteeTracker{
-		bestUpdateCache:          lru.NewCache[uint64, *LightClientUpdate](1000),
+		bestUpdateCache:          lru.NewCache[uint64, *types.LightClientUpdate](1000),
 		serializedCommitteeCache: lru.NewCache[string, []byte](100),
 		syncCommitteeCache:       lru.NewCache[string, syncCommittee](100),
 		committeeRootCache:       lru.NewCache[uint64, common.Hash](100),
@@ -130,9 +132,9 @@ func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Sc
 		constraints:              constraints,
 		signerThreshold:          signerThreshold,
 		enforceTime:              enforceTime,
-		minimumUpdateScore: UpdateScore{
-			signerCount:    uint32(signerThreshold),
-			subPeriodIndex: 512,
+		minimumUpdateScore: types.UpdateScore{
+			SignerCount:    uint32(signerThreshold),
+			SubPeriodIndex: params.SyncPeriodLength / 16,
 		},
 		connected:    make(map[sctServer]*sctPeerInfo),
 		broadcastTo:  make(map[sctClient]struct{}),
@@ -196,7 +198,7 @@ const (
 // insertUpdate verifies the update and stores it in the update chain if possible.
 // The serialized version of the next committee should also be supplied if it is
 // not already stored in the database.
-func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommittee []byte) int {
+func (s *SyncCommitteeTracker) insertUpdate(update *types.LightClientUpdate, nextCommittee []byte) int {
 	var (
 		period   = update.Header.SyncPeriod()
 		rollback bool
@@ -209,7 +211,6 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommi
 		log.Error("Unexpected insertUpdate", "period", period, "firstPeriod", s.firstPeriod, "nextPeriod", s.nextPeriod)
 		return sciUnexpectedError
 	}
-	update.CalculateScore()
 	if period+1 == s.firstPeriod {
 		if update.NextSyncCommitteeRoot != s.getSyncCommitteeRoot(period+1) {
 			return sciWrongUpdate
@@ -221,7 +222,7 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommi
 			log.Error("Update expected to exist but missing from db")
 			return sciUnexpectedError
 		}
-		if !update.score.betterThan(oldUpdate.score) {
+		if !update.Score().BetterThan(oldUpdate.Score()) {
 			// not better that existing one, nothing to do
 			return sciSuccess
 		}
@@ -259,7 +260,7 @@ func (s *SyncCommitteeTracker) insertUpdate(update *LightClientUpdate, nextCommi
 // verifyUpdate checks whether the header signature is correct and the update
 // fits into the specified constraints (assumes that the update has been
 // successfully validated previously)
-func (s *SyncCommitteeTracker) verifyUpdate(update *LightClientUpdate) bool {
+func (s *SyncCommitteeTracker) verifyUpdate(update *types.LightClientUpdate) bool {
 	if !s.checkConstraints(update) {
 		return false
 	}
@@ -283,7 +284,7 @@ func getBestUpdateKey(period uint64) []byte {
 }
 
 // GetBestUpdate returns the best known canonical sync committee update at the given period
-func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
+func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *types.LightClientUpdate {
 	if update, ok := s.bestUpdateCache.Get(period); ok {
 		if update != nil {
 			if update.Header.SyncPeriod() != period {
@@ -293,9 +294,9 @@ func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
 		return update
 	}
 	if updateEnc, err := s.db.Get(getBestUpdateKey(period)); err == nil {
-		update := new(LightClientUpdate)
+		update := new(types.LightClientUpdate)
 		if err := rlp.DecodeBytes(updateEnc, update); err == nil {
-			update.CalculateScore()
+			update.Score() // ensure that canonical updates in memory always have their score calculated and therefore are thread safe
 			s.bestUpdateCache.Add(period, update)
 			if update.Header.SyncPeriod() != period {
 				log.Error("Best update from wrong period found in database")
@@ -310,11 +311,11 @@ func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *LightClientUpdate {
 }
 
 // storeBestUpdate stores a sync committee update in the canonical update chain
-func (s *SyncCommitteeTracker) storeBestUpdate(update *LightClientUpdate) {
+func (s *SyncCommitteeTracker) storeBestUpdate(update *types.LightClientUpdate) {
 	period := update.Header.SyncPeriod()
 	updateEnc, err := rlp.EncodeToBytes(update)
 	if err != nil {
-		log.Error("Error encoding LightClientUpdate", "error", err)
+		log.Error("Error encoding types.LightClientUpdate", "error", err)
 		return
 	}
 	s.bestUpdateCache.Add(period, update)
@@ -348,14 +349,14 @@ func getSyncCommitteeKey(period uint64, committeeRoot common.Hash) []byte {
 func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committeeRoot common.Hash) []byte {
 	key := getSyncCommitteeKey(period, committeeRoot)
 	if committee, ok := s.serializedCommitteeCache.Get(string(key)); ok {
-		if len(committee) == 513*48 {
+		if len(committee) == SerializedCommitteeSize {
 			return committee
 		} else {
 			log.Error("Serialized committee with invalid size found in cache")
 		}
 	}
 	if committee, err := s.db.Get(key); err == nil {
-		if len(committee) == 513*48 {
+		if len(committee) == SerializedCommitteeSize {
 			s.serializedCommitteeCache.Add(string(key), committee)
 			return committee
 		} else {
@@ -377,18 +378,18 @@ func (s *SyncCommitteeTracker) storeSerializedSyncCommittee(period uint64, commi
 // SerializedCommitteeRoot calculates the root hash of the binary tree representation
 // of a sync committee provided in serialized format
 func SerializedCommitteeRoot(enc []byte) common.Hash {
-	if len(enc) != 513*48 {
+	if len(enc) != SerializedCommitteeSize {
 		return common.Hash{}
 	}
 	var (
 		hasher  = sha256.New()
-		padding [16]byte
-		data    [512]common.Hash
-		l       = 512
+		padding [64 - params.BlsPubkeySize]byte
+		data    [params.SyncCommitteeSize]common.Hash
+		l       = params.SyncCommitteeSize
 	)
 	for i := range data {
 		hasher.Reset()
-		hasher.Write(enc[i*48 : (i+1)*48])
+		hasher.Write(enc[i*params.BlsPubkeySize : (i+1)*params.BlsPubkeySize])
 		hasher.Write(padding[:])
 		hasher.Sum(data[i][:0])
 	}
@@ -402,7 +403,7 @@ func SerializedCommitteeRoot(enc []byte) common.Hash {
 		l /= 2
 	}
 	hasher.Reset()
-	hasher.Write(enc[512*48 : 513*48])
+	hasher.Write(enc[SerializedCommitteeSize-params.BlsPubkeySize : SerializedCommitteeSize])
 	hasher.Write(padding[:])
 	hasher.Sum(data[1][:0])
 	hasher.Reset()
@@ -502,65 +503,11 @@ func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
 // checkConstraints checks whether the signed headers of the given committee
 // update is on the right fork and the proven NextSyncCommitteeRoot matches the
 // update chain constraints.
-func (s *SyncCommitteeTracker) checkConstraints(update *LightClientUpdate) bool {
+func (s *SyncCommitteeTracker) checkConstraints(update *types.LightClientUpdate) bool {
 	if !s.genesisInit {
 		log.Error("SyncCommitteeTracker not initialized")
 		return false
 	}
 	root, matchAll := s.constraints.CommitteeRoot(update.Header.SyncPeriod() + 1)
 	return matchAll || root == update.NextSyncCommitteeRoot
-}
-
-// LightClientUpdate is a proof of the next sync committee root based on a header
-// signed by the sync committee of the given period. Optionally the update can
-// prove quasi-finality by the signed header referring to a previous, finalized
-// header from the same period, and the finalized header referring to the next
-// sync committee root.
-//
-// See data structure definition here:
-// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientupdate
-type LightClientUpdate struct {
-	Header                  Header
-	NextSyncCommitteeRoot   common.Hash
-	NextSyncCommitteeBranch MerkleValues
-	FinalizedHeader         Header
-	FinalityBranch          MerkleValues
-	SyncCommitteeBits       []byte
-	SyncCommitteeSignature  []byte
-	score                   UpdateScore // not part of the encoding, calculated after decoding
-}
-
-// Validate verifies the validity of the update
-func (update *LightClientUpdate) Validate() error {
-	if update.hasFinalizedHeader() {
-		if update.FinalizedHeader.SyncPeriod() != update.Header.SyncPeriod() {
-			return errors.New("finalizedHeader is from previous period") // proves the same committee it is signed by
-		}
-		if root, ok := VerifySingleProof(update.FinalityBranch, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()), 0); !ok || root != update.Header.StateRoot {
-			return errors.New("invalid FinalizedHeader merkle proof")
-		}
-	}
-	if root, ok := VerifySingleProof(update.NextSyncCommitteeBranch, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot), 0); !ok || root != update.Header.StateRoot {
-		return errors.New("invalid NextSyncCommittee merkle proof")
-	}
-	return nil
-}
-
-// hasFinalizedHeader returns true if the update has a finalized header referred
-// by the signed header and referring to the next sync committee.
-// Note that in addition to this, a sufficient signer participation is also needed
-// in order to fulfill the quasi-finality condition (see UpdateScore.isFinalized).
-func (l *LightClientUpdate) hasFinalizedHeader() bool {
-	return l.FinalizedHeader.BodyRoot != (common.Hash{}) && l.FinalizedHeader.SyncPeriod() == l.Header.SyncPeriod()
-}
-
-// CalculateScore returns the UpdateScore describing the proof strength of the update
-func (l *LightClientUpdate) CalculateScore() UpdateScore {
-	l.score.signerCount = 0
-	for _, v := range l.SyncCommitteeBits {
-		l.score.signerCount += uint32(bits.OnesCount8(v))
-	}
-	l.score.subPeriodIndex = uint32(l.Header.Slot & 0x1fff)
-	l.score.finalizedHeader = l.hasFinalizedHeader()
-	return l.score
 }

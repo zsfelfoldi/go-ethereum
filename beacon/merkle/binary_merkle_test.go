@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package beacon
+package merkle
 
 import (
 	"math/bits"
@@ -127,8 +127,8 @@ func TestRangeFormat(t *testing.T) {
 
 func TestSingleProof(t *testing.T) {
 	for index := uint64(1); index < 256; index++ {
-		proof := make(MerkleValues, 63-bits.LeadingZeros64(index))
-		writer := NewCallbackWriter(NewIndexMapFormat().AddLeaf(index, nil), func(i uint64, v MerkleValue) {
+		proof := make(Values, 63-bits.LeadingZeros64(index))
+		writer := NewCallbackWriter(NewIndexMapFormat().AddLeaf(index, nil), func(i uint64, v Value) {
 			shift := bits.LeadingZeros64(i) - bits.LeadingZeros64(index)
 			if i^(index>>shift) == 1 {
 				proof[shift] = v
@@ -243,11 +243,11 @@ func (r testReader) children() (left, right ProofReader) {
 	return r * 2, r*2 + 1
 }
 
-func (r testReader) readNode() (MerkleValue, bool) {
+func (r testReader) readNode() (Value, bool) {
 	return testMerkleTree[r], true
 }
 
-var testMerkleTree [256]MerkleValue
+var testMerkleTree [256]Value
 
 func init() {
 	hasher := sha256.New()

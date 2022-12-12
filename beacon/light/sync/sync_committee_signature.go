@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package beacon
+package sync
 
 import (
 	"bufio"
@@ -27,6 +27,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ethereum/go-ethereum/beacon/light/types"
+	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/log"
@@ -49,7 +52,7 @@ type committeeSigVerifier interface {
 // See data structure definition here:
 // https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/beacon-chain.md#syncaggregate
 type blsSyncCommittee struct {
-	keys      [512]*bls.Pubkey
+	keys      [params.SyncCommitteeSize]*bls.Pubkey
 	aggregate *bls.Pubkey
 }
 
@@ -58,20 +61,20 @@ type BLSVerifier struct{}
 
 // deserializeSyncCommittee implements committeeSigVerifier
 func (BLSVerifier) deserializeSyncCommittee(enc []byte) syncCommittee {
-	if len(enc) != 513*48 {
-		log.Error("Wrong input size for deserializeSyncCommittee", "expected", 513*48, "got", len(enc))
+	if len(enc) != SerializedCommitteeSize {
+		log.Error("Wrong input size for deserializeSyncCommittee", "expected", SerializedCommitteeSize, "got", len(enc))
 		return nil
 	}
 	sc := new(blsSyncCommittee)
-	for i := 0; i <= 512; i++ {
+	for i := 0; i <= params.SyncCommitteeSize; i++ {
 		pk := new(bls.Pubkey)
-		var sk [48]byte
-		copy(sk[:], enc[i*48:(i+1)*48])
+		var sk [params.BlsPubkeySize]byte
+		copy(sk[:], enc[i*params.BlsPubkeySize:(i+1)*params.BlsPubkeySize])
 		if err := pk.Deserialize(&sk); err != nil {
 			log.Error("bls.Pubkey.Deserialize failed", "error", err, "data", sk)
 			return nil
 		}
-		if i < 512 {
+		if i < params.SyncCommitteeSize {
 			sc.keys[i] = pk
 		} else {
 			sc.aggregate = pk
@@ -82,13 +85,13 @@ func (BLSVerifier) deserializeSyncCommittee(enc []byte) syncCommittee {
 
 // verifySignature implements committeeSigVerifier
 func (BLSVerifier) verifySignature(committee syncCommittee, signingRoot common.Hash, bitmask, signature []byte) bool {
-	if len(signature) != 96 || len(bitmask) != 64 {
+	if len(signature) != params.BlsSignatureSize || len(bitmask) != params.SyncCommitteeSize/8 {
 		return false
 	}
 	var (
 		sig          bls.Signature
-		sigBytes     [96]byte
-		signerKeys   [512]*bls.Pubkey
+		sigBytes     [params.BlsSignatureSize]byte
+		signerKeys   [params.SyncCommitteeSize]*bls.Pubkey
 		signerCount  int
 		blsCommittee = committee.(*blsSyncCommittee)
 	)
@@ -112,8 +115,8 @@ type dummyVerifier struct{}
 
 // deserializeSyncCommittee implements committeeSigVerifier
 func (dummyVerifier) deserializeSyncCommittee(enc []byte) syncCommittee {
-	if len(enc) != 513*48 {
-		log.Error("Wrong input size for deserializeSyncCommittee", "expected", 513*48, "got", len(enc))
+	if len(enc) != SerializedCommitteeSize {
+		log.Error("Wrong input size for deserializeSyncCommittee", "expected", SerializedCommitteeSize, "got", len(enc))
 		return nil
 	}
 	var sc dummySyncCommittee
@@ -133,13 +136,13 @@ func randomDummySyncCommittee() dummySyncCommittee {
 }
 
 func serializeDummySyncCommittee(sc dummySyncCommittee) []byte {
-	enc := make([]byte, 513*48)
+	enc := make([]byte, SerializedCommitteeSize)
 	copy(enc[:32], sc[:])
 	return enc
 }
 
 func makeDummySignature(committee dummySyncCommittee, signingRoot common.Hash, bitmask []byte) []byte {
-	sig := make([]byte, 96)
+	sig := make([]byte, params.BlsSignatureSize)
 	for i, b := range committee[:] {
 		sig[i] = b ^ signingRoot[i]
 	}
@@ -154,8 +157,8 @@ type Fork struct {
 	Name  string // name of the fork in the chain config (config.yaml) file
 	// See fork version definition here:
 	//  https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#custom-types
-	Version []byte      // fork version
-	domain  MerkleValue // calculated by computeDomain, based on fork version and genesis validators root
+	Version []byte             // fork version
+	domain  merkle.Value // calculated by computeDomain, based on fork version and genesis validators root
 }
 
 // Forks is the list of all beacon chain forks in the chain configuration.
@@ -163,24 +166,24 @@ type Forks []Fork
 
 // domain returns the signature domain for the given epoch (assumes that domains
 // have already been calculated).
-func (bf Forks) domain(epoch uint64) MerkleValue {
+func (bf Forks) domain(epoch uint64) merkle.Value {
 	for i := len(bf) - 1; i >= 0; i-- {
 		if epoch >= bf[i].Epoch {
 			return bf[i].domain
 		}
 	}
 	log.Error("Fork domain unknown", "epoch", epoch)
-	return MerkleValue{}
+	return merkle.Value{}
 }
 
 // computeDomain returns the signature domain based on the given fork version
 // and genesis validator set root
-func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) MerkleValue {
+func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) merkle.Value {
 	var (
 		hasher        = sha256.New()
-		forkVersion32 MerkleValue
-		forkDataRoot  MerkleValue
-		domain        MerkleValue
+		forkVersion32 merkle.Value
+		forkDataRoot  merkle.Value
+		domain        merkle.Value
 	)
 	copy(forkVersion32[:len(forkVersion)], forkVersion)
 	hasher.Write(forkVersion32[:])
@@ -199,7 +202,7 @@ func (bf Forks) computeDomains(genesisValidatorsRoot common.Hash) {
 }
 
 // signingRoot calculates the signing root of the given header.
-func (bf Forks) signingRoot(header Header) common.Hash {
+func (bf Forks) signingRoot(header types.Header) common.Hash {
 	var (
 		signingRoot common.Hash
 		headerHash  = header.Hash()
