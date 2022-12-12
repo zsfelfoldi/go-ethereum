@@ -21,9 +21,10 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ethereum/go-ethereum/beacon/light/sync"
+	"github.com/ethereum/go-ethereum/beacon/light/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
-	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -34,7 +35,7 @@ const (
 )
 
 // committee update syncing is initiated in each period for each syncPeriodOffsets[i]
-// when slot (period+1)*8192+syncPeriodOffsets[i] has been reached.
+// when slot (period+1)*params.SyncPeriodLength+syncPeriodOffsets[i] has been reached.
 // This ensures that a close-to-best update for each period can be synced and
 // propagated well in advance before the next period begins but later (when it's
 // very unlikely that even a reorg could change the given period) the absolute
@@ -46,15 +47,15 @@ var syncPeriodOffsets = []int{-256, -16, 64}
 type CommitteeSyncer struct {
 	api *BeaconLightApi
 
-	genesisData         beacon.GenesisData
+	genesisData         sync.GenesisData
 	checkpointPeriod    uint64
 	checkpointCommittee []byte
-	committeeTracker    *beacon.SyncCommitteeTracker
+	committeeTracker    *sync.SyncCommitteeTracker
 
 	lastAdvertisedPeriod uint64
 	lastPeriodOffset     int
 
-	updateCache                      *lru.Cache[uint64, beacon.LightClientUpdate]
+	updateCache                      *lru.Cache[uint64, types.LightClientUpdate]
 	committeeCache                   *lru.Cache[uint64, []byte]
 	headTriggerCh, closeCh, closedCh chan struct{}
 	useHeadTrigger                   bool
@@ -62,7 +63,7 @@ type CommitteeSyncer struct {
 
 // NewCommitteeSyncer creates a new CommitteeSyncer
 // Note: genesisData is only needed when light syncing (using GetInitData for bootstrap)
-func NewCommitteeSyncer(api *BeaconLightApi, genesisData beacon.GenesisData, useHeadTrigger bool) *CommitteeSyncer {
+func NewCommitteeSyncer(api *BeaconLightApi, genesisData sync.GenesisData, useHeadTrigger bool) *CommitteeSyncer {
 	return &CommitteeSyncer{
 		api:            api,
 		genesisData:    genesisData,
@@ -70,13 +71,13 @@ func NewCommitteeSyncer(api *BeaconLightApi, genesisData beacon.GenesisData, use
 		useHeadTrigger: useHeadTrigger,
 		closeCh:        make(chan struct{}),
 		closedCh:       make(chan struct{}),
-		updateCache:    lru.NewCache[uint64, beacon.LightClientUpdate](maxRequest),
+		updateCache:    lru.NewCache[uint64, types.LightClientUpdate](maxRequest),
 		committeeCache: lru.NewCache[uint64, []byte](maxRequest),
 	}
 }
 
 // Start starts the syncing of the given SyncCommitteeTracker
-func (cs *CommitteeSyncer) Start(committeeTracker *beacon.SyncCommitteeTracker) {
+func (cs *CommitteeSyncer) Start(committeeTracker *sync.SyncCommitteeTracker) {
 	cs.committeeTracker = committeeTracker
 	committeeTracker.SyncWithPeer(cs, nil)
 	go cs.headPollLoop()
@@ -107,7 +108,7 @@ func (cs *CommitteeSyncer) headPollLoop() {
 		sinceLastNewHead   time.Duration
 		sinceLastNewSigner time.Duration
 		timerActive        bool
-		lastHead           beacon.Header
+		lastHead           types.Header
 		lastSignerCount    int
 	)
 	if !cs.useHeadTrigger {
@@ -128,16 +129,16 @@ func (cs *CommitteeSyncer) headPollLoop() {
 			return
 		}
 		timerActive = false
-		if lastHead == (beacon.Header{}) {
+		if lastHead == (types.Header{}) {
 			lastHead, _ = cs.api.GetHeader(common.Hash{})
-			if lastHead != (beacon.Header{}) {
+			if lastHead != (types.Header{}) {
 				cs.syncUpdates(lastHead, false)
 				if lastHead.ParentRoot != (common.Hash{}) {
 					lastHead, _ = cs.api.GetHeader(lastHead.ParentRoot)
 				}
 			}
 		}
-		if lastHead != (beacon.Header{}) {
+		if lastHead != (types.Header{}) {
 			if signedHead, newHead, err := cs.api.GetInstantHeadUpdate(lastHead); err == nil {
 				if newHead != lastHead {
 					lastHead = newHead
@@ -148,9 +149,9 @@ func (cs *CommitteeSyncer) headPollLoop() {
 					signerCount := signedHead.SignerCount()
 					if signerCount > lastSignerCount {
 						sinceLastNewSigner, lastSignerCount = 0, signerCount
-						if cs.committeeTracker.AddSignedHeads(cs, []beacon.SignedHead{signedHead}) != nil {
+						if cs.committeeTracker.AddSignedHeads(cs, []sync.SignedHead{signedHead}) != nil {
 							cs.syncUpdates(newHead, true)
-							if err := cs.committeeTracker.AddSignedHeads(cs, []beacon.SignedHead{signedHead}); err != nil {
+							if err := cs.committeeTracker.AddSignedHeads(cs, []sync.SignedHead{signedHead}); err != nil {
 								log.Error("Error adding new signed head", "error", err)
 							}
 						}
@@ -183,7 +184,7 @@ func (cs *CommitteeSyncer) headPollLoop() {
 }
 
 // handleNewHead does the necessary operations when a new head is received
-func (cs *CommitteeSyncer) handleNewHead(head beacon.Header) {
+func (cs *CommitteeSyncer) handleNewHead(head types.Header) {
 	cs.updateCache.Purge()
 	cs.committeeCache.Purge()
 	cs.syncUpdates(head, false)
@@ -193,13 +194,13 @@ func (cs *CommitteeSyncer) handleNewHead(head beacon.Header) {
 // has been reached by the current head and initiates az update sync if necessary.
 // If retry is true then syncing is tried again even if no new syncing offset
 // point has been reached.
-func (cs *CommitteeSyncer) syncUpdates(head beacon.Header, retry bool) {
-	nextPeriod := beacon.PeriodOfSlot(head.Slot + uint64(-syncPeriodOffsets[0]))
+func (cs *CommitteeSyncer) syncUpdates(head types.Header, retry bool) {
+	nextPeriod := types.PeriodOfSlot(head.Slot + uint64(-syncPeriodOffsets[0]))
 	if nextPeriod == 0 {
 		return
 	}
 	var (
-		nextPeriodStart = beacon.PeriodStart(nextPeriod)
+		nextPeriodStart = types.PeriodStart(nextPeriod)
 		lastPeriod      = nextPeriod - 1
 		offset          = 1
 	)
@@ -215,14 +216,14 @@ func (cs *CommitteeSyncer) syncUpdates(head beacon.Header, retry bool) {
 // might have improved since the last query and advertises them to the tracker.
 // The tracker can then fetch the actual updates and committees via GetBestCommitteeProofs.
 func (cs *CommitteeSyncer) syncUpdatesUntil(lastPeriod uint64) bool {
-	ptr := int(beacon.MaxUpdateInfoLength)
+	ptr := int(types.MaxUpdateInfoLength)
 	if lastPeriod+1 < uint64(ptr) {
 		ptr = int(lastPeriod + 1)
 	}
 	var (
-		updateInfo = &beacon.UpdateInfo{
+		updateInfo = &types.UpdateInfo{
 			AfterLastPeriod: lastPeriod + 1,
-			Scores:          make(beacon.UpdateScores, ptr),
+			Scores:          make(types.UpdateScores, ptr),
 		}
 		localNextPeriod = cs.committeeTracker.NextPeriod()
 		period          = lastPeriod
@@ -233,7 +234,7 @@ func (cs *CommitteeSyncer) syncUpdatesUntil(lastPeriod uint64) bool {
 			break
 		}
 		ptr--
-		updateInfo.Scores[ptr] = remoteUpdate.CalculateScore()
+		updateInfo.Scores[ptr] = remoteUpdate.Score()
 		if ptr == 0 || period == 0 {
 			break
 		}
@@ -260,20 +261,20 @@ func (cs *CommitteeSyncer) syncUpdatesUntil(lastPeriod uint64) bool {
 }
 
 // GetBestCommitteeProofs fetches updates and committees for the specified periods
-func (cs *CommitteeSyncer) GetBestCommitteeProofs(ctx context.Context, req beacon.CommitteeRequest) (beacon.CommitteeReply, error) {
-	reply := beacon.CommitteeReply{
-		Updates:    make([]beacon.LightClientUpdate, len(req.UpdatePeriods)),
+func (cs *CommitteeSyncer) GetBestCommitteeProofs(ctx context.Context, req types.CommitteeRequest) (types.CommitteeReply, error) {
+	reply := types.CommitteeReply{
+		Updates:    make([]types.LightClientUpdate, len(req.UpdatePeriods)),
 		Committees: make([][]byte, len(req.CommitteePeriods)),
 	}
 	var err error
 	for i, period := range req.UpdatePeriods {
 		if reply.Updates[i], err = cs.getBestUpdate(period); err != nil {
-			return beacon.CommitteeReply{}, err
+			return types.CommitteeReply{}, err
 		}
 	}
 	for i, period := range req.CommitteePeriods {
 		if reply.Committees[i], err = cs.getCommittee(period); err != nil {
-			return beacon.CommitteeReply{}, err
+			return types.CommitteeReply{}, err
 		}
 	}
 	return reply, nil
@@ -285,7 +286,7 @@ func (cs *CommitteeSyncer) CanRequest(updateCount, committeeCount int) bool {
 }
 
 // getBestUpdate returns the best update for the given period
-func (cs *CommitteeSyncer) getBestUpdate(period uint64) (beacon.LightClientUpdate, error) {
+func (cs *CommitteeSyncer) getBestUpdate(period uint64) (types.LightClientUpdate, error) {
 	if c, ok := cs.updateCache.Get(period); ok {
 		return c, nil
 	}
@@ -313,10 +314,10 @@ func (cs *CommitteeSyncer) getCommittee(period uint64) ([]byte, error) {
 // getBestUpdateAndCommittee fetches the best update for period and corresponding
 // committee for period+1 and caches the results until a new head is received by
 // headPollLoop
-func (cs *CommitteeSyncer) getBestUpdateAndCommittee(period uint64) (beacon.LightClientUpdate, []byte, error) {
+func (cs *CommitteeSyncer) getBestUpdateAndCommittee(period uint64) (types.LightClientUpdate, []byte, error) {
 	update, committee, err := cs.api.GetBestUpdateAndCommittee(period)
 	if err != nil {
-		return beacon.LightClientUpdate{}, nil, err
+		return types.LightClientUpdate{}, nil, err
 	}
 	cs.updateCache.Add(period, update)
 	cs.committeeCache.Add(period+1, committee)
@@ -326,16 +327,16 @@ func (cs *CommitteeSyncer) getBestUpdateAndCommittee(period uint64) (beacon.Ligh
 // GetInitData fetches the bootstrap data and returns LightClientInitData (the
 // corresponding committee is stored so that a subsequent GetBestCommitteeProofs
 // can return it when requested)
-func (cs *CommitteeSyncer) GetInitData(ctx context.Context, checkpoint common.Hash) (beacon.Header, beacon.LightClientInitData, error) {
-	if cs.genesisData == (beacon.GenesisData{}) {
-		return beacon.Header{}, beacon.LightClientInitData{}, errors.New("missing genesis data")
+func (cs *CommitteeSyncer) GetInitData(ctx context.Context, checkpoint common.Hash) (types.Header, sync.LightClientInitData, error) {
+	if cs.genesisData == (sync.GenesisData{}) {
+		return types.Header{}, sync.LightClientInitData{}, errors.New("missing genesis data")
 	}
 	header, checkpointData, committee, err := cs.api.GetCheckpointData(ctx, checkpoint)
 	if err != nil {
-		return beacon.Header{}, beacon.LightClientInitData{}, err
+		return types.Header{}, sync.LightClientInitData{}, err
 	}
 	cs.checkpointPeriod, cs.checkpointCommittee = checkpointData.Period, committee
-	return header, beacon.LightClientInitData{GenesisData: cs.genesisData, CheckpointData: checkpointData}, nil
+	return header, sync.LightClientInitData{GenesisData: cs.genesisData, CheckpointData: checkpointData}, nil
 }
 
 // WrongReply is called by the tracker when the BeaconLightApi has provided

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package beacon
+package sync
 
 import (
 	"context"
@@ -22,6 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/beacon/light/types"
+	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
@@ -133,7 +136,7 @@ func runSctTest(t *testing.T, testCase sctTestCase) {
 	clock := &mclock.Simulated{}
 	var lastTime time.Duration
 	for stepIndex, step := range testCase {
-		tm := time.Duration(float64(time.Second*12*8192) * step.periodTime)
+		tm := time.Duration(float64(time.Second*12*params.SyncPeriodLength) * step.periodTime)
 		clock.Run(tm - lastTime)
 		lastTime = tm
 		for i, ts := range step.trackers {
@@ -172,7 +175,7 @@ func runSctTest(t *testing.T, testCase sctTestCase) {
 			for period := ts.expFirst; period < ts.expAfterLast; period++ {
 				if update := sct.GetBestUpdate(period); update == nil {
 					t.Errorf("Step %d tracker %d: update missing from synced chain (period %d)", stepIndex, i, period)
-				} else if update.CalculateScore() != ts.expTc.periods[period].update.CalculateScore() {
+				} else if update.Score() != ts.expTc.periods[period].update.Score() {
 					t.Errorf("Step %d tracker %d: wrong update found in synced chain (period %d)", stepIndex, i, period)
 				}
 			}
@@ -197,7 +200,7 @@ func newTestGenesis() GenesisData {
 	var genesisData GenesisData
 	rand.Read(genesisData.GenesisValidatorsRoot[:])
 	return genesisData
-}
+}params.SyncCommitteeSize
 
 func newTestForks(genesisData GenesisData, forks Forks) Forks {
 	forks.computeDomains(genesisData.GenesisValidatorsRoot)
@@ -218,17 +221,17 @@ func newTestChain(parent *testChain, genesisData GenesisData, forks Forks, newCo
 			tc.fillCommittees(begin, end+1)
 		} else {
 			tc.fillCommittees(begin+1, end+1)
-		}
+		}params.SyncCommitteeSize
 	}
 	tc.fillUpdates(begin, end, subPeriodIndex, signerCount)
 	return tc
 }
 
-func makeTestHeaderWithSingleProof(slot, index uint64, value MerkleValue) (Header, MerkleValues) {
-	var branch MerkleValues
+func makeTestHeaderWithSingleProof(slot, index uint64, value merkle.Value) (types.Header, merkle.Values) {
+	var branch merkle.Values
 	hasher := sha256.New()
 	for index > 1 {
-		var proofHash MerkleValue
+		var proofHash merkle.Value
 		rand.Read(proofHash[:])
 		hasher.Reset()
 		if index&1 == 0 {
@@ -239,16 +242,16 @@ func makeTestHeaderWithSingleProof(slot, index uint64, value MerkleValue) (Heade
 			hasher.Write(value[:])
 		}
 		hasher.Sum(value[:0])
-		index /= 2
+		index /= 2params.SyncCommitteeSize
 		branch = append(branch, proofHash)
 	}
-	return Header{Slot: slot, StateRoot: common.Hash(value)}, branch
+	return types.Header{Slot: slot, StateRoot: common.Hash(value)}, branch
 }
 
 func makeBitmask(signerCount int) []byte {
-	bitmask := make([]byte, 64)
-	for i := 0; i < 512; i++ {
-		if rand.Intn(512-i) < signerCount {
+	bitmask := make([]byte, params.SyncCommitteeSize/8)
+	for i := 0; i < params.SyncCommitteeSize; i++ {
+		if rand.Intn(params.SyncCommitteeSize-i) < signerCount {
 			bitmask[i/8] += byte(1) << (i & 7)
 			signerCount--
 		}
@@ -259,7 +262,7 @@ func makeBitmask(signerCount int) []byte {
 type testPeriod struct {
 	committee     dummySyncCommittee
 	committeeRoot common.Hash
-	update        LightClientUpdate
+	update        types.LightClientUpdate
 }
 
 type testChain struct {
@@ -273,21 +276,21 @@ func (tc *testChain) makeTestSignedHead(header Header, signerCount int) SignedHe
 	return SignedHead{
 		Header:        header,
 		BitMask:       bitmask,
-		Signature:     makeDummySignature(tc.periods[PeriodOfSlot(header.Slot+1)].committee, tc.forks.signingRoot(header), bitmask),
+		Signature:     makeDummySignature(tc.periods[types.PeriodOfSlot(header.Slot+1)].committee, tc.forks.signingRoot(header), bitmask),
 		SignatureSlot: header.Slot + 1,
 	}
 }
 
 const finalizedTestUpdate = 8191 // if subPeriodIndex == finalizedTestUpdate then a finalized update is generated
 
-func (tc *testChain) makeTestUpdate(period, subPeriodIndex uint64, signerCount int) LightClientUpdate {
-	var update LightClientUpdate
+func (tc *testChain) makeTestUpdate(period, subPeriodIndex uint64, signerCount int) types.LightClientUpdate {
+	var update types.LightClientUpdate
 	update.NextSyncCommitteeRoot = tc.periods[period+1].committeeRoot
 	if subPeriodIndex == finalizedTestUpdate {
-		update.FinalizedHeader, update.NextSyncCommitteeBranch = makeTestHeaderWithSingleProof(PeriodStart(period)+100, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot))
-		update.Header, update.FinalityBranch = makeTestHeaderWithSingleProof(PeriodStart(period)+200, BsiFinalBlock, MerkleValue(update.FinalizedHeader.Hash()))
+		update.FinalizedHeader, update.NextSyncCommitteeBranch = makeTestHeaderWithSingleProof(PeriodStart(period)+100, params.BsiNextSyncCommittee, merkle.Value(update.NextSyncCommitteeRoot))
+		update.Header, update.FinalityBranch = makeTestHeaderWithSingleProof(PeriodStart(period)+200, params.BsiFinalBlock, merkle.Value(update.FinalizedHeader.Hash()))
 	} else {
-		update.Header, update.NextSyncCommitteeBranch = makeTestHeaderWithSingleProof(PeriodStart(period)+subPeriodIndex, BsiNextSyncCommittee, MerkleValue(update.NextSyncCommitteeRoot))
+		update.Header, update.NextSyncCommitteeBranch = makeTestHeaderWithSingleProof(PeriodStart(period)+subPeriodIndex, params.BsiNextSyncCommittee, merkle.Value(update.NextSyncCommitteeRoot))
 	}
 	signedHead := tc.makeTestSignedHead(update.Header, signerCount)
 	update.SyncCommitteeBits, update.SyncCommitteeSignature = signedHead.BitMask, signedHead.Signature
@@ -317,9 +320,9 @@ type tcSyncer struct {
 
 func (s *tcSyncer) CanRequest(updateCount, committeeCount int) bool { return true }
 
-func (s *tcSyncer) GetBestCommitteeProofs(ctx context.Context, req CommitteeRequest) (CommitteeReply, error) {
-	reply := CommitteeReply{
-		Updates:    make([]LightClientUpdate, len(req.UpdatePeriods)),
+func (s *tcSyncer) GetBestCommitteeProofs(ctx context.Context, req types.CommitteeRequest) (types.CommitteeReply, error) {
+	reply := types.CommitteeReply{
+		Updates:    make([]types.LightClientUpdate, len(req.UpdatePeriods)),
 		Committees: make([][]byte, len(req.CommitteePeriods)),
 	}
 	for i, period := range req.UpdatePeriods {
@@ -335,13 +338,13 @@ func (s *tcSyncer) WrongReply(description string) {
 	s.failed = true
 }
 
-func (tc *testChain) makeUpdateInfo(firstPeriod int) *UpdateInfo {
-	u := &UpdateInfo{
+func (tc *testChain) makeUpdateInfo(firstPeriod int) *types.UpdateInfo {
+	u := &types.UpdateInfo{
 		AfterLastPeriod: uint64(len(tc.periods) - 1),
 		Scores:          make(UpdateScores, len(tc.periods)-firstPeriod-1),
 	}
 	for i := range u.Scores {
-		u.Scores[i] = tc.periods[firstPeriod+i].update.CalculateScore()
+		u.Scores[i] = tc.periods[firstPeriod+i].update.Score()
 	}
 	return u
 }
@@ -357,9 +360,9 @@ type sctSyncer struct {
 
 func (s *sctSyncer) CanRequest(updateCount, committeeCount int) bool { return true }
 
-func (s *sctSyncer) GetBestCommitteeProofs(ctx context.Context, req CommitteeRequest) (CommitteeReply, error) {
-	reply := CommitteeReply{
-		Updates:    make([]LightClientUpdate, len(req.UpdatePeriods)),
+func (s *sctSyncer) GetBestCommitteeProofs(ctx context.Context, req types.CommitteeRequest) (types.CommitteeReply, error) {
+	reply := types.CommitteeReply{
+		Updates:    make([]types.LightClientUpdate, len(req.UpdatePeriods)),
 		Committees: make([][]byte, len(req.CommitteePeriods)),
 	}
 	for i, period := range req.UpdatePeriods {

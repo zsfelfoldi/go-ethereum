@@ -14,144 +14,40 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package beacon
+package sync
 
 import (
 	"context"
-	"encoding/binary"
-	"math"
 	"time"
 
+	"github.com/ethereum/go-ethereum/beacon/light/types"
 	"github.com/ethereum/go-ethereum/log"
 )
 
 const (
-	MaxUpdateInfoLength     = 128
 	broadcastFrequencyLimit = time.Millisecond * 200
 	advertiseDelay          = time.Second * 10
 )
-
-// CommitteeRequest represents a request for fetching updates and committees at the given periods
-type CommitteeRequest struct {
-	UpdatePeriods    []uint64 // list of periods where LightClientUpdates are requested (not including full sync committee)
-	CommitteePeriods []uint64 // list of periods where sync committees are requested
-}
-
-// empty returns true if the request does not request anything
-func (req CommitteeRequest) empty() bool {
-	return req.UpdatePeriods == nil && req.CommitteePeriods == nil
-}
-
-// CommitteeReply is an answer to a CommitteeRequest, contains the updates and
-// committees corresponding to the period numbers in the request in the same order
-type CommitteeReply struct {
-	Updates    []LightClientUpdate // list of requested LightClientUpdates
-	Committees [][]byte            // list of requested sync committees in serialized form
-}
 
 // sctClient represents a peer that SyncCommitteeTracker sends signed heads and
 // sync committee advertisements to
 type sctClient interface {
 	SendSignedHeads(heads []SignedHead)
-	SendUpdateInfo(updateInfo *UpdateInfo)
+	SendUpdateInfo(updateInfo *types.UpdateInfo)
 }
 
 // sctServer represents a peer that SyncCommitteeTracker can request sync committee update proofs from
 type sctServer interface {
-	GetBestCommitteeProofs(ctx context.Context, req CommitteeRequest) (CommitteeReply, error)
+	GetBestCommitteeProofs(ctx context.Context, req types.CommitteeRequest) (types.CommitteeReply, error)
 	CanRequest(updateCount, committeeCount int) bool
 	WrongReply(description string)
-}
-
-// UpdateInfo contains scores for an advertised update chain. Note that the most
-// recent updates are always advertised but earliest ones might not because of
-// length limitation.
-type UpdateInfo struct {
-	AfterLastPeriod uint64       // first period not covered by Scores
-	Scores          UpdateScores // Scores[i] is the UpdateScore of period AfterLastPeriod-len(Scores)+i
-}
-
-// UpdateScore allows the comparison between updates at the same period in order
-// to find the best update chain that provides the strongest proof of being canonical.
-//
-// UpdateScores have a tightly packed binary encoding format for efficient p2p
-// protocol transmission. Each UpdateScore is encoded in 3 bytes.
-// When interpreted as a 24 bit little indian unsigned integer:
-//  - the lowest 10 bits contain the number of signers in the header signature aggregate
-//  - the next 13 bits contain the "sub-period index" which is he signed header's
-//    slot modulo 8192 (which is correlated with the risk of the chain being
-//    re-orged before the previous period boundary in case of non-finalized updates)
-//  - the highest bit is set when the update is finalized (meaning that the finality
-//    header referenced by the signed header is in the same period as the signed
-//    header, making reorgs before the period boundary impossible
-type UpdateScore struct {
-	signerCount     uint32 // number of signers in the header signature aggregate
-	subPeriodIndex  uint32 // signed header's slot modulo 8192
-	finalizedHeader bool   // update is considered finalized if has finalized header from the same period and 2/3 signatures
-}
-
-type UpdateScores []UpdateScore
-
-// isFinalized returns true if the update has a header signed by at least 2/3 of
-// the committee, referring to a finalized header that refers to the next sync
-// committee. This condition is a close approximation of the actual finality
-// condition that can only be verified by full beacon nodes.
-func (u *UpdateScore) isFinalized() bool {
-	return u.finalizedHeader && u.signerCount > 341
-}
-
-// reorgRiskPenalty returns a modifier that approximates the risk of a
-// non-finalized update header being reorged. It should be subtracted from the
-// signer participation count when comparing non-finaized updates. This risk is
-// assumed to be dropping exponentially as the update header is further away
-// from the beginning of the period.
-func (u *UpdateScore) reorgRiskPenalty() uint32 {
-	return uint32(math.Pow(2, 10-float64(u.subPeriodIndex)/32))
-}
-
-// betterThan returns true if update u is considered better than w.
-func (u *UpdateScore) betterThan(w UpdateScore) bool {
-	var (
-		uFinalized = u.isFinalized()
-		wFinalized = w.isFinalized()
-	)
-	if uFinalized || wFinalized {
-		// finalized update is always better than non-finalized; only signer count matters when both are finalized
-		if uFinalized && wFinalized {
-			return u.signerCount > w.signerCount
-		}
-		return uFinalized
-	}
-	// take reorg risk into account when comparing two non-finalized updates
-	return u.signerCount+w.reorgRiskPenalty() > w.signerCount+u.reorgRiskPenalty()
-}
-
-// Encode encodes the update score data in a compact form for in-protocol advertisement.
-func (u *UpdateScore) Encode(data []byte) {
-	v := u.signerCount + u.subPeriodIndex<<10
-	if u.finalizedHeader {
-		v += 0x800000
-	}
-	var enc [4]byte
-	binary.LittleEndian.PutUint32(enc[:], v)
-	copy(data, enc[:3])
-}
-
-// Decode decodes the update score data
-func (u *UpdateScore) Decode(data []byte) {
-	var enc [4]byte
-	copy(enc[:3], data)
-	v := binary.LittleEndian.Uint32(enc[:])
-	u.signerCount = v & 0x3ff
-	u.subPeriodIndex = (v >> 10) & 0x1fff
-	u.finalizedHeader = (v & 0x800000) != 0
 }
 
 // SyncWithPeer starts or updates the syncing process with a given peer, based
 // on the advertised update scores.
 // Note that calling with remoteInfo == nil does not start syncing but allows
 // attempting the init process with the given peer if not initialized yet.
-func (s *SyncCommitteeTracker) SyncWithPeer(peer sctServer, remoteInfo *UpdateInfo) chan struct{} {
+func (s *SyncCommitteeTracker) SyncWithPeer(peer sctServer, remoteInfo *types.UpdateInfo) chan struct{} {
 	s.lock.Lock()
 	sp := s.connected[peer]
 	if sp == nil {
@@ -208,7 +104,7 @@ func (s *SyncCommitteeTracker) Stop() {
 // sctPeerInfo is the state of the syncing process from an individual server peer
 type sctPeerInfo struct {
 	peer               sctServer
-	remoteInfo         UpdateInfo
+	remoteInfo         types.UpdateInfo
 	requesting, queued bool
 	forkPeriod         uint64
 	deferredHeads      []SignedHead
@@ -255,7 +151,7 @@ func (s *SyncCommitteeTracker) syncLoop() {
 // Returns true if a new request has been sent.
 func (s *SyncCommitteeTracker) startRequest(sp *sctPeerInfo) bool {
 	req := s.nextRequest(sp)
-	if req.empty() {
+	if req.IsEmpty() {
 		if sp.deferredHeads != nil {
 			s.addSignedHeads(sp.peer, sp.deferredHeads)
 			sp.deferredHeads = nil
@@ -302,9 +198,9 @@ func (s *SyncCommitteeTracker) startRequest(sp *sctPeerInfo) bool {
 
 // nextRequest creates the next request to be sent to the given peer, based on
 // the difference between the remote advertised and the local update chains.
-func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
+func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) types.CommitteeRequest {
 	if sp.remoteInfo.AfterLastPeriod < uint64(len(sp.remoteInfo.Scores)) {
-		return CommitteeRequest{}
+		return types.CommitteeRequest{}
 	}
 	var (
 		localInfo       = s.getUpdateInfo()
@@ -314,11 +210,11 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 	constraintsFirst, constraintsAfterFixed, constraintsAfterLast := s.constraints.PeriodRange()
 
 	if constraintsAfterLast <= constraintsFirst || constraintsAfterFixed <= constraintsFirst {
-		return CommitteeRequest{}
+		return types.CommitteeRequest{}
 	}
 	if s.chainInit && (constraintsAfterFixed <= s.firstPeriod || constraintsFirst > s.nextPeriod) {
 		log.Error("Gap between local updates and fixed committee constraints, cannot sync", "local first", s.firstPeriod, "local afterLast", s.nextPeriod, "constraints first", constraintsFirst, "constraints afterFixed", constraintsAfterFixed)
-		return CommitteeRequest{}
+		return types.CommitteeRequest{}
 	}
 
 	// committee period range -> update period range
@@ -334,10 +230,10 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		syncAfterLast = remoteAfterLast
 	}
 	if syncAfterLast < syncFirst {
-		return CommitteeRequest{}
+		return types.CommitteeRequest{}
 	}
 	var (
-		request        CommitteeRequest
+		request        types.CommitteeRequest
 		localFirst     = s.firstPeriod
 		localAfterLast = s.nextPeriod
 		localInfoFirst = localInfo.AfterLastPeriod - uint64(len(localInfo.Scores))
@@ -372,7 +268,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 			localScore  = localInfo.Scores[period-localFirst]
 			remoteScore = sp.remoteInfo.Scores[period-remoteFirst]
 		)
-		if remoteScore.betterThan(localScore) {
+		if remoteScore.BetterThan(localScore) {
 			request.UpdatePeriods = append(request.UpdatePeriods, period)
 		}
 	}
@@ -387,7 +283,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 		// useless if it cannot serve us)
 		if period >= remoteFirst {
 			remoteScore := sp.remoteInfo.Scores[period-remoteFirst]
-			if s.minimumUpdateScore.betterThan(remoteScore) {
+			if s.minimumUpdateScore.BetterThan(remoteScore) {
 				break // do not sync further if advertised score is less than our minimum requirement
 			}
 		}
@@ -405,7 +301,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 			break
 		}
 		remoteScore := sp.remoteInfo.Scores[period-remoteFirst]
-		if s.minimumUpdateScore.betterThan(remoteScore) {
+		if s.minimumUpdateScore.BetterThan(remoteScore) {
 			break // do not sync further if advertised score is less than our minimum requirement
 		}
 		// Note: updates are available from localFirst to localAfterLast-1 while
@@ -421,7 +317,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) CommitteeRequest {
 
 // processReply processes the reply to a previous request, verifying received
 // updates and committees and extending/improving the local update chain if possible.
-func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest CommitteeRequest, reply CommitteeReply) bool {
+func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest types.CommitteeRequest, reply types.CommitteeReply) bool {
 	if len(reply.Updates) != len(sentRequest.UpdatePeriods) || len(reply.Committees) != len(sentRequest.CommitteePeriods) {
 		return false
 	}
@@ -431,7 +327,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 		lastStoredCommittee uint64
 	)
 	for i, c := range reply.Committees {
-		if len(c) != 513*48 {
+		if len(c) != SerializedCommitteeSize {
 			return false
 		}
 		period := sentRequest.CommitteePeriods[i]
@@ -464,7 +360,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 		var (
 			update          = update // updates are cached by reference, do not overwrite
 			period          = update.Header.SyncPeriod()
-			remoteInfoScore UpdateScore
+			remoteInfoScore types.UpdateScore
 		)
 		if period != sentRequest.UpdatePeriods[i] {
 			return false
@@ -477,8 +373,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest Committ
 		} else {
 			remoteInfoScore = s.minimumUpdateScore
 		}
-		update.CalculateScore()
-		if remoteInfoScore.betterThan(update.score) {
+		if remoteInfoScore.BetterThan(update.Score()) {
 			return false // remote did not deliver an update with the promised score
 		}
 
@@ -517,35 +412,35 @@ func (s *SyncCommitteeTracker) NextPeriod() uint64 {
 	return s.nextPeriod
 }
 
-// GetUpdateInfo returns and UpdateInfo based on the current local update chain
+// GetUpdateInfo returns and types.UpdateInfo based on the current local update chain
 // (tracker mutex locked).
-func (s *SyncCommitteeTracker) GetUpdateInfo() *UpdateInfo {
+func (s *SyncCommitteeTracker) GetUpdateInfo() *types.UpdateInfo {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	return s.getUpdateInfo()
 }
 
-// getUpdateInfo returns and UpdateInfo based on the current local update chain
+// getUpdateInfo returns and types.UpdateInfo based on the current local update chain
 // (tracker mutex expected).
-func (s *SyncCommitteeTracker) getUpdateInfo() *UpdateInfo {
+func (s *SyncCommitteeTracker) getUpdateInfo() *types.UpdateInfo {
 	if s.updateInfo != nil {
 		return s.updateInfo
 	}
 	l := s.nextPeriod - s.firstPeriod
-	if l > MaxUpdateInfoLength {
-		l = MaxUpdateInfoLength
+	if l > types.MaxUpdateInfoLength {
+		l = types.MaxUpdateInfoLength
 	}
 	firstPeriod := s.nextPeriod - l
 
-	u := &UpdateInfo{
+	u := &types.UpdateInfo{
 		AfterLastPeriod: s.nextPeriod,
-		Scores:          make(UpdateScores, int(l)),
+		Scores:          make(types.UpdateScores, int(l)),
 	}
 
 	for period := firstPeriod; period < s.nextPeriod; period++ {
 		if update := s.GetBestUpdate(period); update != nil {
-			u.Scores[period-firstPeriod] = update.score
+			u.Scores[period-firstPeriod] = update.Score()
 		} else {
 			log.Error("Update missing from database", "period", period)
 		}

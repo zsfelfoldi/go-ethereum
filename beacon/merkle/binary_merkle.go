@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package beacon
+package merkle
 
 import (
 	"encoding/binary"
@@ -28,15 +28,15 @@ import (
 	"github.com/minio/sha256-simd"
 )
 
-// MerkleValue represents either a 32 byte value or hash node in a binary merkle tree/partial proof
+// Value represents either a 32 byte value or hash node in a binary merkle tree/partial proof
 type (
-	MerkleValue  [32]byte
-	MerkleValues []MerkleValue
+	Value  [32]byte
+	Values []Value
 )
 
 var (
-	MerkleValueT = reflect.TypeOf(MerkleValue{})
-	merkleZero   [64]MerkleValue
+	ValueT = reflect.TypeOf(Value{})
+	merkleZero   [64]Value
 )
 
 func init() {
@@ -50,8 +50,8 @@ func init() {
 }
 
 // UnmarshalJSON parses a merkle value in hex syntax.
-func (m *MerkleValue) UnmarshalJSON(input []byte) error {
-	return hexutil.UnmarshalFixedJSON(MerkleValueT, input, m[:])
+func (m *Value) UnmarshalJSON(input []byte) error {
+	return hexutil.UnmarshalFixedJSON(ValueT, input, m[:])
 }
 
 // VerifySingleProof verifies a Merkle proof branch for a single value in a
@@ -60,11 +60,11 @@ func (m *MerkleValue) UnmarshalJSON(input []byte) error {
 // level 0) and if greater than len(proof)-1 then the sibling subtrees closest
 // to the root are not stored and all-zero value subtrees are assumed (makes
 // proofs for 24 bit arrays more efficient).
-func VerifySingleProof(proof MerkleValues, index uint64, value MerkleValue, bottomLevel int) (common.Hash, bool) {
+func VerifySingleProof(proof Values, index uint64, value Value, bottomLevel int) (common.Hash, bool) {
 	hasher := sha256.New()
 	var proofIndex int
 	for index > 1 {
-		var proofHash MerkleValue
+		var proofHash Value
 		if proofIndex < len(proof) {
 			proofHash = proof[proofIndex]
 		} else {
@@ -103,13 +103,13 @@ type ProofFormat interface {
 // If internal hash is available then subtrees are only traversed if needed by the writer.
 type ProofReader interface {
 	children() (left, right ProofReader) // subtrees accessible if not nil
-	readNode() (MerkleValue, bool)       // hash should be available if children are nil (leaf node), optional otherwise (internal node)
+	readNode() (Value, bool)       // hash should be available if children are nil (leaf node), optional otherwise (internal node)
 }
 
 // ProofWriter allow collecting data for a partial proof while a subset of a tree is traversed.
 type ProofWriter interface {
 	children() (left, right ProofWriter) // all non-nil subtrees are traversed
-	writeNode(MerkleValue)               // called for every traversed tree node (both leaf and internal)
+	writeNode(Value)               // called for every traversed tree node (both leaf and internal)
 }
 
 // TraverseProof traverses a reader and a writer defined on the same tree
@@ -159,7 +159,7 @@ func TraverseProof(reader ProofReader, writer ProofWriter) (common.Hash, bool) {
 // MultiProof stores a partial Merkle tree proof
 type MultiProof struct {
 	Format ProofFormat
-	Values MerkleValues
+	Values Values
 }
 
 // ParseSSZMultiProof creates a MultiProof from a standard serialized format
@@ -172,7 +172,7 @@ func ParseSSZMultiProof(proof []byte) (MultiProof, error) {
 	var (
 		leafCount   = int(binary.LittleEndian.Uint16(proof[1:3]))
 		format      = NewIndexMapFormat()
-		values      = make(MerkleValues, leafCount)
+		values      = make(Values, leafCount)
 		valuesStart = leafCount*2 + 1
 	)
 	if len(proof) != leafCount*34+1 {
@@ -210,7 +210,7 @@ func parseMultiProofFormat(leaves map[uint64]ProofFormat, index uint64, format [
 // attaching further subtree readers at certain indices
 type multiProofReader struct {
 	format   ProofFormat
-	values   *MerkleValues
+	values   *Values
 	index    uint64
 	subtrees func(uint64) ProofReader
 }
@@ -231,13 +231,13 @@ func (mpr multiProofReader) children() (left, right ProofReader) {
 }
 
 // readNode implements ProofReader
-func (mpr multiProofReader) readNode() (MerkleValue, bool) {
+func (mpr multiProofReader) readNode() (Value, bool) {
 	if l, _ := mpr.format.children(); l == nil && len(*mpr.values) > 0 {
 		hash := (*mpr.values)[0]
 		*mpr.values = (*mpr.values)[1:]
 		return hash, true
 	}
-	return MerkleValue{}, false
+	return Value{}, false
 }
 
 // Reader creates a multiProofReader for the given proof; if subtrees != nil
@@ -258,7 +258,7 @@ func (mpr multiProofReader) Finished() bool {
 }
 
 // rootHash returns the root hash of the proven structure.
-func (mp MultiProof) rootHash() common.Hash {
+func (mp MultiProof) RootHash() common.Hash {
 	reader := mp.Reader(nil)
 	hash, ok := TraverseProof(reader, nil)
 	if !ok || !reader.Finished() {
@@ -272,7 +272,7 @@ func (mp MultiProof) rootHash() common.Hash {
 // certain indices.
 type multiProofWriter struct {
 	format   ProofFormat
-	values   *MerkleValues
+	values   *Values
 	index    uint64
 	subtrees func(uint64) ProofWriter
 }
@@ -284,7 +284,7 @@ type multiProofWriter struct {
 // they should be attached at leaf indices of the given format.
 // Also note that target can be nil in which case the nodes specified by the format
 // are traversed but not stored; subtree writers might still store tree data.
-func NewMultiProofWriter(format ProofFormat, target *MerkleValues, subtrees func(uint64) ProofWriter) multiProofWriter {
+func NewMultiProofWriter(format ProofFormat, target *Values, subtrees func(uint64) ProofWriter) multiProofWriter {
 	return multiProofWriter{format: format, values: target, index: 1, subtrees: subtrees}
 }
 
@@ -304,7 +304,7 @@ func (mpw multiProofWriter) children() (left, right ProofWriter) {
 }
 
 // writeNode implements ProofWriter
-func (mpw multiProofWriter) writeNode(node MerkleValue) {
+func (mpw multiProofWriter) writeNode(node Value) {
 	if mpw.values != nil {
 		if lf, _ := mpw.format.children(); lf == nil {
 			*mpw.values = append(*mpw.values, node)
@@ -479,7 +479,7 @@ func (m MergedReader) children() (left, right ProofReader) {
 }
 
 // readNode implements ProofReader
-func (m MergedReader) readNode() (value MerkleValue, ok bool) {
+func (m MergedReader) readNode() (value Value, ok bool) {
 	var hasChildren bool
 	for _, reader := range m {
 		if left, _ := reader.children(); left != nil {
@@ -491,7 +491,7 @@ func (m MergedReader) readNode() (value MerkleValue, ok bool) {
 		}
 	}
 	if hasChildren {
-		return MerkleValue{}, false
+		return Value{}, false
 	}
 	return
 }
@@ -520,7 +520,7 @@ func (m MergedWriter) children() (left, right ProofWriter) {
 }
 
 // writeNode implements ProofWriter
-func (m MergedWriter) writeNode(value MerkleValue) {
+func (m MergedWriter) writeNode(value Value) {
 	for _, w := range m {
 		w.writeNode(value)
 	}
@@ -530,12 +530,12 @@ func (m MergedWriter) writeNode(value MerkleValue) {
 type callbackWriter struct {
 	format        ProofFormat
 	index         uint64
-	storeCallback func(uint64, MerkleValue)
+	storeCallback func(uint64, Value)
 }
 
 // NewCallbackWriter creates a callbackWriter that traverses the tree subset
 // defined by the given proof format and calls callbackWriter for each traversed node
-func NewCallbackWriter(format ProofFormat, storeCallback func(uint64, MerkleValue)) callbackWriter {
+func NewCallbackWriter(format ProofFormat, storeCallback func(uint64, Value)) callbackWriter {
 	return callbackWriter{format: format, index: 1, storeCallback: storeCallback}
 }
 
@@ -550,6 +550,6 @@ func (cw callbackWriter) children() (left, right ProofWriter) {
 }
 
 // writeNode implements ProofWriter
-func (cw callbackWriter) writeNode(node MerkleValue) {
+func (cw callbackWriter) writeNode(node Value) {
 	cw.storeCallback(cw.index, node)
 }

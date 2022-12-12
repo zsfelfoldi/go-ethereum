@@ -23,16 +23,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/beacon/engine"
+	"github.com/ethereum/go-ethereum/beacon/light/api"
+	"github.com/ethereum/go-ethereum/beacon/light/sync"
+	"github.com/ethereum/go-ethereum/beacon/light/types"
+	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/common/mclock"
-	cbeacon "github.com/ethereum/go-ethereum/core/beacon"
-	"github.com/ethereum/go-ethereum/core/types"
+	ctypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 	"github.com/ethereum/go-ethereum/internal/flags"
-	"github.com/ethereum/go-ethereum/light/beacon"
-	"github.com/ethereum/go-ethereum/light/beacon/api"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/urfave/cli/v2"
@@ -66,7 +69,7 @@ func main() {
 }
 
 var (
-	stateProofFormat    beacon.ProofFormat // requested multiproof format
+	stateProofFormat    merkle.ProofFormat // requested multiproof format
 	execBlockIndex      int                // index of execution block root in proof.Values where proof.Format == stateProofFormat
 	finalizedBlockIndex int                // index of finalized block root in proof.Values where proof.Format == stateProofFormat
 )
@@ -75,14 +78,14 @@ func blsync(ctx *cli.Context) error {
 	if !ctx.IsSet(utils.BeaconApiFlag.Name) {
 		utils.Fatalf("Beacon node light client API URL not specified")
 	}
-	stateProofFormat = beacon.NewIndexMapFormat().AddLeaf(beacon.BsiExecHead, nil).AddLeaf(beacon.BsiFinalBlock, nil)
+	stateProofFormat = merkle.NewIndexMapFormat().AddLeaf(params.BsiExecHead, nil).AddLeaf(params.BsiFinalBlock, nil)
 	var (
-		stateIndexMap = beacon.ProofFormatIndexMap(stateProofFormat)
+		stateIndexMap = merkle.ProofFormatIndexMap(stateProofFormat)
 		chainConfig   = makeChainConfig(ctx)
 		customHeader  = make(map[string]string)
 	)
-	execBlockIndex = stateIndexMap[beacon.BsiExecHead]
-	finalizedBlockIndex = stateIndexMap[beacon.BsiFinalBlock]
+	execBlockIndex = stateIndexMap[params.BsiExecHead]
+	finalizedBlockIndex = stateIndexMap[params.BsiFinalBlock]
 
 	for _, s := range utils.SplitAndTrim(ctx.String(utils.BeaconApiHeaderFlag.Name)) {
 		kv := strings.Split(s, ":")
@@ -96,12 +99,12 @@ func blsync(ctx *cli.Context) error {
 		beaconApi               = api.NewBeaconLightApi(ctx.String(utils.BeaconApiFlag.Name), customHeader)
 		committeeSyncer         = api.NewCommitteeSyncer(beaconApi, chainConfig.GenesisData, false)
 		db                      = memorydb.New()
-		syncCommitteeCheckpoint = beacon.NewWeakSubjectivityCheckpoint(db, committeeSyncer, chainConfig.Checkpoint, nil)
+		syncCommitteeCheckpoint = sync.NewWeakSubjectivityCheckpoint(db, committeeSyncer, chainConfig.Checkpoint, nil)
 	)
 	if syncCommitteeCheckpoint == nil {
 		utils.Fatalf("No beacon chain checkpoint")
 	}
-	syncCommitteeTracker := beacon.NewSyncCommitteeTracker(db, chainConfig.Forks, syncCommitteeCheckpoint, ctx.Int(utils.BeaconThresholdFlag.Name), !ctx.Bool(utils.BeaconNoFilterFlag.Name), beacon.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
+	syncCommitteeTracker := sync.NewSyncCommitteeTracker(db, chainConfig.Forks, syncCommitteeCheckpoint, ctx.Int(utils.BeaconThresholdFlag.Name), !ctx.Bool(utils.BeaconNoFilterFlag.Name), sync.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
 	execSyncer := &execSyncer{
 		api:           beaconApi,
 		client:        makeRPCClient(ctx),
@@ -114,17 +117,17 @@ func blsync(ctx *cli.Context) error {
 	return nil
 }
 
-func callNewPayloadV1(client *rpc.Client, block *types.Block) (string, error) {
-	var resp cbeacon.PayloadStatusV1
+func callNewPayloadV1(client *rpc.Client, block *ctypes.Block) (string, error) {
+	var resp engine.PayloadStatusV1
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	err := client.CallContext(ctx, &resp, "engine_newPayloadV1", *cbeacon.BlockToExecutableData(block))
+	err := client.CallContext(ctx, &resp, "engine_newPayloadV1", *engine.BlockToExecutableData(block))
 	cancel()
 	return resp.Status, err
 }
 
 func callForkchoiceUpdatedV1(client *rpc.Client, headHash, finalizedHash common.Hash) (string, error) {
-	var resp cbeacon.ForkChoiceResponse
-	update := cbeacon.ForkchoiceStateV1{
+	var resp engine.ForkChoiceResponse
+	update := engine.ForkchoiceStateV1{
 		HeadBlockHash:      headHash,
 		SafeBlockHash:      finalizedHash,
 		FinalizedBlockHash: finalizedHash,
@@ -146,13 +149,13 @@ var statePaths = []string{
 	"[\"latestExecutionPayloadHeader\",\"blockHash\"]",
 }
 
-func (e *execSyncer) newHead(head beacon.Header) {
+func (e *execSyncer) newHead(head types.Header) {
 	log.Info("Received new beacon head", "slot", head.Slot, "blockRoot", head.Hash())
 	if e.client == nil {
 		return
 	}
 	var (
-		blocks         []*types.Block
+		blocks         []*ctypes.Block
 		finalizedRoots []common.Hash
 		parentFound    bool
 		maxBlockFetch  = 4

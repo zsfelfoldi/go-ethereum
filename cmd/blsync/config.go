@@ -19,10 +19,10 @@ package main
 import (
 	"context"
 
+	"github.com/ethereum/go-ethereum/beacon/light/sync"
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/light/beacon"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -30,23 +30,23 @@ import (
 )
 
 var (
-	MainnetConfig = beacon.ChainConfig{
-		GenesisData: beacon.GenesisData{
+	MainnetConfig = sync.ChainConfig{
+		GenesisData: sync.GenesisData{
 			GenesisValidatorsRoot: common.HexToHash("0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95"),
 			GenesisTime:           1606824023,
 		},
-		Forks: beacon.Forks{
-			beacon.Fork{
+		Forks: sync.Forks{
+			sync.Fork{
 				Epoch:   0,
 				Name:    "GENESIS",
 				Version: []byte{0, 0, 0, 0},
 			},
-			beacon.Fork{
+			sync.Fork{
 				Epoch:   74240,
 				Name:    "ALTAIR",
 				Version: []byte{1, 0, 0, 0},
 			},
-			beacon.Fork{
+			sync.Fork{
 				Epoch:   144896,
 				Name:    "BELLATRIX",
 				Version: []byte{2, 0, 0, 0},
@@ -55,23 +55,23 @@ var (
 		Checkpoint: common.HexToHash("0x388be41594ec7d6a6894f18c73f3469f07e2c19a803de4755d335817ed8e2e5a"),
 	}
 
-	SepoliaConfig = beacon.ChainConfig{
-		GenesisData: beacon.GenesisData{
+	SepoliaConfig = sync.ChainConfig{
+		GenesisData: sync.GenesisData{
 			GenesisValidatorsRoot: common.HexToHash("0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078"),
 			GenesisTime:           1655733600,
 		},
-		Forks: beacon.Forks{
-			beacon.Fork{
+		Forks: sync.Forks{
+			sync.Fork{
 				Epoch:   0,
 				Name:    "GENESIS",
 				Version: []byte{144, 0, 0, 105},
 			},
-			beacon.Fork{
+			sync.Fork{
 				Epoch:   50,
 				Name:    "ALTAIR",
 				Version: []byte{144, 0, 0, 112},
 			},
-			beacon.Fork{
+			sync.Fork{
 				Epoch:   100,
 				Name:    "BELLATRIX",
 				Version: []byte{144, 0, 0, 113},
@@ -80,23 +80,23 @@ var (
 		Checkpoint: common.HexToHash("0x1005a6d9175e96bfbce4d35b80f468e9bff0b674e1e861d16e09e10005a58e81"),
 	}
 
-	GoerliConfig = beacon.ChainConfig{
-		GenesisData: beacon.GenesisData{
+	GoerliConfig = sync.ChainConfig{
+		GenesisData: sync.GenesisData{
 			GenesisValidatorsRoot: common.HexToHash("0x043db0d9a83813551ee2f33450d23797757d430911a9320530ad8a0eabc43efb"),
 			GenesisTime:           1614588812,
 		},
-		Forks: beacon.Forks{
-			beacon.Fork{
+		Forks: sync.Forks{
+			sync.Fork{
 				Epoch:   0,
 				Name:    "GENESIS",
 				Version: []byte{0, 0, 16, 32},
 			},
-			beacon.Fork{
+			sync.Fork{
 				Epoch:   36660,
 				Name:    "ALTAIR",
 				Version: []byte{1, 0, 16, 32},
 			},
-			beacon.Fork{
+			sync.Fork{
 				Epoch:   112260,
 				Name:    "BELLATRIX",
 				Version: []byte{2, 0, 16, 32},
@@ -106,10 +106,10 @@ var (
 	}
 )
 
-func makeChainConfig(ctx *cli.Context) beacon.ChainConfig {
+func makeChainConfig(ctx *cli.Context) sync.ChainConfig {
 	utils.CheckExclusive(ctx, utils.MainnetFlag, utils.GoerliFlag, utils.SepoliaFlag)
 	customConfig := ctx.IsSet(utils.BeaconConfigFlag.Name) || ctx.IsSet(utils.BeaconGenesisRootFlag.Name) || ctx.IsSet(utils.BeaconGenesisTimeFlag.Name)
-	var config beacon.ChainConfig
+	var config sync.ChainConfig
 	switch {
 	case ctx.Bool(utils.MainnetFlag.Name):
 		config = MainnetConfig
@@ -126,7 +126,7 @@ func makeChainConfig(ctx *cli.Context) beacon.ChainConfig {
 		utils.Fatalf("Cannot use custom beacon chain config flags in combination with pre-defined network config")
 	}
 	if ctx.IsSet(utils.BeaconConfigFlag.Name) {
-		forks, err := beacon.LoadForks(ctx.String(utils.BeaconConfigFlag.Name))
+		forks, err := sync.LoadForks(ctx.String(utils.BeaconConfigFlag.Name))
 		if err != nil {
 			utils.Fatalf("Could not load beacon chain config file", "file name", ctx.String(utils.BeaconConfigFlag.Name), "error", err)
 		}
