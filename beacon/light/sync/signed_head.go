@@ -60,7 +60,7 @@ func (s *SignedHead) Equal(s2 *SignedHead) bool {
 // AddSignedHeads adds signed heads to the tracker if the syncing process has
 // been finished; adds them to a deferred list otherwise that is processed when
 // the syncing is finished.
-func (s *SyncCommitteeTracker) AddSignedHeads(peer sctServer, heads []SignedHead) error {
+func (s *CommitteeTracker) AddSignedHeads(peer ctServer, heads []SignedHead) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -73,7 +73,7 @@ func (s *SyncCommitteeTracker) AddSignedHeads(peer sctServer, heads []SignedHead
 
 // addSignedHeads adds signed heads to the tracker after a successful verification
 // (it is assumed that the local update chain has been synced with the given peer)
-func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead) error {
+func (s *CommitteeTracker) addSignedHeads(peer ctServer, heads []SignedHead) error {
 	var (
 		oldHeadHash common.Hash
 		err         error
@@ -110,8 +110,8 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 			h := &headInfo{
 				head:         head,
 				hash:         hash,
-				sentTo:       make(map[sctClient]struct{}),
-				receivedFrom: map[sctServer]struct{}{peer: struct{}{}},
+				sentTo:       make(map[ctClient]struct{}),
+				receivedFrom: map[ctServer]struct{}{peer: struct{}{}},
 			}
 			s.acceptedList.updateHead(h)
 		}
@@ -132,7 +132,7 @@ func (s *SyncCommitteeTracker) addSignedHeads(peer sctServer, heads []SignedHead
 // The age of the header is also returned (the time elapsed since the beginning
 // of the given slot, according to the local system clock). If enforceTime is
 // true then negative age (future) headers are rejected.
-func (s *SyncCommitteeTracker) verifySignature(head SignedHead) (bool, time.Duration) {
+func (s *CommitteeTracker) verifySignature(head SignedHead) (bool, time.Duration) {
 	var (
 		slotTime = int64(time.Second) * int64(s.genesisTime+head.Header.Slot*12)
 		age      = time.Duration(s.unixNano() - slotTime)
@@ -148,7 +148,7 @@ func (s *SyncCommitteeTracker) verifySignature(head SignedHead) (bool, time.Dura
 }
 
 // SubscribeToNewHeads subscribes the given callback function to head beacon headers with a verified valid sync committee signature.
-func (s *SyncCommitteeTracker) SubscribeToNewHeads(subFn func(types.Header)) {
+func (s *CommitteeTracker) SubscribeToNewHeads(subFn func(types.Header)) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -161,8 +161,8 @@ type headInfo struct {
 	head         SignedHead
 	hash         common.Hash
 	signerCount  int
-	receivedFrom map[sctServer]struct{}
-	sentTo       map[sctClient]struct{}
+	receivedFrom map[ctServer]struct{}
+	sentTo       map[ctClient]struct{}
 }
 
 // headList is a list of best known heads for the few most recent slots

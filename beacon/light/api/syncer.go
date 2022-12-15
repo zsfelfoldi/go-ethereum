@@ -43,14 +43,14 @@ const (
 var syncPeriodOffsets = []int{-256, -16, 64}
 
 // CommitteeSyncer syncs committee updates and signed heads from BeaconLightApi
-// to SyncCommitteeTracker
+// to CommitteeTracker
 type CommitteeSyncer struct {
 	api *BeaconLightApi
 
 	genesisData         sync.GenesisData
 	checkpointPeriod    uint64
 	checkpointCommittee []byte
-	committeeTracker    *sync.SyncCommitteeTracker
+	committeeTracker    *sync.CommitteeTracker
 
 	lastAdvertisedPeriod uint64
 	lastPeriodOffset     int
@@ -76,8 +76,8 @@ func NewCommitteeSyncer(api *BeaconLightApi, genesisData sync.GenesisData, useHe
 	}
 }
 
-// Start starts the syncing of the given SyncCommitteeTracker
-func (cs *CommitteeSyncer) Start(committeeTracker *sync.SyncCommitteeTracker) {
+// Start starts the syncing of the given CommitteeTracker
+func (cs *CommitteeSyncer) Start(committeeTracker *sync.CommitteeTracker) {
 	cs.committeeTracker = committeeTracker
 	committeeTracker.SyncWithPeer(cs, nil)
 	go cs.headPollLoop()

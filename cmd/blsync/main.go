@@ -104,7 +104,7 @@ func blsync(ctx *cli.Context) error {
 	if syncCommitteeCheckpoint == nil {
 		utils.Fatalf("No beacon chain checkpoint")
 	}
-	syncCommitteeTracker := sync.NewSyncCommitteeTracker(db, chainConfig.Forks, syncCommitteeCheckpoint, ctx.Int(utils.BeaconThresholdFlag.Name), !ctx.Bool(utils.BeaconNoFilterFlag.Name), sync.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
+	syncCommitteeTracker := sync.NewCommitteeTracker(db, chainConfig.Forks, syncCommitteeCheckpoint, ctx.Int(utils.BeaconThresholdFlag.Name), !ctx.Bool(utils.BeaconNoFilterFlag.Name), sync.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
 	execSyncer := &execSyncer{
 		api:           beaconApi,
 		client:        makeRPCClient(ctx),

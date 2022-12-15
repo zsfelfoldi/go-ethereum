@@ -54,21 +54,21 @@ var (
 	tcBetterUpdates    = newTestChain(tcBase, testGenesis, tfNormal, false, 5, 7, finalizedTestUpdate, 400) // finalized updates from period 5 to 7 (stronger than the one above)
 )
 
-type sctTestCase []sctTestStep
+type ctTestCase []ctTestStep
 
-type sctTestStep struct {
+type ctTestStep struct {
 	periodTime float64 // slotTime uint64
-	trackers   []sctTestTrackerStep
-	sync       []sctTestTrackerSync
+	trackers   []ctTestTrackerStep
+	sync       []ctTestTrackerSync
 }
 
-type sctTestTrackerSync struct {
+type ctTestTrackerSync struct {
 	sourceTc       *testChain // nil if target is synced from another source tracker
 	source, target int        // tracker index in the test setup; source is -1 if the target is synced from a testChain
 	expFail        bool
 }
 
-type sctTestTrackerStep struct {
+type ctTestTrackerStep struct {
 	forks           Forks
 	signerThreshold int
 	newTracker      bool // should always be true at first step and whenever forks/signerThreshold is changed
@@ -80,55 +80,55 @@ type sctTestTrackerStep struct {
 	expFirst, expAfterLast uint64
 }
 
-func TestSyncCommitteeTrackerConstraints(t *testing.T) {
-	runSctTest(t, sctTestCase{
-		{7.5, []sctTestTrackerStep{{tfNormal, 257, true, tcBase, 0, 9, 9, tcBase, 0, 8}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcBase, 5, 8}}, []sctTestTrackerSync{{tcBase, -1, 0, false}, {nil, 0, 1, false}}},
-		{8.5, []sctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 10, 10, tcBase, 0, 9}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcBase, 5, 9}}, []sctTestTrackerSync{{tcBase, -1, 0, false}, {nil, 0, 1, false}}},
-		{9.5, []sctTestTrackerStep{{tfNormal, 257, true, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcBase, 5, 10}}, []sctTestTrackerSync{{tcBase, -1, 0, false}, {nil, 0, 1, false}}},
-		{9.6, []sctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfNormal, 257, false, tcBase, 0, 6, 1000, tcBase, 0, 10}}, []sctTestTrackerSync{{nil, 0, 1, false}}},
+func TestCommitteeTrackerConstraints(t *testing.T) {
+	runCtTest(t, ctTestCase{
+		{7.5, []ctTestTrackerStep{{tfNormal, 257, true, tcBase, 0, 9, 9, tcBase, 0, 8}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcBase, 5, 8}}, []ctTestTrackerSync{{tcBase, -1, 0, false}, {nil, 0, 1, false}}},
+		{8.5, []ctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 10, 10, tcBase, 0, 9}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcBase, 5, 9}}, []ctTestTrackerSync{{tcBase, -1, 0, false}, {nil, 0, 1, false}}},
+		{9.5, []ctTestTrackerStep{{tfNormal, 257, true, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcBase, 5, 10}}, []ctTestTrackerSync{{tcBase, -1, 0, false}, {nil, 0, 1, false}}},
+		{9.6, []ctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfNormal, 257, false, tcBase, 0, 6, 1000, tcBase, 0, 10}}, []ctTestTrackerSync{{nil, 0, 1, false}}},
 	})
 }
 
-func TestSyncCommitteeTrackerLowParticipation(t *testing.T) {
-	runSctTest(t, sctTestCase{
-		{9.5, []sctTestTrackerStep{{tfNormal, 257, true, tcLowParticipation, 0, 9, 9, tcLowParticipation, 0, 8}, {tfNormal, 300, true, tcBase, 5, 6, 1000, tcLowParticipation, 5, 8}}, []sctTestTrackerSync{{tcLowParticipation, -1, 0, false}, {nil, 0, 1, false}}},
-		{11.5, []sctTestTrackerStep{{tfNormal, 257, false, tcLowParticipation, 0, 13, 13, tcLowParticipation, 0, 12}, {tfNormal, 300, false, tcBase, 5, 6, 1000, tcLowParticipation, 5, 8}}, []sctTestTrackerSync{{tcLowParticipation, -1, 0, false}, {nil, 0, 1, false}}},
-		{11.6, []sctTestTrackerStep{{tfNormal, 257, false, tcLowParticipation, 0, 13, 13, tcLowParticipation, 0, 12}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcLowParticipation, 5, 12}}, []sctTestTrackerSync{{nil, 0, 1, false}}},
-		{13.5, []sctTestTrackerStep{{tfNormal, 257, false, tcLowParticipation, 0, 16, 16, tcLowParticipation, 0, 14}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcLowParticipation, 5, 14}}, []sctTestTrackerSync{{tcLowParticipation, -1, 0, true}, {nil, 0, 1, false}}},
-		{14.5, []sctTestTrackerStep{{tfNormal, 257, false, tcLowParticipation, 0, 16, 16, tcLowParticipation, 0, 15}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcLowParticipation, 5, 15}}, []sctTestTrackerSync{{tcLowParticipation, -1, 0, false}, {nil, 0, 1, false}}},
-		{19.5, []sctTestTrackerStep{{tfNormal, 257, false, tcLowParticipation, 0, 21, 21, tcLowParticipation, 0, 15}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcLowParticipation, 5, 15}}, []sctTestTrackerSync{{tcLowParticipation, -1, 0, false}, {nil, 0, 1, false}}},
-		{19.6, []sctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcBase, 5, 10}}, []sctTestTrackerSync{{tcBase, -1, 0, false}, {nil, 0, 1, false}}},
+func TestCommitteeTrackerLowParticipation(t *testing.T) {
+	runCtTest(t, ctTestCase{
+		{9.5, []ctTestTrackerStep{{tfNormal, 257, true, tcLowParticipation, 0, 9, 9, tcLowParticipation, 0, 8}, {tfNormal, 300, true, tcBase, 5, 6, 1000, tcLowParticipation, 5, 8}}, []ctTestTrackerSync{{tcLowParticipation, -1, 0, false}, {nil, 0, 1, false}}},
+		{11.5, []ctTestTrackerStep{{tfNormal, 257, false, tcLowParticipation, 0, 13, 13, tcLowParticipation, 0, 12}, {tfNormal, 300, false, tcBase, 5, 6, 1000, tcLowParticipation, 5, 8}}, []ctTestTrackerSync{{tcLowParticipation, -1, 0, false}, {nil, 0, 1, false}}},
+		{11.6, []ctTestTrackerStep{{tfNormal, 257, false, tcLowParticipation, 0, 13, 13, tcLowParticipation, 0, 12}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcLowParticipation, 5, 12}}, []ctTestTrackerSync{{nil, 0, 1, false}}},
+		{13.5, []ctTestTrackerStep{{tfNormal, 257, false, tcLowParticipation, 0, 16, 16, tcLowParticipation, 0, 14}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcLowParticipation, 5, 14}}, []ctTestTrackerSync{{tcLowParticipation, -1, 0, true}, {nil, 0, 1, false}}},
+		{14.5, []ctTestTrackerStep{{tfNormal, 257, false, tcLowParticipation, 0, 16, 16, tcLowParticipation, 0, 15}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcLowParticipation, 5, 15}}, []ctTestTrackerSync{{tcLowParticipation, -1, 0, false}, {nil, 0, 1, false}}},
+		{19.5, []ctTestTrackerStep{{tfNormal, 257, false, tcLowParticipation, 0, 21, 21, tcLowParticipation, 0, 15}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcLowParticipation, 5, 15}}, []ctTestTrackerSync{{tcLowParticipation, -1, 0, false}, {nil, 0, 1, false}}},
+		{19.6, []ctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcBase, 5, 10}}, []ctTestTrackerSync{{tcBase, -1, 0, false}, {nil, 0, 1, false}}},
 	})
 }
 
-func TestSyncCommitteeTrackerFork(t *testing.T) {
-	runSctTest(t, sctTestCase{
-		{9.5, []sctTestTrackerStep{{tfNormal, 257, true, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAlternative, 257, true, tcFork, 0, 11, 11, tcFork, 0, 10}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcBase, 5, 7}}, []sctTestTrackerSync{{tcBase, -1, 0, false}, {tcFork, -1, 1, false}, {nil, 1, 2, true}}},
-		{9.6, []sctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAlternative, 257, false, tcFork, 0, 11, 11, tcFork, 0, 10}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcBase, 5, 10}}, []sctTestTrackerSync{{nil, 0, 2, false}}},
-		{9.7, []sctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAlternative, 257, false, tcFork, 0, 11, 11, tcFork, 0, 10}, {tfAlternative, 257, true, tcFork, 5, 6, 1000, tcFork, 5, 7}}, []sctTestTrackerSync{}},
-		{9.8, []sctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAlternative, 257, false, tcFork, 0, 11, 11, tcFork, 0, 10}, {tfAlternative, 257, true, tcFork, 5, 6, 1000, tcFork, 5, 10}}, []sctTestTrackerSync{{nil, 1, 2, false}}},
+func TestCommitteeTrackerFork(t *testing.T) {
+	runCtTest(t, ctTestCase{
+		{9.5, []ctTestTrackerStep{{tfNormal, 257, true, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAlternative, 257, true, tcFork, 0, 11, 11, tcFork, 0, 10}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcBase, 5, 7}}, []ctTestTrackerSync{{tcBase, -1, 0, false}, {tcFork, -1, 1, false}, {nil, 1, 2, true}}},
+		{9.6, []ctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAlternative, 257, false, tcFork, 0, 11, 11, tcFork, 0, 10}, {tfNormal, 257, false, tcBase, 5, 6, 1000, tcBase, 5, 10}}, []ctTestTrackerSync{{nil, 0, 2, false}}},
+		{9.7, []ctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAlternative, 257, false, tcFork, 0, 11, 11, tcFork, 0, 10}, {tfAlternative, 257, true, tcFork, 5, 6, 1000, tcFork, 5, 7}}, []ctTestTrackerSync{}},
+		{9.8, []ctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAlternative, 257, false, tcFork, 0, 11, 11, tcFork, 0, 10}, {tfAlternative, 257, true, tcFork, 5, 6, 1000, tcFork, 5, 10}}, []ctTestTrackerSync{{nil, 1, 2, false}}},
 	})
 }
 
-func TestSyncCommitteeTrackerAnotherGenesis(t *testing.T) {
-	runSctTest(t, sctTestCase{
-		{9.5, []sctTestTrackerStep{{tfNormal, 257, true, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAnotherGenesis, 257, true, tcAnotherGenesis, 0, 11, 11, tcAnotherGenesis, 0, 10}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcBase, 1, 0}}, []sctTestTrackerSync{{tcBase, -1, 0, false}, {tcAnotherGenesis, -1, 1, false}, {nil, 1, 0, true}, {nil, 1, 2, true}}},
-		{9.6, []sctTestTrackerStep{{tfNormal, 257, true, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAnotherGenesis, 257, true, tcAnotherGenesis, 0, 11, 11, tcAnotherGenesis, 0, 10}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcBase, 5, 10}}, []sctTestTrackerSync{{nil, 0, 2, false}}},
+func TestCommitteeTrackerAnotherGenesis(t *testing.T) {
+	runCtTest(t, ctTestCase{
+		{9.5, []ctTestTrackerStep{{tfNormal, 257, true, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAnotherGenesis, 257, true, tcAnotherGenesis, 0, 11, 11, tcAnotherGenesis, 0, 10}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcBase, 1, 0}}, []ctTestTrackerSync{{tcBase, -1, 0, false}, {tcAnotherGenesis, -1, 1, false}, {nil, 1, 0, true}, {nil, 1, 2, true}}},
+		{9.6, []ctTestTrackerStep{{tfNormal, 257, true, tcBase, 0, 11, 11, tcBase, 0, 10}, {tfAnotherGenesis, 257, true, tcAnotherGenesis, 0, 11, 11, tcAnotherGenesis, 0, 10}, {tfNormal, 257, true, tcBase, 5, 6, 1000, tcBase, 5, 10}}, []ctTestTrackerSync{{nil, 0, 2, false}}},
 	})
 }
 
-func TestSyncCommitteeTrackerBetterUpdates(t *testing.T) {
-	runSctTest(t, sctTestCase{
-		{9.5, []sctTestTrackerStep{{tfNormal, 257, true, tcBase, 2, 11, 11, tcBase, 2, 10}, {tfNormal, 257, true, tcBase, 0, 9, 9, tcBetterUpdates, 0, 8}, {tfNormal, 257, true, tcBase, 0, 9, 9, tcBetterUpdates2, 0, 8}}, []sctTestTrackerSync{{tcBase, -1, 0, false}, {tcBetterUpdates, -1, 1, false}, {tcBetterUpdates2, -1, 2, false}}},
-		{9.6, []sctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates, 0, 10}, {tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates, 0, 10}, {tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates2, 0, 10}}, []sctTestTrackerSync{{tcBetterUpdates, -1, 1, false}, {nil, 1, 0, false}, {nil, 0, 2, false}}},
-		{9.7, []sctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates2, 0, 10}, {tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates2, 0, 10}, {tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates2, 0, 10}}, []sctTestTrackerSync{{nil, 2, 0, false}, {nil, 2, 1, false}}},
+func TestCommitteeTrackerBetterUpdates(t *testing.T) {
+	runCtTest(t, ctTestCase{
+		{9.5, []ctTestTrackerStep{{tfNormal, 257, true, tcBase, 2, 11, 11, tcBase, 2, 10}, {tfNormal, 257, true, tcBase, 0, 9, 9, tcBetterUpdates, 0, 8}, {tfNormal, 257, true, tcBase, 0, 9, 9, tcBetterUpdates2, 0, 8}}, []ctTestTrackerSync{{tcBase, -1, 0, false}, {tcBetterUpdates, -1, 1, false}, {tcBetterUpdates2, -1, 2, false}}},
+		{9.6, []ctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates, 0, 10}, {tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates, 0, 10}, {tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates2, 0, 10}}, []ctTestTrackerSync{{tcBetterUpdates, -1, 1, false}, {nil, 1, 0, false}, {nil, 0, 2, false}}},
+		{9.7, []ctTestTrackerStep{{tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates2, 0, 10}, {tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates2, 0, 10}, {tfNormal, 257, false, tcBase, 0, 11, 11, tcBetterUpdates2, 0, 10}}, []ctTestTrackerSync{{nil, 2, 0, false}, {nil, 2, 1, false}}},
 	})
 }
 
-func runSctTest(t *testing.T, testCase sctTestCase) {
+func runCtTest(t *testing.T, testCase ctTestCase) {
 	count := len(testCase[0].trackers)
 	dbs := make([]*memorydb.Database, count)
-	trackers := make([]*SyncCommitteeTracker, count)
+	trackers := make([]*CommitteeTracker, count)
 	constraints := make([]*testConstraints, count)
 	for i := range dbs {
 		dbs[i] = memorydb.New()
@@ -145,7 +145,7 @@ func runSctTest(t *testing.T, testCase sctTestCase) {
 					trackers[i].Stop()
 				}
 				constraints[i] = &testConstraints{}
-				trackers[i] = NewSyncCommitteeTracker(dbs[i], ts.forks, constraints[i], ts.signerThreshold, true, dummyVerifier{}, clock, func() int64 { return int64(clock.Now()) })
+				trackers[i] = NewCommitteeTracker(dbs[i], ts.forks, constraints[i], ts.signerThreshold, true, dummyVerifier{}, clock, func() int64 { return int64(clock.Now()) })
 			}
 			constraints[i].setRoots(ts.constraintsTc, ts.constraintsFirst, ts.constraintsAfterFixed, ts.constraintsAfterLast)
 		}
@@ -156,7 +156,7 @@ func runSctTest(t *testing.T, testCase sctTestCase) {
 				s.syncTracker(trackers[ss.target])
 				failed = s.failed
 			} else {
-				s := &sctSyncer{sct: trackers[ss.source]}
+				s := &ctSyncer{ct: trackers[ss.source]}
 				s.syncTracker(trackers[ss.target])
 				failed = s.failed
 			}
@@ -166,32 +166,32 @@ func runSctTest(t *testing.T, testCase sctTestCase) {
 		}
 		// check resulting tracker state
 		for i, ts := range step.trackers {
-			sct := trackers[i]
+			ct := trackers[i]
 			if ts.expFirst > 0 {
-				if sct.GetBestUpdate(ts.expFirst-1) != nil {
+				if ct.GetBestUpdate(ts.expFirst-1) != nil {
 					t.Errorf("Step %d tracker %d: update found in synced chain before the expected range (period %d)", stepIndex, i, ts.expFirst-1)
 				}
 			}
 			for period := ts.expFirst; period < ts.expAfterLast; period++ {
-				if update := sct.GetBestUpdate(period); update == nil {
+				if update := ct.GetBestUpdate(period); update == nil {
 					t.Errorf("Step %d tracker %d: update missing from synced chain (period %d)", stepIndex, i, period)
 				} else if update.Score() != ts.expTc.periods[period].update.Score() {
 					t.Errorf("Step %d tracker %d: wrong update found in synced chain (period %d)", stepIndex, i, period)
 				}
 			}
 			for period := ts.expFirst; period <= ts.expAfterLast; period++ {
-				if sct.GetSyncCommitteeRoot(period) != ts.expTc.periods[period].committeeRoot {
+				if ct.GetSyncCommitteeRoot(period) != ts.expTc.periods[period].committeeRoot {
 					t.Errorf("Step %d tracker %d: committee root mismatch in synced chain (period %d)", stepIndex, i, period)
 				}
 			}
-			if sct.GetBestUpdate(ts.expAfterLast) != nil {
+			if ct.GetBestUpdate(ts.expAfterLast) != nil {
 				t.Errorf("Step %d tracker %d: update found in synced chain after the expected range (period %d)", stepIndex, i, ts.expAfterLast)
 			}
 		}
 	}
-	for _, sct := range trackers {
-		if sct != nil {
-			sct.Stop()
+	for _, ct := range trackers {
+		if ct != nil {
+			ct.Stop()
 		}
 	}
 }
@@ -349,39 +349,39 @@ func (tc *testChain) makeUpdateInfo(firstPeriod int) *types.UpdateInfo {
 	return u
 }
 
-func (s *tcSyncer) syncTracker(sct *SyncCommitteeTracker) {
-	<-sct.SyncWithPeer(s, s.tc.makeUpdateInfo(0))
+func (s *tcSyncer) syncTracker(ct *CommitteeTracker) {
+	<-ct.SyncWithPeer(s, s.tc.makeUpdateInfo(0))
 }
 
-type sctSyncer struct {
-	sct    *SyncCommitteeTracker
+type ctSyncer struct {
+	ct    *CommitteeTracker
 	failed bool
 }
 
-func (s *sctSyncer) CanRequest(updateCount, committeeCount int) bool { return true }
+func (s *ctSyncer) CanRequest(updateCount, committeeCount int) bool { return true }
 
-func (s *sctSyncer) GetBestCommitteeProofs(ctx context.Context, req types.CommitteeRequest) (types.CommitteeReply, error) {
+func (s *ctSyncer) GetBestCommitteeProofs(ctx context.Context, req types.CommitteeRequest) (types.CommitteeReply, error) {
 	reply := types.CommitteeReply{
 		Updates:    make([]types.LightClientUpdate, len(req.UpdatePeriods)),
 		Committees: make([][]byte, len(req.CommitteePeriods)),
 	}
 	for i, period := range req.UpdatePeriods {
-		if u := s.sct.GetBestUpdate(period); u != nil {
+		if u := s.ct.GetBestUpdate(period); u != nil {
 			reply.Updates[i] = *u
 		}
 	}
 	for i, period := range req.CommitteePeriods {
-		reply.Committees[i] = s.sct.GetSerializedSyncCommittee(period, s.sct.GetSyncCommitteeRoot(period))
+		reply.Committees[i] = s.ct.GetSerializedSyncCommittee(period, s.ct.GetSyncCommitteeRoot(period))
 	}
 	return reply, nil
 }
 
-func (s *sctSyncer) WrongReply(description string) {
+func (s *ctSyncer) WrongReply(description string) {
 	s.failed = true
 }
 
-func (s *sctSyncer) syncTracker(sct *SyncCommitteeTracker) {
-	<-sct.SyncWithPeer(s, s.sct.GetUpdateInfo())
+func (s *ctSyncer) syncTracker(ct *CommitteeTracker) {
+	<-ct.SyncWithPeer(s, s.ct.GetUpdateInfo())
 }
 
 type testConstraints struct {

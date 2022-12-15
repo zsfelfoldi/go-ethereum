@@ -29,15 +29,15 @@ const (
 	advertiseDelay          = time.Second * 10
 )
 
-// sctClient represents a peer that SyncCommitteeTracker sends signed heads and
+// ctClient represents a peer that CommitteeTracker sends signed heads and
 // sync committee advertisements to
-type sctClient interface {
+type ctClient interface {
 	SendSignedHeads(heads []SignedHead)
 	SendUpdateInfo(updateInfo *types.UpdateInfo)
 }
 
-// sctServer represents a peer that SyncCommitteeTracker can request sync committee update proofs from
-type sctServer interface {
+// ctServer represents a peer that CommitteeTracker can request sync committee update proofs from
+type ctServer interface {
 	GetBestCommitteeProofs(ctx context.Context, req types.CommitteeRequest) (types.CommitteeReply, error)
 	CanRequest(updateCount, committeeCount int) bool
 	WrongReply(description string)
@@ -47,11 +47,11 @@ type sctServer interface {
 // on the advertised update scores.
 // Note that calling with remoteInfo == nil does not start syncing but allows
 // attempting the init process with the given peer if not initialized yet.
-func (s *SyncCommitteeTracker) SyncWithPeer(peer sctServer, remoteInfo *types.UpdateInfo) chan struct{} {
+func (s *CommitteeTracker) SyncWithPeer(peer ctServer, remoteInfo *types.UpdateInfo) chan struct{} {
 	s.lock.Lock()
 	sp := s.connected[peer]
 	if sp == nil {
-		sp = &sctPeerInfo{peer: peer}
+		sp = &ctPeerInfo{peer: peer}
 		s.connected[peer] = sp
 	}
 	if remoteInfo != nil {
@@ -73,7 +73,7 @@ func (s *SyncCommitteeTracker) SyncWithPeer(peer sctServer, remoteInfo *types.Up
 }
 
 // Disconnect notifies the tracker about a peer being disconnected
-func (s *SyncCommitteeTracker) Disconnect(peer sctServer) {
+func (s *CommitteeTracker) Disconnect(peer ctServer) {
 	s.lock.Lock()
 	delete(s.connected, peer)
 	s.lock.Unlock()
@@ -82,7 +82,7 @@ func (s *SyncCommitteeTracker) Disconnect(peer sctServer) {
 // retrySyncAllPeers re-triggers the syncing process (check if there is something
 // new to request) with all connected peers. Should be called when constraints
 // are updated and might allow syncing further.
-func (s *SyncCommitteeTracker) retrySyncAllPeers() {
+func (s *CommitteeTracker) retrySyncAllPeers() {
 	for _, sp := range s.connected {
 		if !sp.queued && !sp.requesting {
 			s.requestQueue = append(s.requestQueue, sp)
@@ -97,13 +97,13 @@ func (s *SyncCommitteeTracker) retrySyncAllPeers() {
 }
 
 // Stop stops the syncing/propagation process and shuts down the tracker
-func (s *SyncCommitteeTracker) Stop() {
+func (s *CommitteeTracker) Stop() {
 	close(s.stopCh)
 }
 
-// sctPeerInfo is the state of the syncing process from an individual server peer
-type sctPeerInfo struct {
-	peer               sctServer
+// ctPeerInfo is the state of the syncing process from an individual server peer
+type ctPeerInfo struct {
+	peer               ctServer
 	remoteInfo         types.UpdateInfo
 	requesting, queued bool
 	forkPeriod         uint64
@@ -113,7 +113,7 @@ type sctPeerInfo struct {
 
 // syncLoop is the global syncing loop starting requests to all peers where there
 // is something to sync according to the most recent advertisement.
-func (s *SyncCommitteeTracker) syncLoop() {
+func (s *CommitteeTracker) syncLoop() {
 	s.lock.Lock()
 	for {
 		if len(s.requestQueue) > 0 {
@@ -149,7 +149,7 @@ func (s *SyncCommitteeTracker) syncLoop() {
 // request; finishes the syncing otherwise (processes deferred signed head
 // advertisements and closes the doneSyncing channel).
 // Returns true if a new request has been sent.
-func (s *SyncCommitteeTracker) startRequest(sp *sctPeerInfo) bool {
+func (s *CommitteeTracker) startRequest(sp *ctPeerInfo) bool {
 	req := s.nextRequest(sp)
 	if req.IsEmpty() {
 		if sp.deferredHeads != nil {
@@ -198,7 +198,7 @@ func (s *SyncCommitteeTracker) startRequest(sp *sctPeerInfo) bool {
 
 // nextRequest creates the next request to be sent to the given peer, based on
 // the difference between the remote advertised and the local update chains.
-func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) types.CommitteeRequest {
+func (s *CommitteeTracker) nextRequest(sp *ctPeerInfo) types.CommitteeRequest {
 	if sp.remoteInfo.AfterLastPeriod < uint64(len(sp.remoteInfo.Scores)) {
 		return types.CommitteeRequest{}
 	}
@@ -317,7 +317,7 @@ func (s *SyncCommitteeTracker) nextRequest(sp *sctPeerInfo) types.CommitteeReque
 
 // processReply processes the reply to a previous request, verifying received
 // updates and committees and extending/improving the local update chain if possible.
-func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest types.CommitteeRequest, reply types.CommitteeReply) bool {
+func (s *CommitteeTracker) processReply(sp *ctPeerInfo, sentRequest types.CommitteeRequest, reply types.CommitteeReply) bool {
 	if len(reply.Updates) != len(sentRequest.UpdatePeriods) || len(reply.Committees) != len(sentRequest.CommitteePeriods) {
 		return false
 	}
@@ -401,7 +401,7 @@ func (s *SyncCommitteeTracker) processReply(sp *sctPeerInfo, sentRequest types.C
 // NextPeriod returns the next update period to be synced (the period after the
 // last update if there are updates or the first period fixed by the constraints
 // if there are no updates yet)
-func (s *SyncCommitteeTracker) NextPeriod() uint64 {
+func (s *CommitteeTracker) NextPeriod() uint64 {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -414,7 +414,7 @@ func (s *SyncCommitteeTracker) NextPeriod() uint64 {
 
 // GetUpdateInfo returns and types.UpdateInfo based on the current local update chain
 // (tracker mutex locked).
-func (s *SyncCommitteeTracker) GetUpdateInfo() *types.UpdateInfo {
+func (s *CommitteeTracker) GetUpdateInfo() *types.UpdateInfo {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -423,7 +423,7 @@ func (s *SyncCommitteeTracker) GetUpdateInfo() *types.UpdateInfo {
 
 // getUpdateInfo returns and types.UpdateInfo based on the current local update chain
 // (tracker mutex expected).
-func (s *SyncCommitteeTracker) getUpdateInfo() *types.UpdateInfo {
+func (s *CommitteeTracker) getUpdateInfo() *types.UpdateInfo {
 	if s.updateInfo != nil {
 		return s.updateInfo
 	}
@@ -454,7 +454,7 @@ func (s *SyncCommitteeTracker) getUpdateInfo() *types.UpdateInfo {
 // changed. It schedules a call to advertiseCommitteesNow in the near future
 // (after advertiseDelay) unless it is already scheduled. This delay ensures that
 // advertisements are not sent too frequently.
-func (s *SyncCommitteeTracker) updateInfoChanged() {
+func (s *CommitteeTracker) updateInfoChanged() {
 	s.updateInfo = nil
 	if s.advertiseScheduled {
 		return
@@ -471,10 +471,10 @@ func (s *SyncCommitteeTracker) updateInfoChanged() {
 }
 
 // advertiseCommitteesNow sends committee update chain advertisements to all active peers.
-func (s *SyncCommitteeTracker) advertiseCommitteesNow() {
+func (s *CommitteeTracker) advertiseCommitteesNow() {
 	info := s.getUpdateInfo()
 	if s.advertisedTo == nil {
-		s.advertisedTo = make(map[sctClient]struct{})
+		s.advertisedTo = make(map[ctClient]struct{})
 	}
 	for peer := range s.broadcastTo {
 		if _, ok := s.advertisedTo[peer]; !ok {

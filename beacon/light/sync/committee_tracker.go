@@ -32,9 +32,9 @@ import (
 )
 
 var (
-	initDataKey      = []byte("sct.init") // RLP(LightClientInitData)
-	bestUpdateKey    = []byte("sct.bu-")  // bigEndian64(syncPeriod) -> RLP(types.LightClientUpdate)  (nextCommittee only referenced by root hash)
-	syncCommitteeKey = []byte("sct.sc-")  // bigEndian64(syncPeriod) + committee root hash -> serialized committee
+	initDataKey      = []byte("ct.init") // RLP(LightClientInitData)
+	bestUpdateKey    = []byte("ct.bu-")  // bigEndian64(syncPeriod) -> RLP(types.LightClientUpdate)  (nextCommittee only referenced by root hash)
+	syncCommitteeKey = []byte("ct.sc-")  // bigEndian64(syncPeriod) + committee root hash -> serialized committee
 )
 
 const SerializedCommitteeSize = (params.SyncCommitteeSize + 1) * params.BlsPubkeySize
@@ -47,17 +47,17 @@ type ChainConfig struct {
 }
 
 // GenesisData is required for signature verification and is set by the
-// SyncCommitteeTracker.Init function.
+// CommitteeTracker.Init function.
 type GenesisData struct {
 	GenesisTime           uint64      // unix time (in seconds) of slot 0
 	GenesisValidatorsRoot common.Hash // root hash of the genesis validator set, used for signature domain calculation
 }
 
-// SctConstraints defines constraints on the synced update chain. These constraints
+// Constraints defines constraints on the synced update chain. These constraints
 // include the GenesisData, a range of periods (first <= period < afterFixed)
 // where committee roots are fixed and another "free" range (afterFixed <= period < afterLast)
 // where committee roots are determined by the best known update chain.
-// An implementation of SctConstraints should call initCallback to pass
+// An implementation of Constraints should call initCallback to pass
 // GenesisData whenever it is available (either durinrg SetCallbacks or later).
 // If the constraints are changed then it should call updateCallback.
 //
@@ -66,13 +66,13 @@ type GenesisData struct {
 // from there) or full syncing light service mode (in which case a full beacon
 // header chain is synced based on the externally driven consensus and the update
 // chain is fully restricted based on that).
-type SctConstraints interface {
+type Constraints interface {
 	PeriodRange() (first, afterFixed, afterLast uint64)
 	CommitteeRoot(period uint64) (root common.Hash, matchAll bool) // matchAll is true in the free range where any committee root matches the constraints
 	SetCallbacks(initCallback func(GenesisData), updateCallback func())
 }
 
-// SyncCommitteeTracker maintains a chain of sync committee updates and a small
+// CommitteeTracker maintains a chain of sync committee updates and a small
 // set of best known signed heads. It is used in all client configurations
 // operating on a beacon chain. It can sync its update chain and receive signed
 // heads from either an ODR or beacon node API backend and propagate/serve this
@@ -82,7 +82,7 @@ type SctConstraints interface {
 // head yet.
 // Sync committee chain is either initialized from a weak subjectivity checkpoint
 // or controlled by a BeaconChain that is driven by a trusted source (beacon node API).
-type SyncCommitteeTracker struct {
+type CommitteeTracker struct {
 	lock                     sync.RWMutex
 	db                       ethdb.KeyValueStore
 	sigVerifier              committeeSigVerifier
@@ -94,7 +94,7 @@ type SyncCommitteeTracker struct {
 	unixNano                 func() int64
 
 	forks              Forks
-	constraints        SctConstraints
+	constraints        Constraints
 	signerThreshold    int
 	minimumUpdateScore types.UpdateScore
 	enforceTime        bool
@@ -107,9 +107,9 @@ type SyncCommitteeTracker struct {
 	firstPeriod, nextPeriod uint64
 
 	updateInfo                *types.UpdateInfo
-	connected                 map[sctServer]*sctPeerInfo
-	requestQueue              []*sctPeerInfo
-	broadcastTo, advertisedTo map[sctClient]struct{}
+	connected                 map[ctServer]*ctPeerInfo
+	requestQueue              []*ctPeerInfo
+	broadcastTo, advertisedTo map[ctClient]struct{}
 	advertiseScheduled        bool
 	triggerCh, initCh, stopCh chan struct{}
 	acceptedList              headList
@@ -117,9 +117,9 @@ type SyncCommitteeTracker struct {
 	headSubs []func(types.Header)
 }
 
-// NewSyncCommitteeTracker creates a new SyncCommitteeTracker
-func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints SctConstraints, signerThreshold int, enforceTime bool, sigVerifier committeeSigVerifier, clock mclock.Clock, unixNano func() int64) *SyncCommitteeTracker {
-	s := &SyncCommitteeTracker{
+// NewCommitteeTracker creates a new CommitteeTracker
+func NewCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Constraints, signerThreshold int, enforceTime bool, sigVerifier committeeSigVerifier, clock mclock.Clock, unixNano func() int64) *CommitteeTracker {
+	s := &CommitteeTracker{
 		bestUpdateCache:          lru.NewCache[uint64, *types.LightClientUpdate](1000),
 		serializedCommitteeCache: lru.NewCache[string, []byte](100),
 		syncCommitteeCache:       lru.NewCache[string, syncCommittee](100),
@@ -136,8 +136,8 @@ func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Sc
 			SignerCount:    uint32(signerThreshold),
 			SubPeriodIndex: params.SyncPeriodLength / 16,
 		},
-		connected:    make(map[sctServer]*sctPeerInfo),
-		broadcastTo:  make(map[sctClient]struct{}),
+		connected:    make(map[ctServer]*ctPeerInfo),
+		broadcastTo:  make(map[ctClient]struct{}),
 		triggerCh:    make(chan struct{}, 1),
 		initCh:       make(chan struct{}),
 		stopCh:       make(chan struct{}),
@@ -167,9 +167,9 @@ func NewSyncCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Sc
 // syncing process.
 // Note that Init may be called either at startup or later if it has to be
 // fetched from the network based on a checkpoint hash.
-func (s *SyncCommitteeTracker) Init(GenesisData GenesisData) {
+func (s *CommitteeTracker) Init(GenesisData GenesisData) {
 	if s.genesisInit {
-		log.Error("SyncCommitteeTracker already initialized")
+		log.Error("CommitteeTracker already initialized")
 		return
 	}
 	s.lock.Lock()
@@ -184,7 +184,7 @@ func (s *SyncCommitteeTracker) Init(GenesisData GenesisData) {
 }
 
 // GetInitChannel returns a channel that gets closed when the tracker has been initialized
-func (s *SyncCommitteeTracker) GetInitChannel() chan struct{} {
+func (s *CommitteeTracker) GetInitChannel() chan struct{} {
 	return s.initCh
 }
 
@@ -198,7 +198,7 @@ const (
 // insertUpdate verifies the update and stores it in the update chain if possible.
 // The serialized version of the next committee should also be supplied if it is
 // not already stored in the database.
-func (s *SyncCommitteeTracker) insertUpdate(update *types.LightClientUpdate, nextCommittee []byte) int {
+func (s *CommitteeTracker) insertUpdate(update *types.LightClientUpdate, nextCommittee []byte) int {
 	var (
 		period   = update.Header.SyncPeriod()
 		rollback bool
@@ -260,7 +260,7 @@ func (s *SyncCommitteeTracker) insertUpdate(update *types.LightClientUpdate, nex
 // verifyUpdate checks whether the header signature is correct and the update
 // fits into the specified constraints (assumes that the update has been
 // successfully validated previously)
-func (s *SyncCommitteeTracker) verifyUpdate(update *types.LightClientUpdate) bool {
+func (s *CommitteeTracker) verifyUpdate(update *types.LightClientUpdate) bool {
 	if !s.checkConstraints(update) {
 		return false
 	}
@@ -284,7 +284,7 @@ func getBestUpdateKey(period uint64) []byte {
 }
 
 // GetBestUpdate returns the best known canonical sync committee update at the given period
-func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *types.LightClientUpdate {
+func (s *CommitteeTracker) GetBestUpdate(period uint64) *types.LightClientUpdate {
 	if update, ok := s.bestUpdateCache.Get(period); ok {
 		if update != nil {
 			if update.Header.SyncPeriod() != period {
@@ -311,7 +311,7 @@ func (s *SyncCommitteeTracker) GetBestUpdate(period uint64) *types.LightClientUp
 }
 
 // storeBestUpdate stores a sync committee update in the canonical update chain
-func (s *SyncCommitteeTracker) storeBestUpdate(update *types.LightClientUpdate) {
+func (s *CommitteeTracker) storeBestUpdate(update *types.LightClientUpdate) {
 	period := update.Header.SyncPeriod()
 	updateEnc, err := rlp.EncodeToBytes(update)
 	if err != nil {
@@ -325,7 +325,7 @@ func (s *SyncCommitteeTracker) storeBestUpdate(update *types.LightClientUpdate) 
 }
 
 // deleteBestUpdate deletes a sync committee update from the canonical update chain
-func (s *SyncCommitteeTracker) deleteBestUpdate(period uint64) {
+func (s *CommitteeTracker) deleteBestUpdate(period uint64) {
 	s.db.Delete(getBestUpdateKey(period))
 	s.bestUpdateCache.Remove(period)
 	s.committeeRootCache.Remove(period + 1)
@@ -346,7 +346,7 @@ func getSyncCommitteeKey(period uint64, committeeRoot common.Hash) []byte {
 
 // GetSerializedSyncCommittee fetches the serialized version of a sync committee
 // from cache or database
-func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committeeRoot common.Hash) []byte {
+func (s *CommitteeTracker) GetSerializedSyncCommittee(period uint64, committeeRoot common.Hash) []byte {
 	key := getSyncCommitteeKey(period, committeeRoot)
 	if committee, ok := s.serializedCommitteeCache.Get(string(key)); ok {
 		if len(committee) == SerializedCommitteeSize {
@@ -368,7 +368,7 @@ func (s *SyncCommitteeTracker) GetSerializedSyncCommittee(period uint64, committ
 
 // storeSerializedSyncCommittee stores the serialized version of a sync committee
 // to cache and database
-func (s *SyncCommitteeTracker) storeSerializedSyncCommittee(period uint64, committeeRoot common.Hash, committee []byte) {
+func (s *CommitteeTracker) storeSerializedSyncCommittee(period uint64, committeeRoot common.Hash, committee []byte) {
 	key := getSyncCommitteeKey(period, committeeRoot)
 	s.serializedCommitteeCache.Add(string(key), committee)
 	s.syncCommitteeCache.Remove(string(key)) // a nil entry for "not found" might have been stored here earlier
@@ -416,7 +416,7 @@ func SerializedCommitteeRoot(enc []byte) common.Hash {
 // getSyncCommitteeRoot returns the sync committee root at the given period of
 // the current local committee root constraints or update chain (tracker mutex
 // lock expected).
-func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) (root common.Hash) {
+func (s *CommitteeTracker) getSyncCommitteeRoot(period uint64) (root common.Hash) {
 	if r, ok := s.committeeRootCache.Get(period); ok {
 		return r
 	}
@@ -438,7 +438,7 @@ func (s *SyncCommitteeTracker) getSyncCommitteeRoot(period uint64) (root common.
 
 // GetSyncCommitteeRoot returns the sync committee root at the given period of the
 // current local committee root constraints or update chain (tracker mutex locked).
-func (s *SyncCommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
+func (s *CommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 
@@ -447,7 +447,7 @@ func (s *SyncCommitteeTracker) GetSyncCommitteeRoot(period uint64) common.Hash {
 
 // getSyncCommittee returns the deserialized sync committee at the given period
 // of the current local committee chain (tracker mutex lock expected).
-func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) syncCommittee {
+func (s *CommitteeTracker) getSyncCommittee(period uint64) syncCommittee {
 	if committeeRoot := s.getSyncCommitteeRoot(period); committeeRoot != (common.Hash{}) {
 		key := string(getSyncCommitteeKey(period, committeeRoot))
 		if sc, ok := s.syncCommitteeCache.Get(key); ok {
@@ -467,7 +467,7 @@ func (s *SyncCommitteeTracker) getSyncCommittee(period uint64) syncCommittee {
 // EnforceForksAndConstraints rolls back committee updates that do not match the
 // tracker's forks and constraints and also starts new requests if possible
 // (tracker mutex locked)
-func (s *SyncCommitteeTracker) EnforceForksAndConstraints() {
+func (s *CommitteeTracker) EnforceForksAndConstraints() {
 	s.lock.Lock()
 	s.enforceForksAndConstraints()
 	s.lock.Unlock()
@@ -476,7 +476,7 @@ func (s *SyncCommitteeTracker) EnforceForksAndConstraints() {
 // enforceForksAndConstraints rolls back committee updates that do not match the
 // tracker's forks and constraints and also starts new requests if possible
 // (tracker mutex expected)
-func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
+func (s *CommitteeTracker) enforceForksAndConstraints() {
 	if !s.genesisInit || !s.chainInit {
 		return
 	}
@@ -503,9 +503,9 @@ func (s *SyncCommitteeTracker) enforceForksAndConstraints() {
 // checkConstraints checks whether the signed headers of the given committee
 // update is on the right fork and the proven NextSyncCommitteeRoot matches the
 // update chain constraints.
-func (s *SyncCommitteeTracker) checkConstraints(update *types.LightClientUpdate) bool {
+func (s *CommitteeTracker) checkConstraints(update *types.LightClientUpdate) bool {
 	if !s.genesisInit {
-		log.Error("SyncCommitteeTracker not initialized")
+		log.Error("CommitteeTracker not initialized")
 		return false
 	}
 	root, matchAll := s.constraints.CommitteeRoot(update.Header.SyncPeriod() + 1)

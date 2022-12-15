@@ -48,12 +48,12 @@ type LightClientInitData struct {
 	CheckpointData
 }
 
-// sctInitBackend retrieves light sync initialization data based on a weak subjectivity checkpoint hash
-type sctInitBackend interface {
+// ctInitBackend retrieves light sync initialization data based on a weak subjectivity checkpoint hash
+type ctInitBackend interface {
 	GetInitData(ctx context.Context, checkpoint common.Hash) (types.Header, LightClientInitData, error)
 }
 
-// WeakSubjectivityCheckpoint implements SctConstraints in a way that it fixes
+// WeakSubjectivityCheckpoint implements Constraints in a way that it fixes
 // the committee belonging to the checkpoint and allows forward extending the
 // committee chain indefinitely. If a parent constraint is specified then it is
 // applied for committee periods older than the checkpoint period, also allowing
@@ -63,7 +63,7 @@ type sctInitBackend interface {
 type WeakSubjectivityCheckpoint struct {
 	lock sync.RWMutex
 
-	parent                              SctConstraints // constraints applied to pre-checkpoint history (no old committees synced if nil)
+	parent                              Constraints // constraints applied to pre-checkpoint history (no old committees synced if nil)
 	db                                  ethdb.KeyValueStore
 	initData                            LightClientInitData
 	initialized                         bool
@@ -73,9 +73,9 @@ type WeakSubjectivityCheckpoint struct {
 }
 
 // NewWeakSubjectivityCheckpoint creates a WeakSubjectivityCheckpoint that either
-// initializes itself from the specified sctInitBackend based on the given
+// initializes itself from the specified ctInitBackend based on the given
 // checkpoint or from the database if the same checkpoint has been fetched before.
-func NewWeakSubjectivityCheckpoint(db ethdb.KeyValueStore, backend sctInitBackend, checkpoint common.Hash, parent SctConstraints) *WeakSubjectivityCheckpoint {
+func NewWeakSubjectivityCheckpoint(db ethdb.KeyValueStore, backend ctInitBackend, checkpoint common.Hash, parent Constraints) *WeakSubjectivityCheckpoint {
 	wsc := &WeakSubjectivityCheckpoint{
 		parent:        parent,
 		db:            db,
@@ -160,7 +160,7 @@ func (wsc *WeakSubjectivityCheckpoint) init(initData LightClientInitData, store 
 	updateCallback()
 }
 
-// PeriodRange implements SctConstraints
+// PeriodRange implements Constraints
 func (wsc *WeakSubjectivityCheckpoint) PeriodRange() (first, afterFixed, afterLast uint64) {
 	wsc.lock.RLock()
 	defer wsc.lock.RUnlock()
@@ -182,7 +182,7 @@ func (wsc *WeakSubjectivityCheckpoint) PeriodRange() (first, afterFixed, afterLa
 	return
 }
 
-// CommitteeRoot implements SctConstraints
+// CommitteeRoot implements Constraints
 func (wsc *WeakSubjectivityCheckpoint) CommitteeRoot(period uint64) (root common.Hash, matchAll bool) {
 	wsc.lock.RLock()
 	defer wsc.lock.RUnlock()
@@ -203,7 +203,7 @@ func (wsc *WeakSubjectivityCheckpoint) CommitteeRoot(period uint64) (root common
 	}
 }
 
-// SetCallbacks implements SctConstraints
+// SetCallbacks implements Constraints
 func (wsc *WeakSubjectivityCheckpoint) SetCallbacks(initCallback func(GenesisData), updateCallback func()) {
 	wsc.lock.Lock()
 	if wsc.initialized {
