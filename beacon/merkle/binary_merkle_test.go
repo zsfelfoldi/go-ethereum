@@ -54,29 +54,24 @@ func TestIndexMapSubtrees(t *testing.T) {
 	for count := 0; count < 1000; count++ {
 		single := NewIndexMapFormat()
 		withSubtrees := NewIndexMapFormat()
-		for {
-			if rand.Intn(5) == 0 {
-				break
-			}
-			index := uint64(rand.Intn(255) + 1)
-			single.AddLeaf(index, nil)
-			withSubtrees.AddLeaf(index, nil)
-		}
-		for {
-			if rand.Intn(5) == 0 {
-				break
-			}
-			subroot := uint64(rand.Intn(255) + 1)
-			subtree := NewIndexMapFormat()
-			for {
-				if rand.Intn(5) == 0 {
-					break
+		// put single leaves and subtrees randomly into a single row in order to avoid collisions
+		for index := uint64(256); index < 512; index++ {
+			switch rand.Intn(100) {
+			case 0: // put single leaf at index
+				single.AddLeaf(index, nil)
+				withSubtrees.AddLeaf(index, nil)
+			case 1: // put subtree at index
+				subtree := NewIndexMapFormat()
+				for {
+					subindex := uint64(rand.Intn(255) + 1)
+					single.AddLeaf(ChildIndex(index, subindex), nil)
+					subtree.AddLeaf(subindex, nil)
+					if rand.Intn(5) == 0 { // exit here in order to avoid empty subtrees
+						break
+					}
 				}
-				index := uint64(rand.Intn(255) + 1)
-				single.AddLeaf(ChildIndex(subroot, index), nil)
-				subtree.AddLeaf(index, nil)
+				withSubtrees.AddLeaf(index, subtree)
 			}
-			withSubtrees.AddLeaf(subroot, subtree)
 		}
 		if !formatsEqual(single, withSubtrees) {
 			t.Errorf("Single and subtree formats do not match")
@@ -225,7 +220,7 @@ func formatsEqual(f1, f2 ProofFormat) bool {
 		return true
 	}
 	if f1 == nil || f2 == nil {
-		return true
+		return false
 	}
 	c1l, c1r := f1.children()
 	c2l, c2r := f2.children()

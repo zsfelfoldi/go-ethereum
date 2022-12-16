@@ -35,8 +35,8 @@ type (
 )
 
 var (
-	ValueT = reflect.TypeOf(Value{})
-	merkleZero   [64]Value
+	ValueT     = reflect.TypeOf(Value{})
+	merkleZero [64]Value
 )
 
 func init() {
@@ -103,13 +103,13 @@ type ProofFormat interface {
 // If internal hash is available then subtrees are only traversed if needed by the writer.
 type ProofReader interface {
 	children() (left, right ProofReader) // subtrees accessible if not nil
-	readNode() (Value, bool)       // hash should be available if children are nil (leaf node), optional otherwise (internal node)
+	readNode() (Value, bool)             // hash should be available if children are nil (leaf node), optional otherwise (internal node)
 }
 
 // ProofWriter allow collecting data for a partial proof while a subset of a tree is traversed.
 type ProofWriter interface {
 	children() (left, right ProofWriter) // all non-nil subtrees are traversed
-	writeNode(Value)               // called for every traversed tree node (both leaf and internal)
+	writeNode(Value)                     // called for every traversed tree node (both leaf and internal)
 }
 
 // TraverseProof traverses a reader and a writer defined on the same tree
