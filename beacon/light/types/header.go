@@ -30,7 +30,7 @@ import (
 // https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#beaconblockheader
 type Header struct {
 	Slot          uint64
-	ProposerIndex uint
+	ProposerIndex uint64
 	ParentRoot    common.Hash
 	StateRoot     common.Hash
 	BodyRoot      common.Hash
@@ -40,7 +40,7 @@ type Header struct {
 func (bh *Header) Hash() common.Hash {
 	var values [8]merkle.Value // values corresponding to indices 8 to 15 of the beacon header tree
 	binary.LittleEndian.PutUint64(values[params.BhiSlot-8][:8], bh.Slot)
-	binary.LittleEndian.PutUint64(values[params.BhiProposerIndex-8][:8], uint64(bh.ProposerIndex))
+	binary.LittleEndian.PutUint64(values[params.BhiProposerIndex-8][:8], bh.ProposerIndex)
 	values[params.BhiParentRoot-8] = merkle.Value(bh.ParentRoot)
 	values[params.BhiStateRoot-8] = merkle.Value(bh.StateRoot)
 	values[params.BhiBodyRoot-8] = merkle.Value(bh.BodyRoot)
@@ -71,7 +71,7 @@ func PeriodOfSlot(slot uint64) uint64 {
 // be reconstructed from a partial beacon state proof stored alongside the header
 type HeaderWithoutState struct {
 	Slot                 uint64
-	ProposerIndex        uint
+	ProposerIndex        uint64
 	ParentRoot, BodyRoot common.Hash
 }
 
@@ -84,7 +84,7 @@ func (bh *HeaderWithoutState) Hash(stateRoot common.Hash) common.Hash {
 func (bh *HeaderWithoutState) Proof(stateRoot common.Hash) merkle.MultiProof {
 	var values [8]merkle.Value // values corresponding to indices 8 to 15 of the beacon header tree
 	binary.LittleEndian.PutUint64(values[params.BhiSlot-8][:8], bh.Slot)
-	binary.LittleEndian.PutUint64(values[params.BhiProposerIndex-8][:8], uint64(bh.ProposerIndex))
+	binary.LittleEndian.PutUint64(values[params.BhiProposerIndex-8][:8], bh.ProposerIndex)
 	values[params.BhiParentRoot-8] = merkle.Value(bh.ParentRoot)
 	values[params.BhiStateRoot-8] = merkle.Value(stateRoot)
 	values[params.BhiBodyRoot-8] = merkle.Value(bh.BodyRoot)

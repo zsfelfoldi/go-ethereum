@@ -86,7 +86,7 @@ type jsonHeader struct {
 func (h *jsonHeader) header() types.Header {
 	return types.Header{
 		Slot:          uint64(h.Slot),
-		ProposerIndex: uint(h.ProposerIndex),
+		ProposerIndex: uint64(h.ProposerIndex),
 		ParentRoot:    h.ParentRoot,
 		StateRoot:     h.StateRoot,
 		BodyRoot:      h.BodyRoot,

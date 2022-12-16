@@ -419,10 +419,17 @@ func (rf rangeFormat) children() (left, right ProofFormat) {
 		return nil, nil
 	}
 	var (
+		// i1..i2 are the descendants of rf.index at the tree level where begin and end are located
 		i1 = rf.index << (lzi - lzr)
 		i2 = ((rf.index + 1) << (lzi - lzr)) - 1
 	)
 	if i1 <= rf.end && i2 >= rf.begin {
+		// Return child formats if there is an overlap (rf.index has any descendants
+		// in the begin..end range).
+		// Note that if begin..end only touches one of the returned child subtrees,
+		// we still return a rangeFormat for both branches and the other one will
+		// not have any further children (that child of rf.index will be stored
+		// in the proof as a single sibling node).
 		return rangeFormat{begin: rf.begin, end: rf.end, index: rf.index * 2, subtree: rf.subtree},
 			rangeFormat{begin: rf.begin, end: rf.end, index: rf.index*2 + 1, subtree: rf.subtree}
 	}
