@@ -195,11 +195,14 @@ func parseMultiProofFormat(leaves map[uint64]ProofFormat, index uint64, format [
 
 // multiProofReader implements ProofReader based on a MultiProof and also allows
 // attaching further subtree readers at certain indices
+// Note: valuePtr is stored and copied as a reference because child readers read
+// from the same value list as the tree is traversed
 type multiProofReader struct {
-	format   ProofFormat
-	values   *Values
-	index    uint64
-	subtrees func(uint64) ProofReader
+	format   ProofFormat              // corresponding proof format
+	values   Values                   // proof values
+	valuePtr *int                     // next index to be read from values
+	index    uint64                   // generalized tree index
+	subtrees func(uint64) ProofReader // attached subtrees
 }
 
 // children implements ProofReader
@@ -213,15 +216,15 @@ func (mpr multiProofReader) children() (left, right ProofReader) {
 		}
 		return nil, nil
 	}
-	return multiProofReader{format: lf, values: mpr.values, index: mpr.index * 2, subtrees: mpr.subtrees},
-		multiProofReader{format: rf, values: mpr.values, index: mpr.index*2 + 1, subtrees: mpr.subtrees}
+	return multiProofReader{format: lf, values: mpr.values, valuePtr: mpr.valuePtr, index: mpr.index * 2, subtrees: mpr.subtrees},
+		multiProofReader{format: rf, values: mpr.values, valuePtr: mpr.valuePtr, index: mpr.index*2 + 1, subtrees: mpr.subtrees}
 }
 
 // readNode implements ProofReader
 func (mpr multiProofReader) readNode() (Value, bool) {
-	if l, _ := mpr.format.children(); l == nil && len(*mpr.values) > 0 {
-		hash := (*mpr.values)[0]
-		*mpr.values = (*mpr.values)[1:]
+	if l, _ := mpr.format.children(); l == nil && len(mpr.values) > *mpr.valuePtr {
+		hash := mpr.values[*mpr.valuePtr]
+		(*mpr.valuePtr)++
 		return hash, true
 	}
 	return Value{}, false
@@ -232,16 +235,15 @@ func (mpr multiProofReader) readNode() (Value, bool) {
 // non-nil reader.
 // Note that the reader can only be traversed once as the values slice is
 // sequentially consumed.
-func (mp MultiProof) Reader(subtrees func(uint64) ProofReader) *multiProofReader {
-	values := mp.Values
-	return &multiProofReader{format: mp.Format, values: &values, index: 1, subtrees: subtrees}
+func (mp MultiProof) Reader(subtrees func(uint64) ProofReader) multiProofReader {
+	return multiProofReader{format: mp.Format, values: mp.Values, valuePtr: new(int), index: 1, subtrees: subtrees}
 }
 
 // Finished returns true if all values have been consumed by the traversal.
 // Should be checked after TraverseProof if received from an untrusted source in
 // order to prevent DoS attacks by excess proof values.
 func (mpr multiProofReader) Finished() bool {
-	return len(*mpr.values) == 0
+	return len(mpr.values) == *mpr.valuePtr
 }
 
 // rootHash returns the root hash of the proven structure.
@@ -257,11 +259,13 @@ func (mp MultiProof) RootHash() common.Hash {
 // multiProofWriter implements ProofWriter and creates a MultiProof with the
 // previously specified format. Also allows attaching further subtree writers at
 // certain indices.
+// Note: values is stored and copied as a reference because child writers append
+// to the same value list as the tree is traversed
 type multiProofWriter struct {
-	format   ProofFormat
-	values   *Values
-	index    uint64
-	subtrees func(uint64) ProofWriter
+	format   ProofFormat              // target proof format
+	values   *Values                  // target proof value list
+	index    uint64                   // generalized tree index
+	subtrees func(uint64) ProofWriter // attached subtrees
 }
 
 // NewMultiProofWriter creates a new multiproof writer with the specified format.
