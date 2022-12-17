@@ -55,25 +55,10 @@ func (m *Value) UnmarshalJSON(input []byte) error {
 }
 
 // VerifySingleProof verifies a Merkle proof branch for a single value in a
-// binary Merkle tree
-// Note: index is a generalized tree index; bottomLevel is optional (root being
-// level 0) and if greater than len(proof)-1 then the sibling subtrees closest
-// to the root are not stored and all-zero value subtrees are assumed (makes
-// proofs for 24 bit arrays more efficient).
-func VerifySingleProof(proof Values, index uint64, value Value, bottomLevel int) (common.Hash, bool) {
+// binary Merkle tree (index is a generalized tree index).
+func VerifySingleProof(proof Values, index uint64, value Value) (common.Hash, bool) {
 	hasher := sha256.New()
-	var proofIndex int
-	for index > 1 {
-		var proofHash Value
-		if proofIndex < len(proof) {
-			proofHash = proof[proofIndex]
-		} else {
-			if i := bottomLevel - proofIndex - 1; i >= 0 {
-				proofHash = merkleZero[i]
-			} else {
-				return common.Hash{}, false
-			}
-		}
+	for _, proofHash := range proof {
 		hasher.Reset()
 		if index&1 == 0 {
 			hasher.Write(value[:])
@@ -84,9 +69,11 @@ func VerifySingleProof(proof Values, index uint64, value Value, bottomLevel int)
 		}
 		hasher.Sum(value[:0])
 		index /= 2
-		proofIndex++
+		if index == 0 {
+			return common.Hash{}, false
+		}
 	}
-	if proofIndex < len(proof) {
+	if index != 1 {
 		return common.Hash{}, false
 	}
 	return common.Hash(value), true

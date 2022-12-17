@@ -348,7 +348,7 @@ func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint com
 		return types.Header{}, sync.CheckpointData{}, nil, errors.New("invalid sync committee JSON")
 	}
 	committeeRoot := sync.SerializedCommitteeRoot(committee)
-	expStateRoot, ok := merkle.VerifySingleProof(data.Data.CommitteeBranch, params.BsiSyncCommittee, merkle.Value(committeeRoot), 0)
+	expStateRoot, ok := merkle.VerifySingleProof(data.Data.CommitteeBranch, params.BsiSyncCommittee, merkle.Value(committeeRoot))
 	if !ok || expStateRoot != data.Data.Header.StateRoot {
 		return types.Header{}, sync.CheckpointData{}, nil, errors.New("invalid sync committee Merkle proof")
 	}

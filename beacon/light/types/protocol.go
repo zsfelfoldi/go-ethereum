@@ -54,11 +54,11 @@ func (update *LightClientUpdate) Validate() error {
 		if update.FinalizedHeader.SyncPeriod() != update.Header.SyncPeriod() {
 			return errors.New("finalizedHeader is from previous period") // proves the same committee it is signed by
 		}
-		if root, ok := merkle.VerifySingleProof(update.FinalityBranch, params.BsiFinalBlock, merkle.Value(update.FinalizedHeader.Hash()), 0); !ok || root != update.Header.StateRoot {
+		if root, ok := merkle.VerifySingleProof(update.FinalityBranch, params.BsiFinalBlock, merkle.Value(update.FinalizedHeader.Hash())); !ok || root != update.Header.StateRoot {
 			return errors.New("invalid FinalizedHeader merkle proof")
 		}
 	}
-	if root, ok := merkle.VerifySingleProof(update.NextSyncCommitteeBranch, params.BsiNextSyncCommittee, merkle.Value(update.NextSyncCommitteeRoot), 0); !ok || root != update.Header.StateRoot {
+	if root, ok := merkle.VerifySingleProof(update.NextSyncCommitteeBranch, params.BsiNextSyncCommittee, merkle.Value(update.NextSyncCommitteeRoot)); !ok || root != update.Header.StateRoot {
 		return errors.New("invalid NextSyncCommittee merkle proof")
 	}
 	return nil

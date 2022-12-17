@@ -130,7 +130,7 @@ func TestSingleProof(t *testing.T) {
 			}
 		})
 		testTraverseProof(t, testProofReader, writer, true)
-		root, ok := VerifySingleProof(proof, index, testMerkleTree[index], 0)
+		root, ok := VerifySingleProof(proof, index, testMerkleTree[index])
 		if root != common.Hash(testMerkleTree[1]) {
 			t.Errorf("VerifySingleProof root hash mismatch (index = %d)", index)
 		}
