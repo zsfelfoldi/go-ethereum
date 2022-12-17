@@ -34,20 +34,7 @@ type (
 	Values []Value
 )
 
-var (
-	ValueT     = reflect.TypeOf(Value{})
-	merkleZero [64]Value
-)
-
-func init() {
-	hasher := sha256.New()
-	for i := 1; i < 64; i++ {
-		hasher.Reset()
-		hasher.Write(merkleZero[i-1][:])
-		hasher.Write(merkleZero[i-1][:])
-		hasher.Sum(merkleZero[i][:0])
-	}
-}
+var ValueT = reflect.TypeOf(Value{})
 
 // UnmarshalJSON parses a merkle value in hex syntax.
 func (m *Value) UnmarshalJSON(input []byte) error {
