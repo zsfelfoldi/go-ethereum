@@ -59,6 +59,9 @@ func main() {
 		utils.GoerliFlag,
 		utils.BlsyncApiFlag,
 		utils.BlsyncJWTSecretFlag,
+		utils.BlsyncTestFlag,
+		utils.BeaconApiNewStateProofFlag,
+		utils.BeaconApiInstantUpdateFlag,
 	}
 	app.Action = blsync
 
@@ -96,7 +99,10 @@ func blsync(ctx *cli.Context) error {
 	}
 
 	var (
-		beaconApi               = api.NewBeaconLightApi(ctx.String(utils.BeaconApiFlag.Name), customHeader)
+		beaconApi = api.NewBeaconLightApi(ctx.String(utils.BeaconApiFlag.Name),
+			customHeader,
+			ctx.IsSet(utils.BeaconApiNewStateProofFlag.Name),
+			ctx.IsSet(utils.BeaconApiInstantUpdateFlag.Name))
 		committeeSyncer         = api.NewCommitteeSyncer(beaconApi, chainConfig.GenesisData, false)
 		db                      = memorydb.New()
 		syncCommitteeCheckpoint = sync.NewWeakSubjectivityCheckpoint(db, committeeSyncer, chainConfig.Checkpoint, nil)
@@ -105,12 +111,20 @@ func blsync(ctx *cli.Context) error {
 		utils.Fatalf("No beacon chain checkpoint")
 	}
 	syncCommitteeTracker := sync.NewCommitteeTracker(db, chainConfig.Forks, syncCommitteeCheckpoint, ctx.Int(utils.BeaconThresholdFlag.Name), !ctx.Bool(utils.BeaconNoFilterFlag.Name), sync.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
-	execSyncer := &execSyncer{
-		api:           beaconApi,
-		client:        makeRPCClient(ctx),
-		execRootCache: lru.NewCache[common.Hash, common.Hash](1000),
+	if ctx.IsSet(utils.BlsyncTestFlag.Name) {
+		if ctx.IsSet(utils.BlsyncApiFlag.Name) || ctx.IsSet(utils.BlsyncJWTSecretFlag.Name) {
+			utils.Fatalf("Target engine API/JWT secret specified in test mode")
+		}
+		testSyncer := newTestSyncer(beaconApi, ctx.IsSet(utils.BeaconApiNewStateProofFlag.Name))
+		syncCommitteeTracker.SubscribeToNewHeads(testSyncer.newSignedHead)
+	} else {
+		execSyncer := &execSyncer{
+			api:           beaconApi,
+			client:        makeRPCClient(ctx),
+			execRootCache: lru.NewCache[common.Hash, common.Hash](1000),
+		}
+		syncCommitteeTracker.SubscribeToNewHeads(execSyncer.newHead)
 	}
-	syncCommitteeTracker.SubscribeToNewHeads(execSyncer.newHead)
 	committeeSyncer.Start(syncCommitteeTracker)
 	syncCommitteeCheckpoint.TriggerFetch()
 	<-ctx.Done()
@@ -140,6 +154,7 @@ func callForkchoiceUpdatedV1(client *rpc.Client, headHash, finalizedHash common.
 
 type execSyncer struct {
 	api           *api.BeaconLightApi
+	sub           *api.StateProofSub
 	client        *rpc.Client
 	execRootCache *lru.Cache[common.Hash, common.Hash] // beacon block root -> execution block root
 }
@@ -151,6 +166,15 @@ var statePaths = []string{
 
 func (e *execSyncer) newHead(head types.Header) {
 	log.Info("Received new beacon head", "slot", head.Slot, "blockRoot", head.Hash())
+	if e.sub == nil {
+		if sub, err := e.api.SubscribeStateProof(stateProofFormat, statePaths, 0, 1); err == nil {
+			log.Info("Successfully created beacon state subscription")
+			e.sub = sub
+		} else {
+			log.Error("Failed to create beacon state subscription", "error", err)
+			return
+		}
+	}
 	if e.client == nil {
 		return
 	}
@@ -161,7 +185,7 @@ func (e *execSyncer) newHead(head types.Header) {
 		maxBlockFetch  = 4
 	)
 	for {
-		proof, err := e.api.GetStateProof(head.StateRoot, statePaths, stateProofFormat)
+		proof, err := e.sub.Get(head.StateRoot)
 		if err != nil {
 			log.Error("Error fetching state proof from beacon API", "error", err)
 			break
@@ -203,7 +227,7 @@ func (e *execSyncer) newHead(head types.Header) {
 		// iterate further back as far as possible (or max 256 steps) just to collect beacon -> exec root associations
 		maxFinalizedFetch := 256
 		for {
-			proof, err := e.api.GetStateProof(head.StateRoot, statePaths, stateProofFormat)
+			proof, err := e.sub.Get(head.StateRoot)
 			if err != nil {
 				// exit silently because we expect running into an error
 				break

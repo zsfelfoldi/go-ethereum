@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,18 +42,21 @@ import (
 // BeaconLightApi requests light client information from a beacon node REST API.
 // Note: all required API endpoints are currently only implemented by Lodestar.
 type BeaconLightApi struct {
-	url           string
-	client        *http.Client
-	customHeaders map[string]string
+	url                          string
+	client                       *http.Client
+	customHeaders                map[string]string
+	newStateProof, instantUpdate bool
 }
 
-func NewBeaconLightApi(url string, customHeaders map[string]string) *BeaconLightApi {
+func NewBeaconLightApi(url string, customHeaders map[string]string, newStateProof, instantUpdate bool) *BeaconLightApi {
 	return &BeaconLightApi{
 		url: url,
 		client: &http.Client{
 			Timeout: time.Second * 10,
 		},
 		customHeaders: customHeaders,
+		newStateProof: newStateProof,
+		instantUpdate: instantUpdate,
 	}
 }
 
@@ -175,11 +179,48 @@ type syncAggregate struct {
 // header and returns it as a SignedHead if available. The current head header
 // is also returned.
 //
-// Note: this function will be implemented using the
-// eth/v0/beacon/light_client/instant_update endpoint when available
-// See the description of the proposed endpoint here:
+// See API endpoint and data structure description here:
 // https://github.com/zsfelfoldi/beacon-APIs/blob/instant_update/apis/beacon/light_client/instant_update.yaml
+// https://github.com/zsfelfoldi/beacon-APIs/blob/instant_update/types/altair/light_client.yaml#L72
 func (api *BeaconLightApi) GetInstantHeadUpdate(reqHead types.Header) (sync.SignedHead, types.Header, error) {
+	if !api.instantUpdate {
+		return api.fakeInstantHeadUpdate(reqHead)
+	}
+	resp, err := api.httpGet("/eth/v0/beacon/light_client/instant_update/" + reqHead.Hash().Hex())
+	if err != nil {
+		return sync.SignedHead{}, types.Header{}, err
+	}
+	var data struct {
+		Data struct {
+			Aggregate     syncAggregate  `json:"best_sync_aggregate"`
+			SignatureSlot common.Decimal `json:"signature_slot"`
+			NewHead       jsonHeader     `json:"new_head"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &data); err != nil {
+		return sync.SignedHead{}, types.Header{}, err
+	}
+	if len(data.Data.Aggregate.BitMask) != params.SyncCommitteeBitmaskSize {
+		return sync.SignedHead{}, types.Header{}, errors.New("invalid sync_committee_bits length")
+	}
+	if len(data.Data.Aggregate.Signature) != params.BlsSignatureSize {
+		return sync.SignedHead{}, types.Header{}, errors.New("invalid sync_committee_signature length")
+	}
+	newHead := data.Data.NewHead.header()
+	if newHead == (types.Header{}) {
+		newHead = reqHead
+	}
+	return sync.SignedHead{
+		Header:        reqHead,
+		BitMask:       data.Data.Aggregate.BitMask,
+		Signature:     data.Data.Aggregate.Signature,
+		SignatureSlot: uint64(data.Data.SignatureSlot),
+	}, newHead, nil
+}
+
+// fakeInstantHeadUpdate uses the optimistic_update endpoint to simulate the behavior
+// of GetInstantHeadUpdate.
+func (api *BeaconLightApi) fakeInstantHeadUpdate(reqHead types.Header) (sync.SignedHead, types.Header, error) {
 	// simulate instant update behavior using head header and optimistic update
 	//TODO use new endpoint when available and use the code below as a fallback option
 	signedHead, err := api.GetOptimisticHeadUpdate()
@@ -297,30 +338,106 @@ func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (types.Header, error
 	return header, nil
 }
 
-// GetStateProof fetches and validates a Merkle proof for the specified parts of
+// does not verify state root
+func (api *BeaconLightApi) GetHeadStateProof(format merkle.ProofFormat, paths []string) (merkle.MultiProof, error) {
+	if api.newStateProof {
+		encFormat, bitLength := EncodeCompactProofFormat(format)
+		return api.getStateProof("head", format, encFormat, bitLength)
+	} else {
+		proof, _, err := api.getOldStateProof("head", format, paths)
+		return proof, err
+	}
+}
+
+type StateProofSub struct {
+	api       *BeaconLightApi
+	format    merkle.ProofFormat
+	paths     []string
+	encFormat []byte
+	bitLength int
+}
+
+func (api *BeaconLightApi) SubscribeStateProof(format merkle.ProofFormat, paths []string, first, period int) (*StateProofSub, error) {
+	encFormat, bitLength := EncodeCompactProofFormat(format)
+	if api.newStateProof {
+		_, err := api.httpGet("/eth/v0/beacon/proof/subscribe/states?format=0x" + hex.EncodeToString(encFormat) + "&first=" + strconv.Itoa(first) + "&period=" + strconv.Itoa(period))
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &StateProofSub{
+		api:       api,
+		format:    format,
+		encFormat: encFormat,
+		bitLength: bitLength,
+		paths:     paths,
+	}, nil
+}
+
+// verifies state root
+func (sub *StateProofSub) Get(stateRoot common.Hash) (merkle.MultiProof, error) {
+	var (
+		proof    merkle.MultiProof
+		rootHash common.Hash
+		err      error
+	)
+	if sub.api.newStateProof {
+		proof, err = sub.api.getStateProof(stateRoot.Hex(), sub.format, sub.encFormat, sub.bitLength)
+		if err == nil {
+			rootHash = proof.RootHash()
+		}
+	} else {
+		proof, rootHash, err = sub.api.getOldStateProof(stateRoot.Hex(), sub.format, sub.paths)
+	}
+	if err != nil {
+		return merkle.MultiProof{}, err
+	}
+	if rootHash != stateRoot {
+		return merkle.MultiProof{}, errors.New("Received proof has incorrect state root")
+	}
+	return proof, nil
+}
+
+func (api *BeaconLightApi) getStateProof(stateId string, format merkle.ProofFormat, encFormat []byte, bitLength int) (merkle.MultiProof, error) {
+	resp, err := api.httpGet("/eth/v0/beacon/proof/state/" + stateId + "?format=0x" + hex.EncodeToString(encFormat))
+	if err != nil {
+		return merkle.MultiProof{}, err
+	}
+	valueCount := (bitLength + 1) / 2
+	if len(resp) != valueCount*32 {
+		return merkle.MultiProof{}, errors.New("Invalid state proof length")
+	}
+	values := make(merkle.Values, valueCount)
+	for i := range values {
+		copy(values[i][:], resp[i*32:(i+1)*32])
+	}
+	return merkle.MultiProof{Format: format, Values: values}, nil
+}
+
+// getOldStateProof fetches and validates a Merkle proof for the specified parts of
 // the recent beacon state referenced by stateRoot. If successful the returned
 // multiproof has the format specified by expFormat. The state subset specified by
 // the list of string keys (paths) should cover the subset specified by expFormat.
-func (api *BeaconLightApi) GetStateProof(stateRoot common.Hash, paths []string, expFormat merkle.ProofFormat) (merkle.MultiProof, error) {
-	path := "/eth/v0/beacon/proof/state/" + stateRoot.Hex() + "?paths=" + paths[0]
+func (api *BeaconLightApi) getOldStateProof(stateId string, expFormat merkle.ProofFormat, paths []string) (merkle.MultiProof, common.Hash, error) {
+	path := "/eth/v0/beacon/proof/state/" + stateId + "?paths=" + paths[0]
 	for i := 1; i < len(paths); i++ {
 		path += "&paths=" + paths[i]
 	}
 	resp, err := api.httpGet(path)
 	if err != nil {
-		return merkle.MultiProof{}, err
+		return merkle.MultiProof{}, common.Hash{}, err
 	}
 	proof, err := parseSSZMultiProof(resp)
 	if err != nil {
-		return merkle.MultiProof{}, err
+		return merkle.MultiProof{}, common.Hash{}, err
 	}
 	var values merkle.Values
 	reader := proof.Reader(nil)
 	root, ok := merkle.TraverseProof(reader, merkle.NewMultiProofWriter(expFormat, &values, nil))
-	if !ok || !reader.Finished() || root != stateRoot {
-		return merkle.MultiProof{}, errors.New("invalid state proof")
+	if !ok || !reader.Finished() {
+		return merkle.MultiProof{}, common.Hash{}, errors.New("invalid state proof")
 	}
-	return merkle.MultiProof{Format: expFormat, Values: values}, nil
+	return merkle.MultiProof{Format: expFormat, Values: values}, root, nil
 }
 
 // parseSSZMultiProof creates a MultiProof from a serialized format:
@@ -378,6 +495,31 @@ func parseMultiProofFormat(indexMap merkle.IndexMapFormat, index uint64, format 
 		return err
 	}
 	return nil
+}
+
+// EncodeCompactProofFormat encodes a merkle.ProofFormat into a binary compact
+// proof format. See description here:
+// https://github.com/ChainSafe/consensus-specs/blob/feat/multiproof/ssz/merkle-proofs.md#compact-multiproofs
+func EncodeCompactProofFormat(format merkle.ProofFormat) ([]byte, int) {
+	target := make([]byte, 0, 64)
+	var bitLength int
+	encodeProofFormatSubtree(format, &target, &bitLength)
+	return target, bitLength
+}
+
+// encodeProofFormatSubtree recursively encodes a subtree of a proof format into
+// binary compact format.
+func encodeProofFormatSubtree(format merkle.ProofFormat, target *[]byte, bitLength *int) {
+	bytePtr, bitMask := *bitLength>>3, byte(128)>>(*bitLength&7)
+	*bitLength++
+	if bytePtr == len(*target) {
+		*target = append(*target, byte(0))
+	}
+	if left, right := format.Children(); left != nil {
+		(*target)[bytePtr] += bitMask
+		encodeProofFormatSubtree(left, target, bitLength)
+		encodeProofFormatSubtree(right, target, bitLength)
+	}
 }
 
 // GetCheckpointData fetches and validates bootstrap data belonging to the given checkpoint.

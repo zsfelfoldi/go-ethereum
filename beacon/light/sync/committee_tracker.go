@@ -134,7 +134,7 @@ func NewCommitteeTracker(db ethdb.KeyValueStore, forks Forks, constraints Constr
 		enforceTime:              enforceTime,
 		minimumUpdateScore: types.UpdateScore{
 			SignerCount:    uint32(signerThreshold),
-			SubPeriodIndex: params.SyncPeriodLength / 16,
+			SubPeriodIndex: 0, //TODO params.SyncPeriodLength / 16,
 		},
 		connected:    make(map[ctServer]*ctPeerInfo),
 		broadcastTo:  make(map[ctClient]struct{}),

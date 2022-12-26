@@ -288,6 +288,16 @@ var (
 		Usage:    "Remote beacon node API custom HTTP header fields (\"key:value,key:value\")",
 		Category: flags.BeaconCategory,
 	}
+	BeaconApiNewStateProofFlag = &cli.BoolFlag{
+		Name:     "beacon.api.newstateproof",
+		Usage:    "Use new state proof API format",
+		Category: flags.BeaconCategory,
+	}
+	BeaconApiInstantUpdateFlag = &cli.BoolFlag{
+		Name:     "beacon.api.instantupdate",
+		Usage:    "Use instant head update API endpoint",
+		Category: flags.BeaconCategory,
+	}
 	BeaconThresholdFlag = &cli.IntFlag{
 		Name:     "beacon.threshold",
 		Usage:    "Beacon sync committee participation threshold",
@@ -327,6 +337,11 @@ var (
 	BlsyncJWTSecretFlag = &cli.StringFlag{
 		Name:     "blsync.jwtsecret",
 		Usage:    "Path to a JWT secret to use for target engine API endpoint",
+		Category: flags.BeaconCategory,
+	}
+	BlsyncTestFlag = &cli.BoolFlag{
+		Name:     "blsync.test",
+		Usage:    "Test beacon API",
 		Category: flags.BeaconCategory,
 	}
 	// Light server and client settings

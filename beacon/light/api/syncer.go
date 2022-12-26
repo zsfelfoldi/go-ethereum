@@ -254,6 +254,10 @@ func (cs *CommitteeSyncer) syncUpdatesUntil(lastPeriod uint64) bool {
 	}
 	select {
 	case <-cs.committeeTracker.SyncWithPeer(cs, updateInfo):
+		localNextPeriod = cs.committeeTracker.NextPeriod()
+		if localNextPeriod <= lastPeriod {
+			log.Error("Failed to sync all API committee updates", "local next period", localNextPeriod, "remote next period", lastPeriod+1)
+		}
 	case <-cs.closeCh:
 		return false
 	}

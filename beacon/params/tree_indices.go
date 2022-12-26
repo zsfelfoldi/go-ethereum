@@ -39,6 +39,7 @@ const (
 	BsiFinalBlock        = 105
 	BsiSyncCommittee     = 54
 	BsiNextSyncCommittee = 55
+	BsiExecPayload       = 56
 	BsiExecHead          = 908
 )
 
