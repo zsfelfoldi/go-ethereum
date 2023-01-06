@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -67,6 +68,9 @@ func (api *BeaconLightApi) httpGet(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("Error from API endpoint \"%s\": status code %d", path, resp.StatusCode)
+	}
 	return io.ReadAll(resp.Body)
 }
 
@@ -116,16 +120,16 @@ func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (types.Light
 		SignatureSlot           common.Decimal    `json:"signature_slot"`
 	}
 
-	var data struct {
-		Data []committeeUpdate `json:"data"`
+	var data []struct {
+		Data committeeUpdate `json:"data"`
 	}
 	if err := json.Unmarshal(resp, &data); err != nil {
 		return types.LightClientUpdate{}, nil, err
 	}
-	if len(data.Data) != 1 {
+	if len(data) != 1 {
 		return types.LightClientUpdate{}, nil, errors.New("invalid number of committee updates")
 	}
-	c := data.Data[0]
+	c := data[0].Data
 	header := c.Header.header()
 	if header.SyncPeriod() != period {
 		return types.LightClientUpdate{}, nil, errors.New("wrong committee update header period")
@@ -297,7 +301,7 @@ func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (types.Header, error
 // multiproof has the format specified by expFormat. The state subset specified by
 // the list of string keys (paths) should cover the subset specified by expFormat.
 func (api *BeaconLightApi) GetStateProof(stateRoot common.Hash, paths []string, expFormat merkle.ProofFormat) (merkle.MultiProof, error) {
-	path := "/eth/v1/beacon/light_client/proof/" + stateRoot.Hex() + "?paths=" + paths[0]
+	path := "/eth/v0/beacon/proof/state/" + stateRoot.Hex() + "?paths=" + paths[0]
 	for i := 1; i < len(paths); i++ {
 		path += "&paths=" + paths[i]
 	}
