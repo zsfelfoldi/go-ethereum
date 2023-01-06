@@ -18,7 +18,6 @@ package types
 
 import (
 	"errors"
-	"math"
 	"math/bits"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
@@ -144,28 +143,14 @@ func (u *UpdateScore) isFinalized() bool {
 	return u.FinalizedHeader && u.SignerCount >= params.SyncCommitteeSupermajority
 }
 
-// reorgRiskPenalty returns a modifier that approximates the risk of a
-// non-finalized update header being reorged. It should be subtracted from the
-// signer participation count when comparing non-finaized updates. This risk is
-// assumed to be dropping exponentially as the update header is further away
-// from the beginning of the period.
-func (u *UpdateScore) reorgRiskPenalty() uint32 {
-	return uint32(math.Pow(2, 10-float64(u.SubPeriodIndex)/params.EpochLength))
-}
-
 // BetterThan returns true if update u is considered better than w.
 func (u UpdateScore) BetterThan(w UpdateScore) bool {
 	var (
 		uFinalized = u.isFinalized()
 		wFinalized = w.isFinalized()
 	)
-	if uFinalized || wFinalized {
-		// finalized update is always better than non-finalized; only signer count matters when both are finalized
-		if uFinalized && wFinalized {
-			return u.SignerCount > w.SignerCount
-		}
+	if uFinalized != wFinalized {
 		return uFinalized
 	}
-	// take reorg risk into account when comparing two non-finalized updates
-	return u.SignerCount+w.reorgRiskPenalty() > w.SignerCount+u.reorgRiskPenalty()
+	return u.SignerCount > w.SignerCount
 }
