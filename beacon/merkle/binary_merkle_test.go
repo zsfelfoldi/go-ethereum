@@ -222,8 +222,8 @@ func formatsEqual(f1, f2 ProofFormat) bool {
 	if f1 == nil || f2 == nil {
 		return false
 	}
-	c1l, c1r := f1.children()
-	c2l, c2r := f2.children()
+	c1l, c1r := f1.Children()
+	c2l, c2r := f2.Children()
 	return formatsEqual(c1l, c2l) && formatsEqual(c1r, c2r)
 }
 
@@ -231,14 +231,14 @@ type testReader byte
 
 var testProofReader = testReader(1)
 
-func (r testReader) children() (left, right ProofReader) {
+func (r testReader) Children() (left, right ProofReader) {
 	if r >= 128 {
 		return nil, nil
 	}
 	return r * 2, r*2 + 1
 }
 
-func (r testReader) readNode() (Value, bool) {
+func (r testReader) ReadNode() (Value, bool) {
 	return testMerkleTree[r], true
 }
 
