@@ -280,7 +280,7 @@ var (
 	// Beacon client light sync settings
 	BeaconApiFlag = &cli.StringFlag{
 		Name:     "beacon.api",
-		Usage:    "Beacon node light client API URL (currently only supports LodeStar)",
+		Usage:    "Beacon node (CL) light client API URL (currently only supports LodeStar)",
 		Category: flags.BeaconCategory,
 	}
 	BeaconApiHeaderFlag = &cli.StringFlag{
@@ -320,8 +320,8 @@ var (
 		Category: flags.BeaconCategory,
 	}
 	BlsyncApiFlag = &cli.StringFlag{
-		Name:     "blsync.api",
-		Usage:    "Target engine API URL",
+		Name:     "blsync.engine.api",
+		Usage:    "Target EL engine API URL",
 		Category: flags.BeaconCategory,
 	}
 	BlsyncJWTSecretFlag = &cli.StringFlag{
