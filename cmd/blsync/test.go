@@ -322,11 +322,11 @@ func (t *testSyncer) updateHead(force bool) error {
 	}
 }
 
-func (t *testSyncer) newSignedHead(head types.Header) {
+func (t *testSyncer) newSignedHead(signedHead types.SignedHead) {
 	now := mclock.Now()
 	go func() {
 		var delay interface{}
-		hash := head.Hash()
+		hash := signedHead.Header.Hash()
 		t.lock.Lock()
 		if arrivedAt, ok := t.waitForSig[hash]; ok {
 			delay = time.Duration(now - arrivedAt)
@@ -335,7 +335,7 @@ func (t *testSyncer) newSignedHead(head types.Header) {
 			delay = "unknown"
 		}
 		t.lock.Unlock()
-		log.Info("Received new signed head", "slot", head.Slot, "blockRoot", hash, "delay", delay, "head states retrieved", t.headStateCount, "subscribed states retrieved", t.recentStateCount)
+		log.Info("Received new signed head", "slot", signedHead.Header.Slot, "blockRoot", hash, "delay", delay, "head states retrieved", t.headStateCount, "subscribed states retrieved", t.recentStateCount)
 	}()
 }
 

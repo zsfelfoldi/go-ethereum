@@ -17,21 +17,17 @@
 package api
 
 import (
-	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/donovanhide/eventsource"
-
-	"github.com/ethereum/go-ethereum/beacon/light/sync"
+	"github.com/ethereum/go-ethereum/beacon/light"
 	"github.com/ethereum/go-ethereum/beacon/light/types"
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/beacon/params"
@@ -40,9 +36,14 @@ import (
 	ctypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/trie"
 	"github.com/holiman/uint256"
-	"github.com/protolambda/zrnt/eth2/beacon/bellatrix"
+	"github.com/protolambda/zrnt/eth2/beacon/capella"
 	"github.com/protolambda/zrnt/eth2/configs"
 	"github.com/protolambda/ztyp/tree"
+)
+
+var (
+	ErrNotFound = errors.New("404 Not Found")
+	ErrInternal = errors.New("500 Internal Server Error")
 )
 
 // BeaconLightApi requests light client information from a beacon node REST API.
@@ -78,41 +79,20 @@ func (api *BeaconLightApi) httpGet(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("Error from API endpoint \"%s\": status code %d", path, resp.StatusCode)
-	}
-	return io.ReadAll(resp.Body)
-}
-
-// Header defines a beacon header and supports JSON encoding according to the
-// standard beacon API format
-//
-// See data structure definition here:
-// https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#beaconblockheader
-type jsonHeader struct {
-	Slot          common.Decimal `json:"slot"`
-	ProposerIndex common.Decimal `json:"proposer_index"`
-	ParentRoot    common.Hash    `json:"parent_root"`
-	StateRoot     common.Hash    `json:"state_root"`
-	BodyRoot      common.Hash    `json:"body_root"`
-}
-
-type jsonBeaconHeader struct {
-	Beacon jsonHeader `json:"beacon"`
-}
-
-func (h *jsonHeader) header() types.Header {
-	return types.Header{
-		Slot:          uint64(h.Slot),
-		ProposerIndex: uint64(h.ProposerIndex),
-		ParentRoot:    h.ParentRoot,
-		StateRoot:     h.StateRoot,
-		BodyRoot:      h.BodyRoot,
+	switch resp.StatusCode {
+	case 200:
+		return io.ReadAll(resp.Body)
+	case 404:
+		return nil, ErrNotFound
+	case 500:
+		return nil, ErrInternal
+	default:
+		return nil, fmt.Errorf("Unexpected error from API endpoint \"%s\": status code %d", path, resp.StatusCode)
 	}
 }
 
-func (h *jsonBeaconHeader) header() types.Header {
-	return h.Beacon.header()
+func (api *BeaconLightApi) httpGetf(format string, params ...any) ([]byte, error) {
+	return api.httpGet(fmt.Sprintf(format, params...))
 }
 
 // GetBestUpdateAndCommittee fetches and validates LightClientUpdate for given
@@ -120,72 +100,35 @@ func (h *jsonBeaconHeader) header() types.Header {
 // equals update.NextSyncCommitteeRoot).
 // Note that the results are validated but the update signature should be verified
 // by the caller as its validity depends on the update chain.
-func (api *BeaconLightApi) GetBestUpdateAndCommittee(period uint64) (types.LightClientUpdate, []byte, error) {
-	resp, err := api.httpGet("/eth/v1/beacon/light_client/updates?start_period=" + strconv.Itoa(int(period)) + "&count=1")
+//TODO handle valid partial results
+func (api *BeaconLightApi) GetBestUpdatesAndCommittees(firstPeriod, count uint64) ([]*types.LightClientUpdate, []*types.SerializedCommittee, error) {
+	resp, err := api.httpGetf("/eth/v1/beacon/light_client/updates?start_period=%d&count=%d", firstPeriod, count)
 	if err != nil {
-		return types.LightClientUpdate{}, nil, err
+		return nil, nil, err
 	}
 
-	// See data structure definition here:
-	// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientupdate
-	type committeeUpdate struct {
-		Header                  jsonBeaconHeader  `json:"attested_header"`
-		NextSyncCommittee       syncCommitteeJson `json:"next_sync_committee"`
-		NextSyncCommitteeBranch merkle.Values     `json:"next_sync_committee_branch"`
-		FinalizedHeader         jsonBeaconHeader  `json:"finalized_header"`
-		FinalityBranch          merkle.Values     `json:"finality_branch"`
-		Aggregate               syncAggregate     `json:"sync_aggregate"`
-		SignatureSlot           common.Decimal    `json:"signature_slot"`
-	}
-
-	var data []struct {
-		Data committeeUpdate `json:"data"`
-	}
+	var data []types.CommitteeUpdate
 	if err := json.Unmarshal(resp, &data); err != nil {
-		return types.LightClientUpdate{}, nil, err
+		return nil, nil, err
 	}
-	if len(data) != 1 {
-		return types.LightClientUpdate{}, nil, errors.New("invalid number of committee updates")
+	if len(data) != int(count) {
+		return nil, nil, errors.New("invalid number of committee updates")
 	}
-	c := data[0].Data
-	header := c.Header.header()
-	if header.SyncPeriod() != period {
-		return types.LightClientUpdate{}, nil, errors.New("wrong committee update header period")
+	updates := make([]*types.LightClientUpdate, int(count))
+	committees := make([]*types.SerializedCommittee, int(count))
+	for i, d := range data {
+		if d.Update.Header.SyncPeriod() != firstPeriod+uint64(i) {
+			return nil, nil, errors.New("wrong committee update header period")
+		}
+		if err := d.Update.Validate(); err != nil {
+			return nil, nil, err
+		}
+		if d.NextSyncCommittee.Root() != d.Update.NextSyncCommitteeRoot {
+			return nil, nil, errors.New("wrong sync committee root")
+		}
+		updates[i], committees[i] = d.Update, d.NextSyncCommittee
 	}
-	if types.PeriodOfSlot(uint64(c.SignatureSlot)) != period {
-		return types.LightClientUpdate{}, nil, errors.New("wrong committee update signature period")
-	}
-	if len(c.NextSyncCommittee.Pubkeys) != params.SyncCommitteeSize {
-		return types.LightClientUpdate{}, nil, errors.New("invalid number of pubkeys in next_sync_committee")
-	}
-
-	committee, ok := c.NextSyncCommittee.serialize()
-	if !ok {
-		return types.LightClientUpdate{}, nil, errors.New("invalid sync committee")
-	}
-	update := types.LightClientUpdate{
-		Header:                  header,
-		NextSyncCommitteeRoot:   sync.SerializedCommitteeRoot(committee),
-		NextSyncCommitteeBranch: c.NextSyncCommitteeBranch,
-		FinalizedHeader:         c.FinalizedHeader.header(),
-		FinalityBranch:          c.FinalityBranch,
-		SyncCommitteeBits:       c.Aggregate.BitMask,
-		SyncCommitteeSignature:  c.Aggregate.Signature,
-	}
-	if err := update.Validate(); err != nil {
-		return types.LightClientUpdate{}, nil, err
-	}
-	return update, committee, nil
-}
-
-// syncAggregate represents an aggregated BLS signature with BitMask referring
-// to a subset of the corresponding sync committee
-//
-// See data structure definition here:
-// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/beacon-chain.md#syncaggregate
-type syncAggregate struct {
-	BitMask   hexutil.Bytes `json:"sync_committee_bits"`
-	Signature hexutil.Bytes `json:"sync_committee_signature"`
+	return updates, committees, nil
 }
 
 // GetOptimisticHeadUpdate fetches a signed header based on the latest available
@@ -194,84 +137,55 @@ type syncAggregate struct {
 //
 // See data structure definition here:
 // https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientoptimisticupdate
-func (api *BeaconLightApi) GetOptimisticHeadUpdate() (sync.SignedHead, error) {
+func (api *BeaconLightApi) GetOptimisticHeadUpdate() (types.SignedHead, error) {
 	resp, err := api.httpGet("/eth/v1/beacon/light_client/optimistic_update")
 	if err != nil {
-		return sync.SignedHead{}, err
+		return types.SignedHead{}, err
 	}
 	return decodeOptimisticHeadUpdate(resp)
 }
 
-func decodeOptimisticHeadUpdate(enc []byte) (sync.SignedHead, error) {
+func decodeOptimisticHeadUpdate(enc []byte) (types.SignedHead, error) {
 	var data struct {
 		Data struct {
-			Header        jsonBeaconHeader `json:"attested_header"`
-			Aggregate     syncAggregate    `json:"sync_aggregate"`
-			SignatureSlot common.Decimal   `json:"signature_slot"`
+			Header        types.JsonBeaconHeader `json:"attested_header"`
+			Aggregate     types.SyncAggregate    `json:"sync_aggregate"`
+			SignatureSlot common.Decimal         `json:"signature_slot"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(enc, &data); err != nil {
-		return sync.SignedHead{}, err
+		return types.SignedHead{}, err
 	}
 	if data.Data.Header.Beacon.StateRoot == (common.Hash{}) {
 		// workaround for different event encoding format in Lodestar
 		if err := json.Unmarshal(enc, &data.Data); err != nil {
-			return sync.SignedHead{}, err
+			return types.SignedHead{}, err
 		}
 	}
 
 	if len(data.Data.Aggregate.BitMask) != params.SyncCommitteeBitmaskSize {
-		return sync.SignedHead{}, errors.New("invalid sync_committee_bits length")
+		return types.SignedHead{}, errors.New("invalid sync_committee_bits length")
 	}
 	if len(data.Data.Aggregate.Signature) != params.BlsSignatureSize {
-		return sync.SignedHead{}, errors.New("invalid sync_committee_signature length")
+		return types.SignedHead{}, errors.New("invalid sync_committee_signature length")
 	}
-	return sync.SignedHead{
-		Header:        data.Data.Header.header(),
-		BitMask:       data.Data.Aggregate.BitMask,
-		Signature:     data.Data.Aggregate.Signature,
+	return types.SignedHead{
+		Header:        data.Data.Header.Beacon,
+		SyncAggregate: data.Data.Aggregate,
 		SignatureSlot: uint64(data.Data.SignatureSlot),
 	}, nil
-}
-
-// syncCommitteeJson is the JSON representation of a sync committee
-//
-// See data structure definition here:
-// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/beacon-chain.md#syncaggregate
-type syncCommitteeJson struct {
-	Pubkeys   []hexutil.Bytes `json:"pubkeys"`
-	Aggregate hexutil.Bytes   `json:"aggregate_pubkey"`
-}
-
-// serialize returns the serialized version of the committee
-func (s *syncCommitteeJson) serialize() ([]byte, bool) {
-	if len(s.Pubkeys) != params.SyncCommitteeSize {
-		return nil, false
-	}
-	sk := make([]byte, sync.SerializedCommitteeSize)
-	for i, key := range s.Pubkeys {
-		if len(key) != params.BlsPubkeySize {
-			return nil, false
-		}
-		copy(sk[i*params.BlsPubkeySize:(i+1)*params.BlsPubkeySize], key[:])
-	}
-	if len(s.Aggregate) != params.BlsPubkeySize {
-		return nil, false
-	}
-	copy(sk[params.SyncCommitteeSize*params.BlsPubkeySize:], s.Aggregate[:])
-	return sk, true
 }
 
 // GetHead fetches and validates the beacon header with the given blockRoot.
 // If blockRoot is null hash then the latest head header is fetched.
 func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (types.Header, error) {
-	path := "/eth/v1/beacon/headers/"
+	var blockId string
 	if blockRoot == (common.Hash{}) {
-		path += "head"
+		blockId = "head"
 	} else {
-		path += blockRoot.Hex()
+		blockId = blockRoot.Hex()
 	}
-	resp, err := api.httpGet(path)
+	resp, err := api.httpGetf("/eth/v1/beacon/headers/%s", blockId)
 	if err != nil {
 		return types.Header{}, err
 	}
@@ -281,7 +195,7 @@ func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (types.Header, error
 			Root      common.Hash `json:"root"`
 			Canonical bool        `json:"canonical"`
 			Header    struct {
-				Message   jsonHeader    `json:"message"`
+				Message   types.Header  `json:"message"`
 				Signature hexutil.Bytes `json:"signature"`
 			} `json:"header"`
 		} `json:"data"`
@@ -289,7 +203,7 @@ func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (types.Header, error
 	if err := json.Unmarshal(resp, &data); err != nil {
 		return types.Header{}, err
 	}
-	header := data.Data.Header.Message.header()
+	header := data.Data.Header.Message
 	if blockRoot == (common.Hash{}) {
 		blockRoot = data.Data.Root
 	}
@@ -324,7 +238,7 @@ func (api *BeaconLightApi) SubscribeStateProof(format merkle.ProofFormat, paths 
 	}
 	encFormat, bitLength := EncodeCompactProofFormat(format)
 	if api.stateProofVersion >= 2 {
-		_, err := api.httpGet("/eth/v0/beacon/proof/subscribe/states?format=0x" + hex.EncodeToString(encFormat) + "&first=" + strconv.Itoa(first) + "&period=" + strconv.Itoa(period))
+		_, err := api.httpGetf("/eth/v0/beacon/proof/subscribe/states?format=0x%x&first=%d&period=%d", encFormat, first, period)
 		if err != nil {
 			return nil, err
 		}
@@ -363,7 +277,7 @@ func (sub *StateProofSub) Get(stateRoot common.Hash) (merkle.MultiProof, error) 
 }
 
 func (api *BeaconLightApi) getStateProof(stateId string, format merkle.ProofFormat, encFormat []byte, bitLength int) (merkle.MultiProof, error) {
-	resp, err := api.httpGet("/eth/v0/beacon/proof/state/" + stateId + "?format=0x" + hex.EncodeToString(encFormat))
+	resp, err := api.httpGetf("/eth/v0/beacon/proof/state/%s?format=0x%x", stateId, encFormat)
 	if err != nil {
 		return merkle.MultiProof{}, err
 	}
@@ -487,52 +401,46 @@ func encodeProofFormatSubtree(format merkle.ProofFormat, target *[]byte, bitLeng
 }
 
 // GetCheckpointData fetches and validates bootstrap data belonging to the given checkpoint.
-func (api *BeaconLightApi) GetCheckpointData(ctx context.Context, checkpoint common.Hash) (types.Header, sync.CheckpointData, []byte, error) {
-	resp, err := api.httpGet("/eth/v1/beacon/light_client/bootstrap/" + checkpoint.String())
+func (api *BeaconLightApi) GetCheckpointData(checkpointHash common.Hash) (*light.CheckpointData, error) {
+	resp, err := api.httpGetf("/eth/v1/beacon/light_client/bootstrap/0x%x", checkpointHash[:])
 	if err != nil {
-		return types.Header{}, sync.CheckpointData{}, nil, err
+		return nil, err
 	}
 
 	// See data structure definition here:
 	// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientbootstrap
 	type bootstrapData struct {
 		Data struct {
-			Header          jsonBeaconHeader  `json:"header"`
-			Committee       syncCommitteeJson `json:"current_sync_committee"`
-			CommitteeBranch merkle.Values     `json:"current_sync_committee_branch"`
+			Header          types.JsonBeaconHeader     `json:"header"`
+			Committee       *types.SerializedCommittee `json:"current_sync_committee"`
+			CommitteeBranch merkle.Values              `json:"current_sync_committee_branch"`
 		} `json:"data"`
 	}
 
 	var data bootstrapData
 	if err := json.Unmarshal(resp, &data); err != nil {
-		return types.Header{}, sync.CheckpointData{}, nil, err
+		return nil, err
 	}
-	header := data.Data.Header.header()
-	if header.Hash() != checkpoint {
-		return types.Header{}, sync.CheckpointData{}, nil, errors.New("invalid checkpoint block header")
+	header := data.Data.Header.Beacon
+	if header.Hash() != checkpointHash {
+		return nil, errors.New("invalid checkpoint block header")
 	}
-	committee, ok := data.Data.Committee.serialize()
-	if !ok {
-		return types.Header{}, sync.CheckpointData{}, nil, errors.New("invalid sync committee JSON")
+	checkpoint := &light.CheckpointData{
+		Header:          header,
+		CommitteeBranch: data.Data.CommitteeBranch,
+		CommitteeRoot:   data.Data.Committee.Root(),
+		Committee:       data.Data.Committee,
 	}
-	committeeRoot := sync.SerializedCommitteeRoot(committee)
-	expStateRoot, ok := merkle.VerifySingleProof(data.Data.CommitteeBranch, params.BsiSyncCommittee, merkle.Value(committeeRoot))
-	if !ok || expStateRoot != header.StateRoot {
-		return types.Header{}, sync.CheckpointData{}, nil, errors.New("invalid sync committee Merkle proof")
+	if !checkpoint.Validate() {
+		return nil, errors.New("invalid sync committee Merkle proof")
 	}
-	nextCommitteeRoot := common.Hash(data.Data.CommitteeBranch[0])
-	checkpointData := sync.CheckpointData{
-		Checkpoint:     checkpoint,
-		Period:         header.SyncPeriod(),
-		CommitteeRoots: [2]common.Hash{committeeRoot, nextCommitteeRoot},
-	}
-	return header, checkpointData, committee, nil
+	return checkpoint, nil
 }
 
 // GetExecutionPayload fetches the execution block belonging to the beacon block
 // specified by beaconRoot and validates its block hash against the expected execRoot.
 func (api *BeaconLightApi) GetExecutionPayload(header types.Header) (*ctypes.Block, error) {
-	resp, err := api.httpGet("/eth/v2/beacon/blocks/" + header.Hash().Hex())
+	resp, err := api.httpGetf("/eth/v2/beacon/blocks/0x%x", header.Hash())
 	if err != nil {
 		return nil, err
 	}
@@ -540,11 +448,12 @@ func (api *BeaconLightApi) GetExecutionPayload(header types.Header) (*ctypes.Blo
 	spec := configs.Mainnet
 	// note: eth2 api endpoints serve bellatrix.SignedBeaconBlock instead
 	// also try  github.com/protolambda/eth2api for api bindings
-	var beaconBlock bellatrix.BeaconBlock
+	//var beaconBlock bellatrix.BeaconBlock
+	var beaconBlock capella.BeaconBlock
 	myJSONBlockData := resp
 	var beaconBlockMessage struct {
 		Data struct {
-			Message bellatrix.BeaconBlock `json:"message"`
+			Message capella.BeaconBlock `json:"message"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(myJSONBlockData, &beaconBlockMessage); err != nil {
@@ -565,26 +474,38 @@ func (api *BeaconLightApi) GetExecutionPayload(header types.Header) (*ctypes.Blo
 		}
 		txs[i] = &tx
 	}
-	execBlock := ctypes.NewBlockWithHeader(&ctypes.Header{
-		ParentHash:  common.Hash(payload.ParentHash),
-		UncleHash:   ctypes.EmptyUncleHash,
-		Coinbase:    common.Address(payload.FeeRecipient),
-		Root:        common.Hash(payload.StateRoot),
-		TxHash:      ctypes.DeriveSha(ctypes.Transactions(txs), trie.NewStackTrie(nil)),
-		ReceiptHash: common.Hash(payload.ReceiptsRoot),
-		Bloom:       ctypes.Bloom(payload.LogsBloom),
-		Difficulty:  big.NewInt(0), // constant
-		Number:      new(big.Int).SetUint64(uint64(payload.BlockNumber)),
-		GasLimit:    uint64(payload.GasLimit),
-		GasUsed:     uint64(payload.GasUsed),
-		Time:        uint64(payload.Timestamp),
-		Extra:       []byte(payload.ExtraData),
-		MixDigest:   common.Hash(payload.PrevRandao), // reused in merge
-		Nonce:       ctypes.BlockNonce{},             // zero
-		BaseFee:     (*uint256.Int)(&payload.BaseFeePerGas).ToBig(),
-	}).WithBody(txs, nil)
+	withdrawals := make([]*ctypes.Withdrawal, len(payload.Withdrawals))
+	for i, w := range payload.Withdrawals {
+		withdrawals[i] = &ctypes.Withdrawal{
+			Index:     uint64(w.Index),
+			Validator: uint64(w.ValidatorIndex),
+			Address:   common.Address(w.Address),
+			Amount:    uint64(w.Amount),
+		}
+	}
+	wroot := ctypes.DeriveSha(ctypes.Withdrawals(withdrawals), trie.NewStackTrie(nil))
+	execHeader := &ctypes.Header{
+		ParentHash:      common.Hash(payload.ParentHash),
+		UncleHash:       ctypes.EmptyUncleHash,
+		Coinbase:        common.Address(payload.FeeRecipient),
+		Root:            common.Hash(payload.StateRoot),
+		TxHash:          ctypes.DeriveSha(ctypes.Transactions(txs), trie.NewStackTrie(nil)),
+		ReceiptHash:     common.Hash(payload.ReceiptsRoot),
+		Bloom:           ctypes.Bloom(payload.LogsBloom),
+		Difficulty:      big.NewInt(0), // constant
+		Number:          new(big.Int).SetUint64(uint64(payload.BlockNumber)),
+		GasLimit:        uint64(payload.GasLimit),
+		GasUsed:         uint64(payload.GasUsed),
+		Time:            uint64(payload.Timestamp),
+		Extra:           []byte(payload.ExtraData),
+		MixDigest:       common.Hash(payload.PrevRandao), // reused in merge
+		Nonce:           ctypes.BlockNonce{},             // zero
+		BaseFee:         (*uint256.Int)(&payload.BaseFeePerGas).ToBig(),
+		WithdrawalsHash: &wroot,
+	}
+	execBlock := ctypes.NewBlockWithHeader(execHeader).WithBody(txs, nil).WithWithdrawals(withdrawals)
 	if execBlock.Hash() != common.Hash(payload.BlockHash) {
-		return nil, fmt.Errorf("sanity check failed, payload hash does not match.\nPayload: %v\nGeth: %v", payload, execBlock)
+		return nil, fmt.Errorf("Sanity check failed, payload hash does not match.")
 	}
 	return execBlock, nil
 }
@@ -604,33 +525,37 @@ func decodeHeadEvent(enc []byte) (uint64, common.Hash, error) {
 // head updates and calls the specified callback functions when they are received.
 // The callbacks are also called for the current head and optimistic head at startup.
 // They are never called concurrently.
-func (api *BeaconLightApi) StartHeadListener(headFn func(slot uint64, blockRoot common.Hash), signedFn func(head sync.SignedHead), errFn func(err error)) func() {
-	var (
-		stream *eventsource.Stream
-		err    error
-	)
-	streamCh := make(chan struct{})
-	closedCh := make(chan struct{})
+func (api *BeaconLightApi) StartHeadListener(headFn func(slot uint64, blockRoot common.Hash), signedFn func(head types.SignedHead), errFn func(err error)) func() {
+	closeCh := make(chan struct{})   // initiate closing the stream
+	closedCh := make(chan struct{})  // stream closed (or failed to create)
+	stoppedCh := make(chan struct{}) // sync loop stopped
+	streamCh := make(chan *eventsource.Stream, 1)
 	go func() {
+		defer close(closedCh)
 		// when connected to a Lodestar node the subscription blocks until the
 		// first actual event arrives; therefore we create the subscription in
 		// a separate goroutine while letting the main goroutine sync up to the
 		// current head
-		stream, err = eventsource.Subscribe(api.url+"/eth/v1/events?topics=head&topics=light_client_optimistic_update", "")
+		stream, err := eventsource.Subscribe(api.url+"/eth/v1/events?topics=head&topics=light_client_optimistic_update", "")
 		if err != nil {
 			errFn(fmt.Errorf("Error creating event subscription: %v", err))
+			close(streamCh)
 			return
 		}
-		close(streamCh)
+		streamCh <- stream
+		<-closeCh
+		stream.Close()
 	}()
 	go func() {
+		defer close(stoppedCh)
+
 		if head, err := api.GetHeader(common.Hash{}); err == nil {
 			headFn(head.Slot, head.Hash())
 		}
 		if signedHead, err := api.GetOptimisticHeadUpdate(); err == nil {
 			signedFn(signedHead)
 		}
-		<-streamCh
+		stream := <-streamCh
 		if stream == nil {
 			return
 		}
@@ -663,13 +588,10 @@ func (api *BeaconLightApi) StartHeadListener(headFn func(slot uint64, blockRoot 
 				errFn(err)
 			}
 		}
-		close(closedCh)
 	}()
 	return func() {
-		<-streamCh
-		if stream != nil {
-			stream.Close()
-		}
+		close(closeCh)
 		<-closedCh
+		<-stoppedCh
 	}
 }

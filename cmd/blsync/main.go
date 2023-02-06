@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/beacon/engine"
+	"github.com/ethereum/go-ethereum/beacon/light"
 	"github.com/ethereum/go-ethereum/beacon/light/api"
 	"github.com/ethereum/go-ethereum/beacon/light/sync"
 	"github.com/ethereum/go-ethereum/beacon/light/types"
@@ -98,16 +99,21 @@ func blsync(ctx *cli.Context) error {
 	}
 
 	var (
-		stateProofVersion       = ctx.Int(utils.BeaconApiStateProofFlag.Name)
-		beaconApi               = api.NewBeaconLightApi(ctx.String(utils.BeaconApiFlag.Name), customHeader, stateProofVersion)
-		committeeSyncer         = api.NewCommitteeSyncer(beaconApi, chainConfig.GenesisData)
-		db                      = memorydb.New()
-		syncCommitteeCheckpoint = sync.NewWeakSubjectivityCheckpoint(db, committeeSyncer, chainConfig.Checkpoint, nil)
+		stateProofVersion = ctx.Int(utils.BeaconApiStateProofFlag.Name)
+		beaconApi         = api.NewBeaconLightApi(ctx.String(utils.BeaconApiFlag.Name), customHeader, stateProofVersion)
+		db                = memorydb.New()
+		threshold         = ctx.Int(utils.BeaconThresholdFlag.Name)
+		committeeChain    = light.NewCommitteeChain(db, chainConfig.Forks, threshold, !ctx.Bool(utils.BeaconNoFilterFlag.Name), light.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
+		checkpointStore   = light.NewCheckpointStore(db, committeeChain)
+		headTracker       = light.NewHeadTracker(committeeChain)
+		scheduler         = sync.NewScheduler()
 	)
-	if syncCommitteeCheckpoint == nil {
-		utils.Fatalf("No beacon chain checkpoint")
-	}
-	syncCommitteeTracker := sync.NewCommitteeTracker(db, chainConfig.Forks, syncCommitteeCheckpoint, ctx.Int(utils.BeaconThresholdFlag.Name), !ctx.Bool(utils.BeaconNoFilterFlag.Name), sync.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
+	committeeChain.SetGenesisData(chainConfig.GenesisData)
+	scheduler.RegisterModule(sync.NewCheckpointInit(committeeChain, checkpointStore, chainConfig.Checkpoint))
+	scheduler.RegisterModule(sync.NewForwardUpdateSyncer(committeeChain))
+	scheduler.RegisterModule(sync.NewHeadSyncer(headTracker, committeeChain))
+	scheduler.RegisterServer(api.NewSyncServer(beaconApi))
+
 	if ctx.IsSet(utils.BlsyncTestFlag.Name) {
 		if ctx.IsSet(utils.BlsyncApiFlag.Name) || ctx.IsSet(utils.BlsyncJWTSecretFlag.Name) {
 			utils.Fatalf("Target engine API/JWT secret specified in test mode")
@@ -119,7 +125,7 @@ func blsync(ctx *cli.Context) error {
 			utils.Fatalf("Cannot run test mode without state proof API enabled")
 		}
 		testSyncer := newTestSyncer(beaconApi, stateProofVersion)
-		syncCommitteeTracker.SubscribeToNewHeads(testSyncer.newSignedHead)
+		headTracker.Subscribe(threshold, testSyncer.newSignedHead)
 	} else {
 		syncer := &execSyncer{
 			api:            beaconApi,
@@ -127,11 +133,11 @@ func blsync(ctx *cli.Context) error {
 			execRootCache:  lru.NewCache[common.Hash, common.Hash](1000),
 			useStateProofs: stateProofVersion != 0,
 		}
-		syncCommitteeTracker.SubscribeToNewHeads(syncer.newHead)
+		headTracker.Subscribe(threshold, syncer.newHead)
 	}
-	committeeSyncer.Start(syncCommitteeTracker)
-	syncCommitteeCheckpoint.TriggerFetch()
+	scheduler.Start()
 	<-ctx.Done()
+	scheduler.Stop()
 	return nil
 }
 
@@ -171,7 +177,8 @@ var statePaths = []string{
 
 // newHead fetches state proofs to determine the execution block root and calls
 // the engine API if specified
-func (e *execSyncer) newHead(head types.Header) {
+func (e *execSyncer) newHead(signedHead types.SignedHead) {
+	head := signedHead.Header
 	log.Info("Received new beacon head", "slot", head.Slot, "blockRoot", head.Hash())
 	block, err := e.api.GetExecutionPayload(head)
 	if err != nil {

@@ -14,141 +14,23 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package sync
+package types
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/ethereum/go-ethereum/beacon/light/types"
 	"github.com/ethereum/go-ethereum/beacon/merkle"
-	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/minio/sha256-simd"
-	bls "github.com/protolambda/bls12-381-util"
 )
-
-// syncCommittee holds either a blsSyncCommittee or a fake dummySyncCommittee used for testing
-type syncCommittee interface{}
-
-// committeeSigVerifier verifies sync committee signatures (either proper BLS
-// signatures or fake signatures used for testing)
-type committeeSigVerifier interface {
-	deserializeSyncCommittee(enc []byte) syncCommittee
-	verifySignature(committee syncCommittee, signedRoot common.Hash, bitmask, signature []byte) bool
-}
-
-// blsSyncCommittee is a set of sync committee signer pubkeys
-//
-// See data structure definition here:
-// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/beacon-chain.md#syncaggregate
-type blsSyncCommittee struct {
-	keys      [params.SyncCommitteeSize]*bls.Pubkey
-	aggregate *bls.Pubkey
-}
-
-// BLSVerifier implements committeeSigVerifier
-type BLSVerifier struct{}
-
-// deserializeSyncCommittee implements committeeSigVerifier
-func (BLSVerifier) deserializeSyncCommittee(enc []byte) syncCommittee {
-	if len(enc) != SerializedCommitteeSize {
-		log.Error("Wrong input size for deserializeSyncCommittee", "expected", SerializedCommitteeSize, "got", len(enc))
-		return nil
-	}
-	sc := new(blsSyncCommittee)
-	for i := 0; i <= params.SyncCommitteeSize; i++ {
-		pk := new(bls.Pubkey)
-		var sk [params.BlsPubkeySize]byte
-		copy(sk[:], enc[i*params.BlsPubkeySize:(i+1)*params.BlsPubkeySize])
-		if err := pk.Deserialize(&sk); err != nil {
-			log.Error("bls.Pubkey.Deserialize failed", "error", err, "data", sk)
-			return nil
-		}
-		if i < params.SyncCommitteeSize {
-			sc.keys[i] = pk
-		} else {
-			sc.aggregate = pk
-		}
-	}
-	return sc
-}
-
-// verifySignature implements committeeSigVerifier
-func (BLSVerifier) verifySignature(committee syncCommittee, signingRoot common.Hash, bitmask, signature []byte) bool {
-	if len(signature) != params.BlsSignatureSize || len(bitmask) != params.SyncCommitteeSize/8 {
-		return false
-	}
-	var (
-		sig          bls.Signature
-		sigBytes     [params.BlsSignatureSize]byte
-		signerKeys   [params.SyncCommitteeSize]*bls.Pubkey
-		signerCount  int
-		blsCommittee = committee.(*blsSyncCommittee)
-	)
-	copy(sigBytes[:], signature)
-	if err := sig.Deserialize(&sigBytes); err != nil {
-		return false
-	}
-	for i, key := range blsCommittee.keys {
-		if bitmask[i/8]&(byte(1)<<(i%8)) != 0 {
-			signerKeys[signerCount] = key
-			signerCount++
-		}
-	}
-	return bls.FastAggregateVerify(signerKeys[:signerCount], signingRoot[:], &sig)
-}
-
-type dummySyncCommittee [32]byte
-
-// dummyVerifier implements committeeSigVerifier
-type dummyVerifier struct{}
-
-// deserializeSyncCommittee implements committeeSigVerifier
-func (dummyVerifier) deserializeSyncCommittee(enc []byte) syncCommittee {
-	if len(enc) != SerializedCommitteeSize {
-		log.Error("Wrong input size for deserializeSyncCommittee", "expected", SerializedCommitteeSize, "got", len(enc))
-		return nil
-	}
-	var sc dummySyncCommittee
-	copy(sc[:], enc[:32])
-	return sc
-}
-
-// verifySignature implements committeeSigVerifier
-func (dummyVerifier) verifySignature(committee syncCommittee, signingRoot common.Hash, bitmask, signature []byte) bool {
-	return bytes.Equal(signature, makeDummySignature(committee.(dummySyncCommittee), signingRoot, bitmask))
-}
-
-func randomDummySyncCommittee() dummySyncCommittee {
-	var sc dummySyncCommittee
-	rand.Read(sc[:])
-	return sc
-}
-
-func serializeDummySyncCommittee(sc dummySyncCommittee) []byte {
-	enc := make([]byte, SerializedCommitteeSize)
-	copy(enc[:32], sc[:])
-	return enc
-}
-
-func makeDummySignature(committee dummySyncCommittee, signingRoot common.Hash, bitmask []byte) []byte {
-	sig := make([]byte, params.BlsSignatureSize)
-	for i, b := range committee[:] {
-		sig[i] = b ^ signingRoot[i]
-	}
-	copy(sig[32:], bitmask)
-	return sig
-}
 
 // Fork describes a single beacon chain fork and also stores the calculated
 // signature domain used after this fork.
@@ -164,16 +46,24 @@ type Fork struct {
 // Forks is the list of all beacon chain forks in the chain configuration.
 type Forks []Fork
 
+// Fork returns the fork belonging to the given epoch
+func (bf Forks) Fork(epoch uint64) (Fork, bool) {
+	for i := len(bf) - 1; i >= 0; i-- {
+		if epoch >= bf[i].Epoch {
+			return bf[i], true
+		}
+	}
+	return Fork{}, false
+}
+
 // domain returns the signature domain for the given epoch (assumes that domains
 // have already been calculated).
 func (bf Forks) domain(epoch uint64) merkle.Value {
-	for i := len(bf) - 1; i >= 0; i-- {
-		if epoch >= bf[i].Epoch {
-			return bf[i].domain
-		}
+	fork, ok := bf.Fork(epoch)
+	if !ok {
+		log.Error("Fork domain unknown", "epoch", epoch)
 	}
-	log.Error("Fork domain unknown", "epoch", epoch)
-	return merkle.Value{}
+	return fork.domain
 }
 
 // computeDomain returns the signature domain based on the given fork version
@@ -195,14 +85,14 @@ func computeDomain(forkVersion []byte, genesisValidatorsRoot common.Hash) merkle
 }
 
 // computeDomains calculates and stores signature domains for each fork in the list.
-func (bf Forks) computeDomains(genesisValidatorsRoot common.Hash) {
+func (bf Forks) ComputeDomains(genesisValidatorsRoot common.Hash) {
 	for i := range bf {
 		bf[i].domain = computeDomain(bf[i].Version, genesisValidatorsRoot)
 	}
 }
 
 // signingRoot calculates the signing root of the given header.
-func (bf Forks) signingRoot(header types.Header) common.Hash {
+func (bf Forks) SigningRoot(header Header) common.Hash {
 	var (
 		signingRoot common.Hash
 		headerHash  = header.Hash()

@@ -17,15 +17,16 @@
 package types
 
 import (
+	"encoding/json"
 	"errors"
-	"math/bits"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/log"
 )
 
-const MaxUpdateInfoLength = 128 // max number of advertised update scores of most recent periods
+const MaxUpdateScoresLength = 128 // max number of advertised update scores of most recent periods
 
 // LightClientUpdate is a proof of the next sync committee root based on a header
 // signed by the sync committee of the given period. Optionally the update can
@@ -37,20 +38,87 @@ const MaxUpdateInfoLength = 128 // max number of advertised update scores of mos
 // https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientupdate
 type LightClientUpdate struct {
 	Header                  Header
+	SyncAggregate           SyncAggregate
+	SignatureSlot           uint64
 	NextSyncCommitteeRoot   common.Hash
 	NextSyncCommitteeBranch merkle.Values
 	FinalizedHeader         Header
 	FinalityBranch          merkle.Values
-	SyncCommitteeBits       []byte
-	SyncCommitteeSignature  []byte
 	score                   UpdateScore // not part of the encoding, calculated after decoding
 	scoreCalculated         bool
 }
 
+type CommitteeUpdate struct {
+	Version           string
+	Update            *LightClientUpdate
+	NextSyncCommittee *SerializedCommittee
+}
+
+// See data structure definition here:
+// https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientupdate
+type committeeUpdateJson struct {
+	Version string              `json:"version"`
+	Data    committeeUpdateData `json:"data"`
+}
+
+type committeeUpdateData struct {
+	Header                  JsonBeaconHeader     `json:"attested_header"`
+	NextSyncCommittee       *SerializedCommittee `json:"next_sync_committee"`
+	NextSyncCommitteeBranch merkle.Values        `json:"next_sync_committee_branch"`
+	FinalizedHeader         JsonBeaconHeader     `json:"finalized_header"`
+	FinalityBranch          merkle.Values        `json:"finality_branch"`
+	SyncAggregate           SyncAggregate        `json:"sync_aggregate"`
+	SignatureSlot           common.Decimal       `json:"signature_slot"`
+}
+
+type JsonBeaconHeader struct {
+	Beacon Header `json:"beacon"`
+}
+
+// MarshalJSON marshals as JSON.
+func (u *CommitteeUpdate) MarshalJSON() ([]byte, error) {
+	return json.Marshal(&committeeUpdateJson{
+		Version: u.Version,
+		Data: committeeUpdateData{
+			Header:                  JsonBeaconHeader{Beacon: u.Update.Header},
+			NextSyncCommittee:       u.NextSyncCommittee,
+			NextSyncCommitteeBranch: u.Update.NextSyncCommitteeBranch,
+			FinalizedHeader:         JsonBeaconHeader{Beacon: u.Update.FinalizedHeader}, //TODO should we encode it when not present?
+			FinalityBranch:          u.Update.FinalityBranch,
+			SyncAggregate:           u.Update.SyncAggregate,
+			SignatureSlot:           common.Decimal(u.Update.SignatureSlot),
+		},
+	})
+}
+
+// UnmarshalJSON unmarshals from JSON.
+func (u *CommitteeUpdate) UnmarshalJSON(input []byte) error {
+	var dec committeeUpdateJson
+	if err := json.Unmarshal(input, &dec); err != nil {
+		return err
+	}
+	u.Version = dec.Version
+	u.NextSyncCommittee = dec.Data.NextSyncCommittee
+	u.Update = &LightClientUpdate{
+		Header:                  dec.Data.Header.Beacon,
+		SyncAggregate:           dec.Data.SyncAggregate,
+		SignatureSlot:           uint64(dec.Data.SignatureSlot),
+		NextSyncCommitteeRoot:   u.NextSyncCommittee.Root(),
+		NextSyncCommitteeBranch: dec.Data.NextSyncCommitteeBranch,
+		FinalizedHeader:         dec.Data.FinalizedHeader.Beacon,
+		FinalityBranch:          dec.Data.FinalityBranch,
+	}
+	return nil
+}
+
 // Validate verifies the validity of the update
 func (update *LightClientUpdate) Validate() error {
+	period := update.Header.SyncPeriod()
+	if PeriodOfSlot(update.SignatureSlot) != period {
+		return errors.New("signature slot and signed header are from different periods")
+	}
 	if update.hasFinalizedHeader() {
-		if update.FinalizedHeader.SyncPeriod() != update.Header.SyncPeriod() {
+		if update.FinalizedHeader.SyncPeriod() != period {
 			return errors.New("finalizedHeader is from previous period") // proves the same committee it is signed by
 		}
 		if root, ok := merkle.VerifySingleProof(update.FinalityBranch, params.BsiFinalBlock, merkle.Value(update.FinalizedHeader.Hash())); !ok || root != update.Header.StateRoot {
@@ -78,78 +146,11 @@ func (l *LightClientUpdate) Score() UpdateScore {
 	if l.scoreCalculated {
 		return l.score
 	}
-	l.score.SignerCount = 0
-	for _, v := range l.SyncCommitteeBits {
-		l.score.SignerCount += uint32(bits.OnesCount8(v))
-	}
+	l.score.SignerCount = uint32(l.SyncAggregate.SignerCount())
 	l.score.SubPeriodIndex = uint32(l.Header.Slot & 0x1fff)
 	l.score.FinalizedHeader = l.hasFinalizedHeader()
 	l.scoreCalculated = true
 	return l.score
-}
-
-// CommitteeRequest represents a request for fetching updates and committees at the given periods
-type CommitteeRequest struct {
-	UpdatePeriods    []uint64 // list of periods where LightClientUpdates are requested (not including full sync committee)
-	CommitteePeriods []uint64 // list of periods where sync committees are requested
-}
-
-// IsEmpty returns true if the request does not request anything
-func (req CommitteeRequest) IsEmpty() bool {
-	return req.UpdatePeriods == nil && req.CommitteePeriods == nil
-}
-
-// CommitteeReply is an answer to a CommitteeRequest, contains the updates and
-// committees corresponding to the period numbers in the request in the same order
-type CommitteeReply struct {
-	Updates    []LightClientUpdate // list of requested LightClientUpdates
-	Committees [][]byte            // list of requested sync committees in serialized form
-}
-
-// UpdateInfo contains scores for an advertised update chain. Note that the most
-// recent updates are always advertised but earliest ones might not because of
-// length limitation.
-type UpdateInfo struct {
-	AfterLastPeriod uint64       // first period not covered by Scores
-	Scores          UpdateScores // Scores[i] is the UpdateScore of period AfterLastPeriod-len(Scores)+i
-}
-
-func (u UpdateInfo) IsValid() bool {
-	return uint64(len(u.Scores)) <= u.AfterLastPeriod
-}
-
-func (u UpdateInfo) Range() UpdateRange {
-	l := uint64(len(u.Scores))
-	if l > u.AfterLastPeriod {
-		panic(nil)
-	}
-	return UpdateRange{First: u.AfterLastPeriod - l, AfterLast: u.AfterLastPeriod}
-}
-
-func (u UpdateInfo) HasScore(period uint64) bool {
-	return period < u.AfterLastPeriod && period >= u.AfterLastPeriod-uint64(len(u.Scores))
-}
-
-func (u UpdateInfo) Score(period uint64) UpdateScore {
-	return u.Scores[len(u.Scores)-int(u.AfterLastPeriod-period)]
-}
-
-type UpdateRange struct {
-	First, AfterLast uint64
-}
-
-func (a UpdateRange) Shared(b UpdateRange) UpdateRange {
-	if b.First > a.First {
-		a.First = b.First
-	}
-	if b.AfterLast < a.AfterLast {
-		a.AfterLast = b.AfterLast
-	}
-	return a
-}
-
-func (a UpdateRange) IsValid() bool {
-	return a.AfterLast >= a.First
 }
 
 // UpdateScore allows the comparison between updates at the same period in order
@@ -171,8 +172,6 @@ type UpdateScore struct {
 	FinalizedHeader bool   // update is considered finalized if has finalized header from the same period and 2/3 signatures
 }
 
-type UpdateScores []UpdateScore
-
 // isFinalized returns true if the update has a header signed by at least 2/3 of
 // the committee, referring to a finalized header that refers to the next sync
 // committee. This condition is a close approximation of the actual finality
@@ -191,4 +190,53 @@ func (u UpdateScore) BetterThan(w UpdateScore) bool {
 		return uFinalized
 	}
 	return u.SignerCount > w.SignerCount
+}
+
+type PeriodRange struct {
+	First, AfterLast uint64
+}
+
+/*func (a PeriodRange) Shared(b PeriodRange) PeriodRange {
+	if b.First > a.First {
+		a.First = b.First
+	}
+	if b.AfterLast < a.AfterLast {
+		a.AfterLast = b.AfterLast
+	}
+	return a
+}
+
+func (a PeriodRange) IsValid() bool {
+	return a.AfterLast >= a.First
+}*/
+
+func (a PeriodRange) IsEmpty() bool {
+	return a.AfterLast == a.First
+}
+
+func (a PeriodRange) Includes(period uint64) bool {
+	return period >= a.First && period < a.AfterLast
+}
+
+func (a PeriodRange) CanExpand(period uint64) bool {
+	return a.IsEmpty() || (period+1 >= a.First && period <= a.AfterLast)
+}
+
+func (a *PeriodRange) Expand(period uint64) {
+	if a.IsEmpty() {
+		a.First, a.AfterLast = period, period+1
+		return
+	}
+	if a.Includes(period) {
+		return
+	}
+	if a.First == period+1 {
+		a.First--
+		return
+	}
+	if a.AfterLast == period {
+		a.AfterLast++
+		return
+	}
+	log.Error("Could not expand period range", "first", a.First, "")
 }
