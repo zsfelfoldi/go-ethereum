@@ -284,11 +284,6 @@ var (
 		Usage:    "Remote beacon node API custom HTTP header fields (\"key:value,key:value\")",
 		Category: flags.BeaconCategory,
 	}
-	BeaconApiStateProofFlag = &cli.IntFlag{
-		Name:     "beacon.api.stateproof",
-		Usage:    "State proof API version (0: no state API  1: old Lodestar API  2: https://github.com/ethereum/beacon-APIs/pull/267 )",
-		Category: flags.BeaconCategory,
-	}
 	BeaconThresholdFlag = &cli.IntFlag{
 		Name:     "beacon.threshold",
 		Usage:    "Beacon sync committee participation threshold",

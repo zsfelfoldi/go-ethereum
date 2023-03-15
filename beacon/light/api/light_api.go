@@ -17,7 +17,6 @@
 package api
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,20 +48,18 @@ var (
 // BeaconLightApi requests light client information from a beacon node REST API.
 // Note: all required API endpoints are currently only implemented by Lodestar.
 type BeaconLightApi struct {
-	url               string
-	client            *http.Client
-	customHeaders     map[string]string
-	stateProofVersion int
+	url           string
+	client        *http.Client
+	customHeaders map[string]string
 }
 
-func NewBeaconLightApi(url string, customHeaders map[string]string, stateProofVersion int) *BeaconLightApi {
+func NewBeaconLightApi(url string, customHeaders map[string]string) *BeaconLightApi {
 	return &BeaconLightApi{
 		url: url,
 		client: &http.Client{
 			Timeout: time.Second * 10,
 		},
-		customHeaders:     customHeaders,
-		stateProofVersion: stateProofVersion,
+		customHeaders: customHeaders,
 	}
 }
 
@@ -214,63 +211,40 @@ func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (types.Header, error
 }
 
 // does not verify state root
-func (api *BeaconLightApi) GetHeadStateProof(format merkle.ProofFormat, paths []string) (merkle.MultiProof, error) {
-	if api.stateProofVersion >= 2 {
-		encFormat, bitLength := EncodeCompactProofFormat(format)
-		return api.getStateProof("head", format, encFormat, bitLength)
-	} else {
-		proof, _, err := api.getOldStateProof("head", format, paths)
-		return proof, err
-	}
+func (api *BeaconLightApi) GetHeadStateProof(format merkle.ProofFormat) (merkle.MultiProof, error) {
+	encFormat, bitLength := EncodeCompactProofFormat(format)
+	return api.getStateProof("head", format, encFormat, bitLength)
 }
 
 type StateProofSub struct {
 	api       *BeaconLightApi
 	format    merkle.ProofFormat
-	paths     []string
 	encFormat []byte
 	bitLength int
 }
 
-func (api *BeaconLightApi) SubscribeStateProof(format merkle.ProofFormat, paths []string, first, period int) (*StateProofSub, error) {
-	if api.stateProofVersion == 0 {
-		return nil, errors.New("State proof API disabled")
-	}
+func (api *BeaconLightApi) SubscribeStateProof(format merkle.ProofFormat, first, period int) (*StateProofSub, error) {
 	encFormat, bitLength := EncodeCompactProofFormat(format)
-	if api.stateProofVersion >= 2 {
-		_, err := api.httpGetf("/eth/v0/beacon/proof/subscribe/states?format=0x%x&first=%d&period=%d", encFormat, first, period)
-		if err != nil && err != ErrNotFound {
-			return nil, err
-		}
+	_, err := api.httpGetf("/eth/v0/beacon/proof/subscribe/states?format=0x%x&first=%d&period=%d", encFormat, first, period)
+	if err != nil && err != ErrNotFound {
+		// if subscribe endpoint is missing then we expect proof endpoint to serve recent states without subscription
+		return nil, err
 	}
 	return &StateProofSub{
 		api:       api,
 		format:    format,
 		encFormat: encFormat,
 		bitLength: bitLength,
-		paths:     paths,
 	}, nil
 }
 
 // verifies state root
 func (sub *StateProofSub) Get(stateRoot common.Hash) (merkle.MultiProof, error) {
-	var (
-		proof    merkle.MultiProof
-		rootHash common.Hash
-		err      error
-	)
-	if sub.api.stateProofVersion >= 2 {
-		proof, err = sub.api.getStateProof(stateRoot.Hex(), sub.format, sub.encFormat, sub.bitLength)
-		if err == nil {
-			rootHash = proof.RootHash()
-		}
-	} else {
-		proof, rootHash, err = sub.api.getOldStateProof(stateRoot.Hex(), sub.format, sub.paths)
-	}
+	proof, err := sub.api.getStateProof(stateRoot.Hex(), sub.format, sub.encFormat, sub.bitLength)
 	if err != nil {
 		return merkle.MultiProof{}, err
 	}
-	if rootHash != stateRoot {
+	if proof.RootHash() != stateRoot {
 		return merkle.MultiProof{}, errors.New("Received proof has incorrect state root")
 	}
 	return proof, nil
@@ -290,89 +264,6 @@ func (api *BeaconLightApi) getStateProof(stateId string, format merkle.ProofForm
 		copy(values[i][:], resp[i*32:(i+1)*32])
 	}
 	return merkle.MultiProof{Format: format, Values: values}, nil
-}
-
-// getOldStateProof fetches and validates a Merkle proof for the specified parts of
-// the recent beacon state referenced by stateRoot. If successful the returned
-// multiproof has the format specified by expFormat. The state subset specified by
-// the list of string keys (paths) should cover the subset specified by expFormat.
-func (api *BeaconLightApi) getOldStateProof(stateId string, expFormat merkle.ProofFormat, paths []string) (merkle.MultiProof, common.Hash, error) {
-	path := "/eth/v0/beacon/proof/state/" + stateId + "?paths=" + paths[0]
-	for i := 1; i < len(paths); i++ {
-		path += "&paths=" + paths[i]
-	}
-	resp, err := api.httpGet(path)
-	if err != nil {
-		return merkle.MultiProof{}, common.Hash{}, err
-	}
-	proof, err := parseSSZMultiProof(resp)
-	if err != nil {
-		return merkle.MultiProof{}, common.Hash{}, err
-	}
-	var values merkle.Values
-	reader := proof.Reader(nil)
-	root, ok := merkle.TraverseProof(reader, merkle.NewMultiProofWriter(expFormat, &values, nil))
-	if !ok || !reader.Finished() {
-		return merkle.MultiProof{}, common.Hash{}, errors.New("invalid state proof")
-	}
-	return merkle.MultiProof{Format: expFormat, Values: values}, root, nil
-}
-
-// parseSSZMultiProof creates a MultiProof from a serialized format:
-//
-// 1 byte: always 1
-// 2 bytes: leafCount
-// (leafCount-1) * 2 bytes: as the tree is traversed in depth-first, left-to-right
-//     order, the number of leaves on the left branch of each traversed non-leaf
-//     subtree are listed here
-// leafCount * 32 bytes: leaf values and internal sibling hashes in the same traversal order
-//
-// Note: this is the format generated by the /eth/v1/beacon/light_client/proof/
-// beacon light client API endpoint which is currently only supported by Lodestar.
-// A different format is proposed to be standardized so this function will
-// probably be replaced later, see here:
-//
-// https://github.com/ethereum/consensus-specs/pull/3148
-// https://github.com/ethereum/beacon-APIs/pull/267
-func parseSSZMultiProof(proof []byte) (merkle.MultiProof, error) {
-	if len(proof) < 3 || proof[0] != 1 {
-		return merkle.MultiProof{}, errors.New("invalid proof length")
-	}
-	var (
-		leafCount   = int(binary.LittleEndian.Uint16(proof[1:3]))
-		format      = merkle.NewIndexMapFormat()
-		values      = make(merkle.Values, leafCount)
-		valuesStart = leafCount*2 + 1
-	)
-	if len(proof) != leafCount*34+1 {
-		return merkle.MultiProof{}, errors.New("invalid proof length")
-	}
-	if err := parseMultiProofFormat(format, 1, proof[3:valuesStart]); err != nil {
-		return merkle.MultiProof{}, err
-	}
-	for i := range values {
-		copy(values[i][:], proof[valuesStart+i*32:valuesStart+(i+1)*32])
-	}
-	return merkle.MultiProof{Format: format, Values: values}, nil
-}
-
-// parseMultiProofFormat recursively parses the SSZ serialized proof format
-func parseMultiProofFormat(indexMap merkle.IndexMapFormat, index uint64, format []byte) error {
-	indexMap.AddLeaf(index, nil)
-	if len(format) == 0 {
-		return nil
-	}
-	boundary := int(binary.LittleEndian.Uint16(format[:2])) * 2
-	if boundary > len(format) {
-		return errors.New("invalid proof format")
-	}
-	if err := parseMultiProofFormat(indexMap, index*2, format[2:boundary]); err != nil {
-		return err
-	}
-	if err := parseMultiProofFormat(indexMap, index*2+1, format[boundary:]); err != nil {
-		return err
-	}
-	return nil
 }
 
 // EncodeCompactProofFormat encodes a merkle.ProofFormat into a binary compact

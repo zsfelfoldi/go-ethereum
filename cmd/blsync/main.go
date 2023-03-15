@@ -61,7 +61,6 @@ func main() {
 		utils.BlsyncApiFlag,
 		utils.BlsyncJWTSecretFlag,
 		utils.BlsyncTestFlag,
-		utils.BeaconApiStateProofFlag,
 	}
 	app.Action = blsync
 
@@ -99,14 +98,13 @@ func blsync(ctx *cli.Context) error {
 	}
 
 	var (
-		stateProofVersion = ctx.Int(utils.BeaconApiStateProofFlag.Name)
-		beaconApi         = api.NewBeaconLightApi(ctx.String(utils.BeaconApiFlag.Name), customHeader, stateProofVersion)
-		db                = memorydb.New()
-		threshold         = ctx.Int(utils.BeaconThresholdFlag.Name)
-		committeeChain    = light.NewCommitteeChain(db, chainConfig.Forks, threshold, !ctx.Bool(utils.BeaconNoFilterFlag.Name), light.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
-		checkpointStore   = light.NewCheckpointStore(db, committeeChain)
-		headTracker       = light.NewHeadTracker(committeeChain)
-		scheduler         = sync.NewScheduler()
+		beaconApi       = api.NewBeaconLightApi(ctx.String(utils.BeaconApiFlag.Name), customHeader)
+		db              = memorydb.New()
+		threshold       = ctx.Int(utils.BeaconThresholdFlag.Name)
+		committeeChain  = light.NewCommitteeChain(db, chainConfig.Forks, threshold, !ctx.Bool(utils.BeaconNoFilterFlag.Name), light.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
+		checkpointStore = light.NewCheckpointStore(db, committeeChain)
+		headTracker     = light.NewHeadTracker(committeeChain)
+		scheduler       = sync.NewScheduler()
 	)
 	committeeChain.SetGenesisData(chainConfig.GenesisData)
 	scheduler.RegisterModule(sync.NewCheckpointInit(committeeChain, checkpointStore, chainConfig.Checkpoint))
@@ -118,20 +116,13 @@ func blsync(ctx *cli.Context) error {
 		if ctx.IsSet(utils.BlsyncApiFlag.Name) || ctx.IsSet(utils.BlsyncJWTSecretFlag.Name) {
 			utils.Fatalf("Target engine API/JWT secret specified in test mode")
 		}
-		if !ctx.IsSet(utils.BeaconApiStateProofFlag.Name) {
-			stateProofVersion = 1
-		}
-		if stateProofVersion == 0 {
-			utils.Fatalf("Cannot run test mode without state proof API enabled")
-		}
-		testSyncer := newTestSyncer(beaconApi, stateProofVersion)
+		testSyncer := newTestSyncer(beaconApi)
 		headTracker.Subscribe(threshold, testSyncer.newSignedHead)
 	} else {
 		syncer := &execSyncer{
-			api:            beaconApi,
-			client:         makeRPCClient(ctx),
-			execRootCache:  lru.NewCache[common.Hash, common.Hash](1000),
-			useStateProofs: stateProofVersion != 0,
+			api:           beaconApi,
+			client:        makeRPCClient(ctx),
+			execRootCache: lru.NewCache[common.Hash, common.Hash](1000),
 		}
 		headTracker.Subscribe(threshold, syncer.newHead)
 	}
@@ -163,16 +154,10 @@ func callForkchoiceUpdatedV1(client *rpc.Client, headHash, finalizedHash common.
 }
 
 type execSyncer struct {
-	api            *api.BeaconLightApi
-	sub            *api.StateProofSub
-	useStateProofs bool
-	client         *rpc.Client
-	execRootCache  *lru.Cache[common.Hash, common.Hash] // beacon block root -> execution block root
-}
-
-var statePaths = []string{
-	"[\"finalizedCheckpoint\",\"root\"]",
-	"[\"latestExecutionPayloadHeader\",\"blockHash\"]",
+	api           *api.BeaconLightApi
+	sub           *api.StateProofSub
+	client        *rpc.Client
+	execRootCache *lru.Cache[common.Hash, common.Hash] // beacon block root -> execution block root
 }
 
 // newHead fetches state proofs to determine the execution block root and calls
@@ -187,21 +172,17 @@ func (e *execSyncer) newHead(signedHead types.SignedHead) {
 	}
 	blockRoot := block.Hash()
 	var finalizedExecRoot common.Hash
-	if e.useStateProofs {
-		if e.sub == nil {
-			if sub, err := e.api.SubscribeStateProof(stateProofFormat, statePaths, 0, 1); err == nil {
-				log.Info("Successfully created beacon state subscription")
-				e.sub = sub
-			} else {
-				log.Error("Failed to create beacon state subscription", "error", err)
-				return
-			}
-		}
-		proof, err := e.sub.Get(head.StateRoot)
-		if err != nil {
-			log.Error("Error fetching state proof from beacon API", "error", err)
+	if e.sub == nil {
+		if sub, err := e.api.SubscribeStateProof(stateProofFormat, 0, 1); err == nil {
+			log.Info("Successfully created beacon state subscription")
+			e.sub = sub
+		} else {
+			log.Error("Failed to create beacon state subscription", "error", err)
 			return
 		}
+	}
+	proof, err := e.sub.Get(head.StateRoot)
+	if err == nil {
 		var (
 			execBlockRoot       = common.Hash(proof.Values[execBlockIndex])
 			finalizedBeaconRoot = common.Hash(proof.Values[finalizedBlockIndex])
@@ -216,6 +197,8 @@ func (e *execSyncer) newHead(signedHead types.SignedHead) {
 			e.fetchExecRoots(head.ParentRoot)
 		}
 		finalizedExecRoot, _ = e.execRootCache.Get(finalizedBeaconRoot)
+	} else if err != api.ErrNotFound {
+		log.Error("Error fetching state proof from beacon API", "error", err)
 	}
 	if e.client == nil { // dry run, no engine API specified
 		log.Info("New execution block retrieved", "block number", block.NumberU64(), "block hash", blockRoot, "finalized block hash", finalizedExecRoot)

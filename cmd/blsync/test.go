@@ -19,7 +19,6 @@ package main
 import (
 	"encoding/hex"
 	"math/rand"
-	"strconv"
 	"sync"
 	"time"
 
@@ -38,10 +37,9 @@ const (
 )
 
 type testSyncer struct {
-	lock              sync.Mutex
-	api               *api.BeaconLightApi
-	stateProofVersion int
-	subs              []*api.StateProofSub // only for new api
+	lock sync.Mutex
+	api  *api.BeaconLightApi
+	subs []*api.StateProofSub // only for new api
 	// maps are nil until initialized by first head
 	headers            map[uint64]types.Header // slot -> canonical header
 	headSlot, tailSlot uint64                  // headers available between tailSlot..headSlot
@@ -52,11 +50,10 @@ type testSyncer struct {
 	headStateCount, recentStateCount int
 }
 
-func newTestSyncer(api *api.BeaconLightApi, stateProofVersion int) *testSyncer {
+func newTestSyncer(api *api.BeaconLightApi) *testSyncer {
 	rand.Seed(time.Now().UnixNano())
 	t := &testSyncer{
-		api:               api,
-		stateProofVersion: stateProofVersion,
+		api: api,
 	}
 	go t.updateLoop()
 	return t
@@ -65,10 +62,10 @@ func newTestSyncer(api *api.BeaconLightApi, stateProofVersion int) *testSyncer {
 func (t *testSyncer) createSubs() bool {
 	t.subs = make([]*api.StateProofSub, testStateSubCount)
 	for i := range t.subs {
-		subFormat, subPaths := t.makeTestFormat(3, 0.25/float32(i))
+		subFormat := t.makeTestFormat(3, 0.25/float32(i))
 		encFormat, _ := api.EncodeCompactProofFormat(subFormat)
 		hexFormat := "0x" + hex.EncodeToString(encFormat)
-		if sub, err := t.api.SubscribeStateProof(subFormat, subPaths, 0, 1); err == nil {
+		if sub, err := t.api.SubscribeStateProof(subFormat, 0, 1); err == nil {
 			log.Info("Successfully created state subscription", "subscription index", i, "format", hexFormat)
 			t.subs[i] = sub
 		} else {
@@ -114,47 +111,28 @@ func (t *testSyncer) updateLoop() {
 	}
 }
 
-func (t *testSyncer) makeTestFormat(avgIndexCount, stopRatio float32) (merkle.ProofFormat, []string) {
+func (t *testSyncer) makeTestFormat(avgIndexCount, stopRatio float32) merkle.ProofFormat {
 	format := merkle.NewIndexMapFormat()
-	var paths []string
-	if t.stateProofVersion >= 2 {
-		for i := uint64(params.BsiGenesisTime); i <= params.BsiExecPayload; i++ {
-			format.AddLeaf(i, nil)
-		}
-		format.AddLeaf(params.BsiForkVersion, nil)
-		format.AddLeaf(params.BsiFinalBlock, nil)
-		format.AddLeaf(params.BsiExecHead, nil)
-	} else {
-		format.AddLeaf(params.BsiFinalBlock, nil)
-		format.AddLeaf(params.BsiExecHead, nil)
-		paths = []string{
-			"[\"finalizedCheckpoint\",\"root\"]",
-			"[\"latestExecutionPayloadHeader\",\"blockHash\"]",
-		}
+	for i := uint64(params.BsiGenesisTime); i <= params.BsiExecPayload; i++ {
+		format.AddLeaf(i, nil)
 	}
+	format.AddLeaf(params.BsiForkVersion, nil)
+	format.AddLeaf(params.BsiFinalBlock, nil)
+	format.AddLeaf(params.BsiExecHead, nil)
 	for rand.Float32()*avgIndexCount > 1 {
 		srIndex := rand.Intn(0x2000)
 		format.AddLeaf(merkle.ChildIndex(params.BsiStateRoots, uint64(0x2000+srIndex)), nil)
-		if t.stateProofVersion == 1 {
-			paths = append(paths, "[\"stateRoots\","+strconv.Itoa(srIndex)+"]")
-		}
 	}
 	for rand.Float32()*avgIndexCount > 1 {
 		brIndex := rand.Intn(0x2000)
 		format.AddLeaf(merkle.ChildIndex(params.BsiBlockRoots, uint64(0x2000+brIndex)), nil)
-		if t.stateProofVersion == 1 {
-			paths = append(paths, "[\"blockRoots\","+strconv.Itoa(brIndex)+"]")
-		}
 	}
 	for rand.Float32()*avgIndexCount > 1 {
 		hrIndex := rand.Intn(0x1000000)
 		format.AddLeaf(merkle.ChildIndex(params.BsiHistoricRoots, merkle.ChildIndex(2, uint64(0x1000000+hrIndex))), nil)
-		if t.stateProofVersion == 1 {
-			paths = append(paths, "[\"historicalRoots\","+strconv.Itoa(hrIndex)+"]")
-		}
 	}
 	//TODO sample all lists/vectors?
-	return randomSubset(format, stopRatio), paths
+	return randomSubset(format, stopRatio)
 }
 
 func randomSubset(format merkle.ProofFormat, stopRatio float32) merkle.ProofFormat {
@@ -174,8 +152,8 @@ func addRandomSubset(format merkle.ProofFormat, subset merkle.IndexMapFormat, in
 }
 
 func (t *testSyncer) testHeadProof() {
-	format, paths := t.makeTestFormat(3, 0.1)
-	proof, err := t.api.GetHeadStateProof(format, paths)
+	format := t.makeTestFormat(3, 0.1)
+	proof, err := t.api.GetHeadStateProof(format)
 	if err != nil {
 		encFormat, _ := api.EncodeCompactProofFormat(format)
 		log.Error("Error retrieving head state proof", "format", "0x"+hex.EncodeToString(encFormat), "error", err)
