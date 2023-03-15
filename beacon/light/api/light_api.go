@@ -239,7 +239,7 @@ func (api *BeaconLightApi) SubscribeStateProof(format merkle.ProofFormat, paths 
 	encFormat, bitLength := EncodeCompactProofFormat(format)
 	if api.stateProofVersion >= 2 {
 		_, err := api.httpGetf("/eth/v0/beacon/proof/subscribe/states?format=0x%x&first=%d&period=%d", encFormat, first, period)
-		if err != nil {
+		if err != nil && err != ErrNotFound {
 			return nil, err
 		}
 	}
@@ -393,8 +393,9 @@ func encodeProofFormatSubtree(format merkle.ProofFormat, target *[]byte, bitLeng
 	if bytePtr == len(*target) {
 		*target = append(*target, byte(0))
 	}
-	if left, right := format.Children(); left != nil {
+	if left, right := format.Children(); left == nil {
 		(*target)[bytePtr] += bitMask
+	} else {
 		encodeProofFormatSubtree(left, target, bitLength)
 		encodeProofFormatSubtree(right, target, bitLength)
 	}
