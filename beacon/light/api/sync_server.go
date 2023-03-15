@@ -18,6 +18,7 @@ package api
 
 import (
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/beacon/light"
 	"github.com/ethereum/go-ethereum/beacon/light/types"
@@ -35,7 +36,9 @@ type SyncServer struct {
 	lock sync.RWMutex
 
 	triggerCallback     func()
-	latestHeads         []types.SignedHead
+	latestHeadSlot      uint64
+	latestHeadHash      common.Hash
+	signedHeads         []types.SignedHead
 	canRequestBootstrap bool
 	firstUpdate         uint64 //TODO ...
 }
@@ -58,15 +61,24 @@ func (s *SyncServer) SetTriggerCallback(cb func()) {
 	s.triggerCallback = cb
 }
 
+func (s *SyncServer) Delay() time.Duration { return 0 } //TODO
+
 func (s *SyncServer) Fail(desc string) {
 	log.Warn("API endpoint failure", "URL", s.api.url, "error", desc)
 }
 
-func (s *SyncServer) LatestHeads() []types.SignedHead {
+func (s *SyncServer) LatestHead() (uint64, common.Hash) {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 
-	return s.latestHeads
+	return s.latestHeadSlot, s.latestHeadHash
+}
+
+func (s *SyncServer) SignedHeads() []types.SignedHead {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+
+	return s.signedHeads
 }
 
 func (s *SyncServer) CanRequestBootstrap() bool {
@@ -93,10 +105,10 @@ func (s *SyncServer) UpdateRange() types.PeriodRange {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 
-	if len(s.latestHeads) == 0 {
+	if len(s.signedHeads) == 0 {
 		return types.PeriodRange{}
 	}
-	r := types.PeriodRange{First: s.firstUpdate, AfterLast: types.PeriodOfSlot(s.latestHeads[len(s.latestHeads)-1].Header.Slot + 256)}
+	r := types.PeriodRange{First: s.firstUpdate, AfterLast: types.PeriodOfSlot(s.signedHeads[len(s.signedHeads)-1].Header.Slot + 256)}
 	if !r.IsEmpty() {
 		return r
 	}
@@ -113,27 +125,32 @@ func (s *SyncServer) RequestUpdates(first, count uint64, response func([]*types.
 	}()
 }
 
-func (s *SyncServer) newHead(slot uint64, blockRoot common.Hash) {}
+func (s *SyncServer) newHead(slot uint64, blockRoot common.Hash) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.latestHeadSlot, s.latestHeadHash = slot, blockRoot
+}
 
 func (s *SyncServer) newSignedHead(signedHead types.SignedHead) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	if s.latestHeads == nil {
-		s.latestHeads = []types.SignedHead{signedHead}
+	if s.signedHeads == nil {
+		s.signedHeads = []types.SignedHead{signedHead}
 		s.triggerCallback()
 		return
 	}
-	if lastHead := s.latestHeads[len(s.latestHeads)-1]; signedHead.Header.Slot < lastHead.Header.Slot ||
+	if lastHead := s.signedHeads[len(s.signedHeads)-1]; signedHead.Header.Slot < lastHead.Header.Slot ||
 		(signedHead.Header.Slot == lastHead.Header.Slot && signedHead.SignerCount() <= lastHead.SignerCount()) {
 		return
 	}
-	if len(s.latestHeads) < maxHeadLength {
-		s.latestHeads = append(s.latestHeads, signedHead)
+	if len(s.signedHeads) < maxHeadLength {
+		s.signedHeads = append(s.signedHeads, signedHead)
 		s.triggerCallback()
 		return
 	}
-	copy(s.latestHeads[:len(s.latestHeads)-1], s.latestHeads[1:])
-	s.latestHeads[len(s.latestHeads)-1] = signedHead
+	copy(s.signedHeads[:len(s.signedHeads)-1], s.signedHeads[1:])
+	s.signedHeads[len(s.signedHeads)-1] = signedHead
 	s.triggerCallback()
 }

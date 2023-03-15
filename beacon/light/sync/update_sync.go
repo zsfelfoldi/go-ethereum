@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/beacon/light"
+	"github.com/ethereum/go-ethereum/beacon/light/request"
 	"github.com/ethereum/go-ethereum/beacon/light/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -27,72 +28,21 @@ import (
 
 const maxUpdateRequest = 8
 
-type singleRequestLock struct {
-	lock        sync.Mutex
-	requestLock map[syncServer]bool // true if locked for all servers
-	globalCount int                 // number of true items in requesting map
-}
-
-func (s *singleRequestLock) canRequest(server syncServer) bool {
-	if s.globalCount != 0 {
-		return false
-	}
-	_, ok := s.requestLock[server]
-	return !ok
-}
-
-// assumes that canRequest returned true
-func (s *singleRequestLock) requesting(server syncServer) {
-	if s.requestLock == nil {
-		s.requestLock = make(map[syncServer]bool)
-	}
-	s.requestLock[server] = true
-	s.globalCount++
-}
-
-func (s *singleRequestLock) requestDone(server syncServer) {
-	if s.requestLock[server] {
-		s.globalCount--
-	}
-	delete(s.requestLock, server)
-}
-
-// implements syncModule
-func (s *singleRequestLock) timeout(reqId interface{}) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	server, ok := reqId.(syncServer)
-	if !ok {
-		log.Error("singleRequestLock: wrong request id type")
-		return
-	}
-	if s.requestLock[server] { // do not add lock back if it has already been removed
-		s.requestLock[server] = false // after soft timeout allow other servers to retry
-		s.globalCount--
-	}
-}
-
-// implements syncModule
-func (s *singleRequestLock) removedServer(server syncServer) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	s.requestDone(server)
-}
-
 type checkpointInitServer interface {
-	syncServer
+	request.RequestServer
 	CanRequestBootstrap() bool
 	RequestBootstrap(checkpointHash common.Hash, response func(*light.CheckpointData))
 }
 
 type CheckpointInit struct {
-	singleRequestLock
+	request.SingleLock
+	lock           sync.Mutex
 	chain          *light.CommitteeChain
 	cs             *light.CheckpointStore
 	checkpointHash common.Hash
 	initialized    bool
+
+	InitTrigger request.ModuleTrigger
 }
 
 func NewCheckpointInit(chain *light.CommitteeChain, cs *light.CheckpointStore, checkpointHash common.Hash) *CheckpointInit {
@@ -103,36 +53,38 @@ func NewCheckpointInit(chain *light.CommitteeChain, cs *light.CheckpointStore, c
 	}
 }
 
-func (s *CheckpointInit) process(servers []syncServer) (changed bool, reqId interface{}, reqDone chan struct{}) {
+func (s *CheckpointInit) Process(servers []*request.Server) bool {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	if s.initialized {
-		return
+		return false
 	}
 	if checkpoint := s.cs.Get(s.checkpointHash); checkpoint != nil {
 		checkpoint.InitChain(s.chain)
 		s.initialized = true
-		return true, nil, nil
+		s.InitTrigger.Trigger()
+		return false
 	}
-	srv := selectServer(servers, func(server syncServer) uint64 {
-		if cserver, ok := server.(checkpointInitServer); ok && cserver.CanRequestBootstrap() && s.canRequest(server) {
+	srv := request.SelectServer(servers, func(server *request.Server) uint64 {
+		if cserver, ok := server.RequestServer.(checkpointInitServer); ok && cserver.CanRequestBootstrap() && s.CanSend(server) {
 			return 1
 		}
 		return 0
 	})
 	if srv == nil {
-		return
+		return true
 	}
-	server := srv.(checkpointInitServer)
-	reqDone = make(chan struct{})
-	s.requesting(server)
+	reqId, ok := s.TrySend(srv)
+	if !ok {
+		return true
+	}
+	server := srv.RequestServer.(checkpointInitServer)
 	server.RequestBootstrap(s.checkpointHash, func(checkpoint *light.CheckpointData) {
 		s.lock.Lock()
 		defer s.lock.Unlock()
 
-		s.requestDone(server)
-		close(reqDone)
+		s.Returned(srv, reqId)
 		if checkpoint == nil || !checkpoint.Validate() {
 			server.Fail("error retrieving checkpoint data")
 			return
@@ -140,36 +92,40 @@ func (s *CheckpointInit) process(servers []syncServer) (changed bool, reqId inte
 		checkpoint.InitChain(s.chain)
 		s.cs.Store(checkpoint)
 		s.initialized = true
+		s.InitTrigger.Trigger()
 	})
-	return false, server, reqDone
+	return true
 }
 
 type forwardUpdateServer interface {
-	syncServer
+	request.RequestServer
 	UpdateRange() types.PeriodRange
 	RequestUpdates(first, count uint64, response func([]*types.LightClientUpdate, []*types.SerializedCommittee))
 }
 
 type ForwardUpdateSyncer struct {
-	singleRequestLock
+	request.SingleLock
+	lock  sync.Mutex
 	chain *light.CommitteeChain
+
+	NewUpdateTrigger request.ModuleTrigger
 }
 
 func NewForwardUpdateSyncer(chain *light.CommitteeChain) *ForwardUpdateSyncer {
 	return &ForwardUpdateSyncer{chain: chain}
 }
 
-func (s *ForwardUpdateSyncer) process(servers []syncServer) (changed bool, reqId interface{}, reqDone chan struct{}) {
+func (s *ForwardUpdateSyncer) Process(servers []*request.Server) bool {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	first, ok := s.chain.NextSyncPeriod()
 	if !ok {
-		return
+		return true
 	}
-	srv := selectServer(servers, func(server syncServer) uint64 {
-		if server, ok := server.(forwardUpdateServer); ok && s.canRequest(server) {
-			updateRange := server.UpdateRange()
+	srv := request.SelectServer(servers, func(server *request.Server) uint64 {
+		if fserver, ok := server.RequestServer.(forwardUpdateServer); ok && s.CanSend(server) {
+			updateRange := fserver.UpdateRange()
 			if first < updateRange.First {
 				return 0
 			}
@@ -178,15 +134,17 @@ func (s *ForwardUpdateSyncer) process(servers []syncServer) (changed bool, reqId
 		return 0
 	})
 	if srv == nil {
-		return
+		return true
 	}
-	server := srv.(forwardUpdateServer)
+	server := srv.RequestServer.(forwardUpdateServer)
 	updateRange := server.UpdateRange()
 	if updateRange.AfterLast <= first {
-		return
+		return true
 	}
-	reqDone = make(chan struct{})
-	s.requesting(server)
+	reqId, ok := s.TrySend(srv)
+	if !ok {
+		return true
+	}
 	count := updateRange.AfterLast - first
 	if count > maxUpdateRequest { //TODO const
 		count = maxUpdateRequest
@@ -195,9 +153,7 @@ func (s *ForwardUpdateSyncer) process(servers []syncServer) (changed bool, reqId
 		s.lock.Lock()
 		defer s.lock.Unlock()
 
-		s.requestDone(server)
-		close(reqDone)
-
+		s.Returned(srv, reqId)
 		if len(updates) != int(count) || len(committees) != int(count) {
 			server.Fail("wrong number of updates received")
 			return
@@ -213,9 +169,13 @@ func (s *ForwardUpdateSyncer) process(servers []syncServer) (changed bool, reqId
 				} else {
 					log.Error("Unexpected InsertUpdate error", "error", err)
 				}
+				if i != 0 {
+					s.NewUpdateTrigger.Trigger()
+				}
 				return
 			}
 		}
+		s.NewUpdateTrigger.Trigger()
 	})
-	return false, server, reqDone
+	return true
 }

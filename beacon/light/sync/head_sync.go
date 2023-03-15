@@ -20,12 +20,13 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/beacon/light"
+	"github.com/ethereum/go-ethereum/beacon/light/request"
 	"github.com/ethereum/go-ethereum/beacon/light/types"
 )
 
 type signedHeadServer interface {
-	syncServer
-	LatestHeads() []types.SignedHead
+	request.RequestServer
+	SignedHeads() []types.SignedHead
 }
 
 type latestHeads struct {
@@ -38,6 +39,8 @@ type HeadSyncer struct {
 	headTracker   *light.HeadTracker
 	chain         *light.CommitteeChain
 	added, queued latestHeads
+
+	SignedHeadTrigger request.ModuleTrigger
 }
 
 func NewHeadSyncer(headTracker *light.HeadTracker, chain *light.CommitteeChain) *HeadSyncer {
@@ -47,44 +50,41 @@ func NewHeadSyncer(headTracker *light.HeadTracker, chain *light.CommitteeChain) 
 	}
 }
 
-func (s *HeadSyncer) process(servers []syncServer) (changed bool, reqId interface{}, reqDone chan struct{}) {
+func (s *HeadSyncer) Process(servers []*request.Server) bool {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	nextPeriod, ok := s.chain.NextSyncPeriod()
 	if !ok {
-		return
+		return true
 	}
 	for slot, head := range s.queued.heads {
 		if head.Header.SyncPeriod() <= nextPeriod {
 			delete(s.queued.heads, slot)
 			if s.added.add(head) && s.headTracker.Add(head) == nil {
-				changed = true
+				s.SignedHeadTrigger.Trigger()
 			}
 		}
 	}
 	for _, server := range servers {
-		if server, ok := server.(signedHeadServer); ok {
-			heads := server.LatestHeads()
+		if hserver, ok := server.RequestServer.(signedHeadServer); ok {
+			heads := hserver.SignedHeads()
 			for _, head := range heads {
 				if head.Header.SyncPeriod() > nextPeriod {
 					s.queued.add(head)
 				} else if s.added.add(head) {
 					if s.headTracker.Add(head) == nil {
-						changed = true
+						s.SignedHeadTrigger.Trigger()
 					} else {
-						server.Fail("received invalid signed head")
+						hserver.Fail("received invalid signed head")
 						break
 					}
 				}
 			}
 		}
 	}
-	return
+	return true
 }
-
-func (s *HeadSyncer) timeout(reqId interface{})       {}
-func (s *HeadSyncer) removedServer(server syncServer) {}
 
 func (l *latestHeads) add(head types.SignedHead) bool {
 	if l.heads == nil {

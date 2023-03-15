@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/beacon/engine"
 	"github.com/ethereum/go-ethereum/beacon/light"
 	"github.com/ethereum/go-ethereum/beacon/light/api"
+	"github.com/ethereum/go-ethereum/beacon/light/request"
 	"github.com/ethereum/go-ethereum/beacon/light/sync"
 	"github.com/ethereum/go-ethereum/beacon/light/types"
 	"github.com/ethereum/go-ethereum/beacon/merkle"
@@ -104,13 +105,18 @@ func blsync(ctx *cli.Context) error {
 		committeeChain  = light.NewCommitteeChain(db, chainConfig.Forks, threshold, !ctx.Bool(utils.BeaconNoFilterFlag.Name), light.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
 		checkpointStore = light.NewCheckpointStore(db, committeeChain)
 		headTracker     = light.NewHeadTracker(committeeChain)
-		scheduler       = sync.NewScheduler()
+		scheduler       = request.NewScheduler()
 	)
 	committeeChain.SetGenesisData(chainConfig.GenesisData)
-	scheduler.RegisterModule(sync.NewCheckpointInit(committeeChain, checkpointStore, chainConfig.Checkpoint))
-	scheduler.RegisterModule(sync.NewForwardUpdateSyncer(committeeChain))
-	scheduler.RegisterModule(sync.NewHeadSyncer(headTracker, committeeChain))
-	scheduler.RegisterServer(api.NewSyncServer(beaconApi))
+
+	checkpointInit := sync.NewCheckpointInit(committeeChain, checkpointStore, chainConfig.Checkpoint)
+	forwardSync := sync.NewForwardUpdateSyncer(committeeChain)
+	headSync := sync.NewHeadSyncer(headTracker, committeeChain)
+	scheduler.RegisterModule(checkpointInit)
+	scheduler.RegisterModule(forwardSync)
+	scheduler.RegisterModule(headSync)
+	scheduler.AddTriggers(forwardSync, []*request.ModuleTrigger{&checkpointInit.InitTrigger, &forwardSync.NewUpdateTrigger, &headSync.SignedHeadTrigger})
+	scheduler.AddTriggers(headSync, []*request.ModuleTrigger{&forwardSync.NewUpdateTrigger})
 
 	if ctx.IsSet(utils.BlsyncTestFlag.Name) {
 		if ctx.IsSet(utils.BlsyncApiFlag.Name) || ctx.IsSet(utils.BlsyncJWTSecretFlag.Name) {
@@ -127,6 +133,7 @@ func blsync(ctx *cli.Context) error {
 		headTracker.Subscribe(threshold, syncer.newHead)
 	}
 	scheduler.Start()
+	scheduler.RegisterServer(api.NewSyncServer(beaconApi))
 	<-ctx.Done()
 	scheduler.Stop()
 	return nil
