@@ -325,11 +325,6 @@ var (
 		Usage:    "Path to a JWT secret to use for target engine API endpoint",
 		Category: flags.BeaconCategory,
 	}
-	BlsyncTestFlag = &cli.BoolFlag{
-		Name:     "blsync.test",
-		Usage:    "Test beacon API",
-		Category: flags.BeaconCategory,
-	}
 	// Light server and client settings
 	LightServeFlag = &cli.IntFlag{
 		Name:     "light.serve",

@@ -61,7 +61,6 @@ func main() {
 		utils.GoerliFlag,
 		utils.BlsyncApiFlag,
 		utils.BlsyncJWTSecretFlag,
-		utils.BlsyncTestFlag,
 	}
 	app.Action = blsync
 
@@ -118,20 +117,12 @@ func blsync(ctx *cli.Context) error {
 	scheduler.AddTriggers(forwardSync, []*request.ModuleTrigger{&checkpointInit.InitTrigger, &forwardSync.NewUpdateTrigger, &headSync.SignedHeadTrigger})
 	scheduler.AddTriggers(headSync, []*request.ModuleTrigger{&forwardSync.NewUpdateTrigger})
 
-	if ctx.IsSet(utils.BlsyncTestFlag.Name) {
-		if ctx.IsSet(utils.BlsyncApiFlag.Name) || ctx.IsSet(utils.BlsyncJWTSecretFlag.Name) {
-			utils.Fatalf("Target engine API/JWT secret specified in test mode")
-		}
-		testSyncer := newTestSyncer(beaconApi)
-		headTracker.Subscribe(threshold, testSyncer.newSignedHead)
-	} else {
-		syncer := &execSyncer{
-			api:           beaconApi,
-			client:        makeRPCClient(ctx),
-			execRootCache: lru.NewCache[common.Hash, common.Hash](1000),
-		}
-		headTracker.Subscribe(threshold, syncer.newHead)
+	syncer := &execSyncer{
+		api:           beaconApi,
+		client:        makeRPCClient(ctx),
+		execRootCache: lru.NewCache[common.Hash, common.Hash](1000),
 	}
+	headTracker.Subscribe(threshold, syncer.newHead)
 	scheduler.Start()
 	scheduler.RegisterServer(api.NewSyncServer(beaconApi))
 	<-ctx.Done()
