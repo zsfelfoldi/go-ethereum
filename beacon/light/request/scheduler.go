@@ -20,8 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/beacon/light/types"
-	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
 const softRequestTimeout = time.Second
@@ -47,15 +46,6 @@ type Module interface {
 	// they are called by Scheduler in the same order of priority as they were
 	// registered in.
 	Process(env *Environment)
-}
-
-// RequestServer is a general server interface that can be extended by modules
-// with specific request types.
-type RequestServer interface {
-	SubscribeHeads(newHead func(uint64, common.Hash), newSignedHead func(types.SignedHead))
-	UnsubscribeHeads()
-	Delay() time.Duration // if non-zero then no requests should be sent for the given duration
-	Fail(string)          // report server failure
 }
 
 // ModuleTrigger allows modules to trigger themselves or each other when changes
@@ -87,13 +77,16 @@ type Scheduler struct {
 	headTracker *HeadTracker
 
 	lock        sync.Mutex
+	clock       mclock.Clock
 	modules     []Module // first has highest priority
 	servers     []*Server
 	triggers    map[string]*ModuleTrigger
 	triggeredBy map[Module][]*ModuleTrigger
 	stopCh      chan chan struct{}
 
-	triggerCh             chan struct{}
+	triggerCh             chan struct{} // restarts waiting sync loop
+	testWaitCh            chan struct{} // accepts sends when sync loop is waiting
+	testTimerCh           chan bool     // sends true when simulated timer is processed; false when stopped
 	triggerLock           sync.Mutex
 	processing, triggered bool
 	trModules             map[Module]struct{}
@@ -101,11 +94,16 @@ type Scheduler struct {
 }
 
 // NewScheduler creates a new Scheduler.
-func NewScheduler(headTracker *HeadTracker) *Scheduler {
+func NewScheduler(headTracker *HeadTracker, clock mclock.Clock) *Scheduler {
 	s := &Scheduler{
 		headTracker: headTracker,
+		clock:       clock,
 		stopCh:      make(chan chan struct{}),
-		triggerCh:   make(chan struct{}, 1),
+		// Note: triggerCh and testWaitCh should not have capacity in order to ensure
+		// that after a trigger happens testWaitCh will block until the resulting
+		// processing round has been finished
+		triggerCh:   make(chan struct{}),
+		testWaitCh:  make(chan struct{}),
 		triggers:    make(map[string]*ModuleTrigger),
 		triggeredBy: make(map[Module][]*ModuleTrigger),
 	}
@@ -160,6 +158,7 @@ func (s *Scheduler) RegisterServer(requestServer RequestServer) {
 	server := s.newServer(requestServer)
 	s.servers = append(s.servers, server)
 	s.headTracker.registerServer(server)
+	s.triggerServer(server)
 }
 
 // UnregisterServer removes a registered server.
@@ -216,11 +215,16 @@ func (s *Scheduler) syncLoop() {
 			s.processing = false
 			s.triggerLock.Unlock()
 			s.lock.Unlock()
-			select {
-			case stop := <-s.stopCh:
-				close(stop)
-				return
-			case <-s.triggerCh:
+		loop:
+			for {
+				select {
+				case stop := <-s.stopCh:
+					close(stop)
+					return
+				case <-s.triggerCh:
+					break loop
+				case <-s.testWaitCh:
+				}
 			}
 			s.lock.Lock()
 			s.triggerLock.Lock()
