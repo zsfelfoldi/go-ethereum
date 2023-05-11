@@ -23,8 +23,9 @@ import (
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/minio/sha256-simd"
 )
+
+var headerFormat = merkle.EncodeCompactProofFormat(merkle.NewRangeFormat(8, 15, nil))
 
 // Header defines a beacon header
 //
@@ -78,20 +79,13 @@ func (bh *Header) UnmarshalJSON(input []byte) error {
 
 // Hash calculates the block root of the header
 func (bh *Header) Hash() common.Hash {
-	var values [16]merkle.Value // values corresponding to indices 8 to 15 of the beacon header tree
-	binary.LittleEndian.PutUint64(values[params.BhiSlot][:8], bh.Slot)
-	binary.LittleEndian.PutUint64(values[params.BhiProposerIndex][:8], bh.ProposerIndex)
-	values[params.BhiParentRoot] = merkle.Value(bh.ParentRoot)
-	values[params.BhiStateRoot] = merkle.Value(bh.StateRoot)
-	values[params.BhiBodyRoot] = merkle.Value(bh.BodyRoot)
-	hasher := sha256.New()
-	for i := 7; i > 0; i-- {
-		hasher.Reset()
-		hasher.Write(values[i*2][:])
-		hasher.Write(values[i*2+1][:])
-		hasher.Sum(values[i][:0])
-	}
-	return common.Hash(values[1])
+	var values [8]merkle.Value // values corresponding to indices 8 to 15 of the beacon header tree
+	binary.LittleEndian.PutUint64(values[params.BhiSlot-8][:8], bh.Slot)
+	binary.LittleEndian.PutUint64(values[params.BhiProposerIndex-8][:8], bh.ProposerIndex)
+	values[params.BhiParentRoot-8] = merkle.Value(bh.ParentRoot)
+	values[params.BhiStateRoot-8] = merkle.Value(bh.StateRoot)
+	values[params.BhiBodyRoot-8] = merkle.Value(bh.BodyRoot)
+	return merkle.MultiProof{Format: headerFormat, Values: values[:]}.RootHash()
 }
 
 // Epoch returns the epoch the header belongs to

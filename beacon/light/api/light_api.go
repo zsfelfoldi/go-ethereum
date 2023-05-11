@@ -207,6 +207,33 @@ func (api *BeaconLightApi) GetHeader(blockRoot common.Hash) (types.Header, error
 	return header, nil
 }
 
+func (api *BeaconLightApi) GetStateProof(stateRoot common.Hash, format merkle.CompactProofFormat) (merkle.MultiProof, error) {
+	proof, err := api.getStateProof(stateRoot.Hex(), format)
+	if err != nil {
+		return merkle.MultiProof{}, err
+	}
+	if proof.RootHash() != stateRoot {
+		return merkle.MultiProof{}, errors.New("Received proof has incorrect state root")
+	}
+	return proof, nil
+}
+
+func (api *BeaconLightApi) getStateProof(stateId string, format merkle.CompactProofFormat) (merkle.MultiProof, error) {
+	resp, err := api.httpGetf("/eth/v0/beacon/proof/state/%s?format=0x%x", stateId, format.Format)
+	if err != nil {
+		return merkle.MultiProof{}, err
+	}
+	valueCount := format.ValueCount()
+	if len(resp) != valueCount*32 {
+		return merkle.MultiProof{}, errors.New("Invalid state proof length")
+	}
+	values := make(merkle.Values, valueCount)
+	for i := range values {
+		copy(values[i][:], resp[i*32:(i+1)*32])
+	}
+	return merkle.MultiProof{Format: format, Values: values}, nil
+}
+
 // GetCheckpointData fetches and validates bootstrap data belonging to the given checkpoint.
 func (api *BeaconLightApi) GetCheckpointData(checkpointHash common.Hash) (*light.CheckpointData, error) {
 	resp, err := api.httpGetf("/eth/v1/beacon/light_client/bootstrap/0x%x", checkpointHash[:])

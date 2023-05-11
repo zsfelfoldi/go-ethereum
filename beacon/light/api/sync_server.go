@@ -19,6 +19,7 @@ package api
 import (
 	"github.com/ethereum/go-ethereum/beacon/light"
 	"github.com/ethereum/go-ethereum/beacon/light/types"
+	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/log"
@@ -92,6 +93,16 @@ func (s *SyncServer) RequestBeaconHeader(blockRoot common.Hash, response func(*t
 	go func() {
 		if header, err := s.api.GetHeader(blockRoot); err == nil {
 			response(&header)
+		} else {
+			response(nil)
+		}
+	}()
+}
+
+func (s *SyncServer) RequestBeaconState(stateRoot common.Hash, format merkle.CompactProofFormat, response func(*merkle.MultiProof)) {
+	go func() {
+		if proof, err := s.api.GetStateProof(stateRoot, format); err == nil {
+			response(&proof)
 		} else {
 			response(nil)
 		}

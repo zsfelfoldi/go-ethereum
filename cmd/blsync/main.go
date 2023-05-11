@@ -29,6 +29,8 @@ import (
 	"github.com/ethereum/go-ethereum/beacon/light/request"
 	"github.com/ethereum/go-ethereum/beacon/light/sync"
 	"github.com/ethereum/go-ethereum/beacon/light/types"
+	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -67,14 +69,24 @@ func main() {
 	}
 }
 
+var (
+	stateProofFormat    merkle.CompactProofFormat // requested multiproof format
+	execBlockIndex      int                       // index of execution block root in proof.Values where proof.Format == stateProofFormat
+	finalizedBlockIndex int                       // index of finalized block root in proof.Values where proof.Format == stateProofFormat
+)
+
 func blsync(ctx *cli.Context) error {
 	if !ctx.IsSet(utils.BeaconApiFlag.Name) {
 		utils.Fatalf("Beacon node light client API URL not specified")
 	}
+	stateProofFormat = merkle.EncodeCompactProofFormat(merkle.NewIndexMapFormat().AddLeaf(params.BsiExecHead, nil).AddLeaf(params.BsiFinalBlock, nil))
 	var (
-		chainConfig  = makeChainConfig(ctx)
-		customHeader = make(map[string]string)
+		stateIndexMap = merkle.ProofFormatIndexMap(stateProofFormat)
+		chainConfig   = makeChainConfig(ctx)
+		customHeader  = make(map[string]string)
 	)
+	execBlockIndex = stateIndexMap[params.BsiExecHead]
+	finalizedBlockIndex = stateIndexMap[params.BsiFinalBlock]
 
 	for _, s := range utils.SplitAndTrim(ctx.String(utils.BeaconApiHeaderFlag.Name)) {
 		kv := strings.Split(s, ":")
@@ -91,6 +103,7 @@ func blsync(ctx *cli.Context) error {
 		committeeChain  = light.NewCommitteeChain(db, chainConfig.Forks, threshold, !ctx.Bool(utils.BeaconNoFilterFlag.Name), light.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
 		checkpointStore = light.NewCheckpointStore(db, committeeChain)
 		headValidator   = light.NewHeadValidator(committeeChain)
+		lightChain      = light.NewLightChain(db)
 	)
 	committeeChain.SetGenesisData(chainConfig.GenesisData)
 	headUpdater := sync.NewHeadUpdater(headValidator, committeeChain)
@@ -102,10 +115,15 @@ func blsync(ctx *cli.Context) error {
 	// create sync modules
 	checkpointInit := sync.NewCheckpointInit(committeeChain, checkpointStore, chainConfig.Checkpoint)
 	forwardSync := sync.NewForwardUpdateSync(committeeChain)
-	beaconBlockSync := newBeaconBlockSyncer()
+	headerSync := sync.NewHeaderSync(lightChain, false)
+	stateSync := sync.NewStateSync(lightChain, stateProofFormat, true)
+	beaconBlockSync := newBeaconBlockSyncer(lightChain)
 	engineApiUpdater := &engineApiUpdater{ //TODO constructor
-		client:    makeRPCClient(ctx),
-		blockSync: beaconBlockSync,
+		client:     makeRPCClient(ctx),
+		headerSync: headerSync,
+		stateSync:  stateSync,
+		blockSync:  beaconBlockSync,
+		chain:      lightChain,
 	}
 
 	// set up sync modules and triggers
@@ -115,8 +133,11 @@ func blsync(ctx *cli.Context) error {
 	scheduler.RegisterModule(headUpdater)
 	scheduler.RegisterModule(beaconBlockSync)
 	scheduler.RegisterModule(engineApiUpdater)
+	scheduler.RegisterModule(stateSync)
+	scheduler.RegisterModule(headerSync)
 	// start
 	scheduler.Start()
+	stateSync.SetTailTarget(0)
 	// register server(s)
 	for _, url := range utils.SplitAndTrim(ctx.String(utils.BeaconApiFlag.Name)) {
 		beaconApi := api.NewBeaconLightApi(url, customHeader)

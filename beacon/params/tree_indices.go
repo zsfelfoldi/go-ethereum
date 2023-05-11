@@ -16,6 +16,10 @@
 
 package params
 
+import (
+	"github.com/ethereum/go-ethereum/beacon/merkle"
+)
+
 const (
 	// beacon header fields
 	BhiSlot          = 8
@@ -38,3 +42,5 @@ const (
 	BsiExecPayload       = 56
 	BsiExecHead          = 908
 )
+
+var BsiFinalExecHash = merkle.ChildIndex(merkle.ChildIndex(BsiFinalBlock, BhiStateRoot), BsiExecHead)
