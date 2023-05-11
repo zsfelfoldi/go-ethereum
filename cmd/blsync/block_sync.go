@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/beacon/light"
 	"github.com/ethereum/go-ethereum/beacon/light/request"
 	lsync "github.com/ethereum/go-ethereum/beacon/light/sync"
 	"github.com/ethereum/go-ethereum/beacon/types"
@@ -50,13 +51,15 @@ type beaconBlockSync struct {
 	recentBlocks *lru.Cache[common.Hash, *capella.BeaconBlock]
 
 	headUpdater                             *lsync.HeadUpdater
+	lightChain                              *light.LightChain
 	validatedHead                           types.Header
 	headBlock                               *capella.BeaconBlock // belongs to validatedHead (or nil)
 	headBlockTrigger, prefetchHeaderTrigger *request.ModuleTrigger
 }
 
-func newBeaconBlockSyncer() *beaconBlockSync {
+func newBeaconBlockSyncer(lightChain *light.LightChain) *beaconBlockSync {
 	return &beaconBlockSync{
+		lightChain:   lightChain,
 		recentBlocks: lru.NewCache[common.Hash, *capella.BeaconBlock](10),
 	}
 }
@@ -147,6 +150,16 @@ func (r blockRequest) SendTo(server *request.Server, moduleData *interface{}) {
 			return
 		}
 		r.recentBlocks.Add(r.blockRoot, block)
+		if !r.lightChain.HasHeader(r.blockRoot) {
+			r.lightChain.AddHeader(types.Header{
+				Slot:          uint64(block.Slot),
+				ProposerIndex: uint64(block.ProposerIndex),
+				ParentRoot:    common.Hash(block.ParentRoot),
+				StateRoot:     common.Hash(block.StateRoot),
+				BodyRoot:      common.Hash(block.Body.HashTreeRoot(configs.Mainnet, tree.GetHashFn())),
+			})
+			r.prefetchHeaderTrigger.Trigger()
+		}
 		if r.validatedHead.Hash() == r.blockRoot {
 			r.headBlock = block
 			r.headBlockTrigger.Trigger()
@@ -204,9 +217,13 @@ type engineApiUpdater struct {
 	client      *rpc.Client
 	lock        sync.Mutex
 	lastHead    common.Hash
+	headerSync  *lsync.HeaderSync
+	stateSync   *lsync.StateSync
 	blockSync   *beaconBlockSync
+	chain       *light.LightChain
 	updating    bool
 	selfTrigger *request.ModuleTrigger
+	tailTarget  uint64
 }
 
 // SetupModuleTriggers implements request.Module
@@ -219,7 +236,11 @@ func (s *engineApiUpdater) SetupModuleTriggers(trigger func(id string, subscribe
 // Process implements request.Module
 func (s *engineApiUpdater) Process(env *request.Environment) {
 	s.lock.Lock()
-	defer s.lock.Unlock()
+	defer func() {
+		s.headerSync.SetTailTarget(s.tailTarget)
+		s.chain.Prune(s.tailTarget, true)
+		s.lock.Unlock()
+	}()
 
 	if s.updating {
 		return
@@ -233,6 +254,31 @@ func (s *engineApiUpdater) Process(env *request.Environment) {
 		return
 	}
 
+	head, err := s.chain.GetHeaderByHash(headRoot)
+	if err != nil {
+		return
+	}
+	if uint64(headBlock.Slot) > s.tailTarget+reverseSyncHeaders {
+		s.tailTarget = uint64(headBlock.Slot) - reverseSyncHeaders
+	}
+
+	var finalizedExecRoot common.Hash
+	if state, err := s.chain.GetStateProof(head.Slot, head.StateRoot); err == nil {
+		finalizedRoot := common.Hash(state.Values[finalizedBlockIndex])
+		if finalized, err := s.chain.GetHeaderByHash(finalizedRoot); err == nil {
+			if finalizedState, err := s.chain.GetStateProof(finalized.Slot, finalized.StateRoot); err == nil {
+				finalizedExecRoot = common.Hash(finalizedState.Values[execBlockIndex])
+			}
+			if finalized.Slot > s.tailTarget {
+				s.tailTarget = finalized.Slot
+			}
+		}
+	} else {
+		if s.stateSync.HeadSyncPossible() {
+			return
+		}
+	}
+
 	s.lastHead = headRoot
 	execBlock, err := getExecBlock(headBlock)
 	if err != nil {
@@ -241,7 +287,7 @@ func (s *engineApiUpdater) Process(env *request.Environment) {
 	}
 	execRoot := execBlock.Hash()
 	if s.client == nil { // dry run, no engine API specified
-		log.Info("New execution block retrieved", "block number", execBlock.NumberU64(), "block hash", execRoot)
+		log.Info("New execution block retrieved", "block number", execBlock.NumberU64(), "block hash", execRoot, "finalized block hash", finalizedExecRoot)
 	} else {
 		s.updating = true
 		go func() {
@@ -250,10 +296,10 @@ func (s *engineApiUpdater) Process(env *request.Environment) {
 			} else {
 				log.Error("Failed NewPayload", "block number", execBlock.NumberU64(), "block hash", execRoot, "error", err)
 			}
-			if status, err := callForkchoiceUpdatedV1(s.client, execRoot, common.Hash{}); err == nil {
-				log.Info("Successful ForkchoiceUpdated", "head", execRoot, "status", status)
+			if status, err := callForkchoiceUpdatedV1(s.client, execRoot, finalizedExecRoot); err == nil {
+				log.Info("Successful ForkchoiceUpdated", "head", execRoot, "finalized", finalizedExecRoot, "status", status)
 			} else {
-				log.Error("Failed ForkchoiceUpdated", "head", execRoot, "error", err)
+				log.Error("Failed ForkchoiceUpdated", "head", execRoot, "finalized", finalizedExecRoot, "error", err)
 			}
 			s.lock.Lock()
 			s.updating = false

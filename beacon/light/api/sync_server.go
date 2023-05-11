@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/beacon/light"
+	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/beacon/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -88,4 +89,14 @@ func (s *SyncServer) RequestUpdates(first, count uint64, response func([]*types.
 
 func (s *SyncServer) RequestBeaconBlock(blockRoot common.Hash, response func(*capella.BeaconBlock, error)) {
 	go response(s.api.GetBeaconBlock(blockRoot))
+}
+
+func (s *SyncServer) RequestBeaconState(stateRoot common.Hash, format merkle.CompactProofFormat, response func(*merkle.MultiProof)) {
+	go func() {
+		if proof, err := s.api.GetStateProof(stateRoot, format); err == nil {
+			response(&proof)
+		} else {
+			response(nil)
+		}
+	}()
 }
