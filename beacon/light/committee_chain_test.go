@@ -17,6 +17,7 @@
 package light
 
 import (
+	"crypto/sha256"
 	"math/rand"
 	"testing"
 	"time"
@@ -27,7 +28,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
-	"github.com/minio/sha256-simd"
 )
 
 var (
