@@ -17,15 +17,12 @@
 package light
 
 import (
-	"crypto/sha256"
 	"math/rand"
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/beacon/types"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 )
@@ -45,15 +42,15 @@ var (
 		&types.Fork{Epoch: 0, Version: []byte{0}},
 	})
 
-	tcBase                      = newTestCommitteeChain(nil, tfBase, true, 0, 10, 400, 400)
-	tcBaseWithInvalidUpdates    = newTestCommitteeChain(tcBase, tfBase, false, 5, 10, 400, 200) // signer count too low
-	tcBaseWithBetterUpdates     = newTestCommitteeChain(tcBase, tfBase, false, 5, 10, 400, 440)
-	tcReorgWithWorseUpdates     = newTestCommitteeChain(tcBase, tfBase, true, 5, 10, 20, 400)
-	tcReorgWithWorseUpdates2    = newTestCommitteeChain(tcBase, tfBase, true, 5, 10, 400, 380)
-	tcReorgWithBetterUpdates    = newTestCommitteeChain(tcBase, tfBase, true, 5, 10, 400, 420)
-	tcReorgWithFinalizedUpdates = newTestCommitteeChain(tcBase, tfBase, true, 5, 10, finalizedTestUpdate, 400)
-	tcFork                      = newTestCommitteeChain(tcBase, tfAlternative, true, 7, 10, 400, 400)
-	tcAnotherGenesis            = newTestCommitteeChain(nil, tfAnotherGenesis, true, 0, 10, 400, 400)
+	tcBase                      = newTestCommitteeChain(nil, tfBase, true, 0, 10, 400, false)
+	tcBaseWithInvalidUpdates    = newTestCommitteeChain(tcBase, tfBase, false, 5, 10, 200, false) // signer count too low
+	tcBaseWithBetterUpdates     = newTestCommitteeChain(tcBase, tfBase, false, 5, 10, 440, false)
+	tcReorgWithWorseUpdates     = newTestCommitteeChain(tcBase, tfBase, true, 5, 10, 400, false)
+	tcReorgWithWorseUpdates2    = newTestCommitteeChain(tcBase, tfBase, true, 5, 10, 380, false)
+	tcReorgWithBetterUpdates    = newTestCommitteeChain(tcBase, tfBase, true, 5, 10, 420, false)
+	tcReorgWithFinalizedUpdates = newTestCommitteeChain(tcBase, tfBase, true, 5, 10, 400, true)
+	tcFork                      = newTestCommitteeChain(tcBase, tfAlternative, true, 7, 10, 400, false)
+	tcAnotherGenesis            = newTestCommitteeChain(nil, tfAnotherGenesis, true, 0, 10, 400, false)
 )
 
 func TestCommitteeChainFixedRoots(t *testing.T) {
@@ -244,12 +241,12 @@ func newCommitteeChainTest(t *testing.T, config types.ChainConfig, signerThresho
 		signerThreshold: signerThreshold,
 		enforceTime:     enforceTime,
 	}
-	c.chain = NewCommitteeChain(c.db, config, signerThreshold, enforceTime, dummyVerifier{}, c.clock, func() int64 { return int64(c.clock.Now()) })
+	c.chain = NewCommitteeChain(c.db, config, signerThreshold, enforceTime, DummyVerifier{}, c.clock, func() int64 { return int64(c.clock.Now()) })
 	return c
 }
 
 func (c *committeeChainTest) reloadChain() {
-	c.chain = NewCommitteeChain(c.db, c.config, c.signerThreshold, c.enforceTime, dummyVerifier{}, c.clock, func() int64 { return int64(c.clock.Now()) })
+	c.chain = NewCommitteeChain(c.db, c.config, c.signerThreshold, c.enforceTime, DummyVerifier{}, c.clock, func() int64 { return int64(c.clock.Now()) })
 }
 
 func (c *committeeChainTest) setClockPeriod(period float64) {
@@ -262,13 +259,13 @@ func (c *committeeChainTest) setClockPeriod(period float64) {
 }
 
 func (c *committeeChainTest) addFixedRoot(tc *testCommitteeChain, period uint64, expErr error) {
-	if err := c.chain.AddFixedRoot(period, tc.periods[period].committeeRoot); err != expErr {
+	if err := c.chain.AddFixedRoot(period, tc.periods[period].committee.Root()); err != expErr {
 		c.t.Errorf("Incorrect error output from AddFixedRoot at period %d (expected %v, got %v)", period, expErr, err)
 	}
 }
 
 func (c *committeeChainTest) addCommittee(tc *testCommitteeChain, period uint64, expErr error) {
-	if err := c.chain.AddCommittee(period, serializeDummySyncCommittee(tc.periods[period].committee)); err != expErr {
+	if err := c.chain.AddCommittee(period, tc.periods[period].committee); err != expErr {
 		c.t.Errorf("Incorrect error output from AddCommittee at period %d (expected %v, got %v)", period, expErr, err)
 	}
 }
@@ -276,15 +273,16 @@ func (c *committeeChainTest) addCommittee(tc *testCommitteeChain, period uint64,
 func (c *committeeChainTest) insertUpdate(tc *testCommitteeChain, period uint64, addCommittee bool, expErr error) {
 	var committee *types.SerializedSyncCommittee
 	if addCommittee {
-		committee = serializeDummySyncCommittee(tc.periods[period+1].committee)
+		committee = tc.periods[period+1].committee
 	}
-	if err := c.chain.InsertUpdate(&tc.periods[period].update, committee); err != expErr {
+	if err := c.chain.InsertUpdate(tc.periods[period].update, committee); err != expErr {
 		c.t.Errorf("Incorrect error output from InsertUpdate at period %d (expected %v, got %v)", period, expErr, err)
 	}
 }
 
 func (c *committeeChainTest) verifySignedHeader(tc *testCommitteeChain, period float64, expOk bool) {
-	signedHead := tc.makeTestSignedHead(types.Header{Slot: uint64(period * float64(params.SyncPeriodLength))}, 400)
+	slot := uint64(period * float64(params.SyncPeriodLength))
+	signedHead := GenerateTestSignedHeader(types.Header{Slot: slot}, &tc.config, tc.periods[types.SyncPeriod(slot)].committee, slot+1, 400)
 	if ok, _ := c.chain.VerifySignedHeader(signedHead); ok != expOk {
 		c.t.Errorf("Incorrect output from VerifySignedHeader at period %f (expected %v, got %v)", period, expOk, ok)
 	}
@@ -313,7 +311,7 @@ func newTestForks(config types.ChainConfig, forks types.Forks) types.ChainConfig
 	return config
 }
 
-func newTestCommitteeChain(parent *testCommitteeChain, config types.ChainConfig, newCommittees bool, begin, end int, subPeriodIndex uint64, signerCount int) *testCommitteeChain {
+func newTestCommitteeChain(parent *testCommitteeChain, config types.ChainConfig, newCommittees bool, begin, end int, signerCount int, finalizedHeader bool) *testCommitteeChain {
 	tc := &testCommitteeChain{
 		config: config,
 	}
@@ -328,45 +326,13 @@ func newTestCommitteeChain(parent *testCommitteeChain, config types.ChainConfig,
 			tc.fillCommittees(begin+1, end+1)
 		}
 	}
-	tc.fillUpdates(begin, end, subPeriodIndex, signerCount)
+	tc.fillUpdates(begin, end, signerCount, finalizedHeader)
 	return tc
 }
 
-func makeTestHeaderWithSingleProof(slot, index uint64, value merkle.Value) (types.Header, merkle.Values) {
-	var branch merkle.Values
-	hasher := sha256.New()
-	for index > 1 {
-		var proofHash merkle.Value
-		rand.Read(proofHash[:])
-		hasher.Reset()
-		if index&1 == 0 {
-			hasher.Write(value[:])
-			hasher.Write(proofHash[:])
-		} else {
-			hasher.Write(proofHash[:])
-			hasher.Write(value[:])
-		}
-		hasher.Sum(value[:0])
-		index /= 2
-		branch = append(branch, proofHash)
-	}
-	return types.Header{Slot: slot, StateRoot: common.Hash(value)}, branch
-}
-
-func makeBitmask(signerCount int) (bitmask [params.SyncCommitteeBitmaskSize]byte) {
-	for i := 0; i < params.SyncCommitteeSize; i++ {
-		if rand.Intn(params.SyncCommitteeSize-i) < signerCount {
-			bitmask[i/8] += byte(1) << (i & 7)
-			signerCount--
-		}
-	}
-	return
-}
-
 type testPeriod struct {
-	committee     dummySyncCommittee
-	committeeRoot common.Hash
-	update        types.LightClientUpdate
+	committee *types.SerializedSyncCommittee
+	update    *types.LightClientUpdate
 }
 
 type testCommitteeChain struct {
@@ -374,35 +340,8 @@ type testCommitteeChain struct {
 	config  types.ChainConfig
 }
 
-func (tc *testCommitteeChain) makeTestSignedHead(header types.Header, signerCount int) types.SignedHeader {
-	bitmask := makeBitmask(signerCount)
-	signingRoot, _ := tc.config.Forks.SigningRoot(header)
-	return types.SignedHeader{
-		Header: header,
-		Signature: types.SyncAggregate{
-			Signers:   bitmask,
-			Signature: makeDummySignature(tc.periods[types.SyncPeriod(header.Slot+1)].committee, signingRoot, bitmask),
-		},
-		SignatureSlot: header.Slot + 1,
-	}
-}
-
-const finalizedTestUpdate = params.SyncPeriodLength - 1 // if subPeriodIndex == finalizedTestUpdate then a finalized update is generated
-
-func (tc *testCommitteeChain) makeTestUpdate(period, subPeriodIndex uint64, signerCount int) types.LightClientUpdate {
-	var update types.LightClientUpdate
-	update.NextSyncCommitteeRoot = tc.periods[period+1].committeeRoot
-	if subPeriodIndex == finalizedTestUpdate {
-		update.FinalizedHeader = new(types.Header)
-		*update.FinalizedHeader, update.NextSyncCommitteeBranch = makeTestHeaderWithSingleProof(types.SyncPeriodStart(period)+100, params.StateIndexNextSyncCommittee, merkle.Value(update.NextSyncCommitteeRoot))
-		update.AttestedHeader.Header, update.FinalityBranch = makeTestHeaderWithSingleProof(types.SyncPeriodStart(period)+200, params.StateIndexFinalBlock, merkle.Value(update.FinalizedHeader.Hash()))
-	} else {
-		update.AttestedHeader.Header, update.NextSyncCommitteeBranch = makeTestHeaderWithSingleProof(types.SyncPeriodStart(period)+subPeriodIndex, params.StateIndexNextSyncCommittee, merkle.Value(update.NextSyncCommitteeRoot))
-	}
-	signedHead := tc.makeTestSignedHead(update.AttestedHeader.Header, signerCount)
-	update.AttestedHeader.Signature = signedHead.Signature
-	update.AttestedHeader.SignatureSlot = update.AttestedHeader.Header.Slot
-	return update
+func (tc *testCommitteeChain) makeTestSignedHeader(header types.Header, signatureSlot uint64, signerCount int) types.SignedHeader {
+	return GenerateTestSignedHeader(header, &tc.config, tc.periods[types.SyncPeriod(signatureSlot)].committee, signatureSlot, signerCount)
 }
 
 func (tc *testCommitteeChain) fillCommittees(begin, end int) {
@@ -410,13 +349,12 @@ func (tc *testCommitteeChain) fillCommittees(begin, end int) {
 		tc.periods = append(tc.periods, make([]testPeriod, end+1-len(tc.periods))...)
 	}
 	for i := begin; i <= end; i++ {
-		tc.periods[i].committee = randomDummySyncCommittee()
-		tc.periods[i].committeeRoot = serializeDummySyncCommittee(tc.periods[i].committee).Root()
+		tc.periods[i].committee = GenerateTestCommittee()
 	}
 }
 
-func (tc *testCommitteeChain) fillUpdates(begin, end int, subPeriodIndex uint64, signerCount int) {
+func (tc *testCommitteeChain) fillUpdates(begin, end int, signerCount int, finalizedHeader bool) {
 	for i := begin; i <= end; i++ {
-		tc.periods[i].update = tc.makeTestUpdate(uint64(i), subPeriodIndex, signerCount)
+		tc.periods[i].update = GenerateTestUpdate(&tc.config, uint64(i), tc.periods[i].committee, tc.periods[i+1].committee, signerCount, finalizedHeader)
 	}
 }
