@@ -56,6 +56,7 @@ func TestCheckpointSync(t *testing.T) {
 	fmt.Println(a, b)
 
 	client.scheduler.RegisterServer(server)
+	clock.Run(time.Second)
 	head := types.Header{Slot: types.SyncPeriodStart(8)}
 	server.setHead(head)
 	server.setSignedHead(light.GenerateTestSignedHeader(head, config, server.committeeChain.GetCommittee(8), head.Slot+1, 400))
