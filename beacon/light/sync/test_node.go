@@ -40,10 +40,11 @@ type testNode struct {
 
 	allowPartialUpdates bool
 
+	scheduler        *request.Scheduler
 	newHeadCallbacks []func(uint64, common.Hash)
 }
 
-func newTestNode(config *types.ChainConfig, clock *mclock.Simulated) *testNode {
+func newTestNode(config *types.ChainConfig, clock *mclock.Simulated, checkpointHash common.Hash) *testNode {
 	node := new(testNode)
 	node.db = memorydb.New()
 	node.committeeChain = light.NewCommitteeChain(node.db, config, 300, false, light.DummyVerifier{}, clock, func() int64 { return int64(clock.Now()) })
@@ -54,6 +55,13 @@ func newTestNode(config *types.ChainConfig, clock *mclock.Simulated) *testNode {
 	node.headValidator.Subscribe(350, func(signedHead types.SignedHeader) {
 		node.headTracker.SetValidatedHead(signedHead.Header)
 	})
+	node.scheduler = request.NewScheduler(node.headTracker, clock)
+	if checkpointHash != (common.Hash{}) {
+		node.scheduler.RegisterModule(NewCheckpointInit(node.committeeChain, node.checkpointStore, checkpointHash))
+		node.scheduler.RegisterModule(NewForwardUpdateSync(node.committeeChain))
+	}
+	node.scheduler.RegisterModule(node.headUpdater)
+	node.scheduler.Start()
 	return node
 }
 

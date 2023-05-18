@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/beacon/light"
-	"github.com/ethereum/go-ethereum/beacon/light/request"
 	"github.com/ethereum/go-ethereum/beacon/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -38,9 +37,7 @@ var config = (&types.ChainConfig{ //TODO
 func TestCheckpointSync(t *testing.T) {
 	//TODO allow partial updates, ??enforce time, head announcement order
 	clock := &mclock.Simulated{}
-	server := newTestNode(config, clock)
-	client := newTestNode(config, clock)
-
+	server := newTestNode(config, clock, common.Hash{})
 	for period := uint64(0); period <= 10; period++ {
 		committee := light.GenerateTestCommittee()
 		server.committeeChain.AddFixedRoot(period, committee.Root())
@@ -52,18 +49,19 @@ func TestCheckpointSync(t *testing.T) {
 	checkpoint := light.GenerateTestCheckpoint(3, server.committeeChain.GetCommittee(3))
 	server.checkpointStore.Store(checkpoint)
 
-	checkpointInit := NewCheckpointInit(client.committeeChain, client.checkpointStore, checkpoint.Header.Hash())
-	forwardSync := NewForwardUpdateSync(client.committeeChain)
-	scheduler := request.NewScheduler(client.headTracker, clock)
-	scheduler.RegisterModule(checkpointInit)
-	scheduler.RegisterModule(forwardSync)
-	scheduler.Start()
+	client := newTestNode(config, clock, checkpoint.Header.Hash())
+
 	a, _ := server.committeeChain.NextSyncPeriod()
 	b, _ := client.committeeChain.NextSyncPeriod()
 	fmt.Println(a, b)
-	scheduler.RegisterServer(server)
+
+	client.scheduler.RegisterServer(server)
+	head := types.Header{Slot: types.SyncPeriodStart(8)}
+	server.setHead(head)
+	server.setSignedHead(light.GenerateTestSignedHeader(head, config, server.committeeChain.GetCommittee(8), head.Slot+1, 400))
 	clock.Run(time.Second)
-	scheduler.Stop()
+	//scheduler.Stop()
+
 	a, _ = server.committeeChain.NextSyncPeriod()
 	b, _ = client.committeeChain.NextSyncPeriod()
 	fmt.Println(a, b)
