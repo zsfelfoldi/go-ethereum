@@ -88,7 +88,7 @@ func blsync(ctx *cli.Context) error {
 	var (
 		db              = memorydb.New()
 		threshold       = ctx.Int(utils.BeaconThresholdFlag.Name)
-		committeeChain  = light.NewCommitteeChain(db, *chainConfig.ChainConfig, threshold, !ctx.Bool(utils.BeaconNoFilterFlag.Name), light.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
+		committeeChain  = light.NewCommitteeChain(db, chainConfig.ChainConfig, threshold, !ctx.Bool(utils.BeaconNoFilterFlag.Name), light.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
 		checkpointStore = light.NewCheckpointStore(db, committeeChain)
 		headValidator   = light.NewHeadValidator(committeeChain)
 	)

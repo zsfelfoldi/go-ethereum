@@ -68,14 +68,14 @@ type CommitteeChain struct {
 	syncCommitteeCache *lru.Cache[uint64, syncCommittee] // cache deserialized committees
 	unixNano           func() int64
 
-	config             types.ChainConfig
+	config             *types.ChainConfig
 	signerThreshold    int
 	minimumUpdateScore types.UpdateScore
 	enforceTime        bool
 }
 
 // NewCommitteeChain creates a new CommitteeChain
-func NewCommitteeChain(db ethdb.KeyValueStore, config types.ChainConfig, signerThreshold int, enforceTime bool, sigVerifier committeeSigVerifier, clock mclock.Clock, unixNano func() int64) *CommitteeChain {
+func NewCommitteeChain(db ethdb.KeyValueStore, config *types.ChainConfig, signerThreshold int, enforceTime bool, sigVerifier committeeSigVerifier, clock mclock.Clock, unixNano func() int64) *CommitteeChain {
 	s := &CommitteeChain{
 		fixedRoots: newCanonicalStore[common.Hash](db, fixedRootKey, func(root common.Hash) ([]byte, error) {
 			return root[:], nil
