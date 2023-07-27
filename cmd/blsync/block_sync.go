@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/beacon/light"
+	"github.com/ethereum/go-ethereum/beacon/light/api"
 	"github.com/ethereum/go-ethereum/beacon/light/request"
 	lsync "github.com/ethereum/go-ethereum/beacon/light/sync"
 	"github.com/ethereum/go-ethereum/beacon/types"
@@ -53,6 +54,7 @@ type beaconBlockSync struct {
 	headUpdater                             *lsync.HeadUpdater
 	lightChain                              *light.LightChain
 	validatedHead                           types.Header
+	signedHead                              types.SignedHeader
 	headBlock                               *capella.BeaconBlock // belongs to validatedHead (or nil)
 	headBlockTrigger, prefetchHeaderTrigger *request.ModuleTrigger
 }
@@ -78,13 +80,14 @@ func (s *beaconBlockSync) Process(env *request.Environment) {
 	defer s.lock.Unlock()
 
 	validatedHead := env.ValidatedHead()
-	if validatedHead == (types.Header{}) {
+	if validatedHead.Header == (types.Header{}) {
 		return
 	}
-	if validatedHead != s.validatedHead {
-		s.validatedHead = validatedHead
+	if validatedHead.Header != s.validatedHead {
+		s.validatedHead = validatedHead.Header
 		s.headBlock = nil
-		if block, ok := s.recentBlocks.Get(validatedHead.Hash()); ok {
+		if block, ok := s.recentBlocks.Get(validatedHead.Header.Hash()); ok {
+			s.signedHead = validatedHead
 			s.headBlock = block
 			s.headBlockTrigger.Trigger()
 		}
@@ -103,11 +106,11 @@ func (s *beaconBlockSync) Process(env *request.Environment) {
 	}
 }
 
-func (s *beaconBlockSync) getHeadBlock() *capella.BeaconBlock {
+func (s *beaconBlockSync) getSignedHeadAndBlock() (types.SignedHeader, *capella.BeaconBlock) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	return s.headBlock
+	return s.signedHead, s.headBlock
 }
 
 func (s *beaconBlockSync) tryRequestBlock(env *request.Environment, blockRoot common.Hash, prefetch bool) {
@@ -213,7 +216,7 @@ func getExecBlock(beaconBlock *capella.BeaconBlock) (*ctypes.Block, error) {
 	return execBlock, nil
 }
 
-type engineApiUpdater struct {
+type beaconBlockUpdater struct {
 	client      *rpc.Client
 	lock        sync.Mutex
 	lastHead    common.Hash
@@ -221,20 +224,21 @@ type engineApiUpdater struct {
 	stateSync   *lsync.StateSync
 	blockSync   *beaconBlockSync
 	chain       *light.LightChain
+	server      *api.Server
 	updating    bool
 	selfTrigger *request.ModuleTrigger
 	tailTarget  uint64
 }
 
 // SetupModuleTriggers implements request.Module
-func (s *engineApiUpdater) SetupModuleTriggers(trigger func(id string, subscribe bool) *request.ModuleTrigger) {
+func (s *beaconBlockUpdater) SetupModuleTriggers(trigger func(id string, subscribe bool) *request.ModuleTrigger) {
 	trigger("headBlock", true)
 	trigger("headState", true)
-	s.selfTrigger = trigger("engineApiUpdater", true)
+	s.selfTrigger = trigger("beaconBlockUpdater", true)
 }
 
 // Process implements request.Module
-func (s *engineApiUpdater) Process(env *request.Environment) {
+func (s *beaconBlockUpdater) Process(env *request.Environment) {
 	s.lock.Lock()
 	defer func() {
 		s.headerSync.SetTailTarget(s.tailTarget)
@@ -245,11 +249,11 @@ func (s *engineApiUpdater) Process(env *request.Environment) {
 	if s.updating {
 		return
 	}
-	headBlock := s.blockSync.getHeadBlock()
+	signedHead, headBlock := s.blockSync.getSignedHeadAndBlock()
 	if headBlock == nil {
 		return
 	}
-	headRoot := common.Hash(headBlock.HashTreeRoot(configs.Mainnet, tree.GetHashFn()))
+	headRoot := signedHead.Header.Hash()
 	if headRoot == s.lastHead {
 		return
 	}
@@ -278,8 +282,11 @@ func (s *engineApiUpdater) Process(env *request.Environment) {
 			return
 		}
 	}
-
 	s.lastHead = headRoot
+
+	s.server.PublishHeadEvent(signedHead.Header.Slot, signedHead.Header.Hash())
+	s.server.PublishOptimisticHeadUpdate(signedHead)
+
 	execBlock, err := getExecBlock(headBlock)
 	if err != nil {
 		log.Error("Error extracting execution block from validated beacon block", "error", err)

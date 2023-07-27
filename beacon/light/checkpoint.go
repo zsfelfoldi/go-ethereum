@@ -30,6 +30,9 @@ import (
 
 var checkpointKey = []byte("checkpoint-") // block root -> RLP(CheckpointData)
 
+// CheckpointData contains a sync committee where light sync can be started,
+// together with a proof through a beacon header and corresponding state.
+// Note: CheckpointData is fetched from a server based on a known checkpoint hash.
 type CheckpointData struct {
 	Header          types.Header
 	CommitteeRoot   common.Hash
@@ -37,6 +40,7 @@ type CheckpointData struct {
 	CommitteeBranch merkle.Values
 }
 
+// Validate verifies the proof included in CheckpointData.
 func (c *CheckpointData) Validate() error {
 	if c.CommitteeRoot != c.Committee.Root() {
 		return errors.New("wrong committee root")
@@ -44,7 +48,8 @@ func (c *CheckpointData) Validate() error {
 	return merkle.VerifyProof(c.Header.StateRoot, params.StateIndexSyncCommittee, c.CommitteeBranch, merkle.Value(c.CommitteeRoot))
 }
 
-// expected to be validated already
+// InitChain initializes a CommitteeChain based on the checkpoint.
+// Note that the checkpoint is expected to be already validated.
 func (c *CheckpointData) InitChain(chain *CommitteeChain) {
 	must := func(err error) {
 		if err != nil {
@@ -61,6 +66,7 @@ func (c *CheckpointData) InitChain(chain *CommitteeChain) {
 	must(chain.AddCommittee(period, c.Committee))
 }
 
+// CheckpointStore stores checkpoints in a database, identified by their hash.
 type CheckpointStore struct {
 	chain *CommitteeChain
 	db    ethdb.KeyValueStore
@@ -90,7 +96,7 @@ func (cs *CheckpointStore) Get(checkpoint common.Hash) *CheckpointData {
 			log.Error("Error decoding stored checkpoint", "error", err)
 			return nil
 		}
-		if committee := cs.chain.committees.get(c.Header.SyncPeriod()); committee != nil && committee.Root() == c.CommitteeRoot {
+		if committee := cs.chain.GetCommittee(c.Header.SyncPeriod()); committee != nil && committee.Root() == c.CommitteeRoot {
 			c.Committee = committee
 			return c
 		}

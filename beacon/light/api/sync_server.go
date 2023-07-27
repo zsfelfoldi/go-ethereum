@@ -36,14 +36,14 @@ const (
 )
 
 type SyncServer struct {
-	api         *BeaconLightApi
+	api         *Client
 	unsubscribe func()
 
 	failureDelayUntil mclock.AbsTime
 	failureDelay      float64
 }
 
-func NewSyncServer(api *BeaconLightApi) *SyncServer {
+func NewSyncServer(api *Client) *SyncServer {
 	return &SyncServer{api: api}
 }
 

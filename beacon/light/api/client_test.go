@@ -19,8 +19,8 @@ type nopCloser struct {
 
 func (nopCloser) Close() error { return nil }
 
-func makeApi(response string) *BeaconLightApi {
-	return &BeaconLightApi{client: &testFetcher{response}}
+func makeApi(response string) *Client {
+	return &Client{client: &testFetcher{response}}
 }
 
 func (f *testFetcher) Do(req *http.Request) (*http.Response, error) {

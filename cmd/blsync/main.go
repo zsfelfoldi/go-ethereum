@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -105,10 +106,17 @@ func blsync(ctx *cli.Context) error {
 		headValidator   = light.NewHeadValidator(committeeChain)
 		lightChain      = light.NewLightChain(db)
 	)
+
+	srv := &api.Server{
+		CheckpointStore: checkpointStore,
+		CommitteeChain:  committeeChain,
+		LightChain:      lightChain,
+	}
+
 	headUpdater := sync.NewHeadUpdater(headValidator, committeeChain)
 	headTracker := request.NewHeadTracker(headUpdater.NewSignedHead)
 	headValidator.Subscribe(threshold, func(signedHead types.SignedHeader) {
-		headTracker.SetValidatedHead(signedHead.Header)
+		headTracker.SetValidatedHead(signedHead)
 	})
 
 	// create sync modules
@@ -117,12 +125,15 @@ func blsync(ctx *cli.Context) error {
 	headerSync := sync.NewHeaderSync(lightChain, false)
 	stateSync := sync.NewStateSync(lightChain, stateProofFormat, true)
 	beaconBlockSync := newBeaconBlockSyncer(lightChain)
-	engineApiUpdater := &engineApiUpdater{ //TODO constructor
+	srv.RecentBlocks = beaconBlockSync.recentBlocks //TODO qqq
+	srv.HeadTracker = headTracker
+	beaconBlockUpdater := &beaconBlockUpdater{ //TODO constructor
 		client:     makeRPCClient(ctx),
 		headerSync: headerSync,
 		stateSync:  stateSync,
 		blockSync:  beaconBlockSync,
 		chain:      lightChain,
+		server:     srv,
 	}
 
 	// set up sync modules and triggers
@@ -131,7 +142,7 @@ func blsync(ctx *cli.Context) error {
 	scheduler.RegisterModule(forwardSync)
 	scheduler.RegisterModule(headUpdater)
 	scheduler.RegisterModule(beaconBlockSync)
-	scheduler.RegisterModule(engineApiUpdater)
+	scheduler.RegisterModule(beaconBlockUpdater)
 	scheduler.RegisterModule(stateSync)
 	scheduler.RegisterModule(headerSync)
 	// start
@@ -139,9 +150,14 @@ func blsync(ctx *cli.Context) error {
 	stateSync.SetTailTarget(0)
 	// register server(s)
 	for _, url := range ctx.StringSlice(utils.BeaconApiFlag.Name) {
-		beaconApi := api.NewBeaconLightApi(url, customHeader)
+		beaconApi := api.NewClient(url, customHeader)
 		scheduler.RegisterServer(api.NewSyncServer(beaconApi))
 	}
+
+	mux := http.NewServeMux()
+	srv.RegisterAt(mux)
+	go http.ListenAndServe(":65278", mux)
+
 	// run until stopped
 	<-ctx.Done()
 	scheduler.Stop()
