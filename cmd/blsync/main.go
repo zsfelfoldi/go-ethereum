@@ -111,12 +111,13 @@ func blsync(ctx *cli.Context) error {
 		CheckpointStore: checkpointStore,
 		CommitteeChain:  committeeChain,
 		LightChain:      lightChain,
+		HeadValidator:   headValidator,
 	}
 
 	headUpdater := sync.NewHeadUpdater(headValidator, committeeChain)
 	headTracker := request.NewHeadTracker(headUpdater.NewSignedHead)
 	headValidator.Subscribe(threshold, func(signedHead types.SignedHeader) {
-		headTracker.SetValidatedHead(signedHead)
+		headTracker.SetValidatedHead(signedHead.Header)
 	})
 
 	// create sync modules

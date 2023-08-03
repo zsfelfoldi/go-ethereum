@@ -326,13 +326,17 @@ func (api *Client) StartHeadListener(headFn func(slot uint64, blockRoot common.H
 				}
 				switch event.Event() {
 				case "head":
+					fmt.Println("head event")
 					if slot, blockRoot, err := decodeHeadEvent([]byte(event.Data())); err == nil {
 						headFn(slot, blockRoot)
+						fmt.Println(" slot", slot)
 					} else {
 						errFn(fmt.Errorf("Error decoding head event: %v", err))
 					}
 				case "light_client_optimistic_update":
+					fmt.Println("signed head event")
 					if signedHead, err := decodeOptimisticHeadUpdate([]byte(event.Data())); err == nil {
+						fmt.Println(" slot", signedHead.Header.Slot)
 						signedFn(signedHead)
 					} else {
 						errFn(fmt.Errorf("Error decoding optimistic update event: %v", err))

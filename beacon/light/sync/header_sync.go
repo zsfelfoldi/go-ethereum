@@ -72,7 +72,7 @@ func (s *HeaderSync) Process(env *request.Environment) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	validatedHead := env.ValidatedHead().Header
+	validatedHead := env.ValidatedHead()
 	if validatedHead != s.targetHead {
 		s.targetHead = validatedHead
 		s.syncPtr = validatedHead

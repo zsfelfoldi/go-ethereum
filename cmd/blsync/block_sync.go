@@ -54,7 +54,6 @@ type beaconBlockSync struct {
 	headUpdater                             *lsync.HeadUpdater
 	lightChain                              *light.LightChain
 	validatedHead                           types.Header
-	signedHead                              types.SignedHeader
 	headBlock                               *capella.BeaconBlock // belongs to validatedHead (or nil)
 	headBlockTrigger, prefetchHeaderTrigger *request.ModuleTrigger
 }
@@ -80,14 +79,13 @@ func (s *beaconBlockSync) Process(env *request.Environment) {
 	defer s.lock.Unlock()
 
 	validatedHead := env.ValidatedHead()
-	if validatedHead.Header == (types.Header{}) {
+	if validatedHead == (types.Header{}) {
 		return
 	}
-	if validatedHead.Header != s.validatedHead {
-		s.validatedHead = validatedHead.Header
+	if validatedHead != s.validatedHead {
+		s.validatedHead = validatedHead
 		s.headBlock = nil
-		if block, ok := s.recentBlocks.Get(validatedHead.Header.Hash()); ok {
-			s.signedHead = validatedHead
+		if block, ok := s.recentBlocks.Get(validatedHead.Hash()); ok {
 			s.headBlock = block
 			s.headBlockTrigger.Trigger()
 		}
@@ -106,15 +104,17 @@ func (s *beaconBlockSync) Process(env *request.Environment) {
 	}
 }
 
-func (s *beaconBlockSync) getSignedHeadAndBlock() (types.SignedHeader, *capella.BeaconBlock) {
+func (s *beaconBlockSync) getHeadBlock() *capella.BeaconBlock {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	return s.signedHead, s.headBlock
+	return s.headBlock
 }
 
 func (s *beaconBlockSync) tryRequestBlock(env *request.Environment, blockRoot common.Hash, prefetch bool) {
+	fmt.Println("tryRequestBlock", blockRoot, prefetch)
 	if !s.reqLock.CanRequest(blockRoot) {
+		fmt.Println(" CanRequest returned false")
 		return
 	}
 	env.TryRequest(blockRequest{
@@ -143,17 +143,21 @@ func (r blockRequest) CanSendTo(server *request.Server, moduleData *interface{})
 
 func (r blockRequest) SendTo(server *request.Server, moduleData *interface{}) {
 	reqId := r.reqLock.Send(server, r.blockRoot)
+	fmt.Println("RequestBeaconBlock", r.blockRoot, r.prefetch)
 	server.RequestServer.(beaconBlockServer).RequestBeaconBlock(r.blockRoot, func(block *capella.BeaconBlock, err error) {
 		r.lock.Lock()
 		defer r.lock.Unlock()
 
 		r.reqLock.Returned(server, reqId, r.blockRoot)
 		if block == nil || err != nil {
+			fmt.Println(" failed")
 			server.Fail("error retrieving beacon block")
 			return
 		}
+		fmt.Println(" success")
 		r.recentBlocks.Add(r.blockRoot, block)
 		if !r.lightChain.HasHeader(r.blockRoot) {
+			fmt.Println(" add header")
 			r.lightChain.AddHeader(types.Header{
 				Slot:          uint64(block.Slot),
 				ProposerIndex: uint64(block.ProposerIndex),
@@ -164,6 +168,7 @@ func (r blockRequest) SendTo(server *request.Server, moduleData *interface{}) {
 			r.prefetchHeaderTrigger.Trigger()
 		}
 		if r.validatedHead.Hash() == r.blockRoot {
+			fmt.Println(" validatedHead match")
 			r.headBlock = block
 			r.headBlockTrigger.Trigger()
 		}
@@ -249,11 +254,11 @@ func (s *beaconBlockUpdater) Process(env *request.Environment) {
 	if s.updating {
 		return
 	}
-	signedHead, headBlock := s.blockSync.getSignedHeadAndBlock()
+	headBlock := s.blockSync.getHeadBlock()
 	if headBlock == nil {
 		return
 	}
-	headRoot := signedHead.Header.Hash()
+	headRoot := common.Hash(headBlock.HashTreeRoot(configs.Mainnet, tree.GetHashFn()))
 	if headRoot == s.lastHead {
 		return
 	}
@@ -284,8 +289,10 @@ func (s *beaconBlockUpdater) Process(env *request.Environment) {
 	}
 	s.lastHead = headRoot
 
-	s.server.PublishHeadEvent(signedHead.Header.Slot, signedHead.Header.Hash())
-	s.server.PublishOptimisticHeadUpdate(signedHead)
+	if signedHead := s.server.HeadValidator.BestSignedHeader(head.Slot); signedHead.Header == head {
+		s.server.PublishHeadEvent(head.Slot, head.Hash())
+		s.server.PublishOptimisticHeadUpdate(signedHead)
+	}
 
 	execBlock, err := getExecBlock(headBlock)
 	if err != nil {

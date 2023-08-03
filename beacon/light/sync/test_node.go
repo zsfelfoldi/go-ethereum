@@ -53,7 +53,7 @@ func newTestNode(config *types.ChainConfig, clock *mclock.Simulated, checkpointH
 	node.headUpdater = NewHeadUpdater(node.headValidator, node.committeeChain)
 	node.headTracker = request.NewHeadTracker(node.headUpdater.NewSignedHead)
 	node.headValidator.Subscribe(350, func(signedHead types.SignedHeader) {
-		node.headTracker.SetValidatedHead(signedHead)
+		node.headTracker.SetValidatedHead(signedHead.Header)
 	})
 	node.scheduler = request.NewScheduler(node.headTracker, clock)
 	if checkpointHash != (common.Hash{}) {

@@ -40,6 +40,7 @@ type Server struct {
 	LightChain      *light.LightChain
 	RecentBlocks    *lru.Cache[common.Hash, *capella.BeaconBlock]
 	HeadTracker     *request.HeadTracker
+	HeadValidator   *light.HeadValidator
 
 	eventServer *eventsource.Server
 	lastEventId uint64
@@ -199,11 +200,12 @@ func (s *Server) handleBlocks(resp http.ResponseWriter, req *http.Request) {
 
 func (s *Server) handleOptimisticHeadUpdate(resp http.ResponseWriter, req *http.Request) {
 	head := s.HeadTracker.ValidatedHead()
-	if head.Header == (types.Header{}) {
+	signedHead := s.HeadValidator.BestSignedHeader(head.Slot)
+	if signedHead.Header != head {
 		resp.WriteHeader(http.StatusNotFound)
 		return
 	}
-	respData, err := encodeOptimisticHeadUpdate(head)
+	respData, err := encodeOptimisticHeadUpdate(signedHead)
 	if err != nil {
 		fmt.Println("handleOptimisticHeadUpdate encode failed:", err)
 		resp.WriteHeader(http.StatusInternalServerError)

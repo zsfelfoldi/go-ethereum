@@ -25,14 +25,21 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
+const keepSignedHeaders = 4
+
 type HeadValidator struct {
-	lock           sync.Mutex
+	lock           sync.RWMutex
 	committeeChain *CommitteeChain
 	subs           []*headSub
+	firstSlot      uint64
+	best           map[uint64]types.SignedHeader
 }
 
 func NewHeadValidator(committeeChain *CommitteeChain) *HeadValidator {
-	return &HeadValidator{committeeChain: committeeChain}
+	return &HeadValidator{
+		committeeChain: committeeChain,
+		best:           make(map[uint64]types.SignedHeader),
+	}
 }
 
 type headSub struct {
@@ -68,6 +75,10 @@ func (h *HeadValidator) Add(head types.SignedHeader) error {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
+	if head.Header.Slot < h.firstSlot {
+		return nil
+	}
+
 	sigOk, age := h.committeeChain.VerifySignedHeader(head)
 	if age < 0 {
 		log.Warn("Future signed head received", "age", age)
@@ -79,7 +90,21 @@ func (h *HeadValidator) Add(head types.SignedHeader) error {
 		return errors.New("invalid header signature")
 	}
 
+	if head.Header.Slot > h.firstSlot+keepSignedHeaders*2 {
+		h.best = make(map[uint64]types.SignedHeader)
+		h.firstSlot = head.Header.Slot
+	}
+	for head.Header.Slot > h.firstSlot+keepSignedHeaders {
+		delete(h.best, h.firstSlot)
+		h.firstSlot++
+	}
+
 	signerCount := head.Signature.SignerCount()
+	if oldHead, ok := h.best[head.Header.Slot]; ok && signerCount <= oldHead.Signature.SignerCount() {
+		return nil
+	}
+	h.best[head.Header.Slot] = head
+
 	for _, sub := range h.subs {
 		if sub.minSignerCount > signerCount {
 			break
@@ -92,4 +117,11 @@ func (h *HeadValidator) Add(head types.SignedHeader) error {
 		}
 	}
 	return nil
+}
+
+func (h *HeadValidator) BestSignedHeader(slot uint64) types.SignedHeader {
+	h.lock.RLock()
+	defer h.lock.RUnlock()
+
+	return h.best[slot]
 }

@@ -36,7 +36,7 @@ type HeadTracker struct {
 	newSignedHead func(server *Server, signedHead types.SignedHeader)
 
 	validatedLock        sync.RWMutex
-	validatedHead        types.SignedHeader
+	validatedHead        types.Header
 	validatedHeadTrigger *ModuleTrigger
 
 	prefetchLock        sync.RWMutex
@@ -70,7 +70,7 @@ func (s *HeadTracker) setupModuleTriggers(trigger func(id string) *ModuleTrigger
 }
 
 // SetValidatedHead is called by the external validated head source.
-func (s *HeadTracker) SetValidatedHead(head types.SignedHeader) {
+func (s *HeadTracker) SetValidatedHead(head types.Header) {
 	s.validatedLock.Lock()
 	defer s.validatedLock.Unlock()
 
@@ -79,7 +79,7 @@ func (s *HeadTracker) SetValidatedHead(head types.SignedHeader) {
 }
 
 // ValidatedHead returns the latest validated head.
-func (s *HeadTracker) ValidatedHead() types.SignedHeader {
+func (s *HeadTracker) ValidatedHead() types.Header {
 	s.validatedLock.RLock()
 	defer s.validatedLock.RUnlock()
 
