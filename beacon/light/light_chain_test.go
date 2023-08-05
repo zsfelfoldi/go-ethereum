@@ -20,8 +20,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/ethereum/go-ethereum/beacon/types"
 	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/beacon/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
 )
@@ -383,6 +383,7 @@ func (c *lightChainTest) checkStateProof(header types.Header, expFound bool) {
 	if found := c.chain.HasStateProof(header); found != expFound {
 		c.t.Errorf("Incorrect result from HasStateProof (expected %v, got %v)", expFound, found)
 	}
+
 	if proof, err := c.chain.GetStateProof(header.Slot, header.StateRoot); err == nil {
 		if !expFound {
 			c.t.Errorf("Unexpected state proof found by GetStateProof")
@@ -396,6 +397,22 @@ func (c *lightChainTest) checkStateProof(header types.Header, expFound bool) {
 		}
 		if expFound {
 			c.t.Errorf("Expected state proof not found by GetStateProof")
+		}
+	}
+
+	if proof, err := c.chain.GetStateProofByHash(header.StateRoot); err == nil {
+		if !expFound {
+			c.t.Errorf("Unexpected state proof found by GetStateProofByHash")
+		}
+		if proof.RootHash() != header.StateRoot {
+			c.t.Errorf("State proof with incorrect root hash returned by GetStateProofByHash")
+		}
+	} else {
+		if err != ErrNotFound {
+			c.t.Errorf("Unexpected error from GetStateProofByHash: %v", err)
+		}
+		if expFound {
+			c.t.Errorf("Expected state proof not found by GetStateProofByHash")
 		}
 	}
 }

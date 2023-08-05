@@ -50,7 +50,7 @@ func (s *Server) RegisterAt(mux *http.ServeMux) {
 	mux.HandleFunc(urlUpdates, s.handleUpdates)
 	mux.HandleFunc(urlOptimistic, s.handleOptimisticHeadUpdate)
 	mux.HandleFunc(urlHeaders+"/", s.handleHeaders)
-	//mux.HandleFunc(urlStateProof+"/", s.handleStateProof)
+	mux.HandleFunc(urlStateProof+"/", s.handleStateProof)
 	mux.HandleFunc(urlBootstrap+"/", s.handleBootstrap)
 	mux.HandleFunc(urlBlocks+"/", s.handleBlocks)
 	s.eventServer = eventsource.NewServer()
@@ -257,4 +257,32 @@ func (s *Server) handleHeaders(resp http.ResponseWriter, req *http.Request) {
 	fmt.Println("handleHeaders: success")
 }
 
-func (s *Server) handleStateProof(resp http.ResponseWriter, req *http.Request) {}
+func (s *Server) handleStateProof(resp http.ResponseWriter, req *http.Request) {
+	fmt.Println("handleStateProof", req.URL.Path)
+	stateId := req.URL.Path[len(urlHeaders)+1:]
+	var stateRoot common.Hash
+	if stateId == "head" { //TODO ??number
+		header, _, _ := s.LightChain.HeaderRange()
+		stateRoot = header.StateRoot
+	} else {
+		if data, err := hexutil.Decode(stateId); err == nil && len(data) == len(stateRoot) {
+			copy(stateRoot[:], data)
+		} else {
+			fmt.Println("handleStateProof: bad request")
+			resp.WriteHeader(http.StatusBadRequest)
+			return
+		}
+	}
+	fmt.Println("handleStateProof hash:", stateRoot)
+	proof, err := s.LightChain.GetStateProof(slot, stateRoot)
+
+	var err error
+	header, err = s.LightChain.GetHeaderByStateRoot(stateRoot)
+	found = err == nil
+	if !found {
+		fmt.Println("handleHeaders: not found")
+		resp.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+}

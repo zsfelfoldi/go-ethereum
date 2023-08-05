@@ -21,8 +21,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/ethereum/go-ethereum/beacon/types"
 	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/beacon/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -38,11 +38,12 @@ var (
 )
 
 var (
-	chainRangeKey = []byte("range-")     // RLP(chainRangeData)
-	headerKey     = []byte("header-")    // bigEndian64(slot) + blockRoot -> RLP(types.Header)
-	stateKey      = []byte("state-")     // bigEndian64(slot) + stateRoot -> RLP(merkle.MultiProof)
-	canonicalKey  = []byte("canonical-") // bigEndian64(slot) -> canonical root
-	hashToSlotKey = []byte("hash2slot-") // blockRoot -> RLP(slot)
+	chainRangeKey      = []byte("range-")      // RLP(chainRangeData)
+	headerKey          = []byte("header-")     // bigEndian64(slot) + blockRoot -> RLP(types.Header)
+	stateKey           = []byte("state-")      // bigEndian64(slot) + stateRoot -> RLP(merkle.MultiProof)
+	canonicalKey       = []byte("canonical-")  // bigEndian64(slot) -> canonical root
+	blockRootToSlotKey = []byte("block2slot-") // blockRoot -> RLP(slot)
+	stateRootToSlotKey = []byte("state2slot-") // stateRoot -> RLP(slot); only when state is present
 )
 
 // LightChain stores beacon headers and optionally partial merkle proofs of the
@@ -61,10 +62,11 @@ type LightChain struct {
 	stateHead, stateTail types.Header // state proofs of canonical headers are available in this section
 	lastStoredRange      chainRangeData
 
-	headerCache     *lru.Cache[slotAndHash, types.Header]
-	canonicalCache  *lru.Cache[uint64, common.Hash]
-	hashToSlotCache *lru.Cache[common.Hash, uint64]
-	stateProofCache *lru.Cache[slotAndHash, merkle.MultiProof]
+	headerCache          *lru.Cache[slotAndHash, types.Header]
+	canonicalCache       *lru.Cache[uint64, common.Hash]
+	blockRootToSlotCache *lru.Cache[common.Hash, uint64]
+	stateRootToSlotCache *lru.Cache[common.Hash, uint64]
+	stateProofCache      *lru.Cache[slotAndHash, merkle.MultiProof]
 }
 
 type slotAndHash struct {
@@ -82,11 +84,12 @@ type chainRangeData struct {
 // NewLightChain creates a new LightChain and loads canonical chain info from the database.
 func NewLightChain(db ethdb.KeyValueStore) *LightChain {
 	lc := &LightChain{
-		db:              db,
-		headerCache:     lru.NewCache[slotAndHash, types.Header](500),
-		canonicalCache:  lru.NewCache[uint64, common.Hash](2000),
-		hashToSlotCache: lru.NewCache[common.Hash, uint64](2000),
-		stateProofCache: lru.NewCache[slotAndHash, merkle.MultiProof](100),
+		db:                   db,
+		headerCache:          lru.NewCache[slotAndHash, types.Header](500),
+		canonicalCache:       lru.NewCache[uint64, common.Hash](2000),
+		blockRootToSlotCache: lru.NewCache[common.Hash, uint64](2000),
+		stateRootToSlotCache: lru.NewCache[common.Hash, uint64](2000),
+		stateProofCache:      lru.NewCache[slotAndHash, merkle.MultiProof](100),
 	}
 	lc.loadChainRange()
 	return lc
@@ -303,8 +306,8 @@ func (lc *LightChain) Prune(beforeSlot uint64, removeCanonical bool) {
 		var blockRoot common.Hash
 		copy(blockRoot[:], key[kl+8:])
 		if removeCanonical || blockRoot != lc.getCanonicalHash(slot) {
-			batch.Delete(getHashToSlotKey(blockRoot))
-			lc.hashToSlotCache.Remove(blockRoot)
+			batch.Delete(getBlockRootToSlotKey(blockRoot))
+			lc.blockRootToSlotCache.Remove(blockRoot)
 			batch.Delete(key)
 			lc.headerCache.Remove(slotAndHash{slot: slot, hash: blockRoot})
 		}
@@ -332,6 +335,8 @@ func (lc *LightChain) Prune(beforeSlot uint64, removeCanonical bool) {
 				continue
 			}
 		}
+		batch.Delete(getStateRootToSlotKey(stateRoot))
+		lc.stateRootToSlotCache.Remove(stateRoot)
 		batch.Delete(key)
 		lc.stateProofCache.Remove(slotAndHash{slot: slot, hash: stateRoot})
 	}
@@ -369,13 +374,23 @@ func getCanonicalKey(slot uint64) []byte {
 	return key
 }
 
-func getHashToSlotKey(blockRoot common.Hash) []byte {
+func getBlockRootToSlotKey(blockRoot common.Hash) []byte {
 	var (
-		kl  = len(hashToSlotKey)
+		kl  = len(blockRootToSlotKey)
 		key = make([]byte, kl+32)
 	)
-	copy(key[:kl], hashToSlotKey)
+	copy(key[:kl], blockRootToSlotKey)
 	copy(key[kl:], blockRoot[:])
+	return key
+}
+
+func getStateRootToSlotKey(stateRoot common.Hash) []byte {
+	var (
+		kl  = len(stateRootToSlotKey)
+		key = make([]byte, kl+32)
+	)
+	copy(key[:kl], stateRootToSlotKey)
+	copy(key[kl:], stateRoot[:])
 	return key
 }
 
@@ -398,8 +413,8 @@ func (lc *LightChain) AddHeader(header types.Header) {
 		log.Error("Failed to encode slot number", "error", err)
 		return
 	}
-	batch.Put(getHashToSlotKey(blockRoot), slotEnc)
-	lc.hashToSlotCache.Add(blockRoot, header.Slot)
+	batch.Put(getBlockRootToSlotKey(blockRoot), slotEnc)
+	lc.blockRootToSlotCache.Add(blockRoot, header.Slot)
 	if lc.chainInit && blockRoot == lc.chainTail.ParentRoot {
 		var err error
 		for err == nil {
@@ -419,13 +434,13 @@ func (lc *LightChain) AddHeader(header types.Header) {
 
 // HasHeader returns true if a header with the given block root exists.
 func (lc *LightChain) HasHeader(blockRoot common.Hash) bool {
-	_, ok := lc.getSlotByHash(blockRoot)
+	_, ok := lc.getSlotByBlockRoot(blockRoot)
 	return ok
 }
 
 // GetHeaderByHash returns the header with the given block root.
 func (lc *LightChain) GetHeaderByHash(blockRoot common.Hash) (types.Header, error) {
-	if slot, ok := lc.getSlotByHash(blockRoot); ok {
+	if slot, ok := lc.getSlotByBlockRoot(blockRoot); ok {
 		header, err := lc.getHeader(slot, blockRoot)
 		if err != nil {
 			log.Error("LightChain blockRoot -> slot entry found but header is missing", "slot", slot, "blockRoot", blockRoot)
@@ -437,7 +452,7 @@ func (lc *LightChain) GetHeaderByHash(blockRoot common.Hash) (types.Header, erro
 
 // GetParent returns the parent of the given header if available.
 func (lc *LightChain) GetParent(header types.Header) (types.Header, error) {
-	if parentSlot, ok := lc.hashToSlotCache.Get(header.ParentRoot); ok {
+	if parentSlot, ok := lc.blockRootToSlotCache.Get(header.ParentRoot); ok {
 		parent, err := lc.getHeader(parentSlot, header.ParentRoot)
 		if err != nil {
 			log.Error("LightChain blockRoot -> slot entry found in cache but header is missing", "slot", parentSlot, "blockRoot", header.ParentRoot)
@@ -529,11 +544,27 @@ func (lc *LightChain) getHeader(slot uint64, blockRoot common.Hash) (types.Heade
 	return header, nil
 }
 
-func (lc *LightChain) getSlotByHash(blockRoot common.Hash) (uint64, bool) {
-	if slot, ok := lc.hashToSlotCache.Get(blockRoot); ok {
+func (lc *LightChain) getSlotByBlockRoot(blockRoot common.Hash) (uint64, bool) {
+	if slot, ok := lc.blockRootToSlotCache.Get(blockRoot); ok {
 		return slot, true
 	}
-	slotEnc, err := lc.db.Get(getHashToSlotKey(blockRoot))
+	slotEnc, err := lc.db.Get(getBlockRootToSlotKey(blockRoot))
+	if err != nil {
+		return 0, false
+	}
+	var slot uint64
+	if err := rlp.DecodeBytes(slotEnc, &slot); err != nil {
+		log.Error("Failed to decode slot number", "error", err)
+		return 0, false
+	}
+	return slot, true
+}
+
+func (lc *LightChain) getSlotByStateRoot(stateRoot common.Hash) (uint64, bool) {
+	if slot, ok := lc.stateRootToSlotCache.Get(stateRoot); ok {
+		return slot, true
+	}
+	slotEnc, err := lc.db.Get(getStateRootToSlotKey(stateRoot))
 	if err != nil {
 		return 0, false
 	}
@@ -554,7 +585,7 @@ func (lc *LightChain) HasStateProof(header types.Header) bool {
 	return ok && err == nil
 }
 
-// GetStateProof returns the state proof belonging to the given header.
+// GetStateProof returns the state proof belonging to the given slot and state root.
 func (lc *LightChain) GetStateProof(slot uint64, stateRoot common.Hash) (merkle.MultiProof, error) {
 	if proof, ok := lc.stateProofCache.Get(slotAndHash{slot, stateRoot}); ok {
 		return proof, nil
@@ -569,6 +600,14 @@ func (lc *LightChain) GetStateProof(slot uint64, stateRoot common.Hash) (merkle.
 		return merkle.MultiProof{}, ErrNotFound
 	}
 	return proof, nil
+}
+
+// GetStateProofByHash returns the state proof belonging to the given state root.
+func (lc *LightChain) GetStateProofByHash(stateRoot common.Hash) (merkle.MultiProof, error) {
+	if slot, ok := lc.getSlotByStateRoot(stateRoot); ok {
+		return lc.GetStateProof(slot, stateRoot)
+	}
+	return merkle.MultiProof{}, ErrNotFound
 }
 
 // AddStateProof adds a state proof. If it belongs to a canonical header then
@@ -592,6 +631,13 @@ func (lc *LightChain) AddStateProof(header types.Header, proof merkle.MultiProof
 
 	batch.Put(getStateProofKey(header.Slot, header.StateRoot), proof.Encode())
 	lc.stateProofCache.Add(slotAndHash{header.Slot, header.StateRoot}, proof)
+	slotEnc, err := rlp.EncodeToBytes(&header.Slot)
+	if err != nil {
+		log.Error("Failed to encode slot number", "error", err)
+		return
+	}
+	batch.Put(getStateRootToSlotKey(header.StateRoot), slotEnc)
+	lc.stateRootToSlotCache.Add(header.StateRoot, header.Slot)
 	if !lc.IsCanonical(header) {
 		return nil
 	}
