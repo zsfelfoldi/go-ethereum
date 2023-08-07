@@ -26,6 +26,7 @@ import (
 	"github.com/donovanhide/eventsource"
 	"github.com/ethereum/go-ethereum/beacon/light"
 	"github.com/ethereum/go-ethereum/beacon/light/request"
+	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/beacon/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -259,12 +260,25 @@ func (s *Server) handleHeaders(resp http.ResponseWriter, req *http.Request) {
 
 func (s *Server) handleStateProof(resp http.ResponseWriter, req *http.Request) {
 	fmt.Println("handleStateProof", req.URL.Path)
-	stateId := req.URL.Path[len(urlHeaders)+1:]
-	var stateRoot common.Hash
+
+	formatEnc, err := hexutil.Decode(req.URL.Query().Get("format"))
+	if err != nil {
+		resp.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	var format merkle.CompactProofFormat
+	if format.Decode(formatEnc) != nil {
+		resp.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	stateId := req.URL.Path[len(urlStateProof)+1:]
+	var proof merkle.MultiProof
 	if stateId == "head" { //TODO ??number
 		header, _, _ := s.LightChain.HeaderRange()
-		stateRoot = header.StateRoot
+		proof, err = s.LightChain.GetStateProof(header.Slot, header.StateRoot)
 	} else {
+		var stateRoot common.Hash
 		if data, err := hexutil.Decode(stateId); err == nil && len(data) == len(stateRoot) {
 			copy(stateRoot[:], data)
 		} else {
@@ -272,17 +286,24 @@ func (s *Server) handleStateProof(resp http.ResponseWriter, req *http.Request) {
 			resp.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		fmt.Println("handleStateProof hash:", stateRoot)
+		proof, err = s.LightChain.GetStateProofByHash(stateRoot)
 	}
-	fmt.Println("handleStateProof hash:", stateRoot)
-	proof, err := s.LightChain.GetStateProof(slot, stateRoot)
-
-	var err error
-	header, err = s.LightChain.GetHeaderByStateRoot(stateRoot)
-	found = err == nil
-	if !found {
-		fmt.Println("handleHeaders: not found")
+	if err != nil {
+		fmt.Println("handleStateProof: not found")
 		resp.WriteHeader(http.StatusNotFound)
 		return
 	}
+	var values merkle.Values
+	if _, ok := merkle.TraverseProof(proof.Reader(nil), merkle.NewMultiProofWriter(format, &values, nil)); !ok {
+		fmt.Println("handleStateProof: tree nodes not available")
+		resp.WriteHeader(http.StatusNotFound)
+	}
 
+	respData := make([]byte, len(values)*32)
+	for i, value := range values {
+		copy(respData[i*32:(i+1)*32], value[:])
+	}
+	resp.Write(respData)
+	fmt.Println("handleStateProof: success")
 }

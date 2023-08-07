@@ -26,7 +26,7 @@ import (
 // CompactProofFormat is a binary compact proof format, see description here:
 // https://github.com/ChainSafe/consensus-specs/blob/feat/multiproof/ssz/merkle-proofs.md#compact-multiproofs
 type CompactProofFormat struct {
-	Format                 []byte
+	format                 []byte
 	firstBit, afterLastBit int
 }
 
@@ -41,6 +41,7 @@ func (c CompactProofFormat) Children() (left, right ProofFormat) {
 	if !r.skipSubtree() {
 		log.Error("Invalid compact proof format")
 	}
+	l.afterLastBit = r.firstBit
 	return l, r
 }
 
@@ -55,13 +56,40 @@ func EncodeCompactProofFormat(format ProofFormat) (c CompactProofFormat) {
 	return
 }
 
+// Encode encodes CompactProofFormat into a byte slice
+func (c CompactProofFormat) Encode() []byte {
+	if c.firstBit == 0 && c.afterLastBit+7 >= len(c.format)*8 {
+		return c.format
+	}
+	return EncodeCompactProofFormat(c).Encode()
+}
+
+// Decode decodes CompactProofFormat from a byte slice
+func (c *CompactProofFormat) Decode(enc []byte) error {
+	c.format, c.firstBit, c.afterLastBit = enc, 0, len(enc)*8
+	if !c.skipSubtree() {
+		return errors.New("invalid compact proof format")
+	}
+	afterLastBit := c.firstBit
+	if c.firstBit+8 <= c.afterLastBit {
+		return errors.New("invalid compact proof format")
+	}
+	for c.firstBit < c.afterLastBit {
+		if bit, _ := c.readFirstBit(); bit {
+			return errors.New("invalid compact proof format")
+		}
+	}
+	c.firstBit, c.afterLastBit = 0, afterLastBit
+	return nil
+}
+
 // readFirstBit reads the first bit of the bit vector and moves the first bit
 // pointer one bit ahead.
 func (c *CompactProofFormat) readFirstBit() (bit, ok bool) {
 	if c.firstBit >= c.afterLastBit {
 		return false, false
 	}
-	bit = c.Format[c.firstBit>>3]&(byte(128)>>(c.firstBit&7)) != 0
+	bit = c.format[c.firstBit>>3]&(byte(128)>>(c.firstBit&7)) != 0
 	c.firstBit++
 	return bit, true
 }
@@ -80,11 +108,11 @@ func (c *CompactProofFormat) skipSubtree() bool {
 // appendBit adds a bit at the end of the bit vector.
 func (c *CompactProofFormat) appendBit(bit bool) {
 	bytePtr := c.afterLastBit >> 3
-	if bytePtr == len(c.Format) {
-		c.Format = append(c.Format, byte(0))
+	if bytePtr == len(c.format) {
+		c.format = append(c.format, byte(0))
 	}
 	if bit {
-		c.Format[bytePtr] += byte(128) >> (c.afterLastBit & 7)
+		c.format[bytePtr] += byte(128) >> (c.afterLastBit & 7)
 	}
 	c.afterLastBit++
 }
@@ -124,9 +152,9 @@ type MultiProof struct {
 
 // Encode encodes a MultiProof into a byte slice
 func (m *MultiProof) Encode() []byte {
-	lf := len(m.Format.Format)
+	lf := len(m.Format.format)
 	enc := make([]byte, lf+32*len(m.Values))
-	copy(enc[:lf], m.Format.Format)
+	copy(enc[:lf], m.Format.format)
 	for i, value := range m.Values {
 		copy(enc[lf+i*32:lf+(i+1)*32], value[:])
 	}
@@ -141,10 +169,10 @@ func (m *MultiProof) Decode(enc []byte) error {
 		return errors.New("Invalid length for encoded MultiProof")
 	}
 	format := CompactProofFormat{
-		Format:       make([]byte, lf),
+		format:       make([]byte, lf),
 		afterLastBit: valueCount*2 - 1,
 	}
-	copy(format.Format, enc[:lf])
+	copy(format.format, enc[:lf])
 	if f := format; !f.skipSubtree() || f.firstBit != f.afterLastBit {
 		log.Error("Invalid compact proof format")
 	}

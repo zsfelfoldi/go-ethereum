@@ -182,7 +182,7 @@ func (api *Client) GetStateProof(stateRoot common.Hash, format merkle.CompactPro
 }
 
 func (api *Client) getStateProof(stateId string, format merkle.CompactProofFormat) (merkle.MultiProof, error) {
-	resp, err := api.httpGetf(urlStateProof+"/%s?format=0x%x", stateId, format.Format)
+	resp, err := api.httpGetf(urlStateProof+"/%s?format=0x%x", stateId, format.Encode())
 	if err != nil {
 		return merkle.MultiProof{}, err
 	}
