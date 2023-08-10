@@ -142,7 +142,7 @@ func (api *Client) GetOptimisticHeadUpdate() (types.SignedHeader, error) {
 	return decodeOptimisticHeadUpdate(resp)
 }
 
-// GetHead fetches and validates the beacon header with the given blockRoot.
+// GetHeader fetches and validates the beacon header with the given blockRoot.
 // If blockRoot is null hash then the latest head header is fetched.
 func (api *Client) GetHeader(blockRoot common.Hash) (types.Header, error) {
 	var blockId string

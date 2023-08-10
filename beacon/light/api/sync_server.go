@@ -87,6 +87,16 @@ func (s *SyncServer) RequestUpdates(first, count uint64, response func([]*types.
 	go response(s.api.GetBestUpdatesAndCommittees(first, count))
 }
 
+func (s *SyncServer) RequestBeaconHeader(blockRoot common.Hash, response func(*types.Header)) {
+	go func() {
+		if header, err := s.api.GetHeader(blockRoot); err == nil {
+			response(&header)
+		} else {
+			response(nil)
+		}
+	}()
+}
+
 func (s *SyncServer) RequestBeaconBlock(blockRoot common.Hash, response func(*capella.BeaconBlock, error)) {
 	go response(s.api.GetBeaconBlock(blockRoot))
 }

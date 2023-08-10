@@ -17,6 +17,7 @@
 package sync
 
 import (
+	"fmt"
 	"math"
 	"sync"
 
@@ -100,6 +101,7 @@ func (s *HeaderSync) Process(env *request.Environment) {
 		// always prioritize syncing to the latest head, do not start tail sync until done
 		return
 	}
+	fmt.Println("tail target / chain tail", s.targetTailSlot, chainTail.Slot)
 	if s.targetTailSlot < chainTail.Slot {
 		s.trySyncTail(env, chainTail)
 	}
@@ -127,6 +129,7 @@ func (s *HeaderSync) trySyncTail(env *request.Environment, syncTail types.Header
 		if parent, err := s.chain.GetHeaderByHash(syncTail.ParentRoot); err == nil {
 			syncTail = parent
 		} else {
+			fmt.Println("try req parent", syncTail.ParentRoot)
 			s.tryRequestHeader(env, syncTail.ParentRoot, false)
 			return
 		}
@@ -168,10 +171,12 @@ func (r headerRequest) CanSendTo(server *request.Server, moduleData *interface{}
 
 func (r headerRequest) SendTo(server *request.Server, moduleData *interface{}) {
 	reqId := r.reqLock.Send(server, r.blockRoot)
+	fmt.Println("headerRequest send", r.blockRoot)
 	server.RequestServer.(beaconHeaderServer).RequestBeaconHeader(r.blockRoot, func(header *types.Header) {
 		r.lock.Lock()
 		defer r.lock.Unlock()
 
+		fmt.Println("headerRequest return", r.blockRoot, header)
 		r.reqLock.Returned(server, reqId, r.blockRoot)
 		if header == nil {
 			server.Fail("error retrieving beacon header")
