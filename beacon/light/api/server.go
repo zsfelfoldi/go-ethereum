@@ -17,11 +17,13 @@
 package api
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/donovanhide/eventsource"
 	"github.com/ethereum/go-ethereum/beacon/light"
@@ -43,8 +45,10 @@ type Server struct {
 	HeadTracker     *request.HeadTracker
 	HeadValidator   *light.HeadValidator
 
+	sq          *servingQueue
 	eventServer *eventsource.Server
 	lastEventId uint64
+	rltChan     chan rltData
 }
 
 func (s *Server) RegisterAt(mux *http.ServeMux) {
@@ -57,6 +61,53 @@ func (s *Server) RegisterAt(mux *http.ServeMux) {
 	s.eventServer = eventsource.NewServer()
 	s.eventServer.Register("headEvent", eventsource.NewSliceRepository())
 	mux.HandleFunc(urlEvents, s.eventServer.Handler("headEvent"))
+	mux.HandleFunc("/rate_limit_test", s.handleRateLimitTest)
+	s.rltChan = make(chan rltData, 1000)
+}
+
+type rltData struct {
+	id, dt uint64
+}
+
+func (s *Server) handleRateLimitTest(resp http.ResponseWriter, req *http.Request) {
+
+	task := s.sq.newTask()
+	if !task.start() {
+		resp.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	/*id, err := strconv.ParseUint(req.URL.Query().Get("id"), 10, 64)
+	if err != nil {
+		resp.WriteHeader(http.StatusBadRequest)
+		return
+	}*/
+	delay, err := strconv.ParseUint(req.URL.Query().Get("delay"), 10, 64)
+	if err != nil {
+		resp.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	length, err := strconv.ParseUint(req.URL.Query().Get("length"), 10, 64)
+	if err != nil || length < 16 || length > 10000000 {
+		resp.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	respData := make([]byte, int(length))
+	for i := 16; i < int(length); i++ {
+		respData[i] = byte(i)
+	}
+	/*select {
+	case lastData := <-s.rltChan:
+		binary.LittleEndian.PutUint64(respData[0:8], lastData.id)
+		binary.LittleEndian.PutUint64(respData[8:16], lastData.dt)
+	default:
+	}*/
+
+	time.Sleep(time.Duration(delay))
+	cost := task.processed(len(respData))
+	binary.LittleEndian.PutUint64(respData[0:8], uint64(cost))
+	resp.Write(respData)
+	task.sent()
 }
 
 func (s *Server) PublishHeadEvent(slot uint64, blockRoot common.Hash) {
