@@ -107,13 +107,6 @@ func blsync(ctx *cli.Context) error {
 		lightChain      = light.NewLightChain(db)
 	)
 
-	srv := &api.Server{
-		CheckpointStore: checkpointStore,
-		CommitteeChain:  committeeChain,
-		LightChain:      lightChain,
-		HeadValidator:   headValidator,
-	}
-
 	headUpdater := sync.NewHeadUpdater(headValidator, committeeChain)
 	headTracker := request.NewHeadTracker(headUpdater.NewSignedHead)
 	headValidator.Subscribe(threshold, func(signedHead types.SignedHeader) {
@@ -126,15 +119,15 @@ func blsync(ctx *cli.Context) error {
 	headerSync := sync.NewHeaderSync(lightChain, false)
 	stateSync := sync.NewStateSync(lightChain, stateProofFormat, true)
 	beaconBlockSync := newBeaconBlockSyncer(lightChain)
-	srv.RecentBlocks = beaconBlockSync.recentBlocks //TODO qqq
-	srv.HeadTracker = headTracker
+	srv := api.NewServer(checkpointStore, committeeChain, lightChain, beaconBlockSync.recentBlocks, headTracker, headValidator)
 	beaconBlockUpdater := &beaconBlockUpdater{ //TODO constructor
-		client:     makeRPCClient(ctx),
-		headerSync: headerSync,
-		stateSync:  stateSync,
-		blockSync:  beaconBlockSync,
-		chain:      lightChain,
-		server:     srv,
+		client:        makeRPCClient(ctx),
+		headerSync:    headerSync,
+		stateSync:     stateSync,
+		blockSync:     beaconBlockSync,
+		chain:         lightChain,
+		headValidator: headValidator,
+		server:        srv,
 	}
 
 	// set up sync modules and triggers

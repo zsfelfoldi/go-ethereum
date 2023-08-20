@@ -37,6 +37,19 @@ type servingQueue struct {
 	triggerCh                   chan struct{}
 }
 
+func newServingQueue() *servingQueue {
+	sq := &servingQueue{
+		processLimiter: newLimiter(),
+		sendLimiter:    newLimiter(),
+		triggerCh:      make(chan struct{}, 1),
+	}
+	sq.client = &clientQueue{
+		sq:        sq,
+		maxLength: 10, //TODO
+	}
+	return sq
+}
+
 func (sq *servingQueue) run() {
 	var now mclock.AbsTime
 	for {
@@ -133,6 +146,15 @@ type limiter struct {
 
 	lastCostUpdate         mclock.AbsTime
 	costBuffer, costFactor float64
+}
+
+func newLimiter() *limiter {
+	return &limiter{
+		maxActiveRate: 0.5,                    //TODO
+		maxThreads:    4,                      //TODO
+		idleThreshold: time.Millisecond * 100, //TODO
+		costFactor:    1,
+	}
 }
 
 func (l *limiter) getDelay(now mclock.AbsTime) (time.Duration, chan struct{}) {

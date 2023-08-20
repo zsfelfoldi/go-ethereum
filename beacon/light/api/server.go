@@ -38,17 +38,37 @@ import (
 )
 
 type Server struct {
-	CheckpointStore *light.CheckpointStore
-	CommitteeChain  *light.CommitteeChain
-	LightChain      *light.LightChain
-	RecentBlocks    *lru.Cache[common.Hash, *capella.BeaconBlock]
-	HeadTracker     *request.HeadTracker
-	HeadValidator   *light.HeadValidator
+	checkpointStore *light.CheckpointStore
+	committeeChain  *light.CommitteeChain
+	lightChain      *light.LightChain
+	recentBlocks    *lru.Cache[common.Hash, *capella.BeaconBlock]
+	headTracker     *request.HeadTracker
+	headValidator   *light.HeadValidator
 
 	sq          *servingQueue
 	eventServer *eventsource.Server
 	lastEventId uint64
-	rltChan     chan rltData
+}
+
+func NewServer(
+	checkpointStore *light.CheckpointStore,
+	committeeChain *light.CommitteeChain,
+	lightChain *light.LightChain,
+	recentBlocks *lru.Cache[common.Hash, *capella.BeaconBlock],
+	headTracker *request.HeadTracker,
+	headValidator *light.HeadValidator,
+) *Server {
+	return &Server{
+		checkpointStore: checkpointStore,
+		committeeChain:  committeeChain,
+		lightChain:      lightChain,
+		recentBlocks:    recentBlocks,
+		headTracker:     headTracker,
+		headValidator:   headValidator,
+
+		sq:          newServingQueue(),
+		eventServer: eventsource.NewServer(),
+	}
 }
 
 func (s *Server) RegisterAt(mux *http.ServeMux) {
@@ -58,11 +78,9 @@ func (s *Server) RegisterAt(mux *http.ServeMux) {
 	mux.HandleFunc(urlStateProof+"/", s.handleStateProof)
 	mux.HandleFunc(urlBootstrap+"/", s.handleBootstrap)
 	mux.HandleFunc(urlBlocks+"/", s.handleBlocks)
-	s.eventServer = eventsource.NewServer()
 	s.eventServer.Register("headEvent", eventsource.NewSliceRepository())
 	mux.HandleFunc(urlEvents, s.eventServer.Handler("headEvent"))
 	mux.HandleFunc("/rate_limit_test", s.handleRateLimitTest)
-	s.rltChan = make(chan rltData, 1000)
 }
 
 type rltData struct {
@@ -157,7 +175,7 @@ func (s *Server) handleBootstrap(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 	fmt.Println(" hash", checkpointHash)
-	checkpoint := s.CheckpointStore.Get(checkpointHash)
+	checkpoint := s.checkpointStore.Get(checkpointHash)
 	if checkpoint == nil {
 		fmt.Println(3)
 		resp.WriteHeader(http.StatusNotFound)
@@ -199,11 +217,11 @@ func (s *Server) handleUpdates(resp http.ResponseWriter, req *http.Request) {
 
 	var updates []CommitteeUpdate
 	for period := start; period < start+count; period++ {
-		update := s.CommitteeChain.GetUpdate(period)
+		update := s.committeeChain.GetUpdate(period)
 		if update == nil {
 			continue
 		}
-		committee := s.CommitteeChain.GetCommittee(period + 1)
+		committee := s.committeeChain.GetCommittee(period + 1)
 		if committee == nil {
 			continue
 		}
@@ -233,7 +251,7 @@ func (s *Server) handleBlocks(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 	fmt.Println("handleBlocks hash:", blockRoot)
-	if block, ok := s.RecentBlocks.Get(blockRoot); ok {
+	if block, ok := s.recentBlocks.Get(blockRoot); ok {
 		var blockData jsonBeaconBlock
 		blockData.Data.Message = *block
 		respData, err := json.Marshal(&blockData)
@@ -251,8 +269,8 @@ func (s *Server) handleBlocks(resp http.ResponseWriter, req *http.Request) {
 }
 
 func (s *Server) handleOptimisticHeadUpdate(resp http.ResponseWriter, req *http.Request) {
-	head := s.HeadTracker.ValidatedHead()
-	signedHead := s.HeadValidator.BestSignedHeader(head.Slot)
+	head := s.headTracker.ValidatedHead()
+	signedHead := s.headValidator.BestSignedHeader(head.Slot)
 	if signedHead.Header != head {
 		resp.WriteHeader(http.StatusNotFound)
 		return
@@ -275,7 +293,7 @@ func (s *Server) handleHeaders(resp http.ResponseWriter, req *http.Request) {
 		found  bool
 	)
 	if blockId == "head" {
-		header, _, found = s.LightChain.HeaderRange()
+		header, _, found = s.lightChain.HeaderRange()
 	} else {
 		var blockRoot common.Hash //TODO ??number
 		if data, err := hexutil.Decode(blockId); err == nil && len(data) == len(blockRoot) {
@@ -287,7 +305,7 @@ func (s *Server) handleHeaders(resp http.ResponseWriter, req *http.Request) {
 		}
 		fmt.Println("handleHeaders hash:", blockRoot)
 		var err error
-		header, err = s.LightChain.GetHeaderByHash(blockRoot)
+		header, err = s.lightChain.GetHeaderByHash(blockRoot)
 		found = err == nil
 	}
 	if !found {
@@ -326,8 +344,8 @@ func (s *Server) handleStateProof(resp http.ResponseWriter, req *http.Request) {
 	stateId := req.URL.Path[len(urlStateProof)+1:]
 	var proof merkle.MultiProof
 	if stateId == "head" { //TODO ??number
-		header, _, _ := s.LightChain.HeaderRange()
-		proof, err = s.LightChain.GetStateProof(header.Slot, header.StateRoot)
+		header, _, _ := s.lightChain.HeaderRange()
+		proof, err = s.lightChain.GetStateProof(header.Slot, header.StateRoot)
 	} else {
 		var stateRoot common.Hash
 		if data, err := hexutil.Decode(stateId); err == nil && len(data) == len(stateRoot) {
@@ -338,7 +356,7 @@ func (s *Server) handleStateProof(resp http.ResponseWriter, req *http.Request) {
 			return
 		}
 		fmt.Println("handleStateProof hash:", stateRoot)
-		proof, err = s.LightChain.GetStateProofByHash(stateRoot)
+		proof, err = s.lightChain.GetStateProofByHash(stateRoot)
 	}
 	if err != nil {
 		fmt.Println("handleStateProof: not found")

@@ -222,17 +222,18 @@ func getExecBlock(beaconBlock *capella.BeaconBlock) (*ctypes.Block, error) {
 }
 
 type beaconBlockUpdater struct {
-	client      *rpc.Client
-	lock        sync.Mutex
-	lastHead    common.Hash
-	headerSync  *lsync.HeaderSync
-	stateSync   *lsync.StateSync
-	blockSync   *beaconBlockSync
-	chain       *light.LightChain
-	server      *api.Server
-	updating    bool
-	selfTrigger *request.ModuleTrigger
-	tailTarget  uint64
+	client        *rpc.Client
+	lock          sync.Mutex
+	lastHead      common.Hash
+	headerSync    *lsync.HeaderSync
+	stateSync     *lsync.StateSync
+	blockSync     *beaconBlockSync
+	chain         *light.LightChain
+	headValidator *light.HeadValidator
+	server        *api.Server
+	updating      bool
+	selfTrigger   *request.ModuleTrigger
+	tailTarget    uint64
 }
 
 // SetupModuleTriggers implements request.Module
@@ -289,7 +290,7 @@ func (s *beaconBlockUpdater) Process(env *request.Environment) {
 	}
 	s.lastHead = headRoot
 
-	if signedHead := s.server.HeadValidator.BestSignedHeader(head.Slot); signedHead.Header == head {
+	if signedHead := s.headValidator.BestSignedHeader(head.Slot); signedHead.Header == head {
 		s.server.PublishHeadEvent(head.Slot, head.Hash())
 		s.server.PublishOptimisticHeadUpdate(signedHead)
 	}
