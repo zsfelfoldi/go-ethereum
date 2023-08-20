@@ -42,7 +42,16 @@ func (sq *servingQueue) run() {
 	for {
 		for {
 			now = mclock.Now()
-			dt, dt2 := sq.processLimiter.getDelay(now), sq.sendLimiter.getDelay(now)
+			dt, ch := sq.processLimiter.getDelay(now)
+			if ch != nil {
+				<-ch
+				continue
+			}
+			dt2, ch2 := sq.sendLimiter.getDelay(now)
+			if ch2 != nil {
+				<-ch2
+				continue
+			}
 			if dt2 > dt {
 				dt = dt2
 			}
@@ -118,6 +127,7 @@ type limiter struct {
 	idleThreshold time.Duration
 
 	activeThreads int
+	maxThreadsCh  chan struct{}
 	lastSwitch    mclock.AbsTime
 	idleTime      time.Duration
 
@@ -125,15 +135,18 @@ type limiter struct {
 	costBuffer, costFactor float64
 }
 
-//TODO max threads limit?
-func (l *limiter) getDelay(now mclock.AbsTime) time.Duration {
+func (l *limiter) getDelay(now mclock.AbsTime) (time.Duration, chan struct{}) {
 	l.lock.RLock()
-	delay := l.getIdleTime(now) - l.idleThreshold
-	if delay < 0 {
-		delay = 0
+	defer l.lock.RUnlock()
+
+	if l.activeThreads >= l.maxThreads {
+		l.maxThreadsCh = make(chan struct{})
+		return 0, l.maxThreadsCh
 	}
-	l.lock.RUnlock()
-	return delay
+	if delay := l.getIdleTime(now) - l.idleThreshold; delay >= 0 {
+		return delay, nil
+	}
+	return 0, nil
 }
 
 func (l *limiter) getIdleTime(now mclock.AbsTime) time.Duration {
@@ -147,7 +160,6 @@ func (l *limiter) getIdleTime(now mclock.AbsTime) time.Duration {
 	return l.idleTime + time.Duration(float64(now-l.lastSwitch)*(1-l.maxActiveRate)/l.maxActiveRate)
 }
 
-//TODO max threads limit?
 func (l *limiter) enter(now mclock.AbsTime) {
 	l.lock.Lock()
 	if l.activeThreads == 0 {
@@ -172,6 +184,11 @@ func (l *limiter) normalizedCost(now mclock.AbsTime, cost float64) float64 {
 func (l *limiter) exit(now mclock.AbsTime, cost float64) float64 {
 	l.lock.Lock()
 	l.activeThreads--
+	if l.activeThreads < l.maxThreads && l.maxThreadsCh != nil {
+		close(l.maxThreadsCh)
+		l.maxThreadsCh = nil
+
+	}
 	if l.activeThreads == 0 {
 		l.idleTime = l.getIdleTime(now)
 		l.lastSwitch = now
