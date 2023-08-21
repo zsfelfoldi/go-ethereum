@@ -47,6 +47,7 @@ func newServingQueue() *servingQueue {
 		sq:        sq,
 		maxLength: 10, //TODO
 	}
+	go sq.run()
 	return sq
 }
 
@@ -103,17 +104,17 @@ type task struct {
 	sizeCost            float64
 }
 
-func (t *task) start() bool {
+func (t *task) start() (time.Duration, bool) {
 	t.startCh = make(chan bool, 1)
 	if !t.cq.addTask(t) {
-		return false
+		return 0, false
 	}
 	if <-t.startCh {
 		t.startedAt = mclock.Now()
 		t.sq.processLimiter.enter(t.startedAt)
-		return true
+		return time.Duration(t.startedAt - t.queuedAt), true
 	}
-	return false
+	return 0, false
 }
 
 func (t *task) processed(responseSize int) float64 {

@@ -17,7 +17,6 @@
 package api
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -88,9 +87,12 @@ type rltData struct {
 }
 
 func (s *Server) handleRateLimitTest(resp http.ResponseWriter, req *http.Request) {
-
+	fmt.Println("handleRateLimitTest 1")
 	task := s.sq.newTask()
-	if !task.start() {
+	qtime, ok := task.start()
+	fmt.Println("handleRateLimitTest 2")
+	if !ok {
+		fmt.Println("handleRateLimitTest 2x")
 		resp.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -102,11 +104,13 @@ func (s *Server) handleRateLimitTest(resp http.ResponseWriter, req *http.Request
 	}*/
 	delay, err := strconv.ParseUint(req.URL.Query().Get("delay"), 10, 64)
 	if err != nil {
+		fmt.Println("handleRateLimitTest 3x")
 		resp.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	length, err := strconv.ParseUint(req.URL.Query().Get("length"), 10, 64)
 	if err != nil || length < 16 || length > 10000000 {
+		fmt.Println("handleRateLimitTest 4x")
 		resp.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -121,11 +125,18 @@ func (s *Server) handleRateLimitTest(resp http.ResponseWriter, req *http.Request
 	default:
 	}*/
 
+	fmt.Println("handleRateLimitTest 5")
 	time.Sleep(time.Duration(delay))
-	cost := task.processed(len(respData))
-	binary.LittleEndian.PutUint64(respData[0:8], uint64(cost))
+	fmt.Println("handleRateLimitTest 6")
+	ncost := task.processed(len(respData))
+	fmt.Println("handleRateLimitTest 7")
+	//binary.LittleEndian.PutUint64(respData[0:8], uint64(cost))
+	resp.Header().Set("ratelimit-qtime", strconv.FormatUint(uint64(qtime), 10))
+	resp.Header().Set("ratelimit-ncost", strconv.FormatUint(uint64(ncost), 10))
 	resp.Write(respData)
+	fmt.Println("handleRateLimitTest 8")
 	task.sent()
+	fmt.Println("handleRateLimitTest 9")
 }
 
 func (s *Server) PublishHeadEvent(slot uint64, blockRoot common.Hash) {
