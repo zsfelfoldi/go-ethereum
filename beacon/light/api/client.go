@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/donovanhide/eventsource"
@@ -50,6 +51,7 @@ type Client struct {
 	url           string
 	client        fetcher
 	customHeaders map[string]string
+	limiter       clientLimiter
 }
 
 func NewClient(url string, customHeaders map[string]string) *Client {
@@ -70,9 +72,17 @@ func (api *Client) httpGet(path string) ([]byte, error) {
 	for k, v := range api.customHeaders {
 		req.Header.Set(k, v)
 	}
+	api.limiter.sent()
 	resp, err := api.client.Do(req)
 	if err != nil {
+		api.limiter.failed()
 		return nil, err
+	}
+	if qtime, err, ncost, err2 := strconv.ParseUint(resp.Header.Get("ratelimit-qtime"), 64),
+		strconv.ParseUint(resp.Header.Get("ratelimit-ncost"), 64); err == nil && err2 == nil {
+		api.limiter.received(qtime, ncost)
+	} else {
+		api.limiter.received(0, 0) //TODO
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
@@ -89,6 +99,17 @@ func (api *Client) httpGet(path string) ([]byte, error) {
 
 func (api *Client) httpGetf(format string, params ...any) ([]byte, error) {
 	return api.httpGet(fmt.Sprintf(format, params...))
+}
+
+func (api *Client) RateLimitTest(delay, length uint64) error {
+	resp, err := api.httpGetf("/rate_limit_test?delay=%d&length=%d", delay, length)
+	if err != nil {
+		return err
+	}
+	if len(resp) != length {
+		return errors.New("Incorrect response length")
+	}
+	return nil
 }
 
 // GetBestUpdateAndCommittee fetches and validates LightClientUpdate for given

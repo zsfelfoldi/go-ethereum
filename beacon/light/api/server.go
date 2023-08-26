@@ -115,8 +115,8 @@ func (s *Server) handleRateLimitTest(resp http.ResponseWriter, req *http.Request
 		return
 	}
 	respData := make([]byte, int(length))
-	for i := 16; i < int(length); i++ {
-		respData[i] = byte(i)
+	for i := range respData {
+		respData[i] = byte(i) ^ byte(i/7) ^ byte(i/137)
 	}
 	/*select {
 	case lastData := <-s.rltChan:
