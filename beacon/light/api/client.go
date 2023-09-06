@@ -1,4 +1,4 @@
-// Copyright 2022 The go-ethereum Authors
+// Copyright 2023 The go-ethereum Authors
 // This file is part of the go-ethereum library.
 //
 // The go-ethereum library is free software: you can redistribute it and/or modify
@@ -27,7 +27,9 @@ import (
 
 	"github.com/donovanhide/eventsource"
 	"github.com/ethereum/go-ethereum/beacon/light"
+	"github.com/ethereum/go-ethereum/beacon/light/request"
 	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/beacon/ratelimit"
 	"github.com/ethereum/go-ethereum/beacon/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/protolambda/zrnt/eth2/beacon/capella"
@@ -51,7 +53,7 @@ type Client struct {
 	url           string
 	client        fetcher
 	customHeaders map[string]string
-	limiter       clientLimiter
+	unsubscribe   func()
 }
 
 func NewClient(url string, customHeaders map[string]string) *Client {
@@ -64,167 +66,245 @@ func NewClient(url string, customHeaders map[string]string) *Client {
 	}
 }
 
-func (api *Client) httpGet(path string) ([]byte, error) {
+const (
+	BootstrapRequest    = iota // common.Hash -> *light.CheckpointData
+	UpdateRequest              // GetUpdatesRequest -> GetUpdatesResponse
+	BeaconHeaderRequest        // common.Hash -> types.Header
+	BeaconBlockRequest         // common.Hash -> *capella.BeaconBlock
+	BeaconStateRequest         // GetStateProofRequest -> merkle.MultiProof
+)
+
+type GetUpdatesRequest struct {
+	FirstPeriod, Count uint64
+}
+
+type GetUpdatesResponse struct {
+	Updates    []*types.LightClientUpdate
+	Committees []*types.SerializedSyncCommittee
+}
+
+type GetStateProofRequest struct {
+	StateId string
+	Format  merkle.CompactProofFormat
+}
+
+func (api *Client) Send(reqType int, reqData interface{}, respCallback func(status int, respData interface{}, rateLimitData ratelimit.ResponseData)) {
+	var (
+		resp interface{}
+		rld  ratelimit.ResponseData
+		err  error
+	)
+
+	switch reqType {
+	case BootstrapRequest:
+		resp, rld, err = api.getCheckpointData(reqData.(common.Hash))
+	case UpdateRequest:
+		resp = GetUpdatesResponse{}
+		resp.(GetUpdateResponse).Updates, resp.(GetUpdateResponse).Committees, rld, err =
+			api.getBestUpdatesAndCommittees(reqData.(GetUpdatesRequest).FirstPeriod, reqData.(GetUpdatesRequest).Count)
+	case BeaconHeaderRequest:
+		resp, rld, err = api.getHeader(reqData.(common.Hash))
+	case BeaconBlockRequest:
+		resp, rld, err = api.getBeaconBlock(reqData.(common.Hash))
+	case BeaconStateRequest:
+		resp, rld, err = api.getStateProof(reqData.(GetStateProofRequest).Format, reqData.(GetStateProofRequest).StateId)
+	default:
+		err = errors.New("unknown request type")
+	}
+
+	if err == nil {
+		respCallback(request.Success, resp, rld)
+	} else if err == ErrInternal { //TODO ???
+		respCallback(request.Denied, nil, rld)
+	} else {
+		respCallback(request.Fail, nil, rld)
+	}
+}
+
+func (api *Client) SubscribeHeads(newHead func(uint64, common.Hash), newSignedHead func(signedHead types.SignedHeader)) {
+	api.unsubscribe = api.StartHeadListener(newHead, newSignedHead, func(err error) {
+		log.Warn("Head event stream error", "err", err)
+	})
+}
+
+// Note: UnsubscribeHeads should not be called concurrently with SubscribeHeads
+func (api *Client) UnsubscribeHeads() {
+	if api.unsubscribe != nil {
+		api.unsubscribe()
+		api.unsubscribe = nil
+	}
+}
+
+func (api *Client) httpGet(path string) ([]byte, ratelimit.ResponseData, error) {
+	rld := ratelimit.DefaultResponseData
 	req, err := http.NewRequest("GET", api.url+path, nil)
 	if err != nil {
-		return nil, err
+		return nil, rld, err
 	}
 	for k, v := range api.customHeaders {
 		req.Header.Set(k, v)
 	}
-	api.limiter.sent()
+	api.limiter.sent(1)
+	sentAt := mclock.Now()
 	resp, err := api.client.Do(req)
 	if err != nil {
 		api.limiter.failed()
-		return nil, err
+		return nil, rld, err
 	}
-	if qtime, err, ncost, err2 := strconv.ParseUint(resp.Header.Get("ratelimit-qtime"), 64),
-		strconv.ParseUint(resp.Header.Get("ratelimit-ncost"), 64); err == nil && err2 == nil {
-		api.limiter.received(qtime, ncost)
-	} else {
-		api.limiter.received(0, 0) //TODO
+	//TODO ratelimit.ResponseData, module triggert o csinalja, server triggert mar nem
+	if qtime, err, next, err2, maxlen, err3 :=
+		strconv.ParseUint(resp.Header.Get("rate-qtime"), 32),
+		strconv.ParseUint(resp.Header.Get("rate-next"), 32),
+		strconv.ParseUint(resp.Header.Get("rate-maxlen"), 32); err == nil && err2 == nil && err3 == nil {
+		rld = ratelimit.ResponseData{
+			QTime:  uint32(qtime),
+			Next:   uint32(next),
+			MaxLen: uint32(maxlen),
+		}
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case 200:
-		return io.ReadAll(resp.Body)
+		respData, err := io.ReadAll(resp.Body)
+		return respData, rld, err
 	case 404:
-		return nil, ErrNotFound
+		return nil, rld, ErrNotFound
 	case 500:
-		return nil, ErrInternal
+		return nil, rld, ErrInternal
 	default:
-		return nil, fmt.Errorf("Unexpected error from API endpoint \"%s\": status code %d", path, resp.StatusCode)
+		return nil, rld, fmt.Errorf("Unexpected error from API endpoint \"%s\": status code %d", path, resp.StatusCode)
 	}
 }
 
-func (api *Client) httpGetf(format string, params ...any) ([]byte, error) {
+func (api *Client) httpGetf(format string, params ...any) ([]byte, ratelimit.ResponseData, error) {
 	return api.httpGet(fmt.Sprintf(format, params...))
 }
 
-func (api *Client) RateLimitTest(delay, length uint64) error {
-	resp, err := api.httpGetf("/rate_limit_test?delay=%d&length=%d", delay, length)
+func (api *Client) RateLimitTest(delay, length uint64) (ratelimit.ResponseData, error) {
+	resp, rld, err := api.httpGetf("/rate_limit_test?delay=%d&length=%d", delay, length)
 	if err != nil {
-		return err
+		return rld, err
 	}
 	if len(resp) != length {
-		return errors.New("Incorrect response length")
+		return rld, errors.New("Incorrect response length")
 	}
-	return nil
+	return rld, nil
 }
 
-// GetBestUpdateAndCommittee fetches and validates LightClientUpdate for given
+// getBestUpdateAndCommittee fetches and validates LightClientUpdate for given
 // period and full serialized committee for the next period (committee root hash
 // equals update.NextSyncCommitteeRoot).
 // Note that the results are validated but the update signature should be verified
 // by the caller as its validity depends on the update chain.
 // TODO handle valid partial results
-func (api *Client) GetBestUpdatesAndCommittees(firstPeriod, count uint64) ([]*types.LightClientUpdate, []*types.SerializedSyncCommittee, error) {
-	resp, err := api.httpGetf(urlUpdates+"?start_period=%d&count=%d", firstPeriod, count)
+func (api *Client) getBestUpdatesAndCommittees(firstPeriod, count uint64) ([]*types.LightClientUpdate, []*types.SerializedSyncCommittee, ratelimit.ResponseData, error) {
+	resp, rld, err := api.httpGetf(urlUpdates+"?start_period=%d&count=%d", firstPeriod, count)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, rld, err
 	}
 
 	var data []CommitteeUpdate
 	if err := json.Unmarshal(resp, &data); err != nil {
-		return nil, nil, err
+		return nil, nil, rld, err
 	}
 	if len(data) != int(count) {
-		return nil, nil, errors.New("invalid number of committee updates")
+		return nil, nil, rld, errors.New("invalid number of committee updates")
 	}
 	updates := make([]*types.LightClientUpdate, int(count))
 	committees := make([]*types.SerializedSyncCommittee, int(count))
 	for i, d := range data {
 		if d.Update.AttestedHeader.Header.SyncPeriod() != firstPeriod+uint64(i) {
-			return nil, nil, errors.New("wrong committee update header period")
+			return nil, nil, rld, errors.New("wrong committee update header period")
 		}
 		if err := d.Update.Validate(); err != nil {
-			return nil, nil, err
+			return nil, nil, rld, err
 		}
 		if d.NextSyncCommittee.Root() != d.Update.NextSyncCommitteeRoot {
-			return nil, nil, errors.New("wrong sync committee root")
+			return nil, nil, rld, errors.New("wrong sync committee root")
 		}
 		updates[i], committees[i] = new(types.LightClientUpdate), new(types.SerializedSyncCommittee)
 		*updates[i], *committees[i] = d.Update, d.NextSyncCommittee
 	}
-	return updates, committees, nil
+	return updates, committees, rld, nil
 }
 
-// GetOptimisticHeadUpdate fetches a signed header based on the latest available
+// getOptimisticHeadUpdate fetches a signed header based on the latest available
 // optimistic update. Note that the signature should be verified by the caller
 // as its validity depends on the update chain.
 //
 // See data structure definition here:
 // https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientoptimisticupdate
-func (api *Client) GetOptimisticHeadUpdate() (types.SignedHeader, error) {
-	resp, err := api.httpGet(urlOptimistic)
+func (api *Client) getOptimisticHeadUpdate() (types.SignedHeader, ratelimit.ResponseData, error) {
+	resp, rld, err := api.httpGet(urlOptimistic)
 	if err != nil {
-		return types.SignedHeader{}, err
+		return types.SignedHeader{}, rld, err
 	}
-	return decodeOptimisticHeadUpdate(resp)
+	head, err := decodeOptimisticHeadUpdate(resp)
+	return head, rld, err
 }
 
-// GetHeader fetches and validates the beacon header with the given blockRoot.
+// getHeader fetches and validates the beacon header with the given blockRoot.
 // If blockRoot is null hash then the latest head header is fetched.
-func (api *Client) GetHeader(blockRoot common.Hash) (types.Header, error) {
+func (api *Client) getHeader(blockRoot common.Hash) (types.Header, ratelimit.ResponseData, error) {
 	var blockId string
 	if blockRoot == (common.Hash{}) {
 		blockId = "head"
 	} else {
 		blockId = blockRoot.Hex()
 	}
-	resp, err := api.httpGetf(urlHeaders+"/%s", blockId)
+	resp, rld, err := api.httpGetf(urlHeaders+"/%s", blockId)
 	if err != nil {
-		return types.Header{}, err
+		return types.Header{}, rld, err
 	}
 
 	var data jsonHeaderData
 	if err := json.Unmarshal(resp, &data); err != nil {
-		return types.Header{}, err
+		return types.Header{}, rld, err
 	}
 	header := data.Data.Header.Message
 	if blockRoot == (common.Hash{}) {
 		blockRoot = data.Data.Root
 	}
 	if header.Hash() != blockRoot {
-		return types.Header{}, errors.New("retrieved beacon header root does not match")
+		return types.Header{}, rld, errors.New("retrieved beacon header root does not match")
 	}
-	return header, nil
+	return header, rld, nil
 }
 
-func (api *Client) GetStateProof(stateRoot common.Hash, format merkle.CompactProofFormat) (merkle.MultiProof, error) {
-	proof, err := api.getStateProof(stateRoot.Hex(), format)
+func (api *Client) getStateProof(stateRoot common.Hash, format merkle.CompactProofFormat) (merkle.MultiProof, ratelimit.ResponseData, error) {
+	proof, rld, err := api.getStateProof(stateRoot.Hex(), format)
 	if err != nil {
-		return merkle.MultiProof{}, err
+		return merkle.MultiProof{}, rld, err
 	}
 	if proof.RootHash() != stateRoot {
-		return merkle.MultiProof{}, errors.New("Received proof has incorrect state root")
+		return merkle.MultiProof{}, rld, errors.New("Received proof has incorrect state root")
 	}
-	return proof, nil
+	return proof, rld, nil
 }
 
-func (api *Client) getStateProof(stateId string, format merkle.CompactProofFormat) (merkle.MultiProof, error) {
-	resp, err := api.httpGetf(urlStateProof+"/%s?format=0x%x", stateId, format.Encode())
+func (api *Client) getStateProof(stateId string, format merkle.CompactProofFormat) (merkle.MultiProof, ratelimit.ResponseData, error) {
+	resp, rld, err := api.httpGetf(urlStateProof+"/%s?format=0x%x", stateId, format.Encode())
 	if err != nil {
-		return merkle.MultiProof{}, err
+		return merkle.MultiProof{}, rld, err
 	}
 	valueCount := format.ValueCount()
 	if len(resp) != valueCount*32 {
-		return merkle.MultiProof{}, errors.New("Invalid state proof length")
+		return merkle.MultiProof{}, rld, errors.New("Invalid state proof length")
 	}
 	values := make(merkle.Values, valueCount)
 	for i := range values {
 		copy(values[i][:], resp[i*32:(i+1)*32])
 	}
-	return merkle.MultiProof{Format: format, Values: values}, nil
+	return merkle.MultiProof{Format: format, Values: values}, rld, nil
 }
 
-// GetCheckpointData fetches and validates bootstrap data belonging to the given checkpoint.
-func (api *Client) GetCheckpointData(checkpointHash common.Hash) (*light.CheckpointData, error) {
+// getCheckpointData fetches and validates bootstrap data belonging to the given checkpoint.
+func (api *Client) getCheckpointData(checkpointHash common.Hash) (*light.CheckpointData, ratelimit.ResponseData, error) {
 	fmt.Println("GetCheckpointData", checkpointHash)
-	resp, err := api.httpGetf(urlBootstrap+"/0x%x", checkpointHash[:])
+	resp, rld, err := api.httpGetf(urlBootstrap+"/0x%x", checkpointHash[:])
 	if err != nil {
 		fmt.Println("http", err)
-		return nil, err
+		return nil, rld, err
 	}
 
 	// See data structure definition here:
@@ -234,16 +314,16 @@ func (api *Client) GetCheckpointData(checkpointHash common.Hash) (*light.Checkpo
 	var data bootstrapData
 	if err := json.Unmarshal(resp, &data); err != nil {
 		fmt.Println("json", err)
-		return nil, err
+		return nil, rld, err
 	}
 	if data.Data.Committee == nil {
 		fmt.Println("committee nil")
-		return nil, errors.New("sync committee is missing")
+		return nil, rld, errors.New("sync committee is missing")
 	}
 	header := data.Data.Header.Beacon
 	if header.Hash() != checkpointHash {
 		fmt.Println("invalid hash")
-		return nil, fmt.Errorf("invalid checkpoint block header, have %v want %v", header.Hash(), checkpointHash)
+		return nil, rld, fmt.Errorf("invalid checkpoint block header, have %v want %v", header.Hash(), checkpointHash)
 	}
 	checkpoint := &light.CheckpointData{
 		Header:          header,
@@ -253,21 +333,21 @@ func (api *Client) GetCheckpointData(checkpointHash common.Hash) (*light.Checkpo
 	}
 	if err := checkpoint.Validate(); err != nil {
 		fmt.Println("invalid proof", err)
-		return nil, fmt.Errorf("invalid sync committee Merkle proof: %w", err)
+		return nil, rld, fmt.Errorf("invalid sync committee Merkle proof: %w", err)
 	}
 	fmt.Println("success")
 	return checkpoint, nil
 }
 
-func (api *Client) GetBeaconBlock(blockRoot common.Hash) (*capella.BeaconBlock, error) {
-	resp, err := api.httpGetf(urlBlocks+"/0x%x", blockRoot)
+func (api *Client) getBeaconBlock(blockRoot common.Hash) (*capella.BeaconBlock, ratelimit.ResponseData, error) {
+	resp, rld, err := api.httpGetf(urlBlocks+"/0x%x", blockRoot)
 	if err != nil {
-		return nil, err
+		return nil, rld, err
 	}
 
 	var beaconBlockMessage jsonBeaconBlock
 	if err := json.Unmarshal(resp, &beaconBlockMessage); err != nil {
-		return nil, fmt.Errorf("invalid block json data: %v", err)
+		return nil, rld, fmt.Errorf("invalid block json data: %v", err)
 	}
 	beaconBlock := new(capella.BeaconBlock)
 	*beaconBlock = beaconBlockMessage.Data.Message
@@ -275,7 +355,7 @@ func (api *Client) GetBeaconBlock(blockRoot common.Hash) (*capella.BeaconBlock, 
 	if root != blockRoot {
 		return nil, fmt.Errorf("Beacon block root hash mismatch (expected: %x, got: %x)", blockRoot, root)
 	}
-	return beaconBlock, nil
+	return beaconBlock, rld, nil
 }
 
 func decodeHeadEvent(enc []byte) (uint64, common.Hash, error) {
@@ -286,11 +366,11 @@ func decodeHeadEvent(enc []byte) (uint64, common.Hash, error) {
 	return uint64(data.Slot), data.Block, nil
 }
 
-// StartHeadListener creates an event subscription for heads and signed (optimistic)
+// startHeadListener creates an event subscription for heads and signed (optimistic)
 // head updates and calls the specified callback functions when they are received.
 // The callbacks are also called for the current head and optimistic head at startup.
 // They are never called concurrently.
-func (api *Client) StartHeadListener(headFn func(slot uint64, blockRoot common.Hash), signedFn func(head types.SignedHeader), errFn func(err error)) func() {
+func (api *Client) startHeadListener(headFn func(slot uint64, blockRoot common.Hash), signedFn func(head types.SignedHeader), errFn func(err error)) func() {
 	closeCh := make(chan struct{})   // initiate closing the stream
 	closedCh := make(chan struct{})  // stream closed (or failed to create)
 	stoppedCh := make(chan struct{}) // sync loop stopped

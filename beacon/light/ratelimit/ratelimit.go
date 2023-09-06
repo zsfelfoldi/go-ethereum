@@ -14,20 +14,27 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package api
+package ratelimit
 
 import (
-	"math"
-	"sync"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/donovanhide/eventsource"
+	"github.com/ethereum/go-ethereum/beacon/light"
+	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/beacon/types"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/protolambda/zrnt/eth2/beacon/capella"
+	"github.com/protolambda/zrnt/eth2/configs"
+	"github.com/protolambda/ztyp/tree"
 )
 
-type clientLimiter struct{}
-
-func (l *clientLimiter) sent() {}
-
-func (l *clientLimiter) failed() {}
-
-func (l *clientLimiter) received(qtime, ncost uint64) {}
+type ResponseData struct {
+	QTime, Next, MaxLen uint32
+}

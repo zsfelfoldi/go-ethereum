@@ -133,6 +133,7 @@ func (s *Server) handleRateLimitTest(resp http.ResponseWriter, req *http.Request
 	//binary.LittleEndian.PutUint64(respData[0:8], uint64(cost))
 	resp.Header().Set("ratelimit-qtime", strconv.FormatUint(uint64(qtime), 10))
 	resp.Header().Set("ratelimit-ncost", strconv.FormatUint(uint64(ncost), 10))
+	resp.Header().Set("ratelimit-pmax", strconv.FormatUint(uint64(100), 10)) //TODO
 	resp.Write(respData)
 	fmt.Println("handleRateLimitTest 8")
 	task.sent()
