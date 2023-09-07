@@ -26,13 +26,15 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
-// RequestServer is a general server interface that can be extended by modules
-// with specific request types.
-type Server interface {
+type HeadSubscriber interface {
 	SubscribeHeads(newHead func(uint64, common.Hash), newSignedHead func(types.SignedHeader))
 	UnsubscribeHeads()
-	CanSend(func()) bool
-	Send(reqType int, reqData interface{}, respCallback func(status int, respData interface{}) (timeout bool))
+}
+
+type RateLimitedPeer interface {
+	HeadSubscriber
+	SetDelayCallback(func(delayUntil mclock.AbsTime))
+	Send(reqType int, reqData interface{}, respCallback func(status int, respData interface{}, delayUntil mclock.AbsTime) (status int)) (delayUntil mclock.AbsTime)
 }
 
 const (
@@ -45,7 +47,7 @@ const (
 // Server is a wrapper around RequestServer that handles request timeouts, delays
 // and keeps track of the server's latest reported (not necessarily validated) head.
 type Server struct {
-	RequestServer
+	RateLimitedPeer
 	scheduler *Scheduler
 
 	headLock       sync.RWMutex
@@ -66,13 +68,13 @@ type Server struct {
 }
 
 // newServer creates a new Server.
-func (s *Scheduler) newServer(server RequestServer) *Server {
+func (s *Scheduler) newServer(peer RateLimitedPeer) *Server {
 	srv := &Server{
-		RequestServer: server,
-		scheduler:     s,
-		moduleData:    make(map[Module]*interface{}),
-		timeouts:      make(map[uint64]mclock.Timer),
-		stopCh:        make(chan struct{}),
+		RateLimitedPeer: peer,
+		scheduler:       s,
+		moduleData:      make(map[Module]*interface{}),
+		timeouts:        make(map[uint64]mclock.Timer),
+		stopCh:          make(chan struct{}),
 	}
 	server.SetDelayCallback(srv.setDelay)
 	return srv

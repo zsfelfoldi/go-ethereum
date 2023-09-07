@@ -17,24 +17,19 @@
 package ratelimit
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"net/http"
-	"strconv"
+	"math"
+	"sync"
 	"time"
 
-	"github.com/donovanhide/eventsource"
-	"github.com/ethereum/go-ethereum/beacon/light"
-	"github.com/ethereum/go-ethereum/beacon/merkle"
-	"github.com/ethereum/go-ethereum/beacon/types"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/protolambda/zrnt/eth2/beacon/capella"
-	"github.com/protolambda/zrnt/eth2/configs"
-	"github.com/protolambda/ztyp/tree"
+	"github.com/ethereum/go-ethereum/beacon/light/request"
+	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
-type ResponseData struct {
+type Peer interface {
+	HeadSubscriber
+	Send(reqType int, reqData interface{}, respCallback func(status int, respData interface{}, respMeta MetaInfo))
+}
+
+type MetaInfo struct {
 	QTime, Next uint32
 }

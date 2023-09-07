@@ -47,19 +47,19 @@ type fetcher interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// Client requests light client information from a beacon node REST API.
+// Peer requests light client information from a beacon node REST API.
 // Note: all required API endpoints are currently only implemented by Lodestar.
-type Client struct {
+type Peer struct {
 	url           string
 	client        fetcher
 	customHeaders map[string]string
 	unsubscribe   func()
 }
 
-func NewClient(url string, customHeaders map[string]string) *Client {
-	return &Client{
+func NewPeer(url string, customHeaders map[string]string) *Peer {
+	return &Peer{
 		url: url,
-		client: &http.Client{
+		client: &http.Peer{
 			Timeout: time.Second * 10,
 		},
 		customHeaders: customHeaders,
@@ -88,7 +88,7 @@ type GetStateProofRequest struct {
 	Format  merkle.CompactProofFormat
 }
 
-func (api *Client) Send(reqType int, reqData interface{}, respCallback func(status int, respData interface{}, rateLimitData ratelimit.ResponseData)) {
+func (api *Peer) Send(reqType int, reqData interface{}, respCallback func(status int, respData interface{}, rateLimitData ratelimit.ResponseData)) {
 	var (
 		resp interface{}
 		rld  ratelimit.ResponseData
@@ -121,21 +121,21 @@ func (api *Client) Send(reqType int, reqData interface{}, respCallback func(stat
 	}
 }
 
-func (api *Client) SubscribeHeads(newHead func(uint64, common.Hash), newSignedHead func(signedHead types.SignedHeader)) {
+func (api *Peer) SubscribeHeads(newHead func(uint64, common.Hash), newSignedHead func(signedHead types.SignedHeader)) {
 	api.unsubscribe = api.StartHeadListener(newHead, newSignedHead, func(err error) {
 		log.Warn("Head event stream error", "err", err)
 	})
 }
 
 // Note: UnsubscribeHeads should not be called concurrently with SubscribeHeads
-func (api *Client) UnsubscribeHeads() {
+func (api *Peer) UnsubscribeHeads() {
 	if api.unsubscribe != nil {
 		api.unsubscribe()
 		api.unsubscribe = nil
 	}
 }
 
-func (api *Client) httpGet(path string) ([]byte, ratelimit.ResponseData, error) {
+func (api *Peer) httpGet(path string) ([]byte, ratelimit.ResponseData, error) {
 	rld := ratelimit.DefaultResponseData
 	req, err := http.NewRequest("GET", api.url+path, nil)
 	if err != nil {
@@ -176,11 +176,11 @@ func (api *Client) httpGet(path string) ([]byte, ratelimit.ResponseData, error) 
 	}
 }
 
-func (api *Client) httpGetf(format string, params ...any) ([]byte, ratelimit.ResponseData, error) {
+func (api *Peer) httpGetf(format string, params ...any) ([]byte, ratelimit.ResponseData, error) {
 	return api.httpGet(fmt.Sprintf(format, params...))
 }
 
-func (api *Client) RateLimitTest(delay, length uint64) (ratelimit.ResponseData, error) {
+func (api *Peer) RateLimitTest(delay, length uint64) (ratelimit.ResponseData, error) {
 	resp, rld, err := api.httpGetf("/rate_limit_test?delay=%d&length=%d", delay, length)
 	if err != nil {
 		return rld, err
@@ -197,7 +197,7 @@ func (api *Client) RateLimitTest(delay, length uint64) (ratelimit.ResponseData, 
 // Note that the results are validated but the update signature should be verified
 // by the caller as its validity depends on the update chain.
 // TODO handle valid partial results
-func (api *Client) getBestUpdatesAndCommittees(firstPeriod, count uint64) ([]*types.LightClientUpdate, []*types.SerializedSyncCommittee, ratelimit.ResponseData, error) {
+func (api *Peer) getBestUpdatesAndCommittees(firstPeriod, count uint64) ([]*types.LightClientUpdate, []*types.SerializedSyncCommittee, ratelimit.ResponseData, error) {
 	resp, rld, err := api.httpGetf(urlUpdates+"?start_period=%d&count=%d", firstPeriod, count)
 	if err != nil {
 		return nil, nil, rld, err
@@ -234,7 +234,7 @@ func (api *Client) getBestUpdatesAndCommittees(firstPeriod, count uint64) ([]*ty
 //
 // See data structure definition here:
 // https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/light-client/sync-protocol.md#lightclientoptimisticupdate
-func (api *Client) getOptimisticHeadUpdate() (types.SignedHeader, ratelimit.ResponseData, error) {
+func (api *Peer) getOptimisticHeadUpdate() (types.SignedHeader, ratelimit.ResponseData, error) {
 	resp, rld, err := api.httpGet(urlOptimistic)
 	if err != nil {
 		return types.SignedHeader{}, rld, err
@@ -245,7 +245,7 @@ func (api *Client) getOptimisticHeadUpdate() (types.SignedHeader, ratelimit.Resp
 
 // getHeader fetches and validates the beacon header with the given blockRoot.
 // If blockRoot is null hash then the latest head header is fetched.
-func (api *Client) getHeader(blockRoot common.Hash) (types.Header, ratelimit.ResponseData, error) {
+func (api *Peer) getHeader(blockRoot common.Hash) (types.Header, ratelimit.ResponseData, error) {
 	var blockId string
 	if blockRoot == (common.Hash{}) {
 		blockId = "head"
@@ -271,7 +271,7 @@ func (api *Client) getHeader(blockRoot common.Hash) (types.Header, ratelimit.Res
 	return header, rld, nil
 }
 
-func (api *Client) getStateProof(stateRoot common.Hash, format merkle.CompactProofFormat) (merkle.MultiProof, ratelimit.ResponseData, error) {
+func (api *Peer) getStateProof(stateRoot common.Hash, format merkle.CompactProofFormat) (merkle.MultiProof, ratelimit.ResponseData, error) {
 	proof, rld, err := api.getStateProof(stateRoot.Hex(), format)
 	if err != nil {
 		return merkle.MultiProof{}, rld, err
@@ -282,7 +282,7 @@ func (api *Client) getStateProof(stateRoot common.Hash, format merkle.CompactPro
 	return proof, rld, nil
 }
 
-func (api *Client) getStateProof(stateId string, format merkle.CompactProofFormat) (merkle.MultiProof, ratelimit.ResponseData, error) {
+func (api *Peer) getStateProof(stateId string, format merkle.CompactProofFormat) (merkle.MultiProof, ratelimit.ResponseData, error) {
 	resp, rld, err := api.httpGetf(urlStateProof+"/%s?format=0x%x", stateId, format.Encode())
 	if err != nil {
 		return merkle.MultiProof{}, rld, err
@@ -299,7 +299,7 @@ func (api *Client) getStateProof(stateId string, format merkle.CompactProofForma
 }
 
 // getCheckpointData fetches and validates bootstrap data belonging to the given checkpoint.
-func (api *Client) getCheckpointData(checkpointHash common.Hash) (*light.CheckpointData, ratelimit.ResponseData, error) {
+func (api *Peer) getCheckpointData(checkpointHash common.Hash) (*light.CheckpointData, ratelimit.ResponseData, error) {
 	fmt.Println("GetCheckpointData", checkpointHash)
 	resp, rld, err := api.httpGetf(urlBootstrap+"/0x%x", checkpointHash[:])
 	if err != nil {
@@ -339,7 +339,7 @@ func (api *Client) getCheckpointData(checkpointHash common.Hash) (*light.Checkpo
 	return checkpoint, nil
 }
 
-func (api *Client) getBeaconBlock(blockRoot common.Hash) (*capella.BeaconBlock, ratelimit.ResponseData, error) {
+func (api *Peer) getBeaconBlock(blockRoot common.Hash) (*capella.BeaconBlock, ratelimit.ResponseData, error) {
 	resp, rld, err := api.httpGetf(urlBlocks+"/0x%x", blockRoot)
 	if err != nil {
 		return nil, rld, err
@@ -370,7 +370,7 @@ func decodeHeadEvent(enc []byte) (uint64, common.Hash, error) {
 // head updates and calls the specified callback functions when they are received.
 // The callbacks are also called for the current head and optimistic head at startup.
 // They are never called concurrently.
-func (api *Client) startHeadListener(headFn func(slot uint64, blockRoot common.Hash), signedFn func(head types.SignedHeader), errFn func(err error)) func() {
+func (api *Peer) startHeadListener(headFn func(slot uint64, blockRoot common.Hash), signedFn func(head types.SignedHeader), errFn func(err error)) func() {
 	closeCh := make(chan struct{})   // initiate closing the stream
 	closedCh := make(chan struct{})  // stream closed (or failed to create)
 	stoppedCh := make(chan struct{}) // sync loop stopped
