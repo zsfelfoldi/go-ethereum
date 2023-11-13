@@ -23,7 +23,10 @@ import (
 	"github.com/ethereum/go-ethereum/beacon/params"
 	"github.com/ethereum/go-ethereum/beacon/types"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // CheckpointData contains a sync committee where light sync can be started,
@@ -60,4 +63,52 @@ func (c *CheckpointData) InitChain(chain *CommitteeChain) {
 	}
 	must(chain.AddFixedCommitteeRoot(period+1, common.Hash(c.CommitteeBranch[0])))
 	must(chain.AddCommittee(period, c.Committee))
+}
+
+type CheckpointStore struct {
+	chain *CommitteeChain
+	db    ethdb.KeyValueStore
+}
+
+func NewCheckpointStore(db ethdb.KeyValueStore, chain *CommitteeChain) *CheckpointStore {
+	return &CheckpointStore{
+		db:    db,
+		chain: chain,
+	}
+}
+
+func getCheckpointKey(checkpoint common.Hash) []byte {
+	var (
+		kl  = len(rawdb.CheckpointKey)
+		key = make([]byte, kl+32)
+	)
+	copy(key[:kl], rawdb.CheckpointKey)
+	copy(key[kl:], checkpoint[:])
+	return key
+}
+
+func (cs *CheckpointStore) Get(checkpoint common.Hash) *CheckpointData {
+	if enc, err := cs.db.Get(getCheckpointKey(checkpoint)); err == nil {
+		c := new(CheckpointData)
+		if err := rlp.DecodeBytes(enc, c); err != nil {
+			log.Error("Error decoding stored checkpoint", "error", err)
+			return nil
+		}
+		if committee, _ := cs.chain.committees.get(c.Header.SyncPeriod()); committee != nil && committee.Root() == c.CommitteeRoot {
+			c.Committee = committee
+			return c
+		}
+		log.Error("Missing committee for stored checkpoint", "period", c.Header.SyncPeriod())
+	}
+	return nil
+}
+
+func (cs *CheckpointStore) Store(c *CheckpointData) {
+	enc, err := rlp.EncodeToBytes(c)
+	if err != nil {
+		log.Error("Error encoding checkpoint for storage", "error", err)
+	}
+	if err := cs.db.Put(getCheckpointKey(c.Header.Hash()), enc); err != nil {
+		log.Error("Error storing checkpoint in database", "error", err)
+	}
 }

@@ -68,7 +68,10 @@ func (h *HeadValidator) Add(head types.SignedHeader) error {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
-	sigOk, age := h.committeeChain.VerifySignedHeader(head)
+	sigOk, age, err := h.committeeChain.VerifySignedHeader(head)
+	if err != nil {
+		return err
+	}
 	if age < 0 {
 		log.Warn("Future signed head received", "age", age)
 	}

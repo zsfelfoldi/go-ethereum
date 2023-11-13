@@ -47,7 +47,7 @@ type testNode struct {
 func newTestNode(config *types.ChainConfig, clock *mclock.Simulated, checkpointHash common.Hash) *testNode {
 	node := new(testNode)
 	node.db = memorydb.New()
-	node.committeeChain = light.NewCommitteeChain(node.db, config, 300, false, light.DummyVerifier{}, clock, func() int64 { return int64(clock.Now()) })
+	node.committeeChain = light.NewTestCommitteeChain(node.db, config, 300, false, clock)
 	node.checkpointStore = light.NewCheckpointStore(node.db, node.committeeChain)
 	node.headValidator = light.NewHeadValidator(node.committeeChain)
 	node.headUpdater = NewHeadUpdater(node.headValidator, node.committeeChain)

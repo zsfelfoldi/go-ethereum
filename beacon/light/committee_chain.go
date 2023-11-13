@@ -87,6 +87,11 @@ func NewCommitteeChain(db ethdb.KeyValueStore, config *types.ChainConfig, signer
 	return newCommitteeChain(db, config, signerThreshold, enforceTime, blsVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
 }
 
+// NewTestCommitteeChain creates a new CommitteeChain for testing.
+func NewTestCommitteeChain(db ethdb.KeyValueStore, config *types.ChainConfig, signerThreshold int, enforceTime bool, clock *mclock.Simulated) *CommitteeChain {
+	return newCommitteeChain(db, config, signerThreshold, enforceTime, dummyVerifier{}, clock, func() int64 { return int64(clock.Now()) })
+}
+
 // newCommitteeChain creates a new CommitteeChain with the option of replacing the
 // clock source and signature verification for testing purposes.
 func newCommitteeChain(db ethdb.KeyValueStore, config *types.ChainConfig, signerThreshold int, enforceTime bool, sigVerifier committeeSigVerifier, clock mclock.Clock, unixNano func() int64) *CommitteeChain {

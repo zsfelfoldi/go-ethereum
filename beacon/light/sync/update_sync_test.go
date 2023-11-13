@@ -40,7 +40,7 @@ func TestCheckpointSync(t *testing.T) {
 	server := newTestNode(config, clock, common.Hash{})
 	for period := uint64(0); period <= 10; period++ {
 		committee := light.GenerateTestCommittee()
-		server.committeeChain.AddFixedRoot(period, committee.Root())
+		server.committeeChain.AddFixedCommitteeRoot(period, committee.Root())
 		server.committeeChain.AddCommittee(period, committee)
 	}
 	for period := uint64(0); period < 10; period++ {

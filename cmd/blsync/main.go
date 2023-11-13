@@ -88,7 +88,7 @@ func blsync(ctx *cli.Context) error {
 	var (
 		db              = memorydb.New()
 		threshold       = ctx.Int(utils.BeaconThresholdFlag.Name)
-		committeeChain  = light.NewCommitteeChain(db, chainConfig.ChainConfig, threshold, !ctx.Bool(utils.BeaconNoFilterFlag.Name), light.BLSVerifier{}, &mclock.System{}, func() int64 { return time.Now().UnixNano() })
+		committeeChain  = light.NewCommitteeChain(db, chainConfig.ChainConfig, threshold, !ctx.Bool(utils.BeaconNoFilterFlag.Name))
 		checkpointStore = light.NewCheckpointStore(db, committeeChain)
 		headValidator   = light.NewHeadValidator(committeeChain)
 	)
@@ -130,7 +130,7 @@ func blsync(ctx *cli.Context) error {
 func callNewPayloadV2(client *rpc.Client, block *ctypes.Block) (string, error) {
 	var resp engine.PayloadStatusV1
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	err := client.CallContext(ctx, &resp, "engine_newPayloadV2", *engine.BlockToExecutableData(block, nil, nil, nil, nil).ExecutionPayload)
+	err := client.CallContext(ctx, &resp, "engine_newPayloadV2", *engine.BlockToExecutableData(block, nil, nil).ExecutionPayload)
 	cancel()
 	return resp.Status, err
 }
