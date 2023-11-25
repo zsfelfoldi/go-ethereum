@@ -46,27 +46,20 @@ type beaconBlockServer interface {
 
 type beaconBlockSync struct {
 	lock         sync.Mutex
+	trigger      func()
 	reqLock      request.MultiLock
 	recentBlocks *lru.Cache[common.Hash, *capella.BeaconBlock]
 
-	headUpdater                             *lsync.HeadUpdater
-	validatedHead                           types.Header
-	headBlock                               *capella.BeaconBlock // belongs to validatedHead (or nil)
-	headBlockTrigger, prefetchHeaderTrigger *request.ModuleTrigger
+	headUpdater   *lsync.HeadUpdater
+	validatedHead types.Header
+	headBlock     *capella.BeaconBlock // belongs to validatedHead (or nil)
 }
 
-func newBeaconBlockSyncer() *beaconBlockSync {
+func newBeaconBlockSyncer(s *request.Scheduler) *beaconBlockSync {
 	return &beaconBlockSync{
 		recentBlocks: lru.NewCache[common.Hash, *capella.BeaconBlock](10),
+		trigger:      s.Trigger,
 	}
-}
-
-// SetupModuleTriggers implements request.Module
-func (s *beaconBlockSync) SetupModuleTriggers(trigger func(id string, subscribe bool) *request.ModuleTrigger) {
-	s.reqLock.Trigger = trigger("beaconBlockSync", true)
-	trigger("validatedHead", true)
-	s.headBlockTrigger = trigger("headBlock", false)
-	s.prefetchHeaderTrigger = trigger("prefetchHeader", false)
 }
 
 // Process implements request.Module
@@ -83,7 +76,7 @@ func (s *beaconBlockSync) Process(env *request.Environment) {
 		s.headBlock = nil
 		if block, ok := s.recentBlocks.Get(validatedHead.Hash()); ok {
 			s.headBlock = block
-			s.headBlockTrigger.Trigger()
+			s.trigger()
 		}
 	}
 
@@ -149,7 +142,7 @@ func (r blockRequest) SendTo(server *request.Server, moduleData *interface{}) {
 		r.recentBlocks.Add(r.blockRoot, block)
 		if r.validatedHead.Hash() == r.blockRoot {
 			r.headBlock = block
-			r.headBlockTrigger.Trigger()
+			r.trigger()
 		}
 	})
 }
@@ -201,19 +194,12 @@ func getExecBlock(beaconBlock *capella.BeaconBlock) (*ctypes.Block, error) {
 }
 
 type engineApiUpdater struct {
-	client      *rpc.Client
-	lock        sync.Mutex
-	lastHead    common.Hash
-	blockSync   *beaconBlockSync
-	updating    bool
-	selfTrigger *request.ModuleTrigger
-}
-
-// SetupModuleTriggers implements request.Module
-func (s *engineApiUpdater) SetupModuleTriggers(trigger func(id string, subscribe bool) *request.ModuleTrigger) {
-	trigger("headBlock", true)
-	trigger("headState", true)
-	s.selfTrigger = trigger("engineApiUpdater", true)
+	client    *rpc.Client
+	lock      sync.Mutex
+	trigger   func()
+	lastHead  common.Hash
+	blockSync *beaconBlockSync
+	updating  bool
 }
 
 // Process implements request.Module
@@ -257,7 +243,7 @@ func (s *engineApiUpdater) Process(env *request.Environment) {
 			}
 			s.lock.Lock()
 			s.updating = false
-			s.selfTrigger.Trigger()
+			s.trigger()
 			s.lock.Unlock()
 		}()
 	}

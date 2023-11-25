@@ -98,17 +98,18 @@ func blsync(ctx *cli.Context) error {
 		headTracker.SetValidatedHead(signedHead.Header)
 	})
 
-	// create sync modules
-	checkpointInit := sync.NewCheckpointInit(committeeChain, checkpointStore, chainConfig.Checkpoint)
-	forwardSync := sync.NewForwardUpdateSync(committeeChain)
-	beaconBlockSync := newBeaconBlockSyncer()
+	// set up scheduler and sync modules
+	scheduler := request.NewScheduler(headTracker, &mclock.System{})
+
+	checkpointInit := sync.NewCheckpointInit(scheduler, committeeChain, checkpointStore, chainConfig.Checkpoint)
+	forwardSync := sync.NewForwardUpdateSync(scheduler, committeeChain)
+	beaconBlockSync := newBeaconBlockSyncer(scheduler)
 	engineApiUpdater := &engineApiUpdater{ //TODO constructor
 		client:    makeRPCClient(ctx),
 		blockSync: beaconBlockSync,
+		trigger:   scheduler.Trigger,
 	}
 
-	// set up sync modules and triggers
-	scheduler := request.NewScheduler(headTracker, &mclock.System{})
 	scheduler.RegisterModule(checkpointInit)
 	scheduler.RegisterModule(forwardSync)
 	scheduler.RegisterModule(headUpdater)

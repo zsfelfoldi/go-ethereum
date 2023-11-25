@@ -133,7 +133,7 @@ func (s *Server) isDelayed() bool {
 			s.delayTimer = nil
 			if s.needTrigger && s.timeoutCount == 0 {
 				s.needTrigger = false
-				s.scheduler.triggerServer(s)
+				s.scheduler.Trigger()
 			}
 		}
 		s.lock.Unlock()
@@ -143,7 +143,7 @@ func (s *Server) isDelayed() bool {
 
 // sendRequest generates a request ID and starts a timeout timer. If the timeout
 // is reached then the trigger is triggered (if specified).
-func (s *Server) sendRequest(timeoutTrigger *ModuleTrigger) uint64 {
+func (s *Server) sendRequest() uint64 {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -158,9 +158,7 @@ func (s *Server) sendRequest(timeoutTrigger *ModuleTrigger) uint64 {
 			// do not delete entry yet; nil means timed out request
 			s.timeouts[reqId] = nil
 			s.timeoutCount++
-			if timeoutTrigger != nil {
-				timeoutTrigger.Trigger()
-			}
+			s.scheduler.Trigger()
 		}
 		s.lock.Unlock()
 	})
@@ -196,7 +194,7 @@ func (s *Server) returned(reqId uint64) {
 			s.timeoutCount--
 			if s.needTrigger && s.timeoutCount == 0 && !s.isDelayed() {
 				s.needTrigger = false
-				s.scheduler.triggerServer(s)
+				s.scheduler.Trigger()
 			}
 		}
 		delete(s.timeouts, reqId)

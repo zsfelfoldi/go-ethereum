@@ -34,17 +34,16 @@ import (
 // appear, in order to be passed on to other clients.
 type HeadTracker struct {
 	newSignedHead func(server *Server, signedHead types.SignedHeader)
+	trigger       func()
 
-	validatedLock        sync.RWMutex
-	validatedHead        types.Header
-	validatedHeadTrigger *ModuleTrigger
+	validatedLock sync.RWMutex
+	validatedHead types.Header
 
-	prefetchLock        sync.RWMutex
-	serverHeads         map[*Server]common.Hash
-	headInfo            map[common.Hash]serverHeadInfo
-	headCounter         uint64
-	prefetchHead        common.Hash
-	prefetchHeadTrigger *ModuleTrigger
+	prefetchLock sync.RWMutex
+	serverHeads  map[*Server]common.Hash
+	headInfo     map[common.Hash]serverHeadInfo
+	headCounter  uint64
+	prefetchHead common.Hash
 }
 
 type serverHeadInfo struct {
@@ -62,20 +61,13 @@ func NewHeadTracker(newSignedHead func(server *Server, signedHead types.SignedHe
 	}
 }
 
-// setupModuleTriggers sets up triggers for new validated and prefetch heads when
-// HeadTracker is added to a Scheduler.
-func (s *HeadTracker) setupModuleTriggers(trigger func(id string) *ModuleTrigger) {
-	s.validatedHeadTrigger = trigger("validatedHead")
-	s.prefetchHeadTrigger = trigger("prefetchHead")
-}
-
 // SetValidatedHead is called by the external validated head source.
 func (s *HeadTracker) SetValidatedHead(head types.Header) {
 	s.validatedLock.Lock()
 	defer s.validatedLock.Unlock()
 
 	s.validatedHead = head
-	s.validatedHeadTrigger.Trigger()
+	s.trigger()
 }
 
 // ValidatedHead returns the latest validated head.
@@ -100,7 +92,7 @@ func (s *HeadTracker) registerServer(server *Server) {
 		}
 		server.setHead(slot, blockRoot)
 		s.setServerHead(server, blockRoot)
-		server.scheduler.triggerServer(server)
+		server.scheduler.Trigger()
 	}, func(signedHead types.SignedHeader) {
 		s.newSignedHead(server, signedHead)
 	})
@@ -152,9 +144,9 @@ func (s *HeadTracker) setServerHead(server *Server, head common.Hash) {
 	}
 	if bestHead != s.prefetchHead {
 		s.prefetchHead = bestHead
-		s.prefetchHeadTrigger.Trigger()
+		s.trigger()
 	} else if head == s.prefetchHead {
-		server.scheduler.triggerServer(server)
+		s.trigger()
 	}
 }
 

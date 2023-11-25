@@ -35,27 +35,21 @@ type checkpointInitServer interface {
 
 type CheckpointInit struct {
 	lock           sync.Mutex
+	trigger        func()
 	reqLock        request.SingleLock
 	chain          *light.CommitteeChain
 	cs             *light.CheckpointStore
 	checkpointHash common.Hash
 	initialized    bool
-
-	initTrigger *request.ModuleTrigger
 }
 
-func NewCheckpointInit(chain *light.CommitteeChain, cs *light.CheckpointStore, checkpointHash common.Hash) *CheckpointInit {
+func NewCheckpointInit(s *request.Scheduler, chain *light.CommitteeChain, cs *light.CheckpointStore, checkpointHash common.Hash) *CheckpointInit {
 	return &CheckpointInit{
 		chain:          chain,
 		cs:             cs,
 		checkpointHash: checkpointHash,
+		trigger:        s.Trigger,
 	}
-}
-
-// SetupModuleTriggers implements request.Module
-func (s *CheckpointInit) SetupModuleTriggers(trigger func(id string, subscribe bool) *request.ModuleTrigger) {
-	s.reqLock.Trigger = trigger("checkpointInit", true)
-	s.initTrigger = trigger("committeeChainInit", false)
 }
 
 // Process implements request.Module
@@ -69,7 +63,7 @@ func (s *CheckpointInit) Process(env *request.Environment) {
 	if checkpoint := s.cs.Get(s.checkpointHash); checkpoint != nil {
 		checkpoint.InitChain(s.chain)
 		s.initialized = true
-		s.initTrigger.Trigger()
+		s.trigger()
 		return
 	}
 	if !env.CanRequestNow() {
@@ -111,7 +105,7 @@ func (r checkpointRequest) SendTo(server *request.Server, moduleData *interface{
 		checkpoint.InitChain(r.chain)
 		r.cs.Store(checkpoint)
 		r.initialized = true
-		r.initTrigger.Trigger()
+		r.trigger()
 	})
 }
 
@@ -122,27 +116,16 @@ type updateServer interface {
 
 type ForwardUpdateSync struct {
 	lock    sync.Mutex
+	trigger func()
 	reqLock request.SingleLock
 	chain   *light.CommitteeChain
-
-	newUpdateTrigger *request.ModuleTrigger
 }
 
-func NewForwardUpdateSync(chain *light.CommitteeChain) *ForwardUpdateSync {
-	return &ForwardUpdateSync{chain: chain}
-}
-
-// SetupModuleTriggers implements request.Module
-func (s *ForwardUpdateSync) SetupModuleTriggers(trigger func(id string, subscribe bool) *request.ModuleTrigger) {
-	s.reqLock.Trigger = trigger("forwardUpdateSync", true)
-	// committeeChainInit signals that the committee chain is initialized (has
-	// fixed committee roots) and the first update request can be constructed.
-	trigger("committeeChainInit", true)
-	// validatedHead ensures that the UpdateRange of each server is re-checked
-	// as new heads appear and new updates are synced as they become available.
-	trigger("validatedHead", true)
-	// newUpdate is triggered when a new update is successfully added to the committee chain
-	s.newUpdateTrigger = trigger("newUpdate", true)
+func NewForwardUpdateSync(s *request.Scheduler, chain *light.CommitteeChain) *ForwardUpdateSync {
+	return &ForwardUpdateSync{
+		chain:   chain,
+		trigger: s.Trigger,
+	}
 }
 
 // Process implements request.Module
@@ -217,11 +200,11 @@ func (r updateRequest) SendTo(server *request.Server, moduleData *interface{}) {
 					log.Error("Unexpected InsertUpdate error", "error", err)
 				}
 				if i != 0 { // some updates were added
-					r.newUpdateTrigger.Trigger()
+					r.trigger()
 				}
 				return
 			}
 		}
-		r.newUpdateTrigger.Trigger()
+		r.trigger()
 	})
 }

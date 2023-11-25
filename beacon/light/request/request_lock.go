@@ -26,7 +26,7 @@ type sentRequest struct {
 // If Trigger is not nil then it is triggered whenever the request is unlocked.
 type SingleLock struct {
 	sentRequest
-	Trigger *ModuleTrigger
+	Trigger func()
 }
 
 // CanRequest returns true if the request is not locked.
@@ -42,7 +42,7 @@ func (s *SingleLock) CanRequest() bool {
 // two processes simultaneously acquiring the same lock so we can always assume
 // that Send is successful after CanRequest returned true.
 func (s *SingleLock) Send(srv *Server) uint64 {
-	reqId := srv.sendRequest(s.Trigger)
+	reqId := srv.sendRequest()
 	s.sentTo, s.reqId = srv, reqId
 	return reqId
 }
@@ -54,7 +54,7 @@ func (s *SingleLock) Returned(srv *Server, reqId uint64) {
 	}
 	srv.returned(reqId)
 	if s.Trigger != nil {
-		s.Trigger.Trigger()
+		s.Trigger()
 	}
 }
 
@@ -66,7 +66,7 @@ func (s *SingleLock) Returned(srv *Server, reqId uint64) {
 type MultiLock struct {
 	// locks are only present in the map when sentTo != nil
 	locks   map[interface{}]sentRequest
-	Trigger *ModuleTrigger
+	Trigger func()
 }
 
 // CanRequest returns true if the request identified by lockId is not locked.
@@ -89,7 +89,7 @@ func (s *MultiLock) CanRequest(lockId interface{}) bool {
 // two processes simultaneously acquiring the same lock so we can always assume
 // that Send is successful after CanRequest returned true.
 func (s *MultiLock) Send(srv *Server, lockId interface{}) uint64 {
-	reqId := srv.sendRequest(s.Trigger)
+	reqId := srv.sendRequest()
 	s.locks[lockId] = sentRequest{sentTo: srv, reqId: reqId}
 	return reqId
 }
@@ -101,6 +101,6 @@ func (s *MultiLock) Returned(srv *Server, reqId uint64, lockId interface{}) {
 	}
 	srv.returned(reqId)
 	if s.Trigger != nil {
-		s.Trigger.Trigger()
+		s.Trigger()
 	}
 }

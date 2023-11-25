@@ -57,8 +57,8 @@ func newTestNode(config *types.ChainConfig, clock *mclock.Simulated, checkpointH
 	})
 	node.scheduler = request.NewScheduler(node.headTracker, clock)
 	if checkpointHash != (common.Hash{}) {
-		node.scheduler.RegisterModule(NewCheckpointInit(node.committeeChain, node.checkpointStore, checkpointHash))
-		node.scheduler.RegisterModule(NewForwardUpdateSync(node.committeeChain))
+		node.scheduler.RegisterModule(NewCheckpointInit(node.scheduler, node.committeeChain, node.checkpointStore, checkpointHash))
+		node.scheduler.RegisterModule(NewForwardUpdateSync(node.scheduler, node.committeeChain))
 	}
 	node.scheduler.RegisterModule(node.headUpdater)
 	node.scheduler.Start()

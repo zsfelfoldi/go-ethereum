@@ -44,11 +44,6 @@ func NewHeadUpdater(headValidator *light.HeadValidator, chain *light.CommitteeCh
 	return s
 }
 
-// SetupModuleTriggers implements request.Module
-func (s *HeadUpdater) SetupModuleTriggers(trigger func(id string, subscribe bool) *request.ModuleTrigger) {
-	trigger("newUpdate", true)
-}
-
 func (s *HeadUpdater) NewSignedHead(server *request.Server, signedHead types.SignedHeader) {
 	nextPeriod, ok := s.chain.NextSyncPeriod()
 	if !ok || signedHead.Header.SyncPeriod() > nextPeriod {
