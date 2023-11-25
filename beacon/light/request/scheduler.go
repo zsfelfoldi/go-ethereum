@@ -92,9 +92,6 @@ func (s *Scheduler) RegisterServer(requestServer RequestServer) {
 	defer s.lock.Unlock()
 
 	server := s.newServer(requestServer)
-	for _, module := range s.modules {
-		server.moduleData[module] = new(interface{})
-	}
 	s.servers = append(s.servers, server)
 	s.headTracker.registerServer(server)
 	s.Trigger()
@@ -111,6 +108,16 @@ func (s *Scheduler) UnregisterServer(RequestServer RequestServer) {
 			s.servers = s.servers[:len(s.servers)-1]
 			server.stop()
 			s.headTracker.unregisterServer(server)
+			type moduleWithDisconnect interface {
+				Module
+				Disconnect(*Server)
+			}
+
+			for _, module := range s.modules {
+				if m, ok := module.(moduleWithDisconnect); ok {
+					m.Disconnect(server)
+				}
+			}
 			return
 		}
 	}

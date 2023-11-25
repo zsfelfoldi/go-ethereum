@@ -117,7 +117,7 @@ type blockRequest struct {
 	prefetch  bool
 }
 
-func (r blockRequest) CanSendTo(server *request.Server, moduleData *interface{}) (canSend bool, priority uint64) {
+func (r blockRequest) CanSendTo(server *request.Server) (canSend bool, priority uint64) {
 	if _, ok := server.RequestServer.(beaconBlockServer); !ok {
 		return false, 0
 	}
@@ -128,7 +128,7 @@ func (r blockRequest) CanSendTo(server *request.Server, moduleData *interface{})
 	return r.blockRoot == headRoot, 0
 }
 
-func (r blockRequest) SendTo(server *request.Server, moduleData *interface{}) {
+func (r blockRequest) SendTo(server *request.Server) {
 	reqId := r.reqLock.Send(server, r.blockRoot)
 	server.RequestServer.(beaconBlockServer).RequestBeaconBlock(r.blockRoot, func(block *capella.BeaconBlock, err error) {
 		r.lock.Lock()

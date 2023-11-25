@@ -46,8 +46,6 @@ type Server struct {
 	latestHeadHash common.Hash
 	unregistered   bool // accessed under HeadTracker.prefetchLock
 
-	moduleData map[Module]*interface{}
-
 	lock         sync.Mutex
 	timeouts     map[uint64]mclock.Timer // stopped when request has returned; nil when timed out
 	timeoutCount int
@@ -63,7 +61,6 @@ func (s *Scheduler) newServer(server RequestServer) *Server {
 	return &Server{
 		RequestServer: server,
 		scheduler:     s,
-		moduleData:    make(map[Module]*interface{}),
 		timeouts:      make(map[uint64]mclock.Timer),
 		stopCh:        make(chan struct{}),
 	}

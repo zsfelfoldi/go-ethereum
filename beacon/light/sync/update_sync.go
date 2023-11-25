@@ -36,6 +36,7 @@ type checkpointInitServer interface {
 type CheckpointInit struct {
 	lock           sync.Mutex
 	trigger        func()
+	serverState    map[*request.Server]bool // bootstrap request already attempted
 	reqLock        request.SingleLock
 	chain          *light.CommitteeChain
 	cs             *light.CheckpointStore
@@ -49,6 +50,7 @@ func NewCheckpointInit(s *request.Scheduler, chain *light.CommitteeChain, cs *li
 		cs:             cs,
 		checkpointHash: checkpointHash,
 		trigger:        s.Trigger,
+		serverState:    make(map[*request.Server]bool),
 	}
 }
 
@@ -77,20 +79,27 @@ func (s *CheckpointInit) Process(env *request.Environment) {
 	}
 }
 
+func (s *CheckpointInit) Disconnect(server *request.Server) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	delete(s.serverState, server)
+}
+
 type checkpointRequest struct {
 	*CheckpointInit
 	checkpointHash common.Hash
 }
 
-func (r checkpointRequest) CanSendTo(server *request.Server, moduleData *interface{}) (canSend bool, priority uint64) {
-	if _, ok := server.RequestServer.(checkpointInitServer); !ok || (*moduleData) != nil {
-		// if moduleData is not nil then the request has failed once already
+func (r checkpointRequest) CanSendTo(server *request.Server) (canSend bool, priority uint64) {
+	if _, ok := server.RequestServer.(checkpointInitServer); !ok || r.serverState[server] {
+		// if server state is true then the request has failed once already
 		return false, 0
 	}
 	return true, 0
 }
 
-func (r checkpointRequest) SendTo(server *request.Server, moduleData *interface{}) {
+func (r checkpointRequest) SendTo(server *request.Server) {
 	reqId := r.reqLock.Send(server)
 	server.RequestServer.(checkpointInitServer).RequestBootstrap(r.checkpointHash, func(checkpoint *light.CheckpointData, err error) {
 		r.lock.Lock()
@@ -98,7 +107,7 @@ func (r checkpointRequest) SendTo(server *request.Server, moduleData *interface{
 
 		r.reqLock.Returned(server, reqId)
 		if err != nil || checkpoint == nil || checkpoint.Validate() != nil {
-			(*moduleData) = struct{}{}
+			r.serverState[server] = true
 			server.Fail("error retrieving checkpoint data")
 			return
 		}
@@ -115,16 +124,18 @@ type updateServer interface {
 }
 
 type ForwardUpdateSync struct {
-	lock    sync.Mutex
-	trigger func()
-	reqLock request.SingleLock
-	chain   *light.CommitteeChain
+	lock        sync.Mutex
+	trigger     func()
+	serverState map[*request.Server]uint64 // first available update
+	reqLock     request.SingleLock
+	chain       *light.CommitteeChain
 }
 
 func NewForwardUpdateSync(s *request.Scheduler, chain *light.CommitteeChain) *ForwardUpdateSync {
 	return &ForwardUpdateSync{
-		chain:   chain,
-		trigger: s.Trigger,
+		chain:       chain,
+		trigger:     s.Trigger,
+		serverState: make(map[*request.Server]uint64),
 	}
 }
 
@@ -146,14 +157,21 @@ func (s *ForwardUpdateSync) Process(env *request.Environment) {
 	})
 }
 
+func (s *ForwardUpdateSync) Disconnect(server *request.Server) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	delete(s.serverState, server)
+}
+
 type updateRequest struct {
 	*ForwardUpdateSync
 	first uint64
 }
 
-func (r updateRequest) CanSendTo(server *request.Server, moduleData *interface{}) (canSend bool, priority uint64) {
+func (r updateRequest) CanSendTo(server *request.Server) (canSend bool, priority uint64) {
 	if _, ok := server.RequestServer.(updateServer); ok {
-		firstUpdate, _ := (*moduleData).(uint64)
+		firstUpdate := r.serverState[server]
 		headSlot, _ := server.LatestHead()
 		afterLastUpdate := types.SyncPeriod(headSlot)
 		if r.first >= firstUpdate && r.first < afterLastUpdate {
@@ -163,7 +181,7 @@ func (r updateRequest) CanSendTo(server *request.Server, moduleData *interface{}
 	return false, 0
 }
 
-func (r updateRequest) SendTo(server *request.Server, moduleData *interface{}) {
+func (r updateRequest) SendTo(server *request.Server) {
 	us := server.RequestServer.(updateServer)
 	headSlot, _ := server.LatestHead()
 	afterLastUpdate := types.SyncPeriod(headSlot)

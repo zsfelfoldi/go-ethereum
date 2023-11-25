@@ -20,8 +20,8 @@ package request
 // conditions under which it can be sent to a certain server while SendTo sends it
 // to the selected one. Both should be non-blocking and are never called concurrently.
 type request interface {
-	CanSendTo(server *Server, moduleData *interface{}) (canSend bool, priority uint64)
-	SendTo(server *Server, moduleData *interface{})
+	CanSendTo(server *Server) (canSend bool, priority uint64)
+	SendTo(server *Server)
 }
 
 // Environment allows modules to start network requests when triggered. It is
@@ -50,7 +50,7 @@ func (s *Environment) TryRequest(req request) bool {
 			delete(s.canRequestNow, server)
 			continue
 		}
-		canSend, requestPriority := req.CanSendTo(server, server.moduleData[s.module])
+		canSend, requestPriority := req.CanSendTo(server)
 		if !canSend || requestPriority < maxRequestPriority ||
 			(requestPriority == maxRequestPriority && serverPriority <= maxServerPriority) {
 			continue
@@ -59,7 +59,7 @@ func (s *Environment) TryRequest(req request) bool {
 		bestServer = server
 	}
 	if bestServer != nil {
-		req.SendTo(bestServer, bestServer.moduleData[s.module])
+		req.SendTo(bestServer)
 		return true
 	}
 	return false
@@ -81,7 +81,7 @@ func (s *Environment) CanRequestNow() bool {
 // at the moment) that could serve the given request.
 func (s *Environment) CanRequestLater(req request) bool {
 	for _, server := range s.allServers {
-		if canSend, _ := req.CanSendTo(server, server.moduleData[s.module]); canSend {
+		if canSend, _ := req.CanSendTo(server); canSend {
 			return true
 		}
 	}
