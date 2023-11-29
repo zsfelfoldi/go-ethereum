@@ -24,36 +24,164 @@ import (
 	"github.com/ethereum/go-ethereum/beacon/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/log"
 )
 
-// RequestServer is a general server interface that can be extended by modules
-// with specific request types.
+var (
+	RespInvalid     = &struct{}{}
+	RespSoftTimeout = &struct{}{}
+	RespHardTimeout = &struct{}{}
+)
+
 type RequestServer interface {
-	SubscribeHeads(newHead func(uint64, common.Hash), newSignedHead func(types.SignedHeader))
-	UnsubscribeHeads()
-	DelayUntil() mclock.AbsTime // no requests should be sent before this
-	Fail(string)                // report server failure
+	Subscribe(eventCallback func(evType int, data interface{}))
+	SendRequest(request interface{}) (id interface{})
+	Unsubscribe()
 }
 
-// Server is a wrapper around RequestServer that handles request timeouts, delays
-// and keeps track of the server's latest reported (not necessarily validated) head.
-type Server struct {
+type HeadInfo struct {
+	Slot      uint64
+	BlockRoot common.Hash
+}
+
+type Response struct {
+	Id, RespData interface{}
+}
+
+const (
+	EvNewHead         = iota // data: HeadInfo
+	EvNewSignedHead          // data: types.SignedHeader
+	EvValidResponse          // data: response
+	EvInvalidResponse        // data: id
+	EvSoftTimeout            // data: id
+	EvHardTimeout            // data: id
+	EvCanRequestAgain        // data: nil
+)
+
+type ServerWithTimeout struct {
 	RequestServer
-	scheduler *Scheduler
+	lock                    sync.Mutex
+	clock                   mclock.Clock
+	childEventCb            func(evType int, data interface{})
+	timeouts                map[interface{}]mclock.Timer // stopped when request has returned; nil when timed out
+	waitCount, timeoutCount int
+}
+
+func (s *ServerWithTimeout) Subscribe(eventCallback func(event)) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.childEventCb = eventCallback
+	s.RequestServer.Subscribe(s.eventCallback)
+}
+
+func (s *ServerWithTimeout) eventCallback(evType int, data interface{}) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if s.childEventCb == nil {
+		return
+	}
+	switch evType {
+	case EvNewHead, EvNewSignedHead:
+		s.childEventCb(evType, data)
+		return
+	case EvValidResponse, EvInvalidResponse, EvHardTimeout:
+	default:
+		log.Error("Unexpected server event", "type", evType)
+		return
+	}
+
+	if timer, ok := s.timeouts[reqId]; ok {
+		if timer != nil {
+			s.stopTimer(timer)
+		} else {
+			s.timeoutCount--
+		}
+		delete(s.timeouts, reqId)
+		s.waitCount--
+	}
+	s.childEventCb(evType, data)
+}
+
+func (s *ServerWithTimeout) SendRequest(request interface{}) (id interface{}) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	reqId := s.RequestServer.SendRequest(request)
+	s.timeouts[reqId] = s.clock.AfterFunc(softRequestTimeout, func() {
+		/*if s.testTimerResults != nil {
+			s.testTimerResults = append(s.testTimerResults, true) // simulated timer finished
+		}*/
+		s.lock.Lock()
+		if s.timeouts[reqId] != nil {
+			// do not delete entry yet; nil means timed out request
+			s.timeouts[reqId] = nil
+			s.timeoutCount++
+			s.childEventCb(EvSoftTimeout, reqId)
+		}
+		s.lock.Unlock()
+	})
+	s.waitCount++
+	return reqId
+}
+
+// stop stops all goroutines associated with the server.
+func (s *ServerWithTimeout) Unsubscribe() {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	for _, timer := range s.timeouts {
+		if timer != nil {
+			s.stopTimer(timer)
+		}
+	}
+	s.childEventCb = nil
+	s.RequestServer.Unsubscribe()
+}
+
+func (s *Server) stopTimer(timer mclock.Timer) {
+	timer.Stop()
+	/*if timer.Stop() && s.scheduler.testTimerResults != nil {
+		s.scheduler.testTimerResults = append(s.scheduler.testTimerResults, false) // simulated timer stopped
+	}*/
+}
+
+type ServerWithLimits struct {
+}
+
+func (s *ServerWithLimits) Limits() (int, mclock.AbsTime) {
+	return 1, 0 //TODO
+}
+
+func (s *ServerWithLimits) Fail(desc string) {
+	/*s.failureDelay *= 2
+	now := s.clock.Now()
+	if now > s.failureDelayUntil {
+		s.failureDelay *= math.Pow(2, -float64(now-s.failureDelayUntil)/float64(maxFailureDelay))
+	}
+	if s.failureDelay < float64(minFailureDelay) {
+		s.failureDelay = float64(minFailureDelay)
+	}
+	s.failureDelayUntil = now + mclock.AbsTime(s.failureDelay)
+	log.Warn("API endpoint failure", "URL", s.api.url, "error", desc)
+	*/
+}
+
+type Server struct {
+	ServerWithLimits
 
 	headLock       sync.RWMutex
 	latestHeadSlot uint64
 	latestHeadHash common.Hash
 	unregistered   bool // accessed under HeadTracker.prefetchLock
 
-	lock         sync.Mutex
-	timeouts     map[uint64]mclock.Timer // stopped when request has returned; nil when timed out
-	timeoutCount int
-	delayUntil   mclock.AbsTime
-	delayTimer   mclock.Timer // if non-nil then expires at delayUntil
-	needTrigger  bool
-	lastReqId    uint64
-	stopCh       chan struct{}
+	lock        sync.Mutex
+	delayUntil  mclock.AbsTime
+	delayTimer  mclock.Timer // if non-nil then expires at delayUntil
+	needTrigger bool
+	lastReqId   uint64
+	stopCh      chan struct{}
 }
 
 // newServer creates a new Server.
@@ -136,76 +264,4 @@ func (s *Server) isDelayed() bool {
 		s.lock.Unlock()
 	})
 	return true
-}
-
-// sendRequest generates a request ID and starts a timeout timer. If the timeout
-// is reached then the trigger is triggered (if specified).
-func (s *Server) sendRequest() uint64 {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	s.lastReqId++
-	reqId := s.lastReqId
-	s.timeouts[reqId] = s.scheduler.clock.AfterFunc(softRequestTimeout, func() {
-		if s.scheduler.testTimerResults != nil {
-			s.scheduler.testTimerResults = append(s.scheduler.testTimerResults, true) // simulated timer finished
-		}
-		s.lock.Lock()
-		if s.timeouts[reqId] != nil {
-			// do not delete entry yet; nil means timed out request
-			s.timeouts[reqId] = nil
-			s.timeoutCount++
-			s.scheduler.Trigger()
-		}
-		s.lock.Unlock()
-	})
-	return reqId
-}
-
-func (s *Server) stopTimer(timer mclock.Timer) {
-	if timer.Stop() && s.scheduler.testTimerResults != nil {
-		s.scheduler.testTimerResults = append(s.scheduler.testTimerResults, false) // simulated timer stopped
-	}
-}
-
-// hasTimedOut returns true if the given request has timed out.
-func (s *Server) hasTimedOut(reqId uint64) bool {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	timer, ok := s.timeouts[reqId]
-	return ok && timer == nil
-}
-
-// returned stops the timeout timer and removes the entry associated with the
-// request ID. It should always be called for every sent request (even if the
-// response is an error or useless) unless the server is dropped.
-func (s *Server) returned(reqId uint64) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	if timer, ok := s.timeouts[reqId]; ok {
-		if timer != nil {
-			s.stopTimer(timer)
-		} else {
-			s.timeoutCount--
-			if s.needTrigger && s.timeoutCount == 0 && !s.isDelayed() {
-				s.needTrigger = false
-				s.scheduler.Trigger()
-			}
-		}
-		delete(s.timeouts, reqId)
-	}
-}
-
-// stop stops all goroutines associated with the server.
-func (s *Server) stop() {
-	for _, timer := range s.timeouts {
-		if timer != nil {
-			s.stopTimer(timer)
-		}
-	}
-	if s.delayTimer != nil {
-		s.stopTimer(s.delayTimer)
-	}
 }
