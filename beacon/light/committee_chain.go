@@ -28,10 +28,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/common/mclock"
-	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/rlp"
 )
 
 var (
@@ -67,9 +65,9 @@ type CommitteeChain struct {
 	// with each other and with committeeCache.
 	chainmu             sync.RWMutex
 	db                  ethdb.KeyValueStore
-	updates             *canonicalStore[*types.LightClientUpdate]
-	committees          *canonicalStore[*types.SerializedSyncCommittee]
-	fixedCommitteeRoots *canonicalStore[common.Hash]
+	updates             *updatesStore
+	committees          *serializedSyncCommitteeStore
+	fixedCommitteeRoots *fixedCommitteeRootsStore
 	committeeCache      *lru.Cache[uint64, syncCommittee] // cache deserialized committees
 
 	clock       mclock.Clock         // monotonic clock (simulated clock in tests)
@@ -90,42 +88,10 @@ func NewCommitteeChain(db ethdb.KeyValueStore, config *types.ChainConfig, signer
 // newCommitteeChain creates a new CommitteeChain with the option of replacing the
 // clock source and signature verification for testing purposes.
 func newCommitteeChain(db ethdb.KeyValueStore, config *types.ChainConfig, signerThreshold int, enforceTime bool, sigVerifier committeeSigVerifier, clock mclock.Clock, unixNano func() int64) *CommitteeChain {
-	var (
-		fixedCommitteeRootEncoder = func(root common.Hash) ([]byte, error) {
-			return root[:], nil
-		}
-		fixedCommitteeRootDecoder = func(enc []byte) (root common.Hash, err error) {
-			if len(enc) != common.HashLength {
-				return common.Hash{}, errors.New("incorrect length for committee root entry in the database")
-			}
-			return common.BytesToHash(enc), nil
-		}
-		committeeEncoder = func(committee *types.SerializedSyncCommittee) ([]byte, error) {
-			return committee[:], nil
-		}
-		committeeDecoder = func(enc []byte) (*types.SerializedSyncCommittee, error) {
-			if len(enc) == types.SerializedSyncCommitteeSize {
-				committee := new(types.SerializedSyncCommittee)
-				copy(committee[:], enc)
-				return committee, nil
-			}
-			return nil, errors.New("incorrect length for serialized committee entry in the database")
-		}
-		updateEncoder = func(update *types.LightClientUpdate) ([]byte, error) {
-			return rlp.EncodeToBytes(update)
-		}
-		updateDecoder = func(enc []byte) (*types.LightClientUpdate, error) {
-			update := new(types.LightClientUpdate)
-			if err := rlp.DecodeBytes(enc, update); err != nil {
-				return nil, err
-			}
-			return update, nil
-		}
-	)
 	s := &CommitteeChain{
-		fixedCommitteeRoots: newCanonicalStore[common.Hash](db, rawdb.FixedCommitteeRootKey, fixedCommitteeRootEncoder, fixedCommitteeRootDecoder),
-		committees:          newCanonicalStore[*types.SerializedSyncCommittee](db, rawdb.SyncCommitteeKey, committeeEncoder, committeeDecoder),
-		updates:             newCanonicalStore[*types.LightClientUpdate](db, rawdb.BestUpdateKey, updateEncoder, updateDecoder),
+		fixedCommitteeRoots: newFixedCommitteeRootsStore(db),
+		committees:          newSerializedSyncCommitteSTore(db),
+		updates:             newUpdatesStore(db),
 		committeeCache:      lru.NewCache[uint64, syncCommittee](10),
 		db:                  db,
 		sigVerifier:         sigVerifier,
@@ -146,7 +112,7 @@ func newCommitteeChain(db ethdb.KeyValueStore, config *types.ChainConfig, signer
 	}
 	// roll back invalid updates (might be necessary if forks have been changed since last time)
 	for !s.updates.periods.IsEmpty() {
-		update, ok := s.updates.get(s.updates.periods.End - 1)
+		update, ok := s.updates.get(db, s.updates.periods.End-1)
 		if !ok {
 			log.Error("Sync committee update missing", "period", s.updates.periods.End-1)
 			s.Reset()
@@ -378,7 +344,7 @@ func (s *CommitteeChain) InsertUpdate(update *types.LightClientUpdate, nextCommi
 	}
 	oldRoot := s.getCommitteeRoot(period + 1)
 	reorg := oldRoot != (common.Hash{}) && oldRoot != update.NextSyncCommitteeRoot
-	if oldUpdate, ok := s.updates.get(period); ok && !update.Score().BetterThan(oldUpdate.Score()) {
+	if oldUpdate, ok := s.updates.get(s.db, period); ok && !update.Score().BetterThan(oldUpdate.Score()) {
 		// a better or equal update already exists; no changes, only fail if new one tried to reorg
 		if reorg {
 			return ErrCannotReorg
@@ -470,10 +436,10 @@ func (s *CommitteeChain) rollback(period uint64) error {
 // proven by a previous update or both. It returns an empty hash if the committee
 // root is unknown.
 func (s *CommitteeChain) getCommitteeRoot(period uint64) common.Hash {
-	if root, ok := s.fixedCommitteeRoots.get(period); ok || period == 0 {
+	if root, ok := s.fixedCommitteeRoots.get(s.db, period); ok || period == 0 {
 		return root
 	}
-	if update, ok := s.updates.get(period - 1); ok {
+	if update, ok := s.updates.get(s.db, period-1); ok {
 		return update.NextSyncCommitteeRoot
 	}
 	return common.Hash{}
@@ -484,7 +450,7 @@ func (s *CommitteeChain) getSyncCommittee(period uint64) (syncCommittee, error) 
 	if c, ok := s.committeeCache.Get(period); ok {
 		return c, nil
 	}
-	if sc, ok := s.committees.get(period); ok {
+	if sc, ok := s.committees.get(s.db, period); ok {
 		c, err := s.sigVerifier.deserializeSyncCommittee(sc)
 		if err != nil {
 			return nil, fmt.Errorf("Sync committee #%d deserialization error: %v", period, err)
