@@ -60,11 +60,10 @@ const (
 
 type ServerWithTimeout struct {
 	RequestServer
-	lock                    sync.Mutex
-	clock                   mclock.Clock
-	childEventCb            func(evType int, data interface{})
-	timeouts                map[interface{}]mclock.Timer // stopped when request has returned; nil when timed out
-	waitCount, timeoutCount int
+	lock         sync.Mutex
+	clock        mclock.Clock
+	childEventCb func(evType int, data interface{})
+	timeouts     map[interface{}]mclock.Timer // stopped when request has returned; nil when timed out
 }
 
 func (s *ServerWithTimeout) Subscribe(eventCallback func(event)) {
@@ -79,9 +78,6 @@ func (s *ServerWithTimeout) eventCallback(evType int, data interface{}) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	if s.childEventCb == nil {
-		return
-	}
 	switch evType {
 	case EvNewHead, EvNewSignedHead:
 		s.childEventCb(evType, data)
@@ -95,11 +91,8 @@ func (s *ServerWithTimeout) eventCallback(evType int, data interface{}) {
 	if timer, ok := s.timeouts[reqId]; ok {
 		if timer != nil {
 			s.stopTimer(timer)
-		} else {
-			s.timeoutCount--
 		}
 		delete(s.timeouts, reqId)
-		s.waitCount--
 	}
 	s.childEventCb(evType, data)
 }
@@ -117,12 +110,10 @@ func (s *ServerWithTimeout) SendRequest(request interface{}) (id interface{}) {
 		if s.timeouts[reqId] != nil {
 			// do not delete entry yet; nil means timed out request
 			s.timeouts[reqId] = nil
-			s.timeoutCount++
 			s.childEventCb(EvSoftTimeout, reqId)
 		}
 		s.lock.Unlock()
 	})
-	s.waitCount++
 	return reqId
 }
 
@@ -140,21 +131,88 @@ func (s *ServerWithTimeout) Unsubscribe() {
 	s.RequestServer.Unsubscribe()
 }
 
-func (s *Server) stopTimer(timer mclock.Timer) {
+func (s *ServerWithTimeout) stopTimer(timer mclock.Timer) {
 	timer.Stop()
 	/*if timer.Stop() && s.scheduler.testTimerResults != nil {
 		s.scheduler.testTimerResults = append(s.scheduler.testTimerResults, false) // simulated timer stopped
 	}*/
 }
 
-type ServerWithLimits struct {
+type ServerWithDelay struct {
+	ServerWithTimeout
+	lock                    sync.Mutex
+	clock                   mclock.Clock
+	childEventCb            func(evType int, data interface{})
+	timeouts                map[interface{}]struct{}
+	waitCount, timeoutCount int
 }
 
-func (s *ServerWithLimits) Limits() (int, mclock.AbsTime) {
+func (s *ServerWithDelay) Subscribe(eventCallback func(event)) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.childEventCb = eventCallback
+	s.ServerWithTimeout.Subscribe(s.eventCallback)
+}
+
+func (s *ServerWithDelay) eventCallback(evType int, data interface{}) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	switch evType {
+	case EvNewHead, EvNewSignedHead:
+		s.childEventCb(evType, data)
+		return
+	case EvSoftTimeout:
+		s.timeouts[reqId] = struct{}{}
+		s.timeoutCount++
+		if s.score > scoreMin+scoreDown {
+			s.score -= scoreDown
+		} else {
+			s.score = scoreMin
+		}
+	case EvValidResponse, EvInvalidResponse, EvHardTimeout:
+		if _, ok := s.timeouts[reqId]; ok {
+			delete(s.timeouts, reqId)
+			s.timeoutCount--
+		}
+		s.waitCount--
+		if evType == EvValidResponse && s.waitCount >= s.score/scoreDiv {
+			s.score += scoreUp
+		}
+	default:
+		log.Error("Unexpected server event", "type", evType)
+		return
+	}
+	s.childEventCb(evType, data)
+}
+
+func (s *ServerWithDelay) SendRequest(request interface{}) (id interface{}) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	reqId := s.ServerWithTimeout.SendRequest(request)
+	s.waitCount++
+	return reqId
+}
+
+// stop stops all goroutines associated with the server.
+func (s *ServerWithDelay) Unsubscribe() {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if s.delayTimer != nil {
+		s.stopTimer(s.delayTimer)
+	}
+	s.childEventCb = nil
+	s.ServerWithTimeout.Unsubscribe()
+}
+
+func (s *ServerWithDelay) CanSendNow() bool {
 	return 1, 0 //TODO
 }
 
-func (s *ServerWithLimits) Fail(desc string) {
+func (s *ServerWithDelay) Fail(desc string) {
 	/*s.failureDelay *= 2
 	now := s.clock.Now()
 	if now > s.failureDelayUntil {
@@ -169,19 +227,12 @@ func (s *ServerWithLimits) Fail(desc string) {
 }
 
 type Server struct {
-	ServerWithLimits
+	ServerWithDelay
 
 	headLock       sync.RWMutex
 	latestHeadSlot uint64
 	latestHeadHash common.Hash
 	unregistered   bool // accessed under HeadTracker.prefetchLock
-
-	lock        sync.Mutex
-	delayUntil  mclock.AbsTime
-	delayTimer  mclock.Timer // if non-nil then expires at delayUntil
-	needTrigger bool
-	lastReqId   uint64
-	stopCh      chan struct{}
 }
 
 // newServer creates a new Server.
