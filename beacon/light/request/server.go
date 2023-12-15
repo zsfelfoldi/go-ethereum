@@ -26,8 +26,8 @@ import (
 
 type RequestServer interface {
 	Subscribe(eventCallback func(event Event))
-	CanSendRequest(request interface{}) (bool, float32)
-	SendRequest(request interface{}) (reqId interface{})
+	CanSendRequest(request Request) (bool, float32)
+	SendRequest(request Request) (reqId RequestId)
 	Unsubscribe()
 }
 
@@ -37,8 +37,9 @@ type Server interface {
 }
 
 type Event struct {
-	Type        int
-	ReqId, Data interface{}
+	Type  int
+	ReqId RequestId
+	Data  any
 }
 
 const (
@@ -59,7 +60,7 @@ type serverWithTimeout struct {
 	lock         sync.Mutex
 	clock        mclock.Clock
 	childEventCb func(event Event)
-	timeouts     map[interface{}]mclock.Timer
+	timeouts     map[RequestId]mclock.Timer
 }
 
 func (s *serverWithTimeout) Subscribe(eventCallback func(event Event)) {
@@ -88,7 +89,7 @@ func (s *serverWithTimeout) eventCallback(event Event) {
 	}
 }
 
-func (s *serverWithTimeout) SendRequest(request interface{}) (reqId interface{}) {
+func (s *serverWithTimeout) SendRequest(request Request) (reqId RequestId) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -146,7 +147,7 @@ type serverWithDelay struct {
 	serverWithTimeout
 	lock                       sync.Mutex
 	childEventCb               func(event Event)
-	softTimeouts               map[interface{}]struct{}
+	softTimeouts               map[RequestId]struct{}
 	pendingCount, timeoutCount int
 	parallelLimit              float32
 	sendEvent                  bool
@@ -190,7 +191,7 @@ func (s *serverWithDelay) eventCallback(event Event) {
 	s.childEventCb(event)
 }
 
-func (s *serverWithDelay) SendRequest(request interface{}) (reqId interface{}) {
+func (s *serverWithDelay) SendRequest(request Request) (reqId RequestId) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -265,10 +266,10 @@ func (s *serverWithDelay) Delay(delay time.Duration) {
 
 //func (s *serverWithDelay) Fail()
 
-type ServerSet map[Server]struct{}
+type serverSet map[Server]struct{}
 
 // TryRequest tries to send the given request and returns true in case of success.
-func (s *ServerSet) TryRequest(request interface{}) (Server, interface{}) {
+func (s *serverSet) TryRequest(request Request) (ServerAndId, bool) {
 	var (
 		maxServerPriority, maxRequestPriority float32
 		bestServer                            Server
@@ -288,7 +289,7 @@ func (s *ServerSet) TryRequest(request interface{}) (Server, interface{}) {
 		bestServer = server
 	}
 	if bestServer != nil {
-		return bestServer, bestServer.SendRequest(request)
+		return ServerAndId{Server: bestServer, Id: bestServer.SendRequest(request)}, true
 	}
-	return nil, nil
+	return ServerAndId{}, false
 }

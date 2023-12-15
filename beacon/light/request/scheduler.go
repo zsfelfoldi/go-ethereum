@@ -36,7 +36,7 @@ type Module interface {
 	// Note: Process functions of different modules are never called concurrently;
 	// they are called by Scheduler in the same order of priority as they were
 	// registered in.
-	Process(ServerSet, []ServerEvent) bool
+	Process(*RequestTracker, []ServerEvent) bool
 }
 
 // Scheduler is a modular network data retrieval framework that coordinates multiple
@@ -44,11 +44,12 @@ type Module interface {
 // that calls the Process function of registered modules whenever either the state
 // of existing data structures or connected servers could allow new operations.
 type Scheduler struct {
-	lock    sync.Mutex
-	clock   mclock.Clock
-	modules []Module // first has highest priority
-	servers map[Server]struct{}
-	stopCh  chan chan struct{}
+	lock     sync.Mutex
+	clock    mclock.Clock
+	modules  []Module // first has highest priority
+	trackers []*RequestTracker
+	servers  map[Server]struct{}
+	stopCh   chan chan struct{}
 
 	triggerCh chan struct{} // restarts waiting sync loop
 	//	testWaitCh       chan struct{} // accepts sends when sync loop is waiting
@@ -153,14 +154,15 @@ func (s *Scheduler) syncLoop() {
 // processModules runs an entire processing round, calling processable modules
 // with the appropriate Environment.
 func (s *Scheduler) processModules() {
-	servers := make(ServerSet)
+	servers := make(serverSet)
 	for server, _ := range s.servers {
 		if ok, _ := server.CanRequestNow(); ok {
 			servers[server] = struct{}{}
 		}
 	}
-	for _, module := range s.modules {
-		if module.Process(servers, s.events) {
+	for i, module := range s.modules {
+		s.trackers[i].servers = servers
+		if module.Process(s.trackers[i], s.events) {
 			s.Trigger()
 		}
 	}
