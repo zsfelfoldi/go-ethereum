@@ -17,6 +17,7 @@
 package request
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common/mclock"
@@ -163,6 +164,7 @@ func (s *Scheduler) Stop() {
 func (s *Scheduler) syncLoop() {
 	for {
 		s.lock.Lock()
+		fmt.Println("processModules")
 		s.processModules()
 		s.lock.Unlock()
 

@@ -17,6 +17,7 @@
 package sync
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/ethereum/go-ethereum/beacon/light"
@@ -44,20 +45,23 @@ func NewCheckpointInit(chain *light.CommitteeChain, checkpointHash common.Hash) 
 
 // Process implements request.Module
 func (s *CheckpointInit) Process(tracker *request.RequestTracker, requestEvents []request.RequestEvent, serverEvents []request.ServerEvent) bool {
+	fmt.Println("CheckpointInit", s.pending, s.initialized)
 	if s.initialized {
 		return false
 	}
 	for _, event := range requestEvents {
+		fmt.Println(" requestEvent", event.Response != nil, event.Finalized, event.Timeout)
+		if event.Timeout != event.Finalized {
+			s.pending = false
+		}
 		if event.Response != nil {
-			if checkpoint, ok := event.Response.(types.BootstrapData); ok && checkpoint.Validate(common.Hash(event.Request.(ReqCheckpointData))) == nil {
-				s.chain.CheckpointInit(checkpoint)
+			if checkpoint, ok := event.Response.(*types.BootstrapData); ok && checkpoint.Validate(common.Hash(event.Request.(ReqCheckpointData))) == nil {
+				fmt.Println("*** chain.CheckpointInit")
+				s.chain.CheckpointInit(*checkpoint) //TODO
 				s.initialized = true
 				return true
 			}
 			event.Server.Fail("invalid checkpoint data")
-		}
-		if event.Timeout != event.Finalized {
-			s.pending = false
 		}
 	}
 	if !s.pending {
@@ -80,6 +84,7 @@ type ForwardUpdateSync struct {
 func NewForwardUpdateSync(chain *light.CommitteeChain) *ForwardUpdateSync {
 	return &ForwardUpdateSync{
 		chain:          chain,
+		rangeLock:      make(rangeLock),
 		nextSyncPeriod: make(map[request.Server]uint64),
 	}
 }
@@ -171,8 +176,10 @@ func (u updateResponseList) Less(i, j int) bool {
 
 // Process implements request.Module
 func (s *ForwardUpdateSync) Process(tracker *request.RequestTracker, requestEvents []request.RequestEvent, serverEvents []request.ServerEvent) (trigger bool) {
+	fmt.Println("ForwardUpdateSync", len(s.processQueue))
 	// iterate events and add responses to process queue
 	for _, event := range requestEvents {
+		fmt.Println(" requestEvent", event.Response != nil, event.Finalized, event.Timeout)
 		if event.Response != nil && !s.verifyRange(event) {
 			event.Server.Fail("invalid update range")
 			event.Response = nil
@@ -194,6 +201,7 @@ func (s *ForwardUpdateSync) Process(tracker *request.RequestTracker, requestEven
 
 	// try processing ordered list of available responses
 	sort.Sort(updateResponseList(s.processQueue)) //TODO
+	fmt.Println(" sorted queue", len(s.processQueue))
 	for s.processQueue != nil {
 		event := s.processQueue[0]
 		if !s.processResponse(event) {
@@ -221,14 +229,17 @@ func (s *ForwardUpdateSync) Process(tracker *request.RequestTracker, requestEven
 
 	// start new requests if necessary
 	startPeriod, chainInit := s.chain.NextSyncPeriod()
+	fmt.Println(" chain state", startPeriod, chainInit)
 	if !chainInit {
 		return false
 	}
 	for {
 		firstPeriod, maxCount := s.rangeLock.firstUnlocked(startPeriod, maxUpdateRequest)
+		fmt.Println(" firstUnlocked", firstPeriod, maxCount)
 		if _, request := tracker.TryRequest(func(server request.Server) (request.Request, float32) {
 			nextPeriod := s.nextSyncPeriod[server]
-			if nextPeriod >= firstPeriod {
+			fmt.Println(" remote nextSyncPeriod", nextPeriod)
+			if nextPeriod <= firstPeriod {
 				return nil, 0
 			}
 			count := maxCount

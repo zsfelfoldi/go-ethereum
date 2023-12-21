@@ -16,6 +16,8 @@
 
 package request
 
+import "fmt"
+
 type (
 	Request     any
 	Response    any
@@ -40,17 +42,22 @@ func (p *RequestTracker) TryRequest(requestFn func(server Server) (Request, floa
 		bestServer                            Server
 		bestRequest                           Request
 	)
+	maxServerPriority, maxRequestPriority = -1000, -1000
+	fmt.Println("TryRequest", len(p.servers))
 	for server, _ := range p.servers {
 		canRequest, serverPriority := server.CanRequestNow()
 		if !canRequest {
 			delete(p.servers, server)
+			fmt.Println(" removed server from set")
 			continue
 		}
 		request, requestPriority := requestFn(server)
+		fmt.Println(" requestFn", request != nil, requestPriority)
 		if request == nil || requestPriority < maxRequestPriority ||
 			(requestPriority == maxRequestPriority && serverPriority <= maxServerPriority) {
 			continue
 		}
+		fmt.Println(" bestRequest")
 		maxServerPriority, maxRequestPriority = serverPriority, requestPriority
 		bestServer, bestRequest = server, request
 	}

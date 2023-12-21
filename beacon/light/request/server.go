@@ -17,6 +17,7 @@
 package request
 
 import (
+	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -42,9 +43,10 @@ const (
 )
 
 const (
-	parallelAdjustUp   = 0.1
-	parallelAdjustDown = 1
-	minParallelLimit   = 1
+	parallelAdjustUp     = 0.1
+	parallelAdjustDown   = 1
+	minParallelLimit     = 1
+	defaultParallelLimit = 3
 )
 
 type RequestServer interface {
@@ -192,6 +194,7 @@ type serverWithDelay struct {
 
 func (s *serverWithDelay) init() {
 	s.softTimeouts = make(map[ID]struct{})
+	s.parallelLimit = defaultParallelLimit
 }
 
 func (s *serverWithDelay) Subscribe(eventCallback func(event Event)) {
@@ -208,6 +211,7 @@ func (s *serverWithDelay) eventCallback(event Event) {
 
 	switch event.Type {
 	case EvTimeout:
+		fmt.Println("timeout", event.Data.(ID))
 		s.softTimeouts[event.Data.(ID)] = struct{}{}
 		s.timeoutCount++
 		s.parallelLimit -= parallelAdjustDown
@@ -221,6 +225,7 @@ func (s *serverWithDelay) eventCallback(event Event) {
 		} else {
 			id = event.Data.(ID)
 		}
+		fmt.Println("response", id, event.Type == EvResponse)
 		if _, ok := s.softTimeouts[id]; ok {
 			delete(s.softTimeouts, id)
 			s.timeoutCount--
@@ -239,7 +244,9 @@ func (s *serverWithDelay) SendRequest(request Request) (reqId ID) {
 	defer s.lock.Unlock()
 
 	s.pendingCount++
-	return s.serverWithTimeout.SendRequest(request)
+	id := s.serverWithTimeout.SendRequest(request)
+	fmt.Println("SendRequest", id)
+	return id
 }
 
 // stop stops all goroutines associated with the server.

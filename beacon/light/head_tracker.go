@@ -18,6 +18,7 @@ package light
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -53,6 +54,7 @@ func (h *HeadTracker) Validate(head types.SignedHeader) (bool, error) {
 	defer h.lock.Unlock()
 
 	signerCount := head.Signature.SignerCount()
+	fmt.Println("Validate head", head.Header.Slot, signerCount)
 	if signerCount < h.minSignerCount {
 		return false, errors.New("low signer count")
 	}
@@ -73,6 +75,7 @@ func (h *HeadTracker) Validate(head types.SignedHeader) (bool, error) {
 		return false, errors.New("invalid header signature")
 	}
 	h.signedHead, h.headSignerCount = head, signerCount
+	fmt.Println(" success")
 	return true, nil
 }
 

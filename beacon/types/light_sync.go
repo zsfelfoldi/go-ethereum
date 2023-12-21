@@ -43,13 +43,18 @@ type BootstrapData struct {
 
 // Validate verifies the proof included in BootstrapData.
 func (c *BootstrapData) Validate(checkpointHash common.Hash) error {
+	fmt.Println("Validate")
 	if c.Header.Hash() != checkpointHash {
+		fmt.Println(" wrong checkpoint hash")
 		return errors.New("wrong checkpoint hash")
 	}
 	if c.CommitteeRoot != c.Committee.Root() {
+		fmt.Println(" wrong committee root")
 		return errors.New("wrong committee root")
 	}
-	return merkle.VerifyProof(c.Header.StateRoot, params.StateIndexSyncCommittee, c.CommitteeBranch, merkle.Value(c.CommitteeRoot))
+	v := merkle.VerifyProof(c.Header.StateRoot, params.StateIndexSyncCommittee, c.CommitteeBranch, merkle.Value(c.CommitteeRoot))
+	fmt.Println(" valid", v)
+	return v
 }
 
 // LightClientUpdate is a proof of the next sync committee root based on a header
