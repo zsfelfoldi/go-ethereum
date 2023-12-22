@@ -163,10 +163,8 @@ func (s *Scheduler) Stop() {
 // but ensure that there is going to be a next round.
 func (s *Scheduler) syncLoop() {
 	for {
-		s.lock.Lock()
 		fmt.Println("processModules")
 		s.processModules()
-		s.lock.Unlock()
 
 	loop:
 		for {
@@ -185,21 +183,28 @@ func (s *Scheduler) syncLoop() {
 // processModules runs an entire processing round, calling processable modules
 // with the appropriate Environment.
 func (s *Scheduler) processModules() {
+	s.lock.Lock()
 	servers := make(serverSet)
 	for server, _ := range s.servers {
 		if ok, _ := server.CanRequestNow(); ok {
 			servers[server] = struct{}{}
 		}
 	}
+	serverEvents := s.serverEvents
+	s.serverEvents = nil
+	s.lock.Unlock()
+
 	for _, module := range s.modules {
+		s.lock.Lock()
 		tracker := s.trackers[module]
 		tracker.servers = servers
-		if module.Process(tracker, tracker.requestEvents, s.serverEvents) {
+		requestEvents := tracker.requestEvents
+		tracker.requestEvents = nil
+		s.lock.Unlock()
+		if module.Process(tracker, requestEvents, serverEvents) {
 			s.Trigger()
 		}
-		tracker.requestEvents = nil
 	}
-	s.serverEvents = nil
 }
 
 func (s *Scheduler) Trigger() {

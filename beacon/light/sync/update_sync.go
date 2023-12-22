@@ -65,6 +65,7 @@ func (s *CheckpointInit) Process(tracker *request.RequestTracker, requestEvents 
 		}
 	}
 	if !s.pending {
+		fmt.Println("TryRequest CheckpointInit")
 		if _, request := tracker.TryRequest(func(server request.Server) (request.Request, float32) {
 			return ReqCheckpointData(s.checkpointHash), 0
 		}); request != nil {
@@ -236,6 +237,7 @@ func (s *ForwardUpdateSync) Process(tracker *request.RequestTracker, requestEven
 	for {
 		firstPeriod, maxCount := s.rangeLock.firstUnlocked(startPeriod, maxUpdateRequest)
 		fmt.Println(" firstUnlocked", firstPeriod, maxCount)
+		fmt.Println("TryRequest ForwardUpdateSync")
 		if _, request := tracker.TryRequest(func(server request.Server) (request.Request, float32) {
 			nextPeriod := s.nextSyncPeriod[server]
 			fmt.Println(" remote nextSyncPeriod", nextPeriod)

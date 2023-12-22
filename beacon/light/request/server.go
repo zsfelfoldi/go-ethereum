@@ -263,6 +263,7 @@ func (s *serverWithDelay) Unsubscribe() {
 }
 
 func (s *serverWithDelay) canRequestNow() (bool, float32) {
+	fmt.Println("canRequestNow", s.pendingCount, s.parallelLimit, s.delayTimer != nil)
 	if s.delayTimer != nil || s.pendingCount >= int(s.parallelLimit) {
 		return false, 0
 	}

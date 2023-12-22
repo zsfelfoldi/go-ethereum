@@ -69,7 +69,12 @@ func (s *beaconBlockSync) Process(tracker *request.RequestTracker, requestEvents
 	for _, event := range requestEvents {
 		blockRoot := common.Hash(event.Request.(sync.ReqBeaconBlock))
 		if event.Response != nil {
-			s.recentBlocks.Add(blockRoot, event.Response.(*capella.BeaconBlock))
+			block := event.Response.(*capella.BeaconBlock)
+			s.recentBlocks.Add(blockRoot, block)
+			if blockRoot == s.validatedHead.Hash() {
+				s.headBlock = block
+				trigger = true
+			}
 		}
 		if event.Timeout != event.Finalized {
 			// unlock if timed out or returned with an invalid response without
@@ -113,6 +118,7 @@ func (s *beaconBlockSync) tryRequestBlock(tracker *request.RequestTracker, block
 	if _, ok := s.pending[blockRoot]; ok {
 		return
 	}
+	fmt.Println("TryRequest beaconBlockSync")
 	if _, request := tracker.TryRequest(func(server request.Server) (request.Request, float32) {
 		if prefetch && s.serverHeads[server] != blockRoot {
 			// when requesting a not yet validated head, request it from someone
