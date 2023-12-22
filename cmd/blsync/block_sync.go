@@ -45,7 +45,6 @@ type beaconBlockSync struct {
 	validatedHead types.Header
 	pending       map[common.Hash]struct{}
 	serverHeads   map[request.Server]common.Hash
-	headBlock     *capella.BeaconBlock // belongs to validatedHead (or nil)
 	headTracker   *light.HeadTracker
 }
 
@@ -60,8 +59,8 @@ func newBeaconBlockSyncer(headTracker *light.HeadTracker) *beaconBlockSync {
 
 // Process implements request.Module
 func (s *beaconBlockSync) Process(tracker *request.RequestTracker, requestEvents []request.RequestEvent, serverEvents []request.ServerEvent) (trigger bool) {
-	validatedHead := s.headTracker.ValidatedHead().Header
-	if validatedHead == (types.Header{}) {
+	s.validatedHead = s.headTracker.ValidatedHead().Header
+	if s.validatedHead == (types.Header{}) {
 		return false
 	}
 
@@ -72,7 +71,6 @@ func (s *beaconBlockSync) Process(tracker *request.RequestTracker, requestEvents
 			block := event.Response.(*capella.BeaconBlock)
 			s.recentBlocks.Add(blockRoot, block)
 			if blockRoot == s.validatedHead.Hash() {
-				s.headBlock = block
 				trigger = true
 			}
 		}
@@ -80,15 +78,6 @@ func (s *beaconBlockSync) Process(tracker *request.RequestTracker, requestEvents
 			// unlock if timed out or returned with an invalid response without
 			// previously being unlocked by a timeout
 			delete(s.pending, blockRoot)
-		}
-	}
-
-	if validatedHead != s.validatedHead {
-		s.validatedHead = validatedHead
-		s.headBlock = nil
-		if block, ok := s.recentBlocks.Get(validatedHead.Hash()); ok {
-			s.headBlock = block
-			trigger = true
 		}
 	}
 
@@ -103,18 +92,23 @@ func (s *beaconBlockSync) Process(tracker *request.RequestTracker, requestEvents
 	}
 
 	// start new requests if necessary
-	if s.headBlock == nil {
-		s.tryRequestBlock(tracker, s.validatedHead.Hash(), false)
-	}
-
-	prefetchHead := s.headTracker.PrefetchHead().BlockRoot
-	if _, ok := s.recentBlocks.Get(prefetchHead); !ok && prefetchHead != (common.Hash{}) {
+	s.tryRequestBlock(tracker, s.validatedHead.Hash(), false)
+	if prefetchHead := s.headTracker.PrefetchHead().BlockRoot; prefetchHead != (common.Hash{}) {
 		s.tryRequestBlock(tracker, prefetchHead, true)
 	}
 	return
 }
 
+// belongs to validatedHead (or nil)
+func (s *beaconBlockSync) getHeadBlock() *capella.BeaconBlock {
+	block, _ := s.recentBlocks.Get(s.validatedHead.Hash())
+	return block
+}
+
 func (s *beaconBlockSync) tryRequestBlock(tracker *request.RequestTracker, blockRoot common.Hash, prefetch bool) {
+	if _, ok := s.recentBlocks.Get(blockRoot); ok {
+		return
+	}
 	if _, ok := s.pending[blockRoot]; ok {
 		return
 	}
@@ -190,7 +184,7 @@ func (s *engineApiUpdater) Process(tracker *request.RequestTracker, requestEvent
 	if atomic.LoadUint32(&s.updating) == 1 {
 		return false
 	}
-	headBlock := s.blockSync.headBlock
+	headBlock := s.blockSync.getHeadBlock()
 	if headBlock == nil {
 		return false
 	}
