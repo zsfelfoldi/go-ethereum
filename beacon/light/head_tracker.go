@@ -32,7 +32,7 @@ type HeadTracker struct {
 	lock            sync.RWMutex
 	committeeChain  *CommitteeChain
 	minSignerCount  int
-	signedHead      types.SignedHeader
+	validatedHead   types.FinalityUpdate
 	headSignerCount int
 	prefetchHead    types.HeadInfo
 	changeCounter   uint64
@@ -47,29 +47,33 @@ func NewHeadTracker(committeeChain *CommitteeChain, minSignerCount int) *HeadTra
 }
 
 // ValidatedHead returns the latest validated head.
-func (h *HeadTracker) ValidatedHead() types.SignedHeader {
+func (h *HeadTracker) ValidatedHead() (types.FinalityUpdate, bool) {
 	h.lock.RLock()
 	defer h.lock.RUnlock()
 
-	return h.signedHead
+	return h.validatedHead, h.validatedHead.Attested.Header != (types.Header{})
 }
 
 // Validate validates the given signed head. If the head is successfully validated
 // and it is better than the old validated head (higher slot or same slot and more
 // signers) then ValidatedHead is updated. The boolean return flag signals if
 // ValidatedHead has been changed.
-func (h *HeadTracker) Validate(head types.SignedHeader) (bool, error) {
+func (h *HeadTracker) Validate(head types.FinalityUpdate) (bool, error) {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
+	if err := head.Validate(); err != nil {
+		return false, err
+	}
 	signerCount := head.Signature.SignerCount()
 	if signerCount < h.minSignerCount {
 		return false, errors.New("low signer count")
 	}
-	if head.Header.Slot < h.signedHead.Header.Slot || (head.Header.Slot == h.signedHead.Header.Slot && signerCount <= h.headSignerCount) {
+	if head.Attested.Header.Slot < h.validatedHead.Attested.Header.Slot ||
+		(head.Attested.Header.Slot == h.validatedHead.Attested.Header.Slot && signerCount <= h.headSignerCount) {
 		return false, nil
 	}
-	sigOk, age, err := h.committeeChain.VerifySignedHeader(head)
+	sigOk, age, err := h.committeeChain.VerifySignedHeader(head.SignedHeader())
 	if err != nil {
 		return false, err
 	}
@@ -82,7 +86,7 @@ func (h *HeadTracker) Validate(head types.SignedHeader) (bool, error) {
 	if !sigOk {
 		return false, errors.New("invalid header signature")
 	}
-	h.signedHead, h.headSignerCount = head, signerCount
+	h.validatedHead, h.headSignerCount = head, signerCount
 	h.changeCounter++
 	return true, nil
 }

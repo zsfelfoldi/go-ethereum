@@ -22,7 +22,7 @@ import (
 )
 
 type headTracker interface {
-	Validate(head types.SignedHeader) (bool, error)
+	Validate(head types.FinalityUpdate) (bool, error)
 	SetPrefetchHead(head types.HeadInfo)
 }
 
@@ -36,7 +36,7 @@ type HeadSync struct {
 	chain            committeeChain
 	nextSyncPeriod   uint64
 	chainInit        bool
-	unvalidatedHeads map[request.Server]types.SignedHeader
+	unvalidatedHeads map[request.Server]types.FinalityUpdate
 	serverHeads      map[request.Server]types.HeadInfo
 	headServerCount  map[types.HeadInfo]headServerCount
 	headCounter      uint64
@@ -57,7 +57,7 @@ func NewHeadSync(headTracker headTracker, chain committeeChain) *HeadSync {
 	s := &HeadSync{
 		headTracker:      headTracker,
 		chain:            chain,
-		unvalidatedHeads: make(map[request.Server]types.SignedHeader),
+		unvalidatedHeads: make(map[request.Server]types.FinalityUpdate),
 		serverHeads:      make(map[request.Server]types.HeadInfo),
 		headServerCount:  make(map[types.HeadInfo]headServerCount),
 	}
@@ -69,8 +69,8 @@ func (s *HeadSync) Process(events []request.Event) {
 		switch event.Type {
 		case EvNewHead:
 			s.setServerHead(event.Server, event.Data.(types.HeadInfo))
-		case EvNewSignedHead:
-			s.newSignedHead(event.Server, event.Data.(types.SignedHeader))
+		case EvNewFinalityUpdate:
+			s.newFinalityUpdate(event.Server, event.Data.(types.FinalityUpdate))
 		case request.EvUnregistered:
 			s.setServerHead(event.Server, types.HeadInfo{})
 			delete(s.serverHeads, event.Server)
@@ -91,12 +91,12 @@ func (s *HeadSync) MakeRequest(server request.Server) (request.Request, float32)
 
 // newSignedHead handles received signed head; either validates it if the chain
 // is properly synced or stores it for further validation.
-func (s *HeadSync) newSignedHead(server request.Server, signedHead types.SignedHeader) {
-	if !s.chainInit || types.SyncPeriod(signedHead.SignatureSlot) > s.nextSyncPeriod {
-		s.unvalidatedHeads[server] = signedHead
+func (s *HeadSync) newFinalityUpdate(server request.Server, finalityUpdate types.FinalityUpdate) {
+	if !s.chainInit || types.SyncPeriod(finalityUpdate.SignatureSlot) > s.nextSyncPeriod {
+		s.unvalidatedHeads[server] = finalityUpdate
 		return
 	}
-	s.headTracker.Validate(signedHead)
+	s.headTracker.Validate(finalityUpdate)
 }
 
 // processUnvalidatedHeads iterates the list of unvalidated heads and validates
@@ -105,9 +105,9 @@ func (s *HeadSync) processUnvalidatedHeads() {
 	if !s.chainInit {
 		return
 	}
-	for server, signedHead := range s.unvalidatedHeads {
-		if types.SyncPeriod(signedHead.SignatureSlot) <= s.nextSyncPeriod {
-			s.headTracker.Validate(signedHead)
+	for server, finalityUpdate := range s.unvalidatedHeads {
+		if types.SyncPeriod(finalityUpdate.SignatureSlot) <= s.nextSyncPeriod {
+			s.headTracker.Validate(finalityUpdate)
 			delete(s.unvalidatedHeads, server)
 		}
 	}

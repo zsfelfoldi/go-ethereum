@@ -35,11 +35,11 @@ var (
 	testHead3 = types.HeadInfo{Slot: 124, BlockRoot: common.Hash{3}}
 	testHead4 = types.HeadInfo{Slot: 125, BlockRoot: common.Hash{4}}
 
-	testSHead1 = types.SignedHeader{SignatureSlot: 0x0124, Header: types.Header{Slot: 0x0123, StateRoot: common.Hash{1}}}
-	testSHead2 = types.SignedHeader{SignatureSlot: 0x2010, Header: types.Header{Slot: 0x200e, StateRoot: common.Hash{2}}}
+	testSHead1 = types.FinalityUpdate{SignatureSlot: 0x0124, Attested: types.HeaderWithExecProof{Header: types.Header{Slot: 0x0123, StateRoot: common.Hash{1}}}}
+	testSHead2 = types.FinalityUpdate{SignatureSlot: 0x2010, Attested: types.HeaderWithExecProof{Header: types.Header{Slot: 0x200e, StateRoot: common.Hash{2}}}}
 	// testSHead3 is at the end of period 1 but signed in period 2
-	testSHead3 = types.SignedHeader{SignatureSlot: 0x4000, Header: types.Header{Slot: 0x3fff, StateRoot: common.Hash{3}}}
-	testSHead4 = types.SignedHeader{SignatureSlot: 0x6444, Header: types.Header{Slot: 0x6443, StateRoot: common.Hash{4}}}
+	testSHead3 = types.FinalityUpdate{SignatureSlot: 0x4000, Attested: types.HeaderWithExecProof{Header: types.Header{Slot: 0x3fff, StateRoot: common.Hash{3}}}}
+	testSHead4 = types.FinalityUpdate{SignatureSlot: 0x6444, Attested: types.HeaderWithExecProof{Header: types.Header{Slot: 0x6443, StateRoot: common.Hash{4}}}}
 )
 
 func TestValidatedHead(t *testing.T) {
@@ -51,7 +51,7 @@ func TestValidatedHead(t *testing.T) {
 	ht.ExpValidated(t, 0, nil)
 
 	ts.AddServer(testServer1, 1)
-	ts.ServerEvent(EvNewSignedHead, testServer1, testSHead1)
+	ts.ServerEvent(EvNewFinalityUpdate, testServer1, testSHead1)
 	ts.Run(1, nil, nil)
 	// announced head should be queued because of uninitialized chain
 	ht.ExpValidated(t, 1, nil)
@@ -59,19 +59,19 @@ func TestValidatedHead(t *testing.T) {
 	chain.SetNextSyncPeriod(0) // initialize chain
 	ts.Run(2, nil, nil)
 	// expect previously queued head to be validated
-	ht.ExpValidated(t, 2, []types.SignedHeader{testSHead1})
+	ht.ExpValidated(t, 2, []types.FinalityUpdate{testSHead1})
 
 	chain.SetNextSyncPeriod(1)
-	ts.ServerEvent(EvNewSignedHead, testServer1, testSHead2)
+	ts.ServerEvent(EvNewFinalityUpdate, testServer1, testSHead2)
 	ts.AddServer(testServer2, 1)
-	ts.ServerEvent(EvNewSignedHead, testServer2, testSHead2)
+	ts.ServerEvent(EvNewFinalityUpdate, testServer2, testSHead2)
 	ts.Run(3, nil, nil)
 	// expect both head announcements to be validated instantly
-	ht.ExpValidated(t, 3, []types.SignedHeader{testSHead2, testSHead2})
+	ht.ExpValidated(t, 3, []types.FinalityUpdate{testSHead2, testSHead2})
 
-	ts.ServerEvent(EvNewSignedHead, testServer1, testSHead3)
+	ts.ServerEvent(EvNewFinalityUpdate, testServer1, testSHead3)
 	ts.AddServer(testServer3, 1)
-	ts.ServerEvent(EvNewSignedHead, testServer3, testSHead4)
+	ts.ServerEvent(EvNewFinalityUpdate, testServer3, testSHead4)
 	ts.Run(4, nil, nil)
 	// future period annonced heads should be queued
 	ht.ExpValidated(t, 4, nil)
@@ -79,7 +79,7 @@ func TestValidatedHead(t *testing.T) {
 	chain.SetNextSyncPeriod(2)
 	ts.Run(5, nil, nil)
 	// testSHead3 can be validated now but not testSHead4
-	ht.ExpValidated(t, 5, []types.SignedHeader{testSHead3})
+	ht.ExpValidated(t, 5, []types.FinalityUpdate{testSHead3})
 
 	// server 3 disconnected without proving period 3, its announced head should be dropped
 	ts.RemoveServer(testServer3)
@@ -91,10 +91,10 @@ func TestValidatedHead(t *testing.T) {
 	// testSHead4 could be validated now but it's not queued by any registered server
 	ht.ExpValidated(t, 7, nil)
 
-	ts.ServerEvent(EvNewSignedHead, testServer2, testSHead4)
+	ts.ServerEvent(EvNewFinalityUpdate, testServer2, testSHead4)
 	ts.Run(8, nil, nil)
 	// now testSHead4 should be validated
-	ht.ExpValidated(t, 8, []types.SignedHeader{testSHead4})
+	ht.ExpValidated(t, 8, []types.FinalityUpdate{testSHead4})
 }
 
 func TestPrefetchHead(t *testing.T) {

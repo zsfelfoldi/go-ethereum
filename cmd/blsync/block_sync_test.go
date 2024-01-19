@@ -45,12 +45,12 @@ func TestBlockSync(t *testing.T) {
 
 	expHeadBlock := func(tci int, expHead *capella.BeaconBlock) {
 		expInfo := blockHeadInfo(expHead)
-		var head *capella.BeaconBlock
+		var head headData
 		select {
-		case head = <-blockSync.headBlockCh:
+		case head = <-blockSync.headCh:
 		default:
 		}
-		headInfo := blockHeadInfo(head)
+		headInfo := blockHeadInfo(head.block)
 		if headInfo != expInfo {
 			t.Errorf("Wrong head block in test case #%d (expected {slot %d blockRoot %x}, got {slot %d blockRoot %x})", tci, expInfo.Slot, expInfo.BlockRoot, headInfo.Slot, headInfo.BlockRoot)
 		}
@@ -75,7 +75,7 @@ func TestBlockSync(t *testing.T) {
 	expHeadBlock(3, nil)
 
 	// set as validated head, expect no further requests but block 1 set as head block
-	ht.validated.Header = blockHeader(testBlock1)
+	ht.validated.Attested.Header = blockHeader(testBlock1)
 	ts.Run(4, nil, nil)
 	expHeadBlock(4, testBlock1)
 
@@ -91,7 +91,7 @@ func TestBlockSync(t *testing.T) {
 	ts.Run(6, nil, nil)
 
 	// set as validated head before retrieving block; now it's assumed to be available from server 2 too
-	ht.validated.Header = blockHeader(testBlock2)
+	ht.validated.Attested.Header = blockHeader(testBlock2)
 	// expect req2 retry to server 2
 	ts.Run(7, testServer2, sync.ReqBeaconBlock(head2.BlockRoot))
 	// now head block should be unavailable again
@@ -122,13 +122,13 @@ func blockHeader(block *capella.BeaconBlock) types.Header {
 
 type testHeadTracker struct {
 	prefetch  types.HeadInfo
-	validated types.SignedHeader
+	validated types.FinalityUpdate
 }
 
 func (h *testHeadTracker) PrefetchHead() types.HeadInfo {
 	return h.prefetch
 }
 
-func (h *testHeadTracker) ValidatedHead() types.SignedHeader {
-	return h.validated
+func (h *testHeadTracker) ValidatedHead() (types.FinalityUpdate, bool) {
+	return h.validated, h.validated.Attested.Header != (types.Header{})
 }

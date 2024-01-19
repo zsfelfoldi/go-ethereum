@@ -45,9 +45,9 @@ func (s *ApiServer) Subscribe(eventCallback func(event request.Event)) {
 	s.unsubscribe = s.api.StartHeadListener(func(slot uint64, blockRoot common.Hash) {
 		log.Debug("New head received", "slot", slot, "blockRoot", blockRoot)
 		eventCallback(request.Event{Type: sync.EvNewHead, Data: types.HeadInfo{Slot: slot, BlockRoot: blockRoot}})
-	}, func(head types.SignedHeader) {
-		log.Debug("New signed head received", "slot", head.Header.Slot, "blockRoot", head.Header.Hash(), "signerCount", head.Signature.SignerCount())
-		eventCallback(request.Event{Type: sync.EvNewSignedHead, Data: head})
+	}, func(head types.FinalityUpdate) {
+		log.Debug("New finality update received", "slot", head.Attested.Slot, "blockRoot", head.Attested.Hash(), "signerCount", head.Signature.SignerCount())
+		eventCallback(request.Event{Type: sync.EvNewFinalityUpdate, Data: head})
 	}, func(err error) {
 		log.Warn("Head event stream error", "err", err)
 	})
@@ -63,10 +63,6 @@ func (s *ApiServer) SendRequest(req request.Request) request.ID {
 			if updates, committees, err := s.api.GetBestUpdatesAndCommittees(data.FirstPeriod, data.Count); err == nil {
 				resp = sync.RespUpdates{Updates: updates, Committees: committees}
 			}
-		/*case sync.ReqOptimisticHead:
-		if signedHead, err := s.api.GetOptimisticHeadUpdate(); err == nil {
-			resp = signedHead
-		}*/ //TODO ???
 		case sync.ReqHeader:
 			if header, err := s.api.GetHeader(common.Hash(data)); err == nil {
 				resp = header

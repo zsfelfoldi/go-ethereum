@@ -17,6 +17,7 @@
 package sync
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/beacon/light"
@@ -226,27 +227,27 @@ func (tc *TestCommitteeChain) ExpNextSyncPeriod(t *testing.T, expNsp uint64) {
 
 type TestHeadTracker struct {
 	phead     types.HeadInfo
-	validated []types.SignedHeader
+	validated []types.FinalityUpdate
 }
 
-func (ht *TestHeadTracker) Validate(head types.SignedHeader) (bool, error) {
+func (ht *TestHeadTracker) Validate(head types.FinalityUpdate) (bool, error) {
 	ht.validated = append(ht.validated, head)
 	return true, nil
 }
 
-func (ht *TestHeadTracker) ExpValidated(t *testing.T, tci int, expHeads []types.SignedHeader) {
+func (ht *TestHeadTracker) ExpValidated(t *testing.T, tci int, expHeads []types.FinalityUpdate) {
 	for i, expHead := range expHeads {
 		if i >= len(ht.validated) {
-			t.Errorf("Missing validated head in test case #%d index #%d (expected {slot %d blockRoot %x}, got none)", tci, i, expHead.Header.Slot, expHead.Header.Hash())
+			t.Errorf("Missing validated head in test case #%d index #%d (expected {slot %d blockRoot %x}, got none)", tci, i, expHead.Attested.Header.Slot, expHead.Attested.Header.Hash())
 			continue
 		}
-		if ht.validated[i] != expHead {
-			vhead := ht.validated[i].Header
-			t.Errorf("Wrong validated head in test case #%d index #%d (expected {slot %d blockRoot %x}, got {slot %d blockRoot %x})", tci, i, expHead.Header.Slot, expHead.Header.Hash(), vhead.Slot, vhead.Hash())
+		if !reflect.DeepEqual(ht.validated[i], expHead) {
+			vhead := ht.validated[i].Attested.Header
+			t.Errorf("Wrong validated head in test case #%d index #%d (expected {slot %d blockRoot %x}, got {slot %d blockRoot %x})", tci, i, expHead.Attested.Header.Slot, expHead.Attested.Header.Hash(), vhead.Slot, vhead.Hash())
 		}
 	}
 	for i := len(expHeads); i < len(ht.validated); i++ {
-		vhead := ht.validated[i].Header
+		vhead := ht.validated[i].Attested.Header
 		t.Errorf("Unexpected validated head in test case #%d index #%d (expected none, got {slot %d blockRoot %x})", tci, i, vhead.Slot, vhead.Hash())
 	}
 	ht.validated = nil

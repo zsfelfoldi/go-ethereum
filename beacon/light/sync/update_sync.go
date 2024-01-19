@@ -245,9 +245,9 @@ func (s *ForwardUpdateSync) Process(events []request.Event) {
 			} else {
 				s.unlockRange(sid, req)
 			}
-		case EvNewSignedHead:
-			signedHead := event.Data.(types.SignedHeader)
-			s.nextSyncPeriod[event.Server] = types.SyncPeriod(signedHead.SignatureSlot + 256)
+		case EvNewFinalityUpdate:
+			finalityUpdate := event.Data.(types.FinalityUpdate)
+			s.nextSyncPeriod[event.Server] = types.SyncPeriod(finalityUpdate.SignatureSlot + 256)
 		case request.EvUnregistered:
 			delete(s.nextSyncPeriod, event.Server)
 		}

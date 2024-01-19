@@ -34,12 +34,17 @@ type beaconBlockSync struct {
 	headTracker  headTracker
 
 	lastHeadBlock *capella.BeaconBlock
-	headBlockCh   chan *capella.BeaconBlock
+	headCh        chan headData
+}
+
+type headData struct {
+	block  *capella.BeaconBlock
+	update types.FinalityUpdate
 }
 
 type headTracker interface {
 	PrefetchHead() types.HeadInfo
-	ValidatedHead() types.SignedHeader
+	ValidatedHead() (types.FinalityUpdate, bool)
 }
 
 // newBeaconBlockSync returns a new beaconBlockSync.
@@ -49,7 +54,7 @@ func newBeaconBlockSync(headTracker headTracker) *beaconBlockSync {
 		recentBlocks: lru.NewCache[common.Hash, *capella.BeaconBlock](10),
 		locked:       make(map[common.Hash]struct{}),
 		serverHeads:  make(map[request.Server]common.Hash),
-		headBlockCh:  make(chan *capella.BeaconBlock, 1),
+		headCh:       make(chan headData, 1),
 	}
 }
 
@@ -76,11 +81,11 @@ func (s *beaconBlockSync) Process(events []request.Event) {
 	}
 
 	// send validated head block
-	if vh := s.headTracker.ValidatedHead(); vh != (types.SignedHeader{}) {
-		validatedHead := vh.Header.Hash()
+	if vh, ok := s.headTracker.ValidatedHead(); ok {
+		validatedHead := vh.Attested.Header.Hash()
 		if headBlock, ok := s.recentBlocks.Get(validatedHead); ok && headBlock != s.lastHeadBlock {
 			select {
-			case s.headBlockCh <- headBlock:
+			case s.headCh <- headData{block: headBlock, update: vh}:
 				s.lastHeadBlock = headBlock
 			default:
 			}
@@ -90,8 +95,8 @@ func (s *beaconBlockSync) Process(events []request.Event) {
 
 func (s *beaconBlockSync) MakeRequest(server request.Server) (request.Request, float32) {
 	// request validated head block if unavailable and not yet requested
-	if vh := s.headTracker.ValidatedHead(); vh != (types.SignedHeader{}) {
-		validatedHead := vh.Header.Hash()
+	if vh, ok := s.headTracker.ValidatedHead(); ok {
+		validatedHead := vh.Attested.Header.Hash()
 		if _, ok := s.recentBlocks.Get(validatedHead); !ok {
 			if _, ok := s.locked[validatedHead]; !ok {
 				return sync.ReqBeaconBlock(validatedHead), 1
