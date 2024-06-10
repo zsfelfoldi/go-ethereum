@@ -51,6 +51,7 @@ func TestServerEvents(t *testing.T) {
 	expEvent(EvFail)
 	rs.eventCb(Event{Type: EvResponse, Data: RequestResponse{ID: 1, Request: testRequest, Response: testResponse}})
 	expEvent(nil)
+	srv.unsubscribe()
 }
 
 func TestServerParallel(t *testing.T) {
@@ -129,9 +130,7 @@ func TestServerEventRateLimit(t *testing.T) {
 	srv := NewServer(rs, clock)
 	var eventCount int
 	srv.subscribe(func(event Event) {
-		if !event.IsRequestEvent() {
-			eventCount++
-		}
+		eventCount++
 	})
 	expEvents := func(send, expAllowed int) {
 		eventCount = 0
@@ -147,6 +146,30 @@ func TestServerEventRateLimit(t *testing.T) {
 	expEvents(5, 1)
 	clock.Run(maxServerEventRate * maxServerEventBuffer * 2)
 	expEvents(maxServerEventBuffer+5, maxServerEventBuffer)
+	srv.unsubscribe()
+}
+
+func TestServerUnsubscribe(t *testing.T) {
+	rs := &testRequestServer{}
+	clock := &mclock.Simulated{}
+	srv := NewServer(rs, clock)
+	var eventCount int
+	srv.subscribe(func(event Event) {
+		eventCount++
+	})
+	eventCb := rs.eventCb
+	eventCb(Event{Type: testEventType})
+	if eventCount != 1 {
+		t.Errorf("Server event callback not called before unsubscribe")
+	}
+	srv.unsubscribe()
+	if rs.eventCb != nil {
+		t.Errorf("Server event callback not removed after unsubscribe")
+	}
+	eventCb(Event{Type: testEventType})
+	if eventCount != 1 {
+		t.Errorf("Server event callback called after unsubscribe")
+	}
 }
 
 type testRequestServer struct {
