@@ -18,6 +18,8 @@ package rawdb
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -177,5 +179,85 @@ func DeleteBloombits(db ethdb.Database, bit uint, from uint64, to uint64) {
 	}
 	if it.Error() != nil {
 		log.Crit("Failed to delete bloom bits", "err", it.Error())
+	}
+}
+
+func ReadFilterMapRow(db ethdb.KeyValueReader, mapRowIndex uint64) ([]byte, error) {
+	key := filterMapRowKey(mapRowIndex)
+	if has, err := db.Has(key); !has || err != nil {
+		return nil, err
+	}
+	return db.Get(key)
+}
+
+func WriteFilterMapRow(db ethdb.KeyValueWriter, mapRowIndex uint64, rowEnc []byte) {
+	if err := db.Put(filterMapRowKey(mapRowIndex), rowEnc); err != nil {
+		log.Crit("Failed to store filter map row", "err", err)
+	}
+}
+
+func DeleteFilterMapRow(db ethdb.KeyValueWriter, mapRowIndex uint64) {
+	if err := db.Delete(filterMapRowKey(mapRowIndex)); err != nil {
+		log.Crit("Failed to delete filter map row", "err", err)
+	}
+}
+
+func ReadFilterMapBlockPtr(db ethdb.KeyValueReader, mapIndex uint32) (uint64, error) {
+	encPtr, err := db.Get(filterMapBlockPtrKey(mapIndex))
+	if err != nil {
+		return 0, err
+	}
+	if len(encPtr) != 8 {
+		return 0, errors.New("Invalid block number encoding")
+	}
+	return binary.BigEndian.Uint64(encPtr), nil
+}
+
+func WriteFilterMapBlockPtr(db ethdb.KeyValueWriter, mapIndex uint32, blockNumber uint64) {
+	var encPtr [8]byte
+	binary.BigEndian.PutUint64(encPtr[:], blockNumber)
+	if err := db.Put(filterMapBlockPtrKey(mapIndex), encPtr[:]); err != nil {
+		log.Crit("Failed to store filter map block pointer", "err", err)
+	}
+}
+
+func DeleteFilterMapBlockPtr(db ethdb.KeyValueWriter, mapIndex uint32) {
+	if err := db.Delete(filterMapBlockPtrKey(mapIndex)); err != nil {
+		log.Crit("Failed to delete filter map block pointer", "err", err)
+	}
+}
+
+func ReadBlockLvPointer(db ethdb.KeyValueReader, blockNumber uint64) (uint64, error) {
+	encPtr, err := db.Get(blockLVKey(blockNumber))
+	if err != nil {
+		return 0, err
+	}
+	if len(encPtr) != 8 {
+		return 0, errors.New("Invalid log value pointer encoding")
+	}
+	return binary.BigEndian.Uint64(encPtr), nil
+}
+
+func WriteBlockLvPointer(db ethdb.KeyValueWriter, blockNumber, lvPointer uint64) {
+	var encPtr [8]byte
+	binary.BigEndian.PutUint64(encPtr[:], lvPointer)
+	if err := db.Put(blockLVKey(blockNumber), encPtr[:]); err != nil {
+		log.Crit("Failed to store block log value pointer", "err", err)
+	}
+}
+
+func DeleteBlockLvPointer(db ethdb.KeyValueWriter, blockNumber uint64) {
+	if err := db.Delete(blockLVKey(blockNumber)); err != nil {
+		log.Crit("Failed to delete block log value pointer", "err", err)
+	}
+}
+
+func ReadFilterMapsRange(db ethdb.KeyValueReader) ([]byte, error) {
+	return db.Get(filterMapsRangeKey)
+}
+
+func WriteFilterMapsRange(db ethdb.KeyValueWriter, encRange []byte) {
+	if err := db.Put(filterMapsRangeKey, encRange); err != nil {
+		log.Crit("Failed to store filter maps range", "err", err)
 	}
 }

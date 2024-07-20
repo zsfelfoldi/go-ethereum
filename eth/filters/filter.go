@@ -19,11 +19,15 @@ package filters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
+	"reflect"
 	"slices"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/bloombits"
+	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rpc"
 )
@@ -148,16 +152,27 @@ func (f *Filter) Logs(ctx context.Context) ([]*types.Log, error) {
 		return nil, err
 	}
 
+	start := time.Now()
+	logs, err := filtermaps.GetPotentialMatches(ctx, f.sys.backend, uint64(f.begin), uint64(f.end), f.addresses, f.topics)
+	fmLogs := filterLogs(logs, nil, nil, f.addresses, f.topics)
+	fmt.Println("filtermaps (new) runtime", time.Since(start))
+
+	//TODO remove
+	start = time.Now()
 	logChan, errChan := f.rangeLogsAsync(ctx)
-	var logs []*types.Log
+	var bbLogs []*types.Log
+loop:
 	for {
 		select {
 		case log := <-logChan:
-			logs = append(logs, log)
-		case err := <-errChan:
-			return logs, err
+			bbLogs = append(bbLogs, log)
+		case <-errChan:
+			break loop
 		}
 	}
+	fmt.Println("bloombits (old) runtime", time.Since(start))
+	fmt.Println("DeepEqual", reflect.DeepEqual(fmLogs, bbLogs))
+	return fmLogs, err
 }
 
 // rangeLogsAsync retrieves block-range logs that match the filter criteria asynchronously,

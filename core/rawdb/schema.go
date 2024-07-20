@@ -26,6 +26,8 @@ import (
 	"github.com/ethereum/go-ethereum/metrics"
 )
 
+const testFmPrefix = "fT4-"
+
 // The fields below define the low level database schema prefixing.
 var (
 	// databaseVersionKey tracks the current database version.
@@ -96,6 +98,8 @@ var (
 	// snapSyncStatusFlagKey flags that status of snap sync.
 	snapSyncStatusFlagKey = []byte("SnapSyncStatus")
 
+	filterMapsRangeKey = []byte(testFmPrefix + "fR")
+
 	// Data item prefixes (use single byte to avoid mixing data types, avoid `i`, used for indexes).
 	headerPrefix       = []byte("h") // headerPrefix + num (uint64 big endian) + hash -> header
 	headerTDSuffix     = []byte("t") // headerPrefix + num (uint64 big endian) + hash + headerTDSuffix -> td
@@ -105,12 +109,15 @@ var (
 	blockBodyPrefix     = []byte("b") // blockBodyPrefix + num (uint64 big endian) + hash -> block body
 	blockReceiptsPrefix = []byte("r") // blockReceiptsPrefix + num (uint64 big endian) + hash -> block receipts
 
-	txLookupPrefix        = []byte("l") // txLookupPrefix + hash -> transaction/receipt lookup metadata
-	bloomBitsPrefix       = []byte("B") // bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash -> bloom bits
-	SnapshotAccountPrefix = []byte("a") // SnapshotAccountPrefix + account hash -> account trie value
-	SnapshotStoragePrefix = []byte("o") // SnapshotStoragePrefix + account hash + storage hash -> storage trie value
-	CodePrefix            = []byte("c") // CodePrefix + code hash -> account code
-	skeletonHeaderPrefix  = []byte("S") // skeletonHeaderPrefix + num (uint64 big endian) -> header
+	txLookupPrefix          = []byte("l")                 // txLookupPrefix + hash -> transaction/receipt lookup metadata
+	bloomBitsPrefix         = []byte("B")                 // bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash -> bloom bits
+	filterMapRowPrefix      = []byte(testFmPrefix + "fr") // filterMapRowPrefix + mapRowIndex (uint64 big endian) -> filter row
+	filterMapBlockPtrPrefix = []byte(testFmPrefix + "fb") // filterMapBlockPtrPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
+	blockLVPrefix           = []byte(testFmPrefix + "fp") // blockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
+	SnapshotAccountPrefix   = []byte("a")                 // SnapshotAccountPrefix + account hash -> account trie value
+	SnapshotStoragePrefix   = []byte("o")                 // SnapshotStoragePrefix + account hash + storage hash -> storage trie value
+	CodePrefix              = []byte("c")                 // CodePrefix + code hash -> account code
+	skeletonHeaderPrefix    = []byte("S")                 // skeletonHeaderPrefix + num (uint64 big endian) -> header
 
 	// Path-based storage scheme of merkle patricia trie.
 	TrieNodeAccountPrefix = []byte("A") // TrieNodeAccountPrefix + hexPath -> trie node
@@ -345,4 +352,23 @@ func ResolveStorageTrieNode(key []byte) (bool, common.Hash, []byte) {
 func IsStorageTrieNode(key []byte) bool {
 	ok, _, _ := ResolveStorageTrieNode(key)
 	return ok
+}
+
+// filterMapRowKey = filterMapRowPrefix + mapRowIndex (uint64 big endian)
+func filterMapRowKey(mapRowIndex uint64) []byte {
+	key := append(filterMapRowPrefix, make([]byte, 8)...)
+	binary.BigEndian.PutUint64(key[1:], mapRowIndex)
+	return key
+}
+
+// filterMapBlockPtrKey = filterMapBlockPtrPrefix + mapIndex (uint32 big endian)
+func filterMapBlockPtrKey(mapIndex uint32) []byte {
+	key := append(filterMapBlockPtrPrefix, make([]byte, 4)...)
+	binary.BigEndian.PutUint32(key[1:], mapIndex)
+	return key
+}
+
+// blockLVKey = blockLVPrefix + num (uint64 big endian)
+func blockLVKey(number uint64) []byte {
+	return append(blockLVPrefix, encodeBlockNumber(number)...)
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/bloombits"
+	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/txpool"
@@ -430,4 +431,16 @@ func (b *EthAPIBackend) StateAtBlock(ctx context.Context, block *types.Block, re
 
 func (b *EthAPIBackend) StateAtTransaction(ctx context.Context, block *types.Block, txIndex int, reexec uint64) (*types.Transaction, vm.BlockContext, *state.StateDB, tracers.StateReleaseFunc, error) {
 	return b.eth.stateAtTransaction(ctx, block, txIndex, reexec)
+}
+
+func (b *EthAPIBackend) GetLogByLvIndex(ctx context.Context, lvIndex uint64) (*types.Log, error) {
+	return b.eth.filterMaps.GetLogByLvIndex(lvIndex)
+}
+
+func (b *EthAPIBackend) GetBlockLvPointer(ctx context.Context, blockNumber uint64) (uint64, error) {
+	return b.eth.filterMaps.GetBlockLvPointer(blockNumber)
+}
+
+func (b *EthAPIBackend) GetFilterMapRow(ctx context.Context, mapIndex, rowIndex uint32) (filtermaps.FilterRow, error) {
+	return b.eth.filterMaps.GetFilterMapRow(ctx, mapIndex, rowIndex)
 }
