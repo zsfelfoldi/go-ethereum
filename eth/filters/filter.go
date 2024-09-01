@@ -39,8 +39,9 @@ type Filter struct {
 	addresses []common.Address
 	topics    [][]common.Hash
 
-	block      *common.Hash // Block hash if filtering a single block
-	begin, end int64        // Range interval if filtering multiple blocks
+	block        *common.Hash // Block hash if filtering a single block
+	begin, end   int64        // Range interval if filtering multiple blocks
+	bbMatchCount uint64
 
 	matcher *bloombits.Matcher
 }
@@ -155,9 +156,10 @@ func (f *Filter) Logs(ctx context.Context) ([]*types.Log, error) {
 	start := time.Now()
 	logs, err := filtermaps.GetPotentialMatches(ctx, f.sys.backend, uint64(f.begin), uint64(f.end), f.addresses, f.topics)
 	fmLogs := filterLogs(logs, nil, nil, f.addresses, f.topics)
-	fmt.Println("filtermaps (new) runtime", time.Since(start))
+	fmt.Println("filtermaps (new) runtime", time.Since(start), "true matches", len(fmLogs), "false positives", len(logs)-len(fmLogs))
 
 	//TODO remove
+	f.bbMatchCount = 0
 	start = time.Now()
 	logChan, errChan := f.rangeLogsAsync(ctx)
 	var bbLogs []*types.Log
@@ -170,7 +172,7 @@ loop:
 			break loop
 		}
 	}
-	fmt.Println("bloombits (old) runtime", time.Since(start))
+	fmt.Println("bloombits (old) runtime", time.Since(start), "true matches", len(bbLogs), "false positives", f.bbMatchCount-uint64(len(bbLogs)))
 	fmt.Println("DeepEqual", reflect.DeepEqual(fmLogs, bbLogs))
 	return fmLogs, err
 }
@@ -233,6 +235,7 @@ func (f *Filter) indexedLogs(ctx context.Context, end uint64, logChan chan *type
 	for {
 		select {
 		case number, ok := <-matches:
+			f.bbMatchCount++
 			// Abort if all matches have been fulfilled
 			if !ok {
 				err := session.Error()
