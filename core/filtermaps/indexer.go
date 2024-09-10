@@ -8,7 +8,6 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 )
@@ -91,67 +90,57 @@ func (f *FilterMaps) tryInit(head *types.Header) {
 	f.applyUpdateBatch(update)
 }
 
-func (f *FilterMaps) tryUpdateHead(head *types.Header) {
-	fmRange := f.getRange()
-	fmPtr := f.chain.GetHeader(fmRange.headBlockHash, fmRange.headBlockNumber)
-	if fmPtr == nil {
-		log.Error("Head header not found", "number", fmRange.headBlockNumber, "hash", fmRange.headBlockHash)
-		return
-	}
-	chainPtr := head
-	update := f.newUpdateBatch()
-
+func (f *FilterMaps) tryUpdateHead(newHead *types.Header) {
 	var newHeaders []*types.Header
-	for fmPtr.Hash() != chainPtr.Hash() {
-		if fmPtr.Number.Uint64() >= chainPtr.Number.Uint64() {
-			receipts := f.chain.GetReceiptsByHash(fmPtr.Hash())
-			if receipts == nil {
-				log.Error("Could not retrieve block receipts for reverted block", "number", fmPtr.Number, "hash", fmPtr.Hash())
-				newHeaders = nil
-				break
-			}
-			if err := update.removeBlockFromHead(fmPtr, receipts); err == nil {
-				if update.updatedRangeLength() >= mapsPerEpoch {
-					f.applyUpdateBatch(update)
-					update = f.newUpdateBatch()
-				}
-				fmPtr = f.chain.GetHeader(fmPtr.ParentHash, fmPtr.Number.Uint64()-1)
-				if fmPtr == nil {
-					log.Error("Header of old path not found", "number", fmPtr.Number.Uint64()-1, "hash", fmPtr.ParentHash)
-					return
-				}
-			} else {
-				log.Error("Error reverting block", "number", fmPtr.Number, "hash", fmPtr.Hash(), "error", err)
-				newHeaders = nil
-				break
-			}
+	chainPtr := newHead
+	for {
+		if chainPtr.Hash() == f.headBlockHash {
+			break // no need to revert
 		}
-		if fmPtr.Number.Uint64() < chainPtr.Number.Uint64() {
-			newHeaders = append(newHeaders, chainPtr)
-			chainPtr = f.chain.GetHeader(chainPtr.ParentHash, chainPtr.Number.Uint64()-1)
-			if chainPtr == nil {
-				log.Error("Header of new path not found", "number", chainPtr.Number.Uint64()-1, "hash", chainPtr.ParentHash)
+		rp, stop, err := f.getRevertPoint(chainPtr.Number.Uint64())
+		if err != nil {
+			log.Error("Error fetching revert point", "block number", chainPtr.Number.Uint64(), "error", err)
+			return
+		}
+		if rp != nil && rp.BlockHash == chainPtr.Hash() {
+			if err := f.revertTo(rp); err != nil {
+				log.Error("Error applying revert point", "block number", chainPtr.Number.Uint64(), "error", err)
 				return
 			}
+			break
+		}
+		if stop {
+			log.Warn("No suitable revert point exists; re-initializing log index", "block number", newHead.Number.Uint64())
+			f.reset()
+			f.tryInit(newHead)
+			return
+		}
+		newHeaders = append(newHeaders, chainPtr)
+		chainPtr = f.chain.GetHeader(chainPtr.ParentHash, chainPtr.Number.Uint64()-1)
+		if chainPtr == nil {
+			log.Error("Canonical header not found", "number", chainPtr.Number.Uint64()-1, "hash", chainPtr.ParentHash)
+			return
 		}
 	}
 
-	if newHeaders != nil {
-		for i := len(newHeaders) - 1; i >= 0; i-- {
-			newHeader := newHeaders[i]
-			receipts := f.chain.GetReceiptsByHash(newHeader.Hash())
-			if receipts == nil {
-				log.Error("Could not retrieve block receipts for new block", "number", newHeader.Number, "hash", newHeader.Hash())
-				break
-			}
-			if err := update.addBlockToHead(newHeader, receipts); err != nil {
-				log.Error("Error adding new block", "number", newHeader.Number, "hash", newHeader.Hash(), "error", err)
-				break
-			}
-			if update.updatedRangeLength() >= mapsPerEpoch {
-				f.applyUpdateBatch(update)
-				update = f.newUpdateBatch()
-			}
+	if newHeaders == nil {
+		return
+	}
+	update := f.newUpdateBatch()
+	for i := len(newHeaders) - 1; i >= 0; i-- {
+		newHeader := newHeaders[i]
+		receipts := f.chain.GetReceiptsByHash(newHeader.Hash())
+		if receipts == nil {
+			log.Error("Could not retrieve block receipts for new block", "number", newHeader.Number, "hash", newHeader.Hash())
+			break
+		}
+		if err := update.addBlockToHead(newHeader, receipts); err != nil {
+			log.Error("Error adding new block", "number", newHeader.Number, "hash", newHeader.Hash(), "error", err)
+			break
+		}
+		if update.updatedRangeLength() >= mapsPerEpoch {
+			f.applyUpdateBatch(update)
+			update = f.newUpdateBatch()
 		}
 	}
 	f.applyUpdateBatch(update)
@@ -351,7 +340,11 @@ func (u *updateBatch) addBlockToHead(header *types.Header, receipts types.Receip
 	if (u.headBlockNumber-cachedRevertPoints)%revertPointFrequency != 0 {
 		delete(u.revertPoints, u.headBlockNumber-cachedRevertPoints)
 	}
-	u.revertPoints[u.headBlockNumber] = u.makeRevertPoint()
+	if rp, err := u.makeRevertPoint(); err != nil {
+		return err
+	} else if rp != nil {
+		u.revertPoints[u.headBlockNumber] = rp
+	}
 	return nil
 }
 
@@ -475,35 +468,51 @@ type revertPoint struct {
 	RowLength   [mapHeight]uint
 }
 
-func (f *FilterMaps) makeRevertPoint() (*revertPoint, error) {
+func (u *updateBatch) makeRevertPoint() (*revertPoint, error) {
 	rp := &revertPoint{
-		blockNumber: f.headBlockNumber,
-		BlockHash:   f.headBlockHash,
-		MapIndex:    uint32(f.headLvPointer >> logValuesPerMap),
+		blockNumber: u.headBlockNumber,
+		BlockHash:   u.headBlockHash,
+		MapIndex:    uint32(u.headLvPointer >> logValuesPerMap),
 	}
-	if f.tailLvPointer > uint64(rp.MapIndex)<<logValuesPerMap {
+	if u.tailLvPointer > uint64(rp.MapIndex)<<logValuesPerMap {
 		return nil, nil
 	}
 	for i := range rp.RowLength[:] {
-		row, err := f.getFilterMapRow(rp.MapIndex, uint32(i))
-		if err != nil {
-			return nil, err
+		var row FilterRow
+		if m := u.maps[rp.MapIndex]; m != nil {
+			row = (*m)[i]
+		}
+		if row == nil {
+			var err error
+			row, err = u.getFilterMapRow(rp.MapIndex, uint32(i))
+			if err != nil {
+				return nil, err
+			}
 		}
 		rp.RowLength[i] = uint(len(row))
 	}
 	return rp, nil
 }
 
-func (f *FilterMaps) getRevertPoint(blockNumber uint64) (*revertPoint, error) {
+func (f *FilterMaps) getRevertPoint(blockNumber uint64) (*revertPoint, bool, error) {
+	if blockNumber > f.headBlockNumber {
+		return nil, false, nil
+	}
+	if rp := f.revertPoints[blockNumber]; rp != nil {
+		return rp, false, nil
+	}
+	if blockNumber%revertPointFrequency != 0 {
+		return nil, false, nil
+	}
 	enc, err := rawdb.ReadRevertPoint(f.db, blockNumber)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if enc == nil {
-		return nil, nil
+		return nil, true, nil
 	}
 	rp := &revertPoint{blockNumber: blockNumber}
-	return rp, rlp.DecodeBytes(enc, rp)
+	return rp, false, rlp.DecodeBytes(enc, rp)
 }
 
 func (f *FilterMaps) revertTo(rp *revertPoint) error {

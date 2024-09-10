@@ -262,6 +262,12 @@ func WriteFilterMapsRange(db ethdb.KeyValueWriter, encRange []byte) {
 	}
 }
 
+func DeleteFilterMapsRange(db ethdb.KeyValueWriter) {
+	if err := db.Delete(filterMapsRangeKey); err != nil {
+		log.Crit("Failed to delete filter maps range", "err", err)
+	}
+}
+
 func ReadRevertPoint(db ethdb.KeyValueReader, blockNumber uint64) ([]byte, error) {
 	key := revertPointKey(blockNumber)
 	if has, err := db.Has(key); !has || err != nil {

@@ -84,6 +84,9 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain *core.BlockChain) *FilterMaps {
 		lvPointerCache: lru.NewCache[uint64, uint64](1000),
 		revertPoints:   make(map[uint64]*revertPoint),
 	}
+	if !fm.initialized {
+		fm.resetDb()
+	}
 	fm.updateMapCache()
 	go fm.updateLoop()
 	return fm
@@ -93,6 +96,29 @@ func (f *FilterMaps) Close() {
 	ch := make(chan struct{})
 	f.closeCh <- ch
 	<-ch
+}
+
+func (f *FilterMaps) reset() {
+	f.resetDb()
+	f.filterMapsRange = filterMapsRange{}
+	f.filterMapCache = make(map[uint32]*filterMap)
+	f.revertPoints = make(map[uint64]*revertPoint)
+	f.blockPtrCache.Purge()
+	f.lvPointerCache.Purge()
+}
+
+func (f *FilterMaps) resetDb() {
+	rawdb.DeleteFilterMapsRange(f.db)
+	it := f.db.NewIterator(rawdb.FilterMapsPrefix, nil)
+	var count uint64
+	for it.Next() {
+		f.db.Delete(it.Key())
+		count++
+		if count%100000 == 0 {
+			log.Info("Resetting log index database", "items", count)
+		}
+	}
+	it.Release()
 }
 
 type filterMapsRangeForStorage struct {
