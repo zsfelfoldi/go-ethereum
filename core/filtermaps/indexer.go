@@ -3,6 +3,7 @@ package filtermaps
 import (
 	"errors"
 	"math"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -23,7 +24,7 @@ func (f *FilterMaps) updateLoop() {
 	headEventCh := make(chan core.ChainHeadEvent)
 	sub := f.chain.SubscribeChainHeadEvent(headEventCh)
 	defer sub.Unsubscribe()
-	head := f.chain.CurrentHeader()
+	head := f.chain.CurrentBlock()
 	if head == nil {
 		select {
 		case ev := <-headEventCh:
@@ -45,28 +46,28 @@ func (f *FilterMaps) updateLoop() {
 			var closed bool
 			f.tryExtendTail(func() bool {
 				select {
-				case ev := <-headEventCh:
-					head = ev.Block.Header()
-					return true
+				case <-headEventCh:
 				case ch := <-f.closeCh:
 					close(ch)
 					closed = true
 					return true
 				default:
-					return false
 				}
+				head = f.chain.CurrentBlock()
+				return fmr.headBlockHash != head.Hash()
 			})
 			if closed {
 				return
 			}
 		}
 		select {
-		case ev := <-headEventCh:
-			head = ev.Block.Header()
+		case <-headEventCh:
+		case <-time.After(time.Second * 20):
 		case ch := <-f.closeCh:
 			close(ch)
 			return
 		}
+		head = f.chain.CurrentBlock()
 	}
 }
 
@@ -103,6 +104,9 @@ func (f *FilterMaps) tryUpdateHead(newHead *types.Header) {
 			return
 		}
 		if rp != nil && rp.BlockHash == chainPtr.Hash() {
+			if chainPtr.Number.Uint64()+128 <= f.headBlockNumber {
+				log.Warn("Rolling back log index", "old head", f.headBlockNumber, "new head", chainPtr.Number.Uint64())
+			}
 			if err := f.revertTo(rp); err != nil {
 				log.Error("Error applying revert point", "block number", chainPtr.Number.Uint64(), "error", err)
 				return
