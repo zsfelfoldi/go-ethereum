@@ -6,13 +6,18 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 const (
-	startLvPointer = valuesPerMap << 31
-	removedPointer = math.MaxUint64
+	startLvPointer       = valuesPerMap << 31
+	removedPointer       = math.MaxUint64
+	revertPointFrequency = 256
+	cachedRevertPoints   = 64
 )
 
 func (f *FilterMaps) updateLoop() {
@@ -192,6 +197,7 @@ type updateBatch struct {
 	getFilterMapRow        func(mapIndex, rowIndex uint32) (FilterRow, error)
 	blockLvPointer         map[uint64]uint64
 	mapBlockPtr            map[uint32]uint64
+	revertPoints           map[uint64]*revertPoint
 	firstMap, afterLastMap uint32
 }
 
@@ -205,6 +211,7 @@ func (f *FilterMaps) newUpdateBatch() *updateBatch {
 		getFilterMapRow: f.getFilterMapRow,
 		blockLvPointer:  make(map[uint64]uint64),
 		mapBlockPtr:     make(map[uint32]uint64),
+		revertPoints:    make(map[uint64]*revertPoint),
 	}
 }
 
@@ -213,7 +220,6 @@ func (f *FilterMaps) applyUpdateBatch(u *updateBatch) {
 	defer f.lock.Unlock()
 
 	batch := f.db.NewBatch()
-	f.setRange(batch, u.filterMapsRange)
 	for blockNumber, lvPointer := range u.blockLvPointer {
 		if lvPointer != removedPointer {
 			f.storeBlockLvPointer(batch, blockNumber, lvPointer)
@@ -237,6 +243,32 @@ func (f *FilterMaps) applyUpdateBatch(u *updateBatch) {
 			}
 		}
 	}
+	if u.headBlockNumber < f.headBlockNumber {
+		for b := u.headBlockNumber + 1; b <= f.headBlockNumber; b++ {
+			delete(f.revertPoints, b)
+			if b%revertPointFrequency == 0 {
+				rawdb.DeleteRevertPoint(batch, b)
+			}
+		}
+	}
+	if u.headBlockNumber > f.headBlockNumber {
+		for b := f.headBlockNumber + 1; b <= u.headBlockNumber; b++ {
+			delete(f.revertPoints, b-cachedRevertPoints)
+		}
+	}
+	for b, rp := range u.revertPoints {
+		if b+cachedRevertPoints > u.headBlockNumber {
+			f.revertPoints[b] = rp
+		}
+		if b%revertPointFrequency == 0 {
+			enc, err := rlp.EncodeToBytes(rp)
+			if err != nil {
+				log.Crit("Failed to encode revert point", "err", err)
+			}
+			rawdb.WriteRevertPoint(batch, b, enc)
+		}
+	}
+	f.setRange(batch, u.filterMapsRange)
 	if err := batch.Write(); err != nil {
 		log.Crit("Could not write update batch", "error", err)
 	}
@@ -316,10 +348,14 @@ func (u *updateBatch) addBlockToHead(header *types.Header, receipts types.Receip
 		u.mapBlockPtr[m] = number
 	}
 	u.headBlockNumber, u.headBlockHash = number, header.Hash()
+	if (u.headBlockNumber-cachedRevertPoints)%revertPointFrequency != 0 {
+		delete(u.revertPoints, u.headBlockNumber-cachedRevertPoints)
+	}
+	u.revertPoints[u.headBlockNumber] = u.makeRevertPoint()
 	return nil
 }
 
-func (u *updateBatch) removeValueFromHead(logValue common.Hash) error {
+/*func (u *updateBatch) removeValueFromHead(logValue common.Hash) error {
 	u.headLvPointer--
 	mapIndex := uint32(u.headLvPointer >> logValuesPerMap)
 	rowPtr, err := u.getRowPtr(mapIndex, rowIndex(mapIndex>>logMapsPerEpoch, logValue))
@@ -354,7 +390,7 @@ func (u *updateBatch) removeBlockFromHead(header *types.Header, receipts types.R
 	}
 	u.headBlockNumber, u.headBlockHash = number-1, header.ParentHash
 	return nil
-}
+}*/
 
 func (u *updateBatch) addValueToTail(logValue common.Hash) error {
 	if u.tailLvPointer == 0 {
@@ -428,6 +464,85 @@ func iterateReceiptsReverse(receipts types.Receipts, valueCb func(common.Hash) e
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+type revertPoint struct {
+	blockNumber uint64
+	BlockHash   common.Hash
+	MapIndex    uint32
+	RowLength   [mapHeight]uint
+}
+
+func (f *FilterMaps) makeRevertPoint() (*revertPoint, error) {
+	rp := &revertPoint{
+		blockNumber: f.headBlockNumber,
+		BlockHash:   f.headBlockHash,
+		MapIndex:    uint32(f.headLvPointer >> logValuesPerMap),
+	}
+	if f.tailLvPointer > uint64(rp.MapIndex)<<logValuesPerMap {
+		return nil, nil
+	}
+	for i := range rp.RowLength[:] {
+		row, err := f.getFilterMapRow(rp.MapIndex, uint32(i))
+		if err != nil {
+			return nil, err
+		}
+		rp.RowLength[i] = uint(len(row))
+	}
+	return rp, nil
+}
+
+func (f *FilterMaps) getRevertPoint(blockNumber uint64) (*revertPoint, error) {
+	enc, err := rawdb.ReadRevertPoint(f.db, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+	if enc == nil {
+		return nil, nil
+	}
+	rp := &revertPoint{blockNumber: blockNumber}
+	return rp, rlp.DecodeBytes(enc, rp)
+}
+
+func (f *FilterMaps) revertTo(rp *revertPoint) error {
+	batch := f.db.NewBatch()
+	afterLastMap := uint32((f.headLvPointer + valuesPerMap - 1) >> logValuesPerMap)
+	if rp.MapIndex >= afterLastMap {
+		return errors.New("cannot revert (head map behind revert point)")
+	}
+	lvPointer := uint64(rp.MapIndex) << logValuesPerMap
+	for rowIndex, rowLen := range rp.RowLength[:] {
+		rowIndex := uint32(rowIndex)
+		row, err := f.getFilterMapRow(rp.MapIndex, rowIndex)
+		if err != nil {
+			return err
+		}
+		if uint(len(row)) < rowLen {
+			return errors.New("cannot revert (row too short)")
+		}
+		if uint(len(row)) > rowLen {
+			f.storeFilterMapRow(batch, rp.MapIndex, rowIndex, row[:rowLen])
+		}
+		for mapIndex := rp.MapIndex + 1; mapIndex < afterLastMap; mapIndex++ {
+			f.storeFilterMapRow(batch, mapIndex, rowIndex, nil)
+		}
+		lvPointer += uint64(rowLen)
+	}
+	for mapIndex := rp.MapIndex + 1; mapIndex < afterLastMap; mapIndex++ {
+		f.deleteMapBlockPtr(batch, mapIndex)
+	}
+	for blockNumber := rp.blockNumber + 1; blockNumber <= f.headBlockNumber; blockNumber++ {
+		f.deleteBlockLvPointer(batch, blockNumber)
+	}
+	newRange := f.filterMapsRange
+	newRange.headLvPointer = lvPointer
+	newRange.headBlockNumber = rp.blockNumber
+	newRange.headBlockHash = rp.BlockHash
+	f.setRange(batch, newRange)
+	if err := batch.Write(); err != nil {
+		log.Crit("Could not write update batch", "error", err)
 	}
 	return nil
 }

@@ -114,6 +114,7 @@ var (
 	filterMapRowPrefix      = []byte(testFmPrefix + "fr") // filterMapRowPrefix + mapRowIndex (uint64 big endian) -> filter row
 	filterMapBlockPtrPrefix = []byte(testFmPrefix + "fb") // filterMapBlockPtrPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
 	blockLVPrefix           = []byte(testFmPrefix + "fp") // blockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
+	revertPointPrefix       = []byte(testFmPrefix + "fv") // revertPointPrefix + num (uint64 big endian) -> revert data
 	SnapshotAccountPrefix   = []byte("a")                 // SnapshotAccountPrefix + account hash -> account trie value
 	SnapshotStoragePrefix   = []byte("o")                 // SnapshotStoragePrefix + account hash + storage hash -> storage trie value
 	CodePrefix              = []byte("c")                 // CodePrefix + code hash -> account code
@@ -371,4 +372,9 @@ func filterMapBlockPtrKey(mapIndex uint32) []byte {
 // blockLVKey = blockLVPrefix + num (uint64 big endian)
 func blockLVKey(number uint64) []byte {
 	return append(blockLVPrefix, encodeBlockNumber(number)...)
+}
+
+// revertPointKey = revertPointPrefix + num (uint64 big endian)
+func revertPointKey(number uint64) []byte {
+	return append(revertPointPrefix, encodeBlockNumber(number)...)
 }

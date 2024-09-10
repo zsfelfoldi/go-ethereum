@@ -261,3 +261,23 @@ func WriteFilterMapsRange(db ethdb.KeyValueWriter, encRange []byte) {
 		log.Crit("Failed to store filter maps range", "err", err)
 	}
 }
+
+func ReadRevertPoint(db ethdb.KeyValueReader, blockNumber uint64) ([]byte, error) {
+	key := revertPointKey(blockNumber)
+	if has, err := db.Has(key); !has || err != nil {
+		return nil, err
+	}
+	return db.Get(key)
+}
+
+func WriteRevertPoint(db ethdb.KeyValueWriter, blockNumber uint64, data []byte) {
+	if err := db.Put(revertPointKey(blockNumber), data); err != nil {
+		log.Crit("Failed to store revert point", "err", err)
+	}
+}
+
+func DeleteRevertPoint(db ethdb.KeyValueWriter, blockNumber uint64) {
+	if err := db.Delete(revertPointKey(blockNumber)); err != nil {
+		log.Crit("Failed to delete revert point", "err", err)
+	}
+}

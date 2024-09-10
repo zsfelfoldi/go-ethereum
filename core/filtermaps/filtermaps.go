@@ -46,6 +46,7 @@ type FilterMaps struct {
 	filterMapCache map[uint32]*filterMap
 	blockPtrCache  *lru.Cache[uint32, uint64]
 	lvPointerCache *lru.Cache[uint64, uint64]
+	revertPoints   map[uint64]*revertPoint
 }
 
 type filterMap [mapHeight]FilterRow
@@ -81,6 +82,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain *core.BlockChain) *FilterMaps {
 		filterMapCache: make(map[uint32]*filterMap),
 		blockPtrCache:  lru.NewCache[uint32, uint64](1000),
 		lvPointerCache: lru.NewCache[uint64, uint64](1000),
+		revertPoints:   make(map[uint64]*revertPoint),
 	}
 	fm.updateMapCache()
 	go fm.updateLoop()
@@ -242,6 +244,7 @@ func (f *FilterMaps) getFilterMapRowLocked(mapIndex, rowIndex uint32) (FilterRow
 }
 
 // read only; copy before modification
+// for empty row it returns zero length non-nil slice
 func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, error) {
 	if mapIndex < uint32(f.tailLvPointer>>logValuesPerMap) ||
 		mapIndex >= uint32((f.headLvPointer+valuesPerMap-1)>>logValuesPerMap) {
@@ -255,9 +258,14 @@ func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, erro
 	if err != nil {
 		return nil, err
 	}
-	filterRow, err := decodeRow(encRow)
-	if err != nil {
-		return nil, err
+	var filterRow FilterRow
+	if len(encRow) > 0 {
+		filterRow, err = decodeRow(encRow)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		filterRow = make(FilterRow, 0, valuesPerMap/mapHeight)
 	}
 	if fm != nil {
 		fm[rowIndex] = filterRow
@@ -269,7 +277,11 @@ func (f *FilterMaps) storeFilterMapRow(batch ethdb.Batch, mapIndex, rowIndex uin
 	if fm := f.filterMapCache[mapIndex]; fm != nil {
 		(*fm)[rowIndex] = row
 	}
-	rawdb.WriteFilterMapRow(batch, toMapRowIndex(mapIndex, rowIndex), encodeRow(row))
+	if len(row) > 0 {
+		rawdb.WriteFilterMapRow(batch, toMapRowIndex(mapIndex, rowIndex), encodeRow(row))
+	} else {
+		rawdb.DeleteFilterMapRow(batch, toMapRowIndex(mapIndex, rowIndex))
+	}
 }
 
 func (f *FilterMaps) getMapBlockPtr(mapIndex uint32) (uint64, error) {
