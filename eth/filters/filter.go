@@ -21,7 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"reflect"
+
+	//"reflect"
 	"slices"
 	"time"
 
@@ -159,21 +160,21 @@ func (f *Filter) Logs(ctx context.Context) ([]*types.Log, error) {
 	fmt.Println("filtermaps (new) runtime", time.Since(start), "true matches", len(fmLogs), "false positives", len(logs)-len(fmLogs))
 
 	//TODO remove
-	f.bbMatchCount = 0
-	start = time.Now()
-	logChan, errChan := f.rangeLogsAsync(ctx)
-	var bbLogs []*types.Log
-loop:
-	for {
-		select {
-		case log := <-logChan:
-			bbLogs = append(bbLogs, log)
-		case <-errChan:
-			break loop
+	/*f.bbMatchCount = 0
+		start = time.Now()
+		logChan, errChan := f.rangeLogsAsync(ctx)
+		var bbLogs []*types.Log
+	loop:
+		for {
+			select {
+			case log := <-logChan:
+				bbLogs = append(bbLogs, log)
+			case <-errChan:
+				break loop
+			}
 		}
-	}
-	fmt.Println("bloombits (old) runtime", time.Since(start), "true matches", len(bbLogs), "false positives", f.bbMatchCount-uint64(len(bbLogs)))
-	fmt.Println("DeepEqual", reflect.DeepEqual(fmLogs, bbLogs))
+		fmt.Println("bloombits (old) runtime", time.Since(start), "true matches", len(bbLogs), "false positives", f.bbMatchCount-uint64(len(bbLogs)))
+		fmt.Println("DeepEqual", reflect.DeepEqual(fmLogs, bbLogs))*/
 	return fmLogs, err
 }
 

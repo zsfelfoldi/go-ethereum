@@ -3,8 +3,7 @@ package filtermaps
 import (
 	"context"
 	"math"
-
-	//"sync"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -42,8 +41,8 @@ func GetPotentialMatches(ctx context.Context, backend Backend, firstBlock, lastB
 		matcher[i+1] = matchTopic //newCachedMatcher(matchTopic, firstMap)
 	}
 
-	var logs []*types.Log
-	for epochIndex := firstEpoch; epochIndex <= lastEpoch; epochIndex++ {
+	processEpoch := func(epochIndex uint32) ([]*types.Log, error) {
+		var logs []*types.Log
 		fm, lm := epochIndex<<logMapsPerEpoch, (epochIndex+1)<<logMapsPerEpoch-1
 		if fm < firstMap {
 			fm = firstMap
@@ -61,7 +60,7 @@ func GetPotentialMatches(ctx context.Context, backend Backend, firstBlock, lastB
 		if err != nil {
 			return logs, err
 		}
-		matcher.clearUntil(mapIndices[len(mapIndices)-1])
+		//matcher.clearUntil(mapIndices[len(mapIndices)-1])
 		for _, m := range matches {
 			mlogs, err := getLogsFromMatches(ctx, backend, firstIndex, lastIndex, m)
 			if err != nil {
@@ -69,13 +68,90 @@ func GetPotentialMatches(ctx context.Context, backend Backend, firstBlock, lastB
 			}
 			logs = append(logs, mlogs...)
 		}
+		return logs, nil
+	}
+
+	type task struct {
+		epochIndex uint32
+		logs       []*types.Log
+		err        error
+		done       chan struct{}
+	}
+
+	taskCh := make(chan *task)
+	//closeCh := make(chan struct{})
+	var wg sync.WaitGroup
+	defer func() {
+		close(taskCh)
+		wg.Wait()
+	}()
+
+	worker := func() {
+		for task := range taskCh {
+			if task == nil {
+				break
+			}
+			task.logs, task.err = processEpoch(task.epochIndex)
+			close(task.done)
+		}
+		wg.Done()
+		return
+		/*	for {
+			select {
+			case task := <-taskCh:
+				if task == nil {
+					fmt.Println("worker stopped")
+					wg.Done()
+					return
+				}
+				task.logs, task.err = processEpoch(task.epochIndex)
+				close(task.done)
+			case <-closeCh:
+				fmt.Println("worker stopped 2")
+				wg.Done()
+				return
+			}
+		}*/
+	}
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go worker()
+	}
+
+	var logs []*types.Log
+	startEpoch, waitEpoch := firstEpoch, firstEpoch
+	tasks := make(map[uint32]*task)
+	tasks[startEpoch] = &task{epochIndex: startEpoch, done: make(chan struct{})}
+	for waitEpoch <= lastEpoch {
+		select {
+		case taskCh <- tasks[startEpoch]:
+			startEpoch++
+			if startEpoch <= lastEpoch {
+				if tasks[startEpoch] == nil {
+					tasks[startEpoch] = &task{epochIndex: startEpoch, done: make(chan struct{})}
+				}
+			}
+		case <-tasks[waitEpoch].done:
+			logs = append(logs, tasks[waitEpoch].logs...)
+			if err := tasks[waitEpoch].err; err != nil {
+				return logs, err
+			}
+			delete(tasks, waitEpoch)
+			waitEpoch++
+			if waitEpoch <= lastEpoch {
+				if tasks[waitEpoch] == nil {
+					tasks[waitEpoch] = &task{epochIndex: waitEpoch, done: make(chan struct{})}
+				}
+			}
+		}
 	}
 	return logs, nil
 }
 
 type matcher interface {
 	getMatches(ctx context.Context, mapIndices []uint32) ([]potentialMatches, error)
-	clearUntil(mapIndex uint32)
+	//clearUntil(mapIndex uint32)
 }
 
 func getLogsFromMatches(ctx context.Context, backend Backend, firstIndex, lastIndex uint64, matches potentialMatches) ([]*types.Log, error) {
@@ -111,7 +187,7 @@ func (s *singleMatcher) getMatches(ctx context.Context, mapIndices []uint32) ([]
 	return results, nil
 }
 
-func (s *singleMatcher) clearUntil(mapIndex uint32) {}
+//func (s *singleMatcher) clearUntil(mapIndex uint32) {}
 
 // matchAny implements matcher
 type matchAny []matcher
@@ -141,11 +217,11 @@ func (m matchAny) getMatches(ctx context.Context, mapIndices []uint32) ([]potent
 	return results, nil
 }
 
-func (m matchAny) clearUntil(mapIndex uint32) {
+/*func (m matchAny) clearUntil(mapIndex uint32) {
 	for _, matcher := range m {
 		matcher.clearUntil(mapIndex)
 	}
-}
+}*/
 
 func mergeResults(results []potentialMatches) potentialMatches {
 	if len(results) == 0 {
@@ -223,12 +299,10 @@ func (m matchSequence) getMatches(ctx context.Context, mapIndices []uint32) ([]p
 	nextResult := func(mapIndex uint32) potentialMatches {
 		for nextPtr < len(nextIndices) && nextIndices[nextPtr] <= mapIndex {
 			if nextIndices[nextPtr] == mapIndex {
-				//fmt.Println("nr +", mapIndex, nextPtr)
 				return nextRes[nextPtr]
 			}
 			nextPtr++
 		}
-		//fmt.Println("nr -", mapIndex, nextPtr)
 		return noMatches
 	}
 	results := make([]potentialMatches, len(mapIndices))
@@ -249,11 +323,11 @@ func (m matchSequence) getMatches(ctx context.Context, mapIndices []uint32) ([]p
 	return l
 }*/
 
-func (m matchSequence) clearUntil(mapIndex uint32) {
+/*func (m matchSequence) clearUntil(mapIndex uint32) {
 	for _, matcher := range m {
 		matcher.clearUntil(mapIndex)
 	}
-}
+}*/
 
 func matchResults(mapIndex uint32, offset uint64, baseRes, nextRes, nextNextRes potentialMatches) potentialMatches {
 	if nextRes == nil || (baseRes != nil && len(baseRes) == 0) {
