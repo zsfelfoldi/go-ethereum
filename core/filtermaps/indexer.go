@@ -24,6 +24,7 @@ func (f *FilterMaps) updateLoop() {
 	headEventCh := make(chan core.ChainHeadEvent)
 	sub := f.chain.SubscribeChainHeadEvent(headEventCh)
 	defer sub.Unsubscribe()
+
 	head := f.chain.CurrentBlock()
 	if head == nil {
 		select {
@@ -34,40 +35,64 @@ func (f *FilterMaps) updateLoop() {
 			return
 		}
 	}
+	fmr := f.getRange()
 
-	for {
-		if !f.getRange().initialized {
-			f.tryInit(head)
-		}
-		if fmr := f.getRange(); fmr.initialized && fmr.headBlockHash != head.Hash() {
-			f.tryUpdateHead(head)
-		}
-		if fmr := f.getRange(); fmr.initialized && fmr.headBlockHash == head.Hash() {
-			var closed bool
-			f.tryExtendTail(func() bool {
-				select {
-				case <-headEventCh:
-				case ch := <-f.closeCh:
-					close(ch)
-					closed = true
-					return true
-				default:
-				}
-				head = f.chain.CurrentBlock()
-				return fmr.headBlockHash != head.Hash()
-			})
-			if closed {
-				return
-			}
-		}
-		select {
-		case <-headEventCh:
-		case <-time.After(time.Second * 20):
-		case ch := <-f.closeCh:
-			close(ch)
+	var stop bool
+	wait := func() {
+		if stop {
 			return
 		}
-		head = f.chain.CurrentBlock()
+		select {
+		case ev := <-headEventCh:
+			head = ev.Block.Header()
+		case <-time.After(time.Second * 20):
+			// keep updating filtermaps during syncing
+			head = f.chain.CurrentBlock()
+		case ch := <-f.closeCh:
+			close(ch)
+			stop = true
+		}
+	}
+
+	for !stop {
+		if !fmr.initialized {
+			f.tryInit(head)
+			fmr = f.getRange()
+			if !fmr.initialized {
+				wait()
+				continue
+			}
+		}
+		// filtermaps is initialized
+		if fmr.headBlockHash != head.Hash() {
+			f.tryUpdateHead(head)
+			fmr = f.getRange()
+			if fmr.headBlockHash != head.Hash() {
+				wait()
+				continue
+			}
+		}
+		// filtermaps head is at latest chain head; process tail blocks if possible
+		f.tryExtendTail(func() bool {
+			// return true if tail processing needs to be stopped
+			select {
+			case ev := <-headEventCh:
+				head = ev.Block.Header()
+			case ch := <-f.closeCh:
+				close(ch)
+				stop = true
+				return true
+			default:
+				head = f.chain.CurrentBlock()
+			}
+			// stop if there is a new chain head
+			return fmr.headBlockHash != head.Hash()
+		})
+		if fmr.headBlockHash == head.Hash() {
+			// if tail processing exited while there is no new head then no more
+			// tail blocks can be processed
+			wait()
+		}
 	}
 }
 
@@ -265,7 +290,7 @@ func (f *FilterMaps) applyUpdateBatch(u *updateBatch) {
 	if err := batch.Write(); err != nil {
 		log.Crit("Could not write update batch", "error", err)
 	}
-	log.Info("Filter maps block range updated", "tail", u.tailBlockNumber, "head", u.headBlockNumber)
+	log.Info("Filter maps block range updated", "tail", u.tailBlockNumber, "head", u.headBlockNumber, "log values", u.headLvPointer-u.tailLvPointer)
 }
 
 func (u *updateBatch) updatedRangeLength() uint32 {
