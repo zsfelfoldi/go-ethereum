@@ -221,7 +221,7 @@ func (f *FilterMaps) GetLogByLvIndex(lvIndex uint64) (*types.Log, error) {
 	for _, receipt := range receipts {
 		for _, log := range receipt.Logs {
 			if lvPointer > lvIndex {
-				return nil, errors.New("log value index not found")
+				return nil, nil // not an error, probably a false positive
 			}
 			if lvPointer == lvIndex {
 				return log, nil

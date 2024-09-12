@@ -164,7 +164,9 @@ func getLogsFromMatches(ctx context.Context, backend Backend, firstIndex, lastIn
 		if err != nil {
 			return logs, err
 		}
-		logs = append(logs, log)
+		if log != nil {
+			logs = append(logs, log)
+		}
 	}
 	return logs, nil
 }
