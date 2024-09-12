@@ -25,6 +25,8 @@ type FilterRow []uint32
 // nil means that all lv indices in the filter map range are potential matches.
 type potentialMatches []uint64
 
+var noMatches = potentialMatches{}
+
 const (
 	logMapHeight    = 12
 	mapHeight       = 1 << logMapHeight
