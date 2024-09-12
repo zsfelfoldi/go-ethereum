@@ -400,7 +400,8 @@ func rowIndex(epochIndex uint32, logValue common.Hash) uint32 {
 }
 
 // sorted, no doubles
-func (row FilterRow) potentialMatches(mapIndex uint32, logValue common.Hash) (results potentialMatches) {
+func (row FilterRow) potentialMatches(mapIndex uint32, logValue common.Hash) potentialMatches {
+	results := make(potentialMatches, 0, 8)
 	transformHash := transformHash(mapIndex, logValue)
 	sub1 := binary.LittleEndian.Uint32(transformHash[0:4])
 	mul1 := uint32ModInverse(binary.LittleEndian.Uint32(transformHash[4:8])*2 + 1)
