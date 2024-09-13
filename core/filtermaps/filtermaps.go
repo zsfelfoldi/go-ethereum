@@ -236,6 +236,9 @@ func (f *FilterMaps) GetBlockLvPointer(blockNumber uint64) (uint64, error) {
 	f.lock.RLock()
 	defer f.lock.RUnlock()
 
+	if blockNumber > f.headBlockNumber {
+		return f.headLvPointer, nil
+	}
 	if lvPointer, ok := f.lvPointerCache.Get(blockNumber); ok {
 		return lvPointer, nil
 	}
