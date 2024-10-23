@@ -17,6 +17,7 @@
 package filtermaps
 
 import (
+	"bytes"
 	"errors"
 	"sync"
 	"time"
@@ -30,6 +31,18 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 )
+
+type checkpoint struct {
+	blockNumber uint64
+	blockHash   common.Hash
+	nextLvIndex uint64
+}
+
+var checkpoints = []checkpoint{{
+	blockNumber: 21019982,
+	blockHash:   common.HexToHash("0xc684e4db692fe347e740082665acf91e27c0d9ad2a118822abdd7bb06c2a9250"),
+	nextLvIndex: 15878969230,
+}}
 
 const headCacheSize = 8 // maximum number of recent filter maps cached in memory
 
@@ -175,6 +188,9 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 			log.Error("Error fetching tail block pointer, resetting log index", "error", err)
 			fm.filterMapsRange = filterMapsRange{} // updateLoop resets the database
 		}
+		headBlockPtr, _ := fm.getBlockLvPointer(fm.headBlockNumber)
+		log.Info("Log index head", "number", fm.headBlockNumber, "hash", fm.headBlockHash.String(), "lvPtr", fm.headLvPointer, "head block lvPtr", headBlockPtr) //TODO remove
+		log.Info("Log index tail", "number", fm.tailBlockNumber, "parentHash", fm.tailParentHash.String(), "lvPtr", fm.tailBlockLvPointer)                       //TODO remove
 	}
 	return fm
 }
@@ -218,43 +234,22 @@ func (f *FilterMaps) removeBloomBits() {
 // removeDbWithPrefix removes data with the given prefix from the database and
 // returns true if everything was successfully removed.
 func (f *FilterMaps) removeDbWithPrefix(prefix []byte, action string) bool {
-	var (
-		logged     bool
-		lastLogged time.Time
-		removed    uint64
-	)
-	for {
-		select {
-		case <-f.closeCh:
-			return false
-		default:
+	end := bytes.Clone(prefix)
+	end[len(end)-1]++
+
+	it := f.db.NewIterator(prefix, nil)
+	hadData := it.Next()
+	it.Release()
+	start := time.Now()
+	if err := f.db.DeleteRange(prefix, end); err == nil {
+		if hadData {
+			log.Info(action+" finished", "elapsed", time.Since(start))
 		}
-		it := f.db.NewIterator(prefix, nil)
-		batch := f.db.NewBatch()
-		var count int
-		for ; count < 250000 && it.Next(); count++ {
-			batch.Delete(it.Key())
-			removed++
-		}
-		it.Release()
-		if count == 0 {
-			break
-		}
-		if !logged {
-			log.Info(action + "...")
-			logged = true
-			lastLogged = time.Now()
-		}
-		if time.Since(lastLogged) >= time.Second*10 {
-			log.Info(action+" in progress", "removed keys", removed)
-			lastLogged = time.Now()
-		}
-		batch.Write()
+		return true
+	} else {
+		log.Error(action+" failed", "error", err)
+		return false
 	}
-	if logged {
-		log.Info(action + " finished")
-	}
-	return true
 }
 
 // setRange updates the covered range and also adds the changes to the given batch.
