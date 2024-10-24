@@ -234,21 +234,36 @@ func (f *FilterMaps) removeBloomBits() {
 // removeDbWithPrefix removes data with the given prefix from the database and
 // returns true if everything was successfully removed.
 func (f *FilterMaps) removeDbWithPrefix(prefix []byte, action string) bool {
+	it := f.db.NewIterator(prefix, nil)
+	hasData := it.Next()
+	it.Release()
+	if !hasData {
+		return true
+	}
+
 	end := bytes.Clone(prefix)
 	end[len(end)-1]++
-
-	it := f.db.NewIterator(prefix, nil)
-	hadData := it.Next()
-	it.Release()
 	start := time.Now()
-	if err := f.db.DeleteRange(prefix, end); err == nil {
-		if hadData {
+	var retry bool
+	for {
+		err := f.db.DeleteRange(prefix, end)
+		if err == nil {
 			log.Info(action+" finished", "elapsed", time.Since(start))
+			return true
 		}
-		return true
-	} else {
-		log.Error(action+" failed", "error", err)
-		return false
+		if err != ethdb.ErrTooManyKeys {
+			log.Error(action+" failed", "error", err)
+			return false
+		}
+		select {
+		case <-f.closeCh:
+			return false
+		default:
+		}
+		if !retry {
+			log.Info(action + " in progress...")
+			retry = true
+		}
 	}
 }
 
