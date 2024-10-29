@@ -19,16 +19,20 @@ package filtermaps
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"math/bits"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/types"
 )
+
+const treeLevelCacheSize = 16
 
 type treeHashed interface {
 	leafLevel() int
 	getLeaf(leafIndex uint64) (common.Hash, error)
-	emptyFrom() uint64
+	isEmpty(firstIndex, lastIndex uint64) bool
 	//invalidateFrom() uint64
 	emptyHash(level int) common.Hash
 }
@@ -38,111 +42,116 @@ type treeHasher struct {
 	cache  []*lru.Cache[uint64, common.Hash]
 }
 
-func (h *treeHasher) getNode(index uint64) (common.Hash, error) {
-	//h.checkInvalidate()
-	level := 63 - bits.LeadingZeros(index)
-	leafLevel := h.hashed.leafLevel()
+func newTreeHasher(hashed treeHashed) *treeHasher {
+	h := &treeHasher{
+		hashed: hashed,
+		cache:  make([]*lru.Cache[uint64, common.Hash], hashed.leafLevel()+1),
+	}
+	for i := range h.cache {
+		h.cache[i] = lru.NewCache[uint64, common.Hash](treeLevelCacheSize)
+	}
+	return h
+}
+
+func (t *treeHasher) getNode(index uint64) (common.Hash, error) {
+	//t.checkInvalidate()
+	level := 63 - bits.LeadingZeros64(index)
+	leafLevel := t.hashed.leafLevel()
 	if level > leafLevel || index == 0 {
 		return common.Hash{}, errors.New("invalid hash tree index")
 	}
-	if node, ok := h.cache[level].Get(index); ok {
+	if node, ok := t.cache[level].Get(index); ok {
 		return node, nil
 	}
 	leafOffset := uint64(1) << leafLevel
 	if level < leafLevel { // internal hash node
-		firstLeaf := index<<(leafLevel-level) - leafOffset // first leaf of subtree
-		if firstLeaf >= h.hashed.emptyFrom() {
+		// check if subtree range is empty
+		firstLeaf := index<<(leafLevel-level) - leafOffset
+		lastLeaf := (index+1)<<(leafLevel-level) - leafOffset - 1
+		if t.hashed.isEmpty(firstLeaf, lastLeaf) {
 			// entire subtree is empty, no recursion, no need to cache
-			return h.hashed.emptyHash(level), nil
+			return t.hashed.emptyHash(level), nil
 		}
-		left, err := h.getNode(index * 2)
+		left, err := t.getNode(index * 2)
 		if err != nil {
 			return common.Hash{}, err
 		}
-		right, err := h.getNode(index*2 + 1)
+		right, err := t.getNode(index*2 + 1)
 		if err != nil {
 			return common.Hash{}, err
 		}
-		hasher := sha256.New()
-		hasher.Write(left[:])
-		hasher.Write(right[:])
-		var result common.Hash
-		hasher.Sum(result[:0])
-		h.cache[level].Add(index, result)
+		result := binaryHash(left, right)
+		t.cache[level].Add(index, result)
 		return result, nil
 	}
 	// leaf node
-	result, err := h.hashed.getLeaf(index - leafOffset)
+	result, err := t.hashed.getLeaf(index - leafOffset)
 	if err != nil {
 		return common.Hash{}, err
 	}
-	h.cache[level].Add(index, result)
+	t.cache[level].Add(index, result)
 	return result, nil
 }
 
-type fmTree struct {
+type filterMapsTree struct {
 	*FilterMaps
-	hc *headerChain
+	hc            *headerChain
+	headLvPointer uint64
 }
 
-func (t *fmTree) leafLevel() int { return t.logMaxEpochs }
-func (t *fmTree) getLeaf(leafIndex uint64) (common.Hash, error) {
-	return newHasher(epochTree{fmTree: t, epochIndex: leafIndex}).getNode(1)
+func (f *FilterMaps) newFilterMapsTree() *filterMapsTree {
+	f.indexLock.Lock()
+	defer f.indexLock.Unlock()
+
+	return &filterMapsTree{
+		FilterMaps:    f,
+		hc:            newHeaderChain(f.chain, f.headBlockNumber, f.headBlockHash),
+		headLvPointer: f.headLvPointer,
+	}
 }
-func (t *fmTree) emptyFrom() uint64 { //TODO lock
-	return (t.headLvPointer + uint64(1)<<(t.logMapsPerEpoch+t.logValuesPerMap) - 1) >> (t.logMapsPerEpoch + t.logValuesPerMap)
+
+func (t *filterMapsTree) leafLevel() int { return int(t.logMaxEpochs) }
+
+func (t *filterMapsTree) getLeaf(leafIndex uint64) (common.Hash, error) {
+	return newTreeHasher(epochTree{filterMapsTree: t, epochIndex: leafIndex}).getNode(1)
 }
-func (t *fmTree) emptyHash(level int) common.Hash { return fmTreeEmptyHashes[level] }
+
+func (t *filterMapsTree) isEmpty(firstIndex, lastIndex uint64) bool {
+	return firstIndex<<(t.logMapsPerEpoch+t.logValuesPerMap) >= t.headLvPointer
+}
+
+func (t *filterMapsTree) emptyHash(level int) common.Hash { return t.filterMapsTreeEmptyHashes[level] }
 
 type epochTree struct {
-	*fmTree
+	*filterMapsTree
 	epochIndex uint32
 }
 
 func (t epochTree) leafLevel() int { return 1 }
+
 func (t epochTree) getLeaf(leafIndex uint64) (common.Hash, error) {
 	switch leafIndex {
 	case 0:
-		return newHasher(mapRowsTree(t)).getNode(1)
+		return newTreeHasher(mapRowsTree(t)).getNode(1)
 	case 1:
-		return newHasher(&logIndexTree{epochTree: t}).getNode(1)
+		return newTreeHasher(&logIndexTree{epochTree: t}).getNode(1)
 	}
 }
-func (t epochTree) emptyFrom() uint64               { return 2 }
-func (t epochTree) emptyHash(level int) common.Hash { return epochTreeEmptyHashes[level] }
+
+func (t epochTree) isEmpty(firstIndex, lastIndex uint64) bool { return false }
+
+func (t epochTree) emptyHash(level int) common.Hash {
+	panic("epochTree.emptyHash should never be called")
+}
 
 type mapRowsTree epochTree
 
-func (t mapRowsTree) leafLevel() int { return t.logMaxEpochs }
+func (t mapRowsTree) leafLevel() int { return t.logMapHeight + t.logMapsPerEpoch }
+
 func (t mapRowsTree) getLeaf(leafIndex uint64) (common.Hash, error) {
-	return newHasher(epochTree{fmTree: t, epochIndex: leafIndex}).getNode(1)
-}
-func (t mapRowsTree) emptyFrom() uint64 { //TODO lock
-	return (t.headLvPointer + uint64(1)<<(t.logMapsPerEpoch+t.logValuesPerMap) - 1) >> (t.logMapsPerEpoch + t.logValuesPerMap)
-}
-func (t mapRowsTree) emptyHash(level int) common.Hash { return epochTreeEmptyHashes[level] }
-
-type logIndexTree struct {
-	epochTree
-	// block receipts iterator fields
-	blockNumber                   uint64
-	blockHash                     common.Hash
-	receipts                      types.Receipts
-	txIndex, logIndex, valueIndex int
-	lvIndex                       uint64
-}
-
-func (t *logIndexTree) leafLevel() int { return t.logMaxEpochs }
-func (t *logIndexTree) getLeaf(leafIndex uint64) (common.Hash, error) {
-	return newHasher(epochTree{fmTree: t, epochIndex: leafIndex}).getNode(1)
-}
-func (t *logIndexTree) emptyFrom() uint64 { //TODO lock
-	return (t.headLvPointer + uint64(1)<<(t.logMapsPerEpoch+t.logValuesPerMap) - 1) >> (t.logMapsPerEpoch + t.logValuesPerMap)
-}
-func (t *logIndexTree) emptyHash(level int) common.Hash { return epochTreeEmptyHashes[level] }
-
-func (h *treeHasher) mapRowHash(mapIndex, rowIndex uint32) (common.Hash, error) {
-	row, err := h.getFilterMapRow(mapIndex, rowIndex)
+	mapIndex := t.epochIndex<<t.logMapsPerEpoch + leafIndex%t.mapsPerEpoch
+	rowIndex := leafIndex >> t.logMapsPerEpoch
+	row, err := t.getFilterMapRow(mapIndex, rowIndex)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -157,60 +166,135 @@ func (h *treeHasher) mapRowHash(mapIndex, rowIndex uint32) (common.Hash, error) 
 	return result, nil
 }
 
-func (h *treeHasher) logIndexNode(lvIndex uint64, refSubIndex uint32) (common.Hash, error) {
-	if !h.iterateTo(lvIndex) {
-		if lvIndex < f.tailBlockLvPointer {
-			return common.Hash{}, errors.New("not indexed")
-		}
-		if lvIndex >= f.headLvPointer {
-			return common.Hash{}, nil
-		}
-		blockNumber, lvPointer, err := h.getBlockByLvIndex(lvIndex)
-		if err != nil {
-			return common.Hash{}, err
-		}
-		blockHash := h.hc.getBlockHash(blockNumber)
-		receipts := h.chain.GetReceiptsByHash(blockHash)
-		if receipts == nil {
-			return common.Hash{}, errors.New("receipts not found")
-		}
-		h.blockNumber, h.blockHash, h.receipts, h.lvIndex = blockNumber, blockHash, receipts, lvPointer
-		h.txIndex, h.logIndex, h.valueIndex = 0, 0, 0
-		if !h.iterateTo(lvIndex) {
-			log.Error("Could not iterate to log value index")
-			return common.Hash{}, errors.New("could not iterate to log value index")
-		}
+func (t mapRowsTree) isEmpty(firstIndex, lastIndex uint64) bool {
+	firstMap := t.epochIndex << t.logMapsPerEpoch
+	firstEmptyMap := (t.headLvIndex + t.valuesPerMap - 1) >> t.logValuesPerMap
+	if firstEmptyMap <= firstMap {
+		return true
 	}
-	switch refSubIndex {
+	if firstEmptyMap >= firstMap+t.mapsPerEpoch {
+		return false
+	}
+	return firstIndex>>t.logsMapPerEpoch == lastIndex>>t.logsMapPerEpoch &&
+		firstIndex%t.mapsPerEpoch >= firstEmptyMap-firstMap
+}
+
+func (t mapRowsTree) emptyHash(level int) common.Hash { return t.mapRowsTreeEmptyHashes[level] }
+
+type logIndexTree struct {
+	epochTree
+	// block receipts iterator fields
+	blockNumber                   uint64
+	blockHash                     common.Hash
+	receipts                      types.Receipts
+	txIndex, logIndex, valueIndex int
+	lvIndex                       uint64
+}
+
+func (t *logIndexTree) leafLevel() int { return t.logMapsPerEpoch + t.logValuesPerMap + 1 }
+
+func (t *logIndexTree) getLeaf(leafIndex uint64) (common.Hash, error) {
+	lvIndex := uint64(t.epochIndex)<<(t.logMapsPerEpoch+t.logValuesPerMap) + leafIndex>>1
+	if ok, err := t.findLvIndex(lvIndex); !ok {
+		return common.Hash{}, err
+	}
+	switch leafIndex & 1 {
 	case 0:
-		return h.blockHash, nil
+		return t.blockHash, nil
 	case 1:
 		var result common.Hash
-		binary.LittleEndian.PutUint64(result[0:8], h.blockNumber)
-		binary.LittleEndian.PutUint32(result[8:12], uint32(h.txIndex))
-		binary.LittleEndian.PutUint32(result[12:16], uint32(h.logIndex))
-		binary.LittleEndian.PutUint32(result[16:20], uint32(h.valueIndex))
+		binary.LittleEndian.PutUint64(result[0:8], t.blockNumber)
+		binary.LittleEndian.PutUint32(result[8:12], uint32(t.txIndex))
+		binary.LittleEndian.PutUint32(result[12:16], uint32(t.logIndex))
+		binary.LittleEndian.PutUint32(result[16:20], uint32(t.valueIndex))
 		return result, nil
 	default:
 		panic("invalid refSubIndex")
 	}
 }
 
-func (h *treeHasher) iterateTo(lvTarget uint64) bool {
-	if l.receipts == nil {
+func (t *logIndexTree) isEmpty(firstIndex, lastIndex uint64) bool {
+	return uint64(t.epochIndex)<<(t.logMapsPerEpoch+t.logValuesPerMap)+firstIndex>>1 >= t.headLvPointer
+}
+
+func (t *logIndexTree) emptyHash(level int) common.Hash { return t.logIndexTreeEmptyHashes[level] }
+
+func (t *logIndexTree) findLvIndex(lvIndex uint64) (bool, error) {
+	if t.iterateTo(lvIndex) {
+		return true, nil
+	}
+	if lvIndex < f.tailBlockLvPointer {
+		return false, errors.New("not indexed")
+	}
+	if lvIndex >= f.headLvPointer {
+		return false, nil
+	}
+	blockNumber, lvPointer, err := t.getBlockByLvIndex(lvIndex)
+	if err != nil {
+		return false, err
+	}
+	blockHash := t.hc.getBlockHash(blockNumber)
+	receipts := t.chain.GetReceiptsByHash(blockHash)
+	if receipts == nil {
+		return false, errors.New("receipts not found")
+	}
+	t.blockNumber, t.blockHash, t.receipts, t.lvIndex = blockNumber, blockHash, receipts, lvPointer
+	t.txIndex, t.logIndex, t.valueIndex = 0, 0, 0
+	if !t.iterateTo(lvIndex) {
+		log.Error("Could not iterate to log value index", "blockNumber", blockNumber, "first lvIndex", lvPointer, "target lvIndex", lvIndex)
+		return false, errors.New("could not iterate to log value index")
+	}
+	return true, nil
+}
+
+func (t *logIndexTree) iterateTo(lvTarget uint64) bool {
+	if t.receipts == nil {
 		return false
 	}
-	for ; l.txIndex < len(l.receipts); l.txIndex++ {
-		receipt := l.receipts[l.txIndex]
-		for ; l.logIndex < len(receipt.Logs); l.logIndex++ {
-			log := receipt.Logs[l.logIndex]
-			for ; l.valueIndex <= len(log.Topics); l.valueIndex++ {
-				if l.lvIndex == lvTarget {
+	for ; t.txIndex < len(t.receipts); t.txIndex++ {
+		receipt := t.receipts[t.txIndex]
+		for ; t.logIndex < len(receipt.Logs); t.logIndex++ {
+			log := receipt.Logs[t.logIndex]
+			for ; t.valueIndex <= len(log.Topics); t.valueIndex++ {
+				if t.lvIndex == lvTarget {
 					return true
 				}
-				l.lvIndex++
+				t.lvIndex++
 			}
 		}
 	}
 	return false
+}
+
+func makeEmptyHashes(leafLevel int, leafDefault common.Hash) []common.Hash {
+	hashes := make([]common.Hash, leafLevel+1)
+	hashes[leafLevel] = leafDefault
+	for i := leafLevel - 1; i >= 0; i-- {
+		hashes[i] = binaryHash(hashes[i+1], hashes[i+1])
+	}
+	return hashes
+}
+
+func binaryHash(left, right common.Hash) common.Hash {
+	var result common.Hash
+	hasher := sha256.New()
+	hasher.Write(left[:])
+	hasher.Write(right[:])
+	hasher.Sum(result[:0])
+	return result
+}
+
+type emptyHashes struct {
+	filterMapsTreeEmptyHashes,
+	mapRowsTreeEmptyHashes,
+	logIndexTreeEmptyHashes []common.Hash
+}
+
+func (f *FilterMaps) initEmptyHashes() {
+	var emptyHash common.Hash
+	hasher := sha256.New()
+	hasher.Sum(emptyHash[:0])
+	f.mapRowsTreeEmptyHashes = makeEmptyHashes(f.logMapHeight+f.logMapsPerEpoch, emptyHash)
+	f.logIndexTreeEmptyHashes = makeEmptyHashes(f.logMapsPerEpoch+f.logValuesPerMap+1, common.Hash{})
+	f.filterMapsTreeEmptyHashes = makeEmptyHashes(f.logMaxEpochs, binaryHash(f.mapRowsTreeEmptyHashes[0], f.logIndexTreeEmptyHashes[0]))
 }

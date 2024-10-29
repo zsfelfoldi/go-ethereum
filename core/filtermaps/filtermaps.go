@@ -84,6 +84,7 @@ type FilterMaps struct {
 	Params
 	chain         blockchain
 	matcherSyncCh chan *FilterMapsMatcherBackend
+	emptyHashes
 
 	db ethdb.KeyValueStore
 
@@ -197,13 +198,13 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 		lvPointerCache: lru.NewCache[uint64, uint64](1000),
 		revertPoints:   make(map[uint64]*revertPoint),
 	}
+	fm.initEmptyHashes()
 	if fm.initialized {
 		fm.tailBlockLvPointer, err = fm.getBlockLvPointer(fm.tailBlockNumber)
 		if err != nil {
 			log.Error("Error fetching tail block pointer, resetting log index", "error", err)
 			fm.filterMapsRange = filterMapsRange{} // updateLoop resets the database
 		}
-		headBlockPtr, _ := fm.getBlockLvPointer(fm.headBlockNumber)
 		log.Trace("Log index head", "number", fm.headBlockNumber, "hash", fm.headBlockHash.String(), "log value pointer", fm.headLvPointer)
 		log.Trace("Log index tail", "number", fm.tailBlockNumber, "parentHash", fm.tailParentHash.String(), "log value pointer", fm.tailBlockLvPointer)
 	}
@@ -347,9 +348,8 @@ func (f *FilterMaps) getLogByLvIndex(lvIndex uint64) (*types.Log, error) {
 	// get block receipts
 	receipts := f.chain.GetReceiptsByHash(f.chain.GetCanonicalHash(blockNumber))
 	if receipts == nil {
-		return nil, 0, errors.New("receipts not found")
+		return nil, errors.New("receipts not found")
 	}
-	return receipts, lvPointer, nil
 	// iterate through receipts to find the exact log starting at lvIndex
 	for _, receipt := range receipts {
 		for _, log := range receipt.Logs {
@@ -368,7 +368,7 @@ func (f *FilterMaps) getLogByLvIndex(lvIndex uint64) (*types.Log, error) {
 	return nil, nil
 }
 
-func (f *FilterMaps) getBlockByLvIndex(lvIndex uint64) (types.Receipts, uint64, error) {
+func (f *FilterMaps) getBlockByLvIndex(lvIndex uint64) (uint64, uint64, error) {
 	// find possible block range based on map to block pointers
 	mapIndex := uint32(lvIndex >> f.logValuesPerMap)
 	firstBlockNumber, err := f.getMapBlockPtr(mapIndex)
