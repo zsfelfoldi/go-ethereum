@@ -337,49 +337,19 @@ func (f *FilterMaps) updateMapCache() {
 // Note that this function assumes that the indexer read lock is being held when
 // called from outside the updateLoop goroutine.
 func (f *FilterMaps) getLogByLvIndex(lvIndex uint64) (*types.Log, error) {
-	if lvIndex < f.tailBlockLvPointer || lvIndex > f.headLvPointer {
+	if lvIndex < f.tailBlockLvPointer || lvIndex >= f.headLvPointer { //TODO fix on log-filter branch
 		return nil, nil
 	}
-	// find possible block range based on map to block pointers
-	mapIndex := uint32(lvIndex >> f.logValuesPerMap)
-	firstBlockNumber, err := f.getMapBlockPtr(mapIndex)
+	blockNumber, lvPointer, err := f.getBlockByLvIndex(lvIndex)
 	if err != nil {
 		return nil, err
-	}
-	if firstBlockNumber < f.tailBlockNumber {
-		firstBlockNumber = f.tailBlockNumber
-	}
-	var lastBlockNumber uint64
-	if mapIndex+1 < uint32((f.headLvPointer+f.valuesPerMap-1)>>f.logValuesPerMap) {
-		lastBlockNumber, err = f.getMapBlockPtr(mapIndex + 1)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		lastBlockNumber = f.headBlockNumber
-	}
-	// find block with binary search based on block to log value index pointers
-	for firstBlockNumber < lastBlockNumber {
-		midBlockNumber := (firstBlockNumber + lastBlockNumber + 1) / 2
-		midLvPointer, err := f.getBlockLvPointer(midBlockNumber)
-		if err != nil {
-			return nil, err
-		}
-		if lvIndex < midLvPointer {
-			lastBlockNumber = midBlockNumber - 1
-		} else {
-			firstBlockNumber = midBlockNumber
-		}
 	}
 	// get block receipts
-	receipts := f.chain.GetReceiptsByHash(f.chain.GetCanonicalHash(firstBlockNumber))
+	receipts := f.chain.GetReceiptsByHash(f.chain.GetCanonicalHash(blockNumber))
 	if receipts == nil {
-		return nil, errors.New("receipts not found")
+		return nil, 0, errors.New("receipts not found")
 	}
-	lvPointer, err := f.getBlockLvPointer(firstBlockNumber)
-	if err != nil {
-		return nil, err
-	}
+	return receipts, lvPointer, nil
 	// iterate through receipts to find the exact log starting at lvIndex
 	for _, receipt := range receipts {
 		for _, log := range receipt.Logs {
@@ -396,6 +366,45 @@ func (f *FilterMaps) getLogByLvIndex(lvIndex uint64) (*types.Log, error) {
 		}
 	}
 	return nil, nil
+}
+
+func (f *FilterMaps) getBlockByLvIndex(lvIndex uint64) (types.Receipts, uint64, error) {
+	// find possible block range based on map to block pointers
+	mapIndex := uint32(lvIndex >> f.logValuesPerMap)
+	firstBlockNumber, err := f.getMapBlockPtr(mapIndex)
+	if err != nil {
+		return 0, 0, err
+	}
+	if firstBlockNumber < f.tailBlockNumber {
+		firstBlockNumber = f.tailBlockNumber
+	}
+	var lastBlockNumber uint64
+	if mapIndex+1 < uint32((f.headLvPointer+f.valuesPerMap-1)>>f.logValuesPerMap) {
+		lastBlockNumber, err = f.getMapBlockPtr(mapIndex + 1)
+		if err != nil {
+			return 0, 0, err
+		}
+	} else {
+		lastBlockNumber = f.headBlockNumber
+	}
+	// find block with binary search based on block to log value index pointers
+	for firstBlockNumber < lastBlockNumber {
+		midBlockNumber := (firstBlockNumber + lastBlockNumber + 1) / 2
+		midLvPointer, err := f.getBlockLvPointer(midBlockNumber)
+		if err != nil {
+			return 0, 0, err
+		}
+		if lvIndex < midLvPointer {
+			lastBlockNumber = midBlockNumber - 1
+		} else {
+			firstBlockNumber = midBlockNumber
+		}
+	}
+	lvPointer, err := f.getBlockLvPointer(firstBlockNumber)
+	if err != nil {
+		return 0, 0, err
+	}
+	return firstBlockNumber, lvPointer, nil
 }
 
 // getFilterMapRow returns the given row of the given map. If the row is empty

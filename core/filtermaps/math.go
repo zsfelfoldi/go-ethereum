@@ -28,6 +28,7 @@ type Params struct {
 	logMapHeight    uint // log2(mapHeight)
 	logMapsPerEpoch uint // log2(mmapsPerEpochapsPerEpoch)
 	logValuesPerMap uint // log2(logValuesPerMap)
+	logMaxEpochs    uint
 	// derived fields
 	mapHeight    uint32 // filter map height (number of rows)
 	mapsPerEpoch uint32 // number of maps in an epoch
@@ -38,6 +39,7 @@ var DefaultParams = Params{
 	logMapHeight:    12,
 	logMapsPerEpoch: 6,
 	logValuesPerMap: 16,
+	logMaxEpochs:    24,
 }
 
 func (p *Params) deriveFields() {

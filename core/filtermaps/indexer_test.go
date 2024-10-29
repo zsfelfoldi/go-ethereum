@@ -38,6 +38,7 @@ var testParams = Params{
 	logMapHeight:    2,
 	logMapsPerEpoch: 4,
 	logValuesPerMap: 4,
+	logMaxEpochs:    24,
 }
 
 func TestIndexerRandomRange(t *testing.T) {
