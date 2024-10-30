@@ -25,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 const treeLevelCacheSize = 16
@@ -113,7 +114,7 @@ func (f *FilterMaps) newFilterMapsTree() *filterMapsTree {
 func (t *filterMapsTree) leafLevel() int { return int(t.logMaxEpochs) }
 
 func (t *filterMapsTree) getLeaf(leafIndex uint64) (common.Hash, error) {
-	return newTreeHasher(epochTree{filterMapsTree: t, epochIndex: leafIndex}).getNode(1)
+	return newTreeHasher(epochTree{filterMapsTree: t, epochIndex: uint32(leafIndex)}).getNode(1)
 }
 
 func (t *filterMapsTree) isEmpty(firstIndex, lastIndex uint64) bool {
@@ -135,6 +136,8 @@ func (t epochTree) getLeaf(leafIndex uint64) (common.Hash, error) {
 		return newTreeHasher(mapRowsTree(t)).getNode(1)
 	case 1:
 		return newTreeHasher(&logIndexTree{epochTree: t}).getNode(1)
+	default:
+		panic("epochTree: invalid leaf index")
 	}
 }
 
@@ -146,11 +149,11 @@ func (t epochTree) emptyHash(level int) common.Hash {
 
 type mapRowsTree epochTree
 
-func (t mapRowsTree) leafLevel() int { return t.logMapHeight + t.logMapsPerEpoch }
+func (t mapRowsTree) leafLevel() int { return int(t.logMapHeight + t.logMapsPerEpoch) }
 
 func (t mapRowsTree) getLeaf(leafIndex uint64) (common.Hash, error) {
-	mapIndex := t.epochIndex<<t.logMapsPerEpoch + leafIndex%t.mapsPerEpoch
-	rowIndex := leafIndex >> t.logMapsPerEpoch
+	mapIndex := t.epochIndex<<t.logMapsPerEpoch + uint32(leafIndex)%t.mapsPerEpoch
+	rowIndex := uint32(leafIndex) >> t.logMapsPerEpoch
 	row, err := t.getFilterMapRow(mapIndex, rowIndex)
 	if err != nil {
 		return common.Hash{}, err
@@ -168,15 +171,15 @@ func (t mapRowsTree) getLeaf(leafIndex uint64) (common.Hash, error) {
 
 func (t mapRowsTree) isEmpty(firstIndex, lastIndex uint64) bool {
 	firstMap := t.epochIndex << t.logMapsPerEpoch
-	firstEmptyMap := (t.headLvIndex + t.valuesPerMap - 1) >> t.logValuesPerMap
+	firstEmptyMap := uint32((t.headLvPointer + t.valuesPerMap - 1) >> t.logValuesPerMap)
 	if firstEmptyMap <= firstMap {
 		return true
 	}
 	if firstEmptyMap >= firstMap+t.mapsPerEpoch {
 		return false
 	}
-	return firstIndex>>t.logsMapPerEpoch == lastIndex>>t.logsMapPerEpoch &&
-		firstIndex%t.mapsPerEpoch >= firstEmptyMap-firstMap
+	return firstIndex>>t.logMapsPerEpoch == lastIndex>>t.logMapsPerEpoch &&
+		uint32(firstIndex)%t.mapsPerEpoch >= firstEmptyMap-firstMap
 }
 
 func (t mapRowsTree) emptyHash(level int) common.Hash { return t.mapRowsTreeEmptyHashes[level] }
@@ -191,7 +194,7 @@ type logIndexTree struct {
 	lvIndex                       uint64
 }
 
-func (t *logIndexTree) leafLevel() int { return t.logMapsPerEpoch + t.logValuesPerMap + 1 }
+func (t *logIndexTree) leafLevel() int { return int(t.logMapsPerEpoch + t.logValuesPerMap + 1) }
 
 func (t *logIndexTree) getLeaf(leafIndex uint64) (common.Hash, error) {
 	lvIndex := uint64(t.epochIndex)<<(t.logMapsPerEpoch+t.logValuesPerMap) + leafIndex>>1
@@ -223,10 +226,10 @@ func (t *logIndexTree) findLvIndex(lvIndex uint64) (bool, error) {
 	if t.iterateTo(lvIndex) {
 		return true, nil
 	}
-	if lvIndex < f.tailBlockLvPointer {
+	if lvIndex < t.tailBlockLvPointer {
 		return false, errors.New("not indexed")
 	}
-	if lvIndex >= f.headLvPointer {
+	if lvIndex >= t.headLvPointer {
 		return false, nil
 	}
 	blockNumber, lvPointer, err := t.getBlockByLvIndex(lvIndex)
@@ -294,7 +297,7 @@ func (f *FilterMaps) initEmptyHashes() {
 	var emptyHash common.Hash
 	hasher := sha256.New()
 	hasher.Sum(emptyHash[:0])
-	f.mapRowsTreeEmptyHashes = makeEmptyHashes(f.logMapHeight+f.logMapsPerEpoch, emptyHash)
-	f.logIndexTreeEmptyHashes = makeEmptyHashes(f.logMapsPerEpoch+f.logValuesPerMap+1, common.Hash{})
-	f.filterMapsTreeEmptyHashes = makeEmptyHashes(f.logMaxEpochs, binaryHash(f.mapRowsTreeEmptyHashes[0], f.logIndexTreeEmptyHashes[0]))
+	f.mapRowsTreeEmptyHashes = makeEmptyHashes(int(f.logMapHeight+f.logMapsPerEpoch), emptyHash)
+	f.logIndexTreeEmptyHashes = makeEmptyHashes(int(f.logMapsPerEpoch+f.logValuesPerMap+1), common.Hash{})
+	f.filterMapsTreeEmptyHashes = makeEmptyHashes(int(f.logMaxEpochs), binaryHash(f.mapRowsTreeEmptyHashes[0], f.logIndexTreeEmptyHashes[0]))
 }
