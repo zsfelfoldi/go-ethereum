@@ -35,6 +35,59 @@ const (
 	logFrequency         = time.Second * 8 // log info frequency during long indexing/unindexing process
 )
 
+type processedHead struct {
+	number         uint64
+	parentHash     common.Hash
+	readyCh        chan bool
+	receiptsCh     chan types.Receipts
+	logIndexRootCh chan common.Hash
+	errorCh        chan error
+}
+
+func (f *FilterMaps) PrepareHead(number uint64, parentHash common.Hash) bool {
+	processedHead := &processedHead{
+		number:     number,
+		parentHash: parentHash,
+		readyCh:    make(chan bool),
+		receiptsCh: make(chan types.Receipts),
+	}
+	select {
+	case f.processedHeadCh <- processedHead:
+	case <-f.closeCh:
+		return false
+	}
+	if !<-processedHead.readyCh {
+		return false
+	}
+	processedHead.logIndexRootCh = make(chan common.Hash, 1)
+	processedHead.errorCh = make(chan error, 1)
+	f.processedHead = processedHead
+	return true
+}
+
+// call from the same thread as PrepareHead
+func (f *FilterMaps) ProcessedHead(number uint64, parentHash common.Hash, receipts types.Receipts) (common.Hash, error) {
+	if f.processedHead == nil || f.processedHead.number != number || f.processedHead.parentHash != parentHash {
+		return common.Hash{}, errors.New("processed head has not been prepared")
+	}
+	defer func() {
+		f.processedHead = nil
+	}()
+	select {
+	case f.processedHead.receiptsCh <- receipts:
+	case <-f.closeCh:
+		return common.Hash{}, errors.New("log indexer is shutting down")
+	}
+	select {
+	case logIndexRoot := <-f.processedHead.logIndexRootCh:
+		return logIndexRoot, nil
+	case err := <-f.processedHead.errorCh:
+		return common.Hash{}, err
+	case <-f.closeCh:
+		return common.Hash{}, errors.New("log indexer is shutting down")
+	}
+}
+
 // updateLoop initializes and updates the log index structure according to the
 // canonical chain.
 func (f *FilterMaps) updateLoop() {

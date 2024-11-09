@@ -82,8 +82,10 @@ type FilterMaps struct {
 	history, unindexLimit uint64
 	noHistory             bool
 	Params
-	chain         blockchain
-	matcherSyncCh chan *FilterMapsMatcherBackend
+	chain           blockchain
+	matcherSyncCh   chan *FilterMapsMatcherBackend
+	processedHeadCh chan *processedHead
+	processedHead   *processedHead
 
 	db ethdb.KeyValueStore
 
@@ -190,12 +192,13 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 			headBlockHash:   rs.HeadBlockHash,
 			tailParentHash:  rs.TailParentHash,
 		},
-		matcherSyncCh:  make(chan *FilterMapsMatcherBackend),
-		matchers:       make(map[*FilterMapsMatcherBackend]struct{}),
-		filterMapCache: make(map[uint32]filterMap),
-		blockPtrCache:  lru.NewCache[uint32, uint64](1000),
-		lvPointerCache: lru.NewCache[uint64, uint64](1000),
-		revertPoints:   make(map[uint64]*revertPoint),
+		matcherSyncCh:   make(chan *FilterMapsMatcherBackend),
+		processedHeadCh: make(chan *processedHead),
+		matchers:        make(map[*FilterMapsMatcherBackend]struct{}),
+		filterMapCache:  make(map[uint32]filterMap),
+		blockPtrCache:   lru.NewCache[uint32, uint64](1000),
+		lvPointerCache:  lru.NewCache[uint64, uint64](1000),
+		revertPoints:    make(map[uint64]*revertPoint),
 	}
 	if fm.initialized {
 		fm.tailBlockLvPointer, err = fm.getBlockLvPointer(fm.tailBlockNumber)
