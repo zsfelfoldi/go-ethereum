@@ -35,57 +35,62 @@ const (
 	logFrequency         = time.Second * 8 // log info frequency during long indexing/unindexing process
 )
 
-type processedHead struct {
-	number         uint64
-	parentHash     common.Hash
-	readyCh        chan bool
-	receiptsCh     chan types.Receipts
-	logIndexRootCh chan common.Hash
-	errorCh        chan error
+type ProcessedHead struct {
+	f            *FilterMaps
+	number       uint64
+	parentHash   common.Hash
+	canProcessCh chan bool
+	update       *updateBatch
+	finalizedCh  chan *types.Header
 }
 
-func (f *FilterMaps) PrepareHead(number uint64, parentHash common.Hash) bool {
-	processedHead := &processedHead{
-		number:     number,
-		parentHash: parentHash,
-		readyCh:    make(chan bool),
-		receiptsCh: make(chan types.Receipts),
+func (f *FilterMaps) PrepareHead(number uint64, parentHash common.Hash) *ProcessedHead {
+	p := &ProcessedHead{
+		f:            f,
+		number:       number,
+		parentHash:   parentHash,
+		canProcessCh: make(chan bool),
+		finalizedCh:  make(chan *types.Header, 1),
 	}
 	select {
-	case f.processedHeadCh <- processedHead:
+	case f.processedHeadCh <- p:
 	case <-f.closeCh:
-		return false
+		return nil
 	}
-	if !<-processedHead.readyCh {
-		return false
+	if !<-p.canProcessCh {
+		return nil
 	}
-	processedHead.logIndexRootCh = make(chan common.Hash, 1)
-	processedHead.errorCh = make(chan error, 1)
-	f.processedHead = processedHead
-	return true
+	return p
+}
+
+func (p *ProcessedHead) canProcess() bool {
+	cp := p.f.headBlockNumber+1 == p.number && p.f.headBlockHash == p.parentHash
+	p.canProcessCh <- cp
+	return cp
+}
+
+func (p *ProcessedHead) cannotProcess() {
+	p.canProcessCh <- false
+}
+
+func (p *ProcessedHead) waitProcess() *types.Header {
+	return <-p.finalizedCh
 }
 
 // call from the same thread as PrepareHead
-func (f *FilterMaps) ProcessedHead(number uint64, parentHash common.Hash, receipts types.Receipts) (common.Hash, error) {
-	if f.processedHead == nil || f.processedHead.number != number || f.processedHead.parentHash != parentHash {
-		return common.Hash{}, errors.New("processed head has not been prepared")
-	}
-	defer func() {
-		f.processedHead = nil
-	}()
-	select {
-	case f.processedHead.receiptsCh <- receipts:
-	case <-f.closeCh:
-		return common.Hash{}, errors.New("log indexer is shutting down")
-	}
-	select {
-	case logIndexRoot := <-f.processedHead.logIndexRootCh:
-		return logIndexRoot, nil
-	case err := <-f.processedHead.errorCh:
+func (p *ProcessedHead) Processed(receipts types.Receipts) (common.Hash, error) {
+	p.update = p.f.newUpdateBatch()
+	if err := p.update.addReceiptsToHead(p.number, p.parentHash, receipts); err != nil {
+		log.Error("Error adding processed block", "number", p.number, "parentHash", p.parentHash, "error", err)
 		return common.Hash{}, err
-	case <-f.closeCh:
-		return common.Hash{}, errors.New("log indexer is shutting down")
 	}
+	return common.Hash{}, nil //TODO log index root
+}
+
+func (p *ProcessedHead) Finalized(head *types.Header) {
+	p.update.headBlockHash = head.Hash()
+	p.f.applyUpdateBatch(p.update)
+	p.finalizedCh <- head
 }
 
 // updateLoop initializes and updates the log index structure according to the
@@ -108,11 +113,12 @@ func (f *FilterMaps) updateLoop() {
 	}
 
 	var (
-		headEventCh = make(chan core.ChainEvent, 10)
-		sub         = f.chain.SubscribeChainEvent(headEventCh)
-		head        = f.chain.CurrentBlock()
-		stop        bool
-		syncMatcher *FilterMapsMatcherBackend
+		headEventCh   = make(chan core.ChainEvent, 10)
+		sub           = f.chain.SubscribeChainEvent(headEventCh)
+		head          = f.chain.CurrentBlock()
+		processedHead *ProcessedHead
+		stop          bool
+		syncMatcher   *FilterMapsMatcherBackend
 	)
 
 	matcherSync := func() {
@@ -148,6 +154,10 @@ func (f *FilterMaps) updateLoop() {
 					continue loop
 				}
 				ch <- false
+			case p := <-f.processedHeadCh:
+				if p.canProcess() {
+					processedHead = p
+				}
 			case <-time.After(time.Second * 20):
 				// keep updating log index during syncing
 				head = f.chain.CurrentBlock()
@@ -173,6 +183,12 @@ func (f *FilterMaps) updateLoop() {
 			}
 		}
 		// log index is initialized
+		if processedHead != nil {
+			if newHead := processedHead.waitProcess(); newHead != nil {
+				head = newHead
+			}
+			processedHead = nil
+		}
 		if f.headBlockHash != head.Hash() {
 			// log index head need to be updated
 			f.tryUpdateHead(func() *types.Header {
@@ -185,6 +201,8 @@ func (f *FilterMaps) updateLoop() {
 				case <-f.closeCh:
 					stop = true
 					return nil
+				case p := <-f.processedHeadCh:
+					p.cannotProcess() // head update in progress
 				default:
 					head = f.chain.CurrentBlock()
 				}
@@ -219,12 +237,17 @@ func (f *FilterMaps) updateLoop() {
 			case <-f.closeCh:
 				stop = true
 				return true
+			case p := <-f.processedHeadCh:
+				if p.canProcess() {
+					processedHead = p
+					return true
+				}
 			default:
 				head = f.chain.CurrentBlock()
 			}
 			// stop if there is a new chain head (always prioritize head updates)
 			return f.headBlockHash != head.Hash() || syncMatcher != nil
-		}) && f.headBlockHash == head.Hash() {
+		}) && f.headBlockHash == head.Hash() && processedHead == nil {
 			// if tail processing reached its final state and there is no new
 			// head then wait for more events
 			wait()
@@ -879,13 +902,18 @@ func (u *updateBatch) addValueToHead(logValue common.Hash) error {
 // It also adds block to log value index and filter map to block pointers and
 // a new revert point.
 func (u *updateBatch) addBlockToHead(header *types.Header, receipts types.Receipts) error {
+	err := u.addReceiptsToHead(header.Number.Uint64(), header.ParentHash, receipts)
+	u.headBlockHash = header.Hash()
+	return err
+}
+
+func (u *updateBatch) addReceiptsToHead(number uint64, parentHash common.Hash, receipts types.Receipts) error {
 	if !u.initialized {
 		return errors.New("not initialized")
 	}
-	if header.ParentHash != u.headBlockHash {
+	if parentHash != u.headBlockHash {
 		return errors.New("addBlockToHead parent mismatch")
 	}
-	number := header.Number.Uint64()
 	u.blockLvPointer[number] = u.headLvPointer
 	startMap := uint32((u.headLvPointer + u.f.valuesPerMap - 1) >> u.f.logValuesPerMap)
 	if err := iterateReceipts(receipts, u.addValueToHead); err != nil {
@@ -895,7 +923,7 @@ func (u *updateBatch) addBlockToHead(header *types.Header, receipts types.Receip
 	for m := startMap; m < stopMap; m++ {
 		u.mapBlockPtr[m] = number
 	}
-	u.headBlockNumber, u.headBlockHash = number, header.Hash()
+	u.headBlockNumber = number
 	if (u.headBlockNumber-cachedRevertPoints)%revertPointFrequency != 0 {
 		delete(u.revertPoints, u.headBlockNumber-cachedRevertPoints)
 	}
