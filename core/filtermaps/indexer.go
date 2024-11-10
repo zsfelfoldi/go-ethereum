@@ -80,7 +80,7 @@ func (p *ProcessedHead) waitProcess() *types.Header {
 // call from the same thread as PrepareHead
 func (p *ProcessedHead) Processed(receipts types.Receipts) (common.Hash, error) {
 	p.update = p.f.newUpdateBatch()
-	if err := p.update.addReceiptsToHead(p.number, p.parentHash, receipts); err != nil {
+	if err := p.update.addBlockToHeadWithoutHash(p.number, p.parentHash, receipts); err != nil {
 		log.Error("Error adding processed block", "number", p.number, "parentHash", p.parentHash, "error", err)
 		return common.Hash{}, err
 	}
@@ -902,12 +902,12 @@ func (u *updateBatch) addValueToHead(logValue common.Hash) error {
 // It also adds block to log value index and filter map to block pointers and
 // a new revert point.
 func (u *updateBatch) addBlockToHead(header *types.Header, receipts types.Receipts) error {
-	err := u.addReceiptsToHead(header.Number.Uint64(), header.ParentHash, receipts)
+	err := u.addBlockToHeadWithoutHash(header.Number.Uint64(), header.ParentHash, receipts)
 	u.headBlockHash = header.Hash()
 	return err
 }
 
-func (u *updateBatch) addReceiptsToHead(number uint64, parentHash common.Hash, receipts types.Receipts) error {
+func (u *updateBatch) addBlockToHeadWithoutHash(number uint64, parentHash common.Hash, receipts types.Receipts) error {
 	if !u.initialized {
 		return errors.New("not initialized")
 	}
@@ -915,6 +915,7 @@ func (u *updateBatch) addReceiptsToHead(number uint64, parentHash common.Hash, r
 		return errors.New("addBlockToHead parent mismatch")
 	}
 	u.blockLvPointer[number] = u.headLvPointer
+	u.headLvPointer++ // block delimiter
 	startMap := uint32((u.headLvPointer + u.f.valuesPerMap - 1) >> u.f.logValuesPerMap)
 	if err := iterateReceipts(receipts, u.addValueToHead); err != nil {
 		return err
@@ -972,6 +973,10 @@ func (u *updateBatch) addBlockToTail(header *types.Header, receipts types.Receip
 		return u.addValueToTail(lv)
 	}); err != nil {
 		return err
+	}
+	u.tailBlockLvPointer-- // block delimiter
+	if u.tailBlockLvPointer < u.tailLvPointer {
+		u.tailLvPointer--
 	}
 	startMap := uint32(u.tailBlockLvPointer >> u.f.logValuesPerMap)
 	for m := startMap; m < stopMap; m++ {
