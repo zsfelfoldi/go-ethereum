@@ -84,7 +84,7 @@ type FilterMaps struct {
 	Params
 	chain           blockchain
 	matcherSyncCh   chan *FilterMapsMatcherBackend
-	processedHeadCh chan *ProcessedHead
+	processedHeadCh chan *processedHead
 
 	db ethdb.KeyValueStore
 
@@ -192,7 +192,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 			tailParentHash:  rs.TailParentHash,
 		},
 		matcherSyncCh:   make(chan *FilterMapsMatcherBackend),
-		processedHeadCh: make(chan *ProcessedHead),
+		processedHeadCh: make(chan *processedHead),
 		matchers:        make(map[*FilterMapsMatcherBackend]struct{}),
 		filterMapCache:  make(map[uint32]filterMap),
 		blockPtrCache:   lru.NewCache[uint32, uint64](1000),

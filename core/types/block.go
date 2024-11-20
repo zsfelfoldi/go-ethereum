@@ -79,7 +79,7 @@ type Header struct {
 	Root        common.Hash    `json:"stateRoot"        gencodec:"required"`
 	TxHash      common.Hash    `json:"transactionsRoot" gencodec:"required"`
 	ReceiptHash common.Hash    `json:"receiptsRoot"     gencodec:"required"`
-	Bloom       Bloom          `json:"logsBloom"        gencodec:"required"`
+	Bloom       Bloom          `json:"logsBloom"        gencodec:"required"` //TODO zero length after EIP-7745
 	Difficulty  *big.Int       `json:"difficulty"       gencodec:"required"`
 	Number      *big.Int       `json:"number"           gencodec:"required"`
 	GasLimit    uint64         `json:"gasLimit"         gencodec:"required"`
@@ -106,6 +106,9 @@ type Header struct {
 
 	// RequestsHash was added by EIP-7685 and is ignored in legacy headers.
 	RequestsHash *common.Hash `json:"requestsRoot" rlp:"optional"`
+
+	// LogIndexRoot was added by EIP-7745 and is ignored in legacy headers.
+	LogIndexRoot *common.Hash `json:"logIndexRoot" rlp:"optional"`
 }
 
 // field type overrides for gencodec
@@ -322,6 +325,10 @@ func CopyHeader(h *Header) *Header {
 	if h.RequestsHash != nil {
 		cpy.RequestsHash = new(common.Hash)
 		*cpy.RequestsHash = *h.RequestsHash
+	}
+	if h.LogIndexRoot != nil {
+		cpy.LogIndexRoot = new(common.Hash)
+		*cpy.LogIndexRoot = *h.LogIndexRoot
 	}
 	return &cpy
 }

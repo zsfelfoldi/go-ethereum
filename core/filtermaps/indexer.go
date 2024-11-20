@@ -35,7 +35,7 @@ const (
 	logFrequency         = time.Second * 8 // log info frequency during long indexing/unindexing process
 )
 
-type ProcessedHead struct {
+type processedHead struct {
 	f            *FilterMaps
 	number       uint64
 	parentHash   common.Hash
@@ -44,8 +44,8 @@ type ProcessedHead struct {
 	finalizedCh  chan *types.Header
 }
 
-func (f *FilterMaps) PrepareHead(number uint64, parentHash common.Hash) *ProcessedHead {
-	p := &ProcessedHead{
+func (f *FilterMaps) PrepareHead(number uint64, parentHash common.Hash) core.LogIndexerProcess {
+	p := &processedHead{
 		f:            f,
 		number:       number,
 		parentHash:   parentHash,
@@ -63,22 +63,22 @@ func (f *FilterMaps) PrepareHead(number uint64, parentHash common.Hash) *Process
 	return p
 }
 
-func (p *ProcessedHead) canProcess() bool {
+func (p *processedHead) canProcess() bool {
 	cp := p.f.headBlockNumber+1 == p.number && p.f.headBlockHash == p.parentHash
 	p.canProcessCh <- cp
 	return cp
 }
 
-func (p *ProcessedHead) cannotProcess() {
+func (p *processedHead) cannotProcess() {
 	p.canProcessCh <- false
 }
 
-func (p *ProcessedHead) waitProcess() *types.Header {
+func (p *processedHead) waitProcess() *types.Header {
 	return <-p.finalizedCh
 }
 
 // call from the same thread as PrepareHead
-func (p *ProcessedHead) Processed(receipts types.Receipts) (common.Hash, error) {
+func (p *processedHead) Processed(receipts types.Receipts) (common.Hash, error) {
 	p.update = p.f.newUpdateBatch()
 	if err := p.update.addBlockToHeadWithoutHash(p.number, p.parentHash, receipts); err != nil {
 		log.Error("Error adding processed block", "number", p.number, "parentHash", p.parentHash, "error", err)
@@ -87,7 +87,7 @@ func (p *ProcessedHead) Processed(receipts types.Receipts) (common.Hash, error) 
 	return common.Hash{}, nil //TODO log index root
 }
 
-func (p *ProcessedHead) Finalized(head *types.Header) {
+func (p *processedHead) Finalized(head *types.Header) {
 	p.update.headBlockHash = head.Hash()
 	p.f.applyUpdateBatch(p.update)
 	p.finalizedCh <- head
@@ -116,7 +116,7 @@ func (f *FilterMaps) updateLoop() {
 		headEventCh   = make(chan core.ChainEvent, 10)
 		sub           = f.chain.SubscribeChainEvent(headEventCh)
 		head          = f.chain.CurrentBlock()
-		processedHead *ProcessedHead
+		processedHead *processedHead
 		stop          bool
 		syncMatcher   *FilterMapsMatcherBackend
 	)

@@ -194,6 +194,15 @@ type txLookup struct {
 	transaction *types.Transaction
 }
 
+type logIndexer interface {
+	PrepareHead(number uint64, parentHash common.Hash) LogIndexerProcess
+}
+
+type LogIndexerProcess interface {
+	Processed(receipts types.Receipts) (common.Hash, error)
+	Finalized(head *types.Header)
+}
+
 // BlockChain represents the canonical chain given a database with a genesis
 // block. The Blockchain manages chain imports, reverts, chain reorganisations.
 //
@@ -221,6 +230,7 @@ type BlockChain struct {
 	triedb        *triedb.Database                 // The database handler for maintaining trie nodes.
 	statedb       *state.CachingDB                 // State database to reuse between imports (contains state cache)
 	txIndexer     *txIndexer                       // Transaction indexer, might be nil if not enabled
+	logIndexer    logIndexer
 
 	hc            *HeaderChain
 	rmLogsFeed    event.Feed
@@ -1676,6 +1686,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 		}
 		// Falls through to the block import
 	}
+
 	switch {
 	// First block is pruned
 	case errors.Is(err, consensus.ErrPrunedAncestor):
@@ -1711,7 +1722,6 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 
 	// Track the singleton witness from this chain insertion (if any)
 	var witness *stateless.Witness
-
 	for ; block != nil && err == nil || errors.Is(err, ErrKnownBlock); block, err = it.next() {
 		// If the chain is terminating, stop processing blocks
 		if bc.insertStopped() {
@@ -1774,7 +1784,6 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 		if err != nil {
 			return nil, it.index, err
 		}
-
 		// If we are past Byzantium, enable prefetching to pull in trie node paths
 		// while processing transactions. Before Byzantium the prefetcher is mostly
 		// useless due to the intermediate root hashing after each transaction.
@@ -1814,11 +1823,12 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 		}
 
 		// The traced section of block import.
-		res, err := bc.processBlock(block, statedb, start, setHead)
+		res, err := bc.processBlock(block, statedb, logIndexerProcess, start, setHead)
 		followupInterrupt.Store(true)
 		if err != nil {
 			return nil, it.index, err
 		}
+
 		// Report the import stats before returning the various results
 		stats.processed++
 		stats.usedGas += res.usedGas
@@ -1893,6 +1903,19 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 		}()
 	}
 
+	var logIndexerProcess LogIndexerProcess
+	if bc.vmConfig.IsEIP7745(header.Number) {
+		logIndexerProcess := bc.logIndexer.PrepareHead(block.NumberU64(), block.ParentHash())
+		if logIndexerProcess == nil {
+			return nil, consensus.ErrUnknownAncestor
+		}
+		defer func() {
+			if logIndexerProcess != nil {
+				logIndexerProcess.Cancel()
+			}
+		}()
+	}
+
 	// Process block using the parent state as reference point
 	pstart := time.Now()
 	res, err := bc.processor.Process(block, statedb, bc.vmConfig)
@@ -1939,6 +1962,18 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	}
 	xvtime := time.Since(xvstart)
 	proctime := time.Since(start) // processing + validation + cross validation
+
+	if logIndexerProcess != nil {
+		logIndexRoot, err := logIndexerProcess.Processed(res.Receipts) //TODO measure log index validation time
+		if err != nil {
+			return nil, err
+		}
+		if *header.LogIndexRoot != logIndexRoot {
+			return nil, fmt.Errorf("invalid log index root hash (remote: %x local: %x)", *header.LogIndexRoot, logIndexRoot)
+		}
+		logIndexerProcess.Finalized(header)
+		logIndexerProcess = nil
+	}
 
 	// Update the metrics touched during block processing and validation
 	accountReadTimer.Update(statedb.AccountReads) // Account reads are complete(in processing)
