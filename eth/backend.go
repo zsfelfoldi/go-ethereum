@@ -23,6 +23,7 @@ import (
 	"math/big"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -30,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/bloombits"
+	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/pruner"
 	"github.com/ethereum/go-ethereum/core/txpool"
@@ -84,6 +86,9 @@ type Ethereum struct {
 	bloomRequests     chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bloomIndexer      *core.ChainIndexer             // Bloom indexer operating during block imports
 	closeBloomHandler chan struct{}
+
+	filterMaps      *filtermaps.FilterMaps
+	closeFilterMaps chan chan struct{}
 
 	APIBackend *EthAPIBackend
 
@@ -222,6 +227,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		return nil, err
 	}
 	eth.bloomIndexer.Start(eth.blockchain)
+	eth.filterMaps = filtermaps.NewFilterMaps(chainDb, eth.newChainView(eth.blockchain.CurrentBlock()), filtermaps.DefaultParams, config.LogHistory, 1000, config.LogNoHistory, config.LogExportCheckpoints)
+	eth.closeFilterMaps = make(chan chan struct{})
 
 	if config.BlobPool.Datadir != "" {
 		config.BlobPool.Datadir = stack.ResolvePath(config.BlobPool.Datadir)
@@ -364,7 +371,95 @@ func (s *Ethereum) Start() error {
 
 	// Start the networking layer
 	s.handler.Start(s.p2pServer.MaxPeers)
+
+	// start log indexer
+	s.filterMaps.Start()
+	go s.updateFilterMapsHeads()
 	return nil
+}
+
+func (s *Ethereum) newChainView(head *types.Header) *filtermaps.StoredChainView {
+	if head == nil {
+		return nil
+	}
+	return filtermaps.NewStoredChainView(s.blockchain, head.Number.Uint64(), head.Hash())
+}
+
+func (s *Ethereum) updateFilterMapsHeads() {
+	headEventCh := make(chan core.ChainEvent, 10)
+	blockProcCh := make(chan bool, 10)
+	sub := s.blockchain.SubscribeChainEvent(headEventCh)
+	sub2 := s.blockchain.SubscribeBlockProcessingEvent(blockProcCh)
+	defer func() {
+		sub.Unsubscribe()
+		sub2.Unsubscribe()
+		for {
+			select {
+			case <-headEventCh:
+			case <-blockProcCh:
+			default:
+				return
+			}
+		}
+	}()
+
+	head := s.blockchain.CurrentBlock()
+	targetView := s.newChainView(head) // nil if already sent to channel
+	var blockProc, lastBlockProc bool
+
+	setHead := func(newHead *types.Header) {
+		if newHead == nil {
+			return
+		}
+		if head == nil || newHead.Hash() != head.Hash() {
+			head = newHead
+			targetView = s.newChainView(head)
+		}
+	}
+
+	for {
+		if blockProc != lastBlockProc {
+			select {
+			case s.filterMaps.BlockProcessingCh <- blockProc:
+				lastBlockProc = blockProc
+			case ev := <-headEventCh:
+				setHead(ev.Header)
+			case blockProc = <-blockProcCh:
+				//fmt.Println("block proc feed", blockProc)
+			case <-time.After(time.Second * 10):
+				setHead(s.blockchain.CurrentBlock())
+			case ch := <-s.closeFilterMaps:
+				close(ch)
+				return
+			}
+		} else if targetView != nil {
+			select {
+			case s.filterMaps.TargetViewCh <- targetView:
+				targetView = nil
+			case ev := <-headEventCh:
+				setHead(ev.Header)
+			case blockProc = <-blockProcCh:
+				//fmt.Println("block proc feed", blockProc)
+			case <-time.After(time.Second * 10):
+				setHead(s.blockchain.CurrentBlock())
+			case ch := <-s.closeFilterMaps:
+				close(ch)
+				return
+			}
+		} else {
+			select {
+			case ev := <-headEventCh:
+				setHead(ev.Header)
+			case <-time.After(time.Second * 10):
+				setHead(s.blockchain.CurrentBlock())
+			case blockProc = <-blockProcCh:
+				//fmt.Println("block proc feed", blockProc)
+			case ch := <-s.closeFilterMaps:
+				close(ch)
+				return
+			}
+		}
+	}
 }
 
 func (s *Ethereum) setupDiscovery() error {
@@ -409,6 +504,10 @@ func (s *Ethereum) Stop() error {
 	// Then stop everything else.
 	s.bloomIndexer.Close()
 	close(s.closeBloomHandler)
+	ch := make(chan struct{})
+	s.closeFilterMaps <- ch
+	<-ch
+	s.filterMaps.Stop()
 	s.txPool.Close()
 	s.blockchain.Stop()
 	s.engine.Close()

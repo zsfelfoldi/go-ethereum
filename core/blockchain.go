@@ -228,6 +228,7 @@ type BlockChain struct {
 	chainHeadFeed event.Feed
 	logsFeed      event.Feed
 	blockProcFeed event.Feed
+	blockProcFeedCount int
 	scope         event.SubscriptionScope
 	genesisBlock  *types.Block
 
@@ -1577,8 +1578,6 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 	if len(chain) == 0 {
 		return 0, nil
 	}
-	bc.blockProcFeed.Send(true)
-	defer bc.blockProcFeed.Send(false)
 
 	// Do a sanity check that the provided chain is actually ordered and linked.
 	for i := 1; i < len(chain); i++ {
@@ -1618,6 +1617,17 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 	if bc.insertStopped() {
 		return nil, 0, nil
 	}
+	if bc.blockProcFeedCount == 0 {
+	bc.blockProcFeed.Send(true)
+	}
+	bc.blockProcFeedCount++
+	defer func() {
+		bc.blockProcFeedCount--
+		if bc.blockProcFeedCount == 0 {
+			bc.blockProcFeed.Send(false)
+		}
+	}()
+
 	// Start a parallel signature recovery (signer will fluke on fork transition, minimal perf loss)
 	SenderCacher().RecoverFromBlocks(types.MakeSigner(bc.chainConfig, chain[0].Number(), chain[0].Time()), chain)
 
