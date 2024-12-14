@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/bloombits"
+	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/pruner"
 	"github.com/ethereum/go-ethereum/core/txpool"
@@ -84,6 +85,8 @@ type Ethereum struct {
 	bloomRequests     chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bloomIndexer      *core.ChainIndexer             // Bloom indexer operating during block imports
 	closeBloomHandler chan struct{}
+
+	filterMaps *filtermaps.FilterMaps
 
 	APIBackend *EthAPIBackend
 
@@ -222,6 +225,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		return nil, err
 	}
 	eth.bloomIndexer.Start(eth.blockchain)
+	eth.filterMaps = filtermaps.NewFilterMaps(chainDb, eth.blockchain, filtermaps.DefaultParams, config.LogHistory, 1000, config.LogNoHistory)
 
 	if config.BlobPool.Datadir != "" {
 		config.BlobPool.Datadir = stack.ResolvePath(config.BlobPool.Datadir)
@@ -364,6 +368,9 @@ func (s *Ethereum) Start() error {
 
 	// Start the networking layer
 	s.handler.Start(s.p2pServer.MaxPeers)
+
+	// start log indexer
+	s.filterMaps.Start()
 	return nil
 }
 
@@ -409,6 +416,7 @@ func (s *Ethereum) Stop() error {
 	// Then stop everything else.
 	s.bloomIndexer.Close()
 	close(s.closeBloomHandler)
+	s.filterMaps.Stop()
 	s.txPool.Close()
 	s.blockchain.Stop()
 	s.engine.Close()
