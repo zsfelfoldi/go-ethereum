@@ -211,7 +211,8 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 
 // Start starts the indexer.
 func (f *FilterMaps) Start() {
-	f.closeWg.Add(1)
+	f.closeWg.Add(2)
+	go f.removeBloomBits()
 	go f.updateLoop()
 }
 
@@ -235,6 +236,13 @@ func (f *FilterMaps) reset() bool {
 	// startup and any leftover data will be removed even if it cannot finish now.
 	rawdb.DeleteFilterMapsRange(f.db)
 	return f.removeDbWithPrefix(rawdb.FilterMapsPrefix, "Resetting log index database")
+}
+
+// removeBloomBits removes old bloom bits data from the database.
+func (f *FilterMaps) removeBloomBits() {
+	f.removeDbWithPrefix(rawdb.BloomBitsPrefix, "Removing old bloom bits database")
+	f.removeDbWithPrefix(rawdb.BloomBitsIndexPrefix, "Removing old bloom bits chain index")
+	f.closeWg.Done()
 }
 
 // removeDbWithPrefix removes data with the given prefix from the database and
