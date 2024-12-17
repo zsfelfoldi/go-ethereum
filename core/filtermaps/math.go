@@ -24,6 +24,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+const maxRowLengthRatio = 8
+
 type Params struct {
 	logMapHeight    uint // log2(mapHeight)
 	logMapsPerEpoch uint // log2(mmapsPerEpochapsPerEpoch)
@@ -31,19 +33,21 @@ type Params struct {
 	// derived fields
 	mapHeight    uint32 // filter map height (number of rows)
 	mapsPerEpoch uint32 // number of maps in an epoch
+	maxRowLength uint32 // maximum number of log values per row
 	valuesPerMap uint64 // number of log values marked on each filter map
 }
 
 var DefaultParams = Params{
-	logMapHeight:    12,
+	logMapHeight:    16,
 	logMapsPerEpoch: 6,
-	logValuesPerMap: 16,
+	logValuesPerMap: 20,
 }
 
 func (p *Params) deriveFields() {
 	p.mapHeight = uint32(1) << p.logMapHeight
 	p.mapsPerEpoch = uint32(1) << p.logMapsPerEpoch
 	p.valuesPerMap = uint64(1) << p.logValuesPerMap
+	p.maxValuesPerRow = p.valuesPerMap * maxRowLengthRatio / p.mapHeight
 }
 
 // addressValue returns the log value hash of a log emitting address.
@@ -71,11 +75,12 @@ func topicValue(topic common.Hash) common.Hash {
 // for other log values very expensive. Even if certain values are occasionally
 // sorted into these heavy rows, in most of the epochs they are placed in average
 // length rows.
-func (p *Params) rowIndex(epochIndex uint32, logValue common.Hash) uint32 {
+func (p *Params) rowIndex(epochIndex, alternativeIndex uint32, logValue common.Hash) uint32 {
 	hasher := sha256.New()
 	hasher.Write(logValue[:])
-	var indexEnc [4]byte
-	binary.LittleEndian.PutUint32(indexEnc[:], epochIndex)
+	var indexEnc [8]byte
+	binary.LittleEndian.PutUint32(indexEnc[0:4], epochIndex)
+	binary.LittleEndian.PutUint32(indexEnc[4:8], alternativeIndex)
 	hasher.Write(indexEnc[:])
 	var hash common.Hash
 	hasher.Sum(hash[:0])
@@ -124,7 +129,7 @@ func transformHash(mapIndex uint32, logValue common.Hash) (result common.Hash) {
 // outputs of individual log value matchers and this pattern matcher assumes a
 // sorted and duplicate-free list of indices, we should ensure these properties
 // here.
-func (p *Params) potentialMatches(row FilterRow, mapIndex uint32, logValue common.Hash) potentialMatches {
+func (p *Params) potentialMatches(rows []FilterRow, mapIndex uint32, logValue common.Hash) potentialMatches {
 	results := make(potentialMatches, 0, 8)
 	transformHash := transformHash(mapIndex, logValue)
 	sub1 := binary.LittleEndian.Uint32(transformHash[0:4])
@@ -141,9 +146,14 @@ func (p *Params) potentialMatches(row FilterRow, mapIndex uint32, logValue commo
 	// Column index is 32 bits long while there are 2**16 valid log value indices
 	// in the map's range, so this can also happen by accident with 1 in 2**16
 	// chance, in which case we have a false positive.
-	for _, columnIndex := range row {
-		if potentialSubIndex := (((((((columnIndex * mul4) ^ xor2) * mul3) - sub2) * mul2) ^ xor1) * mul1) - sub1; potentialSubIndex < uint32(p.valuesPerMap) {
-			results = append(results, uint64(mapIndex)<<p.logValuesPerMap+uint64(potentialSubIndex))
+	for _, row := range rows {
+		for _, columnIndex := range row {
+			if potentialSubIndex := (((((((columnIndex * mul4) ^ xor2) * mul3) - sub2) * mul2) ^ xor1) * mul1) - sub1; potentialSubIndex < uint32(p.valuesPerMap) {
+				results = append(results, uint64(mapIndex)<<p.logValuesPerMap+uint64(potentialSubIndex))
+			}
+		}
+		if len(row) < p.maxRowLength {
+			break
 		}
 	}
 	sort.Sort(results)

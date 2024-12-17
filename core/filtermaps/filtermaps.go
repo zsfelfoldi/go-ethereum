@@ -35,31 +35,17 @@ import (
 
 // checkpoint allows the log indexer to start indexing from the given block
 // instead of genesis at the correct absolute log value index.
-type checkpoint struct {
+type checkpoint []epochCheckpoint
+
+type epochCheckpoint struct {
 	blockNumber uint64
 	blockHash   common.Hash
-	nextLvIndex uint64 // next log value index after the given block
+	firstLvIndex uint64 // next log value index after the given block
 }
 
-var checkpoints = []checkpoint{
-	{ // Mainnet
-		blockNumber: 21019982,
-		blockHash:   common.HexToHash("0xc684e4db692fe347e740082665acf91e27c0d9ad2a118822abdd7bb06c2a9250"),
-		nextLvIndex: 15878969230,
-	},
-	{ // Sepolia
-		blockNumber: 6939193,
-		blockHash:   common.HexToHash("0x659b6e8a711efe8184368ac286f1f4aee74be50d38bb7fe4b24f53e73dfa58b8"),
-		nextLvIndex: 3392298216,
-	},
-	{ // Holesky
-		blockNumber: 2607449,
-		blockHash:   common.HexToHash("0xa48c4e1ff3857ba44346bc25346d9947cd12c08f5ce8c10e8acaf40e2d6c7dc4"),
-		nextLvIndex: 966700355,
-	},
-}
+var checkpoints = []checkpoint{}
 
-const headCacheSize = 8 // maximum number of recent filter maps cached in memory
+const headCacheSize = 4 // maximum number of recent filter maps cached in memory
 
 // blockchain defines functions required by the FilterMaps log indexer.
 type blockchain interface {
@@ -92,6 +78,7 @@ type FilterMaps struct {
 	// Matcher backend can read them under indexLock read lock.
 	indexLock sync.RWMutex
 	filterMapsRange
+	headerChain *headerChain // always consistent with the log index
 	// filterMapCache caches certain filter maps (headCacheSize most recent maps
 	// and one tail map) that are expected to be frequently accessed and modified
 	// while updating the structure. Note that the set of cached maps depends
@@ -151,17 +138,18 @@ var emptyRow = FilterRow{}
 // values in those maps are unindexed.
 type filterMapsRange struct {
 	initialized                                      bool
-	headLvPointer, tailLvPointer, tailBlockLvPointer uint64
 	headBlockNumber, tailBlockNumber                 uint64
-	headBlockHash, tailParentHash                    common.Hash
+	headBlockHash                    common.Hash
+	headLvPointer, tailLvPointer uint64
+	headMapIndex, tailMapIndex, tailPartialEpoch uint32
 }
 
 // mapCount returns the number of maps fully or partially included in the range.
-func (fmr *filterMapsRange) mapCount(logValuesPerMap uint) uint32 {
+func (fmr *filterMapsRange) mapCount() uint32 {
 	if !fmr.initialized {
 		return 0
 	}
-	return uint32(fmr.headLvPointer>>logValuesPerMap) + 1 - uint32(fmr.tailLvPointer>>logValuesPerMap)
+	return fmr.headMapIndex +1 - fmr.tailMapIndex
 }
 
 // NewFilterMaps creates a new FilterMaps and starts the indexer in order to keep
@@ -276,8 +264,12 @@ func (f *FilterMaps) removeDbWithPrefix(prefix []byte, action string) bool {
 // setRange updates the covered range and also adds the changes to the given batch.
 // Note that this function assumes that the index write lock is being held.
 func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRange) {
+	if f.headerChain != nil && f.headerChain.getHash(newRange.headBlockNumber) != newRange.headBlockHash {
+		panic("indexed range inconsistent with canonical chain")
+	}
 	f.filterMapsRange = newRange
 	rs := rawdb.FilterMapsRange{
+		//TODO
 		Initialized:     newRange.initialized,
 		HeadLvPointer:   newRange.headLvPointer,
 		TailLvPointer:   newRange.tailLvPointer,
@@ -328,65 +320,11 @@ func (f *FilterMaps) updateMapCache() {
 // Note that this function assumes that the indexer read lock is being held when
 // called from outside the updateLoop goroutine.
 func (f *FilterMaps) getLogByLvIndex(lvIndex uint64) (*types.Log, error) {
-	if lvIndex < f.tailBlockLvPointer || lvIndex >= f.headLvPointer {
-		return nil, nil
-	}
-	// find possible block range based on map to block pointers
-	mapIndex := uint32(lvIndex >> f.logValuesPerMap)
-	firstBlockNumber, err := f.getMapBlockPtr(mapIndex)
+	iter, err := f.newLogIterator(lvIndex)
 	if err != nil {
 		return nil, err
 	}
-	if firstBlockNumber < f.tailBlockNumber {
-		firstBlockNumber = f.tailBlockNumber
-	}
-	var lastBlockNumber uint64
-	if mapIndex+1 < uint32((f.headLvPointer+f.valuesPerMap-1)>>f.logValuesPerMap) {
-		lastBlockNumber, err = f.getMapBlockPtr(mapIndex + 1)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		lastBlockNumber = f.headBlockNumber
-	}
-	// find block with binary search based on block to log value index pointers
-	for firstBlockNumber < lastBlockNumber {
-		midBlockNumber := (firstBlockNumber + lastBlockNumber + 1) / 2
-		midLvPointer, err := f.getBlockLvPointer(midBlockNumber)
-		if err != nil {
-			return nil, err
-		}
-		if lvIndex < midLvPointer {
-			lastBlockNumber = midBlockNumber - 1
-		} else {
-			firstBlockNumber = midBlockNumber
-		}
-	}
-	// get block receipts
-	receipts := f.chain.GetReceiptsByHash(f.chain.GetCanonicalHash(firstBlockNumber))
-	if receipts == nil {
-		return nil, errors.New("receipts not found")
-	}
-	lvPointer, err := f.getBlockLvPointer(firstBlockNumber)
-	if err != nil {
-		return nil, err
-	}
-	// iterate through receipts to find the exact log starting at lvIndex
-	for _, receipt := range receipts {
-		for _, log := range receipt.Logs {
-			if lvPointer > lvIndex {
-				// lvIndex does not point to the first log value (address value)
-				// generated by a log as true matches should always do, so it
-				// is considered a false positive (no log and no error returned).
-				return nil, nil
-			}
-			if lvPointer == lvIndex {
-				return log, nil // potential match
-			}
-			lvPointer += uint64(len(log.Topics) + 1)
-		}
-	}
-	return nil, nil
+	return iter.log(), nil
 }
 
 // getFilterMapRow returns the given row of the given map. If the row is empty

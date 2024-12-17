@@ -353,12 +353,12 @@ func (f *FilterMaps) tryUpdateHead(headFn func() *types.Header) {
 }
 
 // find the latest revert point that is the ancestor of the new head
-func (f *FilterMaps) revertToCommonAncestor(headNum uint64, hc *headerChain) {
+func (f *FilterMaps) revertToCommonAncestor(hc *headerChain) {
 	if hc.getBlockHash(f.headBlockNumber) == f.headBlockHash {
 		return
 	}
 	var (
-		number = headNum
+		number = hc.headNumber()
 		rp     *revertPoint
 	)
 	for {
@@ -812,9 +812,14 @@ func (u *updateBatch) initWithBlock(header *types.Header, receipts types.Receipt
 // addValueToHead adds a single log value to the head of the log index.
 func (u *updateBatch) addValueToHead(logValue common.Hash) error {
 	mapIndex := uint32(u.headLvPointer >> u.f.logValuesPerMap)
-	rowPtr, err := u.getRowPtr(mapIndex, u.f.rowIndex(mapIndex>>u.f.logMapsPerEpoch, logValue))
-	if err != nil {
-		return err
+	for alternativeIndex := uint32(0); ; alternativeIndex++ {
+		rowPtr, err := u.getRowPtr(mapIndex, u.f.rowIndex(mapIndex>>u.f.logMapsPerEpoch, alternativeIndex, logValue))
+		if err != nil {
+			return err
+		}
+		if len(*rowPtr) < u.maxRowLength {
+			break
+		}
 	}
 	column := u.f.columnIndex(u.headLvPointer, logValue)
 	*rowPtr = append(*rowPtr, column)
@@ -849,95 +854,122 @@ func (u *updateBatch) addBlockToHead(header *types.Header, receipts types.Receip
 	return nil
 }
 
-// addValueToTail adds a single log value to the tail of the log index.
-func (u *updateBatch) addValueToTail(logValue common.Hash) error {
-	if u.tailBlockLvPointer == 0 {
-		return errors.New("tail log value pointer underflow")
+type logIterator struct {
+	chain                         *headerChain
+	headBlockNumber               uint64
+	blockNumber                   uint64
+	receipts                      types.Receipts
+	delimiter                     bool
+	txIndex, logIndex, topicIndex int
+}
+
+var errUnindexedRange = errors.New("unindexed range")
+
+func (f *FilterMaps) newLogIterator(lvIndex uint64) *logIterator {
+	l := &logIterator{chain: f.headerChain, headBlockNumber: f.headBlockNumber}
+	if lvIndex < f.tailBlockLvPointer || lvIndex >= f.headLvPointer {
+		return nil, errUnindexedRange
 	}
-	if u.tailBlockLvPointer < u.tailLvPointer {
-		panic("tailBlockLvPointer < tailLvPointer")
-	}
-	u.tailBlockLvPointer--
-	if u.tailBlockLvPointer >= u.tailLvPointer {
-		return nil // already added to the map
-	}
-	u.tailLvPointer--
-	mapIndex := uint32(u.tailBlockLvPointer >> u.f.logValuesPerMap)
-	rowPtr, err := u.getRowPtr(mapIndex, u.f.rowIndex(mapIndex>>u.f.logMapsPerEpoch, logValue))
+	// find possible block range based on map to block pointers
+	mapIndex := uint32(lvIndex >> f.logValuesPerMap)
+	firstBlockNumber, err := f.getMapBlockPtr(mapIndex)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	column := u.f.columnIndex(u.tailBlockLvPointer, logValue)
-	*rowPtr = append(*rowPtr, 0)
-	copy((*rowPtr)[1:], (*rowPtr)[:len(*rowPtr)-1])
-	(*rowPtr)[0] = column
-	return nil
-}
-
-// addBlockToTail adds the logs of the given block to the tail of the log index.
-// It also adds block to log value index and filter map to block pointers.
-func (u *updateBatch) addBlockToTail(header *types.Header, receipts types.Receipts) error {
-	if !u.initialized {
-		return errors.New("not initialized")
+	if firstBlockNumber < f.tailBlockNumber {
+		firstBlockNumber = f.tailBlockNumber
 	}
-	if header.Hash() != u.tailParentHash {
-		return errors.New("addBlockToTail parent mismatch")
+	var lastBlockNumber uint64
+	if mapIndex+1 < uint32((f.headLvPointer+f.valuesPerMap-1)>>f.logValuesPerMap) {
+		lastBlockNumber, err = f.getMapBlockPtr(mapIndex + 1)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		lastBlockNumber = f.headBlockNumber
 	}
-	number := header.Number.Uint64()
-	stopMap := uint32((u.tailBlockLvPointer + u.f.valuesPerMap - 1) >> u.f.logValuesPerMap)
-	var cnt int
-	if err := iterateReceiptsReverse(receipts, func(lv common.Hash) error {
-		cnt++
-		return u.addValueToTail(lv)
-	}); err != nil {
-		return err
-	}
-	startMap := uint32(u.tailBlockLvPointer >> u.f.logValuesPerMap)
-	for m := startMap; m < stopMap; m++ {
-		u.mapBlockPtr[m] = number
-	}
-	u.blockLvPointer[number] = u.tailBlockLvPointer
-	u.tailBlockNumber, u.tailParentHash = number, header.ParentHash
-	return nil
-}
-
-// iterateReceipts iterates the given block receipts, generates log value hashes
-// and passes them to the given callback function as a parameter.
-func iterateReceipts(receipts types.Receipts, valueCb func(common.Hash) error) error {
-	for _, receipt := range receipts {
-		for _, log := range receipt.Logs {
-			if err := valueCb(addressValue(log.Address)); err != nil {
-				return err
-			}
-			for _, topic := range log.Topics {
-				if err := valueCb(topicValue(topic)); err != nil {
-					return err
-				}
-			}
+	// find block with binary search based on block to log value index pointers
+	for firstBlockNumber < lastBlockNumber {
+		midBlockNumber := (firstBlockNumber + lastBlockNumber + 1) / 2
+		midLvPointer, err := f.getBlockLvPointer(midBlockNumber)
+		if err != nil {
+			return nil, err
+		}
+		if lvIndex < midLvPointer {
+			lastBlockNumber = midBlockNumber - 1
+		} else {
+			firstBlockNumber = midBlockNumber
 		}
 	}
+	// get block receipts
+	receipts := f.chain.GetReceiptsByHash(f.headerChain.getHash(firstBlockNumber))
+	if receipts == nil {
+		return nil, errors.New("receipts not found")
+	}
+	l.blockNumber, l.receipts = firstBlockNumber, receipts
+	lvPointer, err := f.getBlockLvPointer(firstBlockNumber)
+	if err != nil {
+		return nil, err
+	}
+	l.nextValid()
+	for ; lvPointer < lvIndex; lvPointer++ {
+		if err := l.next(); err != nil {
+			return nil, err
+		}
+	}
+	return l, nil
+}
+
+func (l *logIterator) next() error { //TODO end of indexed range, no delimiter at end
+	if l.delimiter {
+		l.delimiter = false
+		l.blockNumber++
+		l.receipts = f.chain.GetReceiptsByHash(f.headerChain.getHash(l.blockNumber))
+		if l.receipts == nil {
+			return errors.New("receipts not found")
+		}
+		l.txIndex, l.logIndex, l.topicIndex = 0, 0, 0
+	} else {
+		l.topicIndex++
+	}
+	l.nextValid()
 	return nil
 }
 
-// iterateReceiptsReverse iterates the given block receipts, generates log value
-// hashes in reverse order and passes them to the given callback function as a
-// parameter.
-func iterateReceiptsReverse(receipts types.Receipts, valueCb func(common.Hash) error) error {
-	for i := len(receipts) - 1; i >= 0; i-- {
-		logs := receipts[i].Logs
-		for j := len(logs) - 1; j >= 0; j-- {
-			log := logs[j]
-			for k := len(log.Topics) - 1; k >= 0; k-- {
-				if err := valueCb(topicValue(log.Topics[k])); err != nil {
-					return err
-				}
+func (l *logIterator) nextValid() {
+	for ; l.txIndex < len(receipts); l.txIndex++ {
+		receipt := l.receipts[l.txindex]
+		for ; l.logIndex < len(receipt.Logs); l.logIndex++ {
+			log := receipt.Logs[l.logIndex]
+			if l.topicIndex <= len(log.Topics) {
+				return nil
 			}
-			if err := valueCb(addressValue(log.Address)); err != nil {
-				return err
-			}
+			l.topicIndex = 0
 		}
+		l.logIndex = 0
 	}
-	return nil
+	l.delimiter = true
+}
+
+func (l *logIterator) getLog() (*types.Log, *types.Header) {
+	if l.delimiter {
+		return nil, l.chain.getHeader(l.blockNumber)
+	}
+	if l.topicIndex != 0 {
+		return nil, nil
+	}
+	return l.receipts[l.txindex].Logs[l.logIndex]
+}
+
+func (l *logIterator) getValueHash() common.Hash {
+	if l.delimiter {
+		return common.Hash{}
+	}
+	log := l.receipts[l.txindex].Logs[l.logIndex]
+	if l.topicIndex == 0 {
+		return addressValue(log.Address)
+	}
+	return topicValue(log.Topics[l.topicIndex-1])
 }
 
 // revertPoint can be used to revert the log index to a certain head block.
