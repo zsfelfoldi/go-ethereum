@@ -150,7 +150,6 @@ var (
 	filterMapRowPrefix      = append(FilterMapsPrefix, byte('r')) // filterMapRowPrefix + mapRowIndex (uint64 big endian) -> filter row
 	filterMapBlockPtrPrefix = append(FilterMapsPrefix, byte('b')) // filterMapBlockPtrPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
 	blockLVPrefix           = append(FilterMapsPrefix, byte('p')) // blockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
-	revertPointPrefix       = append(FilterMapsPrefix, byte('v')) // revertPointPrefix + num (uint64 big endian) -> revert data
 
 	preimageCounter    = metrics.NewRegisteredCounter("db/preimage/total", nil)
 	preimageHitCounter = metrics.NewRegisteredCounter("db/preimage/hits", nil)
@@ -371,9 +370,4 @@ func filterMapBlockPtrKey(mapIndex uint32) []byte {
 // blockLVKey = blockLVPrefix + num (uint64 big endian)
 func blockLVKey(number uint64) []byte {
 	return append(blockLVPrefix, encodeBlockNumber(number)...)
-}
-
-// revertPointKey = revertPointPrefix + num (uint64 big endian)
-func revertPointKey(number uint64) []byte {
-	return append(revertPointPrefix, encodeBlockNumber(number)...)
 }

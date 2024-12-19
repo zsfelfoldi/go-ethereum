@@ -78,7 +78,7 @@ type FilterMaps struct {
 	// Matcher backend can read them under indexLock read lock.
 	indexLock sync.RWMutex
 	filterMapsRange
-	headerChain *headerChain // always consistent with the log index
+	chainView *chainView // always consistent with the log index
 	// filterMapCache caches certain filter maps (headCacheSize most recent maps
 	// and one tail map) that are expected to be frequently accessed and modified
 	// while updating the structure. Note that the set of cached maps depends
@@ -264,7 +264,7 @@ func (f *FilterMaps) removeDbWithPrefix(prefix []byte, action string) bool {
 // setRange updates the covered range and also adds the changes to the given batch.
 // Note that this function assumes that the index write lock is being held.
 func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRange) {
-	if f.headerChain != nil && f.headerChain.getHash(newRange.headBlockNumber) != newRange.headBlockHash {
+	if f.chainView != nil && f.chainView.getHash(newRange.headBlockNumber) != newRange.headBlockHash {
 		panic("indexed range inconsistent with canonical chain")
 	}
 	f.filterMapsRange = newRange
