@@ -38,8 +38,8 @@ import (
 type checkpoint []epochCheckpoint
 
 type epochCheckpoint struct {
-	blockNumber uint64
-	blockHash   common.Hash
+	blockNumber  uint64
+	blockHash    common.Hash
 	firstLvIndex uint64 // next log value index after the given block
 }
 
@@ -97,7 +97,7 @@ type FilterMaps struct {
 	matchers     map[*FilterMapsMatcherBackend]struct{}
 
 	// fields only accessed by the indexer (no mutex required).
-	revertPoints                                                           map[uint64]*revertPoint
+	revertPoints                                                           *lru.Cache[uint64, *renderedMap]
 	startHeadUpdate, loggedHeadUpdate, loggedTailExtend, loggedTailUnindex bool
 	startedHeadUpdate, startedTailExtend, startedTailUnindex               time.Time
 	lastLogHeadUpdate, lastLogTailExtend, lastLogTailUnindex               time.Time
@@ -123,11 +123,6 @@ type filterMap []FilterRow
 // simpler.
 type FilterRow []uint32
 
-// emptyRow represents an empty FilterRow. Note that in case of decoded FilterRows
-// nil has a special meaning (transparent; not stored in the cache/overlay map)
-// and therefore an empty row is represented by a zero length slice.
-var emptyRow = FilterRow{}
-
 // filterMapsRange describes the block range that has been indexed and the log
 // value index range it has been mapped to.
 // Note that tailBlockLvPointer points to the earliest log value index belonging
@@ -137,11 +132,17 @@ var emptyRow = FilterRow{}
 // values one by one, rather delete entire maps when all blocks that had log
 // values in those maps are unindexed.
 type filterMapsRange struct {
-	initialized                                      bool
-	headBlockNumber, tailBlockNumber                 uint64
-	headBlockHash                    common.Hash
-	headLvPointer, tailLvPointer uint64
-	headMapIndex, tailMapIndex, tailPartialEpoch uint32
+	initialized        bool
+	headBlockNumber    uint64
+	headBlockHash      common.Hash
+	headBlockDelimiter uint64 // zero if lastIndexedBlock != headBlockNumber
+	// fully rendered maps between firstRenderedMap .. lastRenderedMap
+	// firstRenderedMap-mapsPerEpoch .. firstRenderedMap-mapsPerEpoch+tailPartialEpoch-1
+	firstRenderedMap, lastRenderedMap, tailPartialEpoch uint32
+	// all log values belonging to blocks between firstIndexedBlock .. lastIndexedBlock
+	// are fully rendered
+	// blockLvPointers are available between firstIndexedBlock .. lastIndexedBlock
+	firstIndexedBlock, lastIndexedBlock uint64
 }
 
 // mapCount returns the number of maps fully or partially included in the range.
@@ -149,7 +150,7 @@ func (fmr *filterMapsRange) mapCount() uint32 {
 	if !fmr.initialized {
 		return 0
 	}
-	return fmr.headMapIndex +1 - fmr.tailMapIndex
+	return fmr.headMapIndex + 1 - fmr.tailMapIndex
 }
 
 // NewFilterMaps creates a new FilterMaps and starts the indexer in order to keep
@@ -183,7 +184,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 		filterMapCache: make(map[uint32]filterMap),
 		blockPtrCache:  lru.NewCache[uint32, uint64](1000),
 		lvPointerCache: lru.NewCache[uint64, uint64](1000),
-		revertPoints:   make(map[uint64]*revertPoint),
+		revertPoints:   lru.NewCache[uint64, *renderedMap](cachedRevertPoints),
 	}
 	if fm.initialized {
 		fm.tailBlockLvPointer, err = fm.getBlockLvPointer(fm.tailBlockNumber)
@@ -215,7 +216,7 @@ func (f *FilterMaps) reset() bool {
 	f.indexLock.Lock()
 	f.filterMapsRange = filterMapsRange{}
 	f.filterMapCache = make(map[uint32]filterMap)
-	f.revertPoints = make(map[uint64]*revertPoint)
+	f.revertPoints.Purge()
 	f.blockPtrCache.Purge()
 	f.lvPointerCache.Purge()
 	f.indexLock.Unlock()

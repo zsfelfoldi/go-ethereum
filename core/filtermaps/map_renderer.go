@@ -30,59 +30,50 @@ import (
 
 const (
 	valuesPerCallback = 10000
-	rowsPerCallback   = 4097 //TODO
+)
+
+var (
+	errChainUpdate = errors.New("rendered section of chain updated")
 )
 
 type mapRenderer struct {
-	f                      *FilterMaps
-	mapIndex, lastMapIndex uint32
-	currentMap             filterMap // nil = unchanged
-	iterator               *logIterator
+	f            *FilterMaps
+	targetChain  *chainView
+	lastMap      uint32
+	currentMap   *renderedMap
+	finishedMaps map[uint32]*renderedMap
+	iterator     *logIterator
 }
 
-func (f *FilterMaps) renderMapsFromHead() (*mapRenderer, error) {
-	iter, err := f.newLogIteratorFromHead()
+type renderedMap struct {
+	rm            filterMap
+	mapIndex      uint32
+	lastBlock     uint64
+	lastBlockHash common.Hash
+	blockLvPtrs   []uint64 // start pointers of blocks starting in this map; last one is lastBlock
+	finished      bool     // iterator finished; all values rendered
+	headDelimiter uint64   // if finished then points to the future block delimiter of the head block
+}
+
+func (r *renderedMap) copy() *renderedMap {
+	return &renderedMap{
+		rm:          r.rm.copy(),
+		mapIndex:    r.mapIndex,
+		mapBlockPtr: r.mapBlockPtr,
+		blockLvPtrs: r.blockLvPtrs,
+	}
+}
+
+func (f *FilterMaps) renderMapsFromCheckpoint(r *renderedMap) (*mapRenderer, error) {
+	iter, err := f.newLogIteratorFromBlockDelimiter(r.lastBlock, r.lastDelimiter)
 	if err != nil {
 		return nil, err
 	}
 	return &mapRenderer{
 		f:            f,
-		mapIndex:     uint32(iter.lvIndex >> f.logValuesPerMap),
-		lastMapIndex: math.MaxUint32,
-		currentMap:   f.transparentFilterMap(),
-		lvIndex:      iter.lvIndex,
-		iterator:     iter,
-	}, nil
-}
-
-// revert and re-render blockNumber and above; assumes that blockNumber is already indexed
-func (f *FilterMaps) renderMapsFromBlock(blockNumber uint64) (*mapRenderer, error) {
-	rp := f.revertPoints[blockNumber-1]
-	if rp == nil {
-		// cannot revert map using revert point; re-render entire map affected by the change
-		lvIndex, err := f.getBlockLvPointer(blockNumber)
-		if err != nil {
-			return nil, err
-		}
-		revertMap := uint32(lvIndex >> f.logValuesPerMap)
-		revertFromBlock, err := f.getMapBlockPtr(revertMap)
-		if err != nil {
-			return nil, err
-		}
-		f.revertFromBlock(revertFromBlock)
-		return f.renderMapsInRange(revertMap, math.MaxUint32)
-	}
-	f.revertFromBlock(blockNumber)
-	iter, err := f.newLogIteratorFromBlock(blockNumber)
-	if err != nil {
-		return nil, err
-	}
-	return &mapRenderer{
-		f:            f,
-		mapIndex:     uint32(iter.lvIndex >> f.logValuesPerMap),
-		lastMapIndex: math.MaxUint32,
-		currentMap:   f.revertFilterMap(rp),
-		lvIndex:      iter.lvIndex,
+		currentMap:   r.copy(),
+		finishedMaps: make(map[uint32]*renderedMap),
+		lastMap:      math.MaxUint32,
 		iterator:     iter,
 	}, nil
 }
@@ -93,25 +84,134 @@ func (f *FilterMaps) renderMapsInRange(firstMap, lastMap uint32) (*mapRenderer, 
 		return nil, err
 	}
 	return &mapRenderer{
-		f:            f,
-		mapIndex:     firstMap,
-		lastMapIndex: lastMap,
-		currentMap:   f.emptyFilterMap(),
-		lvIndex:      iter.lvIndex,
+		f: f,
+		currentMap: &renderedMap{
+			rm:       f.emptyFilterMap(),
+			mapIndex: firstMap,
+		},
+		finishedMaps: make(map[uint32]*renderedMap),
+		lastMap:      lastMap,
 		iterator:     iter,
 	}, nil
 }
 
 func (r *mapRenderer) process(stopFn func() bool) (bool, error) {
-	if !r.iterator.updateChainView(r.f.chainView) {
-		// chain changed at current iterator position, current map needs to be discarded
-		r.currentMap = r.f.emptyFilterMap()
-		var err error
-		if iterator, err = r.f.newLogIteratorFromMap(r.mapIndex); err != nil {
-			return false, err
+	for {
+		if done, err := r.processCurrentMap(stopFn); !done {
+			return done, err // stopped or failed
+		}
+		// map finished
+		r.finishedMaps[r.currentMap.mapIndex] = r.currentMap
+		if len(r.finishedMaps) >= mapsPerBatch {
+			if err := r.writeFinishedMaps(); err != nil {
+				return false, err
+			}
+		}
+		if r.currentMap.mapIndex == r.lastMap || r.iterator.finished() {
+			if err := r.writeFinishedMaps(); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+		r.currentMap = &renderedMap{
+			rm:       f.emptyFilterMap(),
+			mapIndex: r.currentMap.mapIndex + 1,
 		}
 	}
+}
+
+func (r *mapRenderer) writeFinishedMaps() error {
+	if len(r.finishedMaps) == 0 {
+		return nil
+	}
+	r.f.indexLock.Lock()
+	defer r.f.indexLock.Unlock()
+
+	firstMap, lastMap := uint32(math.MaxUint32), uint32(0)
+	for m := range r.finishedMaps {
+		if m < firstMap {
+			firstMap = m
+		}
+		if m > lastMap {
+			lastMap = m
+		}
+	}
+	batch := r.f.db.NewBatch()
+	// update filterMapsRange
 	newRange := r.f.filterMapsRange
+	if r.lastMap == math.MaxUint32 {
+		// head update
+		//TODO remove old data if necessary
+		r.f.chainView = r.targetChain
+		if !newRange.initialized {
+			newRange.initialized = true
+			newRange.firstRenderedMap = firstMap
+			fm := r.finishedMaps[firstMap]
+			newRange.firstIndexedBlock = fm.lastBlock + 1 - uint64(len(fm.blockLvPtrs)) //TODO ??afterLast
+		}
+		newRange.headBlockNumber = r.targetChain.headNumber()
+		newRange.headBlockHash = r.targetChain.getBlockHash(newRange.headBlockNumber)
+		newRange.lastRenderedMap = lastMap
+		lm := r.finishedMaps[lastMap]
+		if lm.finished {
+			newRange.lastIndexedBlock = newRange.headBlockNumber
+			if lm.lastBlock != newRange.headBlockNumber {
+				panic("map rendering finished but last block != head block")
+			}
+			newRange.headBlockDelimiter = lm.headDelimiter
+		} else {
+			newRange.lastIndexedBlock = lm.lastBlock - 1 //TODO ??afterLast
+			newRange.headBlockDelimiter = 0
+		}
+	} else {
+		// tail extension
+		if !newRange.initialized {
+			return errors.New("tail extension of uninitialized log index")
+		}
+		if lastBlock := r.finishedMaps[lastMap].lastBlock; r.targetChain.getBlockHash(lastBlock) != r.f.chainView.getBlockHash(lastBlock) {
+			return errChainUpdate
+		}
+		if firstMap != newRange.firstRenderedMap-r.f.mapsPerEpoch+newRange.tailPartialEpoch {
+			return errors.New("tail extension: first map invalid")
+		}
+		newRange.tailPartialEpoch = lastMap + 1 + r.f.mapsPerEpoch - newRange.firstRenderedMap
+		if newRange.tailPartialEpoch > r.f.mapsPerEpoch {
+			return errors.New("tail extension: last map invalid")
+		}
+		if newRange.tailPartialEpoch == r.f.mapsPerEpoch { // tail epoch completed
+			newRange.firstRenderedMap -= r.f.mapsPerEpoch
+			newRange.tailPartialEpoch = 0
+		}
+	}
+	r.f.setRange(batch, newRange)
+	// add or update filter rows
+	for rowIndex := 0; rowIndex < r.f.mapHeight; rowIndex++ {
+		for mapIndex := firstMap; mapIndex <= lastMap; mapIndex++ {
+			row := r.finishedMaps[mapIndex].rm[rowIndex]
+			if fm := r.f.filterMapCache[mapIndex]; fm != nil && bytes.Equal(row, fm[rowIndex]) {
+				continue
+			}
+			r.f.storeFilterMapRow(batch, mapIndex, rowIndex, row)
+		}
+	}
+	// add or update block pointers
+	for mapIndex := firstMap; mapIndex <= lastMap; mapIndex++ {
+		rm := r.finishedMaps[mapIndex]
+		r.f.storeLastBlockNumber(batch, mapIndex, rm.lastBlock)
+		blockNumber := rm.lastBlock + 1 - uint64(len(rm.blockLvPtrs))
+		for _, lvPtr := range rm.blockLvPtrs {
+			r.f.storeBlockLvPointer(batch, blockNumber, lvPtr)
+		}
+	}
+
+	r.finishedMaps = make(map[uint32]*renderedMap)
+	return batch.Write()
+}
+
+func (r *mapRenderer) processCurrentMap(stopFn func() bool) (bool, error) {
+	if !r.iterator.updateChainView(r.f.chainView) {
+		return false, errChainUpdate
+	}
 	var waitCnt, rowCnt int
 	for ; r.mapIndex <= r.lastMapIndex; r.mapIndex++ {
 		// render map into currentMap
@@ -155,101 +255,28 @@ func (r *mapRenderer) process(stopFn func() bool) (bool, error) {
 					newRange.headBlockNumber = r.iterator.blockNumber
 					newRange.headBlockHash = r.iterator.blockHash
 					newRange.headLvPointer = r.iterator.lvIndex
-					rp, err := r.makeRevertPoint()
-					if err != nil {
-						return false, err
+					r.f.revertPoints[r.iterator.blockNumber] = &revertPoint{
+						headLvIndex: r.iterator.lvIndex,
+						mapIndex:    r.mapIndex,
+						headMap:     r.currentMap.copy(),
 					}
-					r.f.addRevertPoint(r.iterator.blockNumber, rp)
 				}
 				if r.iterator.blockNumber == r.f.chainView.headNumber() {
 					break // end of chain, last delimiter is not added
 				}
 			}
 		}
-		batch := r.f.db.NewBatch()
-		for rowIndex, row := range r.currentMap {
-			if row == nil {
-				continue
-			}
-			r.f.storeFilterMapRow(batch, r.mapIndex, rowIndex, row)
-			rowCnt++
-			if rowCnt >= rowsPerCallback {
-				if err := batch.Write(); err != nil {
-					return false, err
-				}
-				batch = r.f.db.NewBatch()
-				if stopFn() {
-					return false, nil
-				}
-				rowCnt = 0
-			}
-		}
-		if r.mapIndex > newRange.headMapIndex {
-			newRange.headMapIndex = r.mapIndex
-		}
-		r.f.setRange(batch, newRange)
-		if err := batch.Write(); err != nil {
-			return false, err
-		}
 	}
 	return true, nil
 }
 
-// revertPoint can be used to revert the log index to a certain head block.
 type revertPoint struct {
-	lvPointer uint64
-	rowLength []uint
-}
-
-// makeRevertPoint creates a new revertPoint.
-func (r *mapRenderer) makeRevertPoint() (*revertPoint, error) {
-	rp := &revertPoint{
-		lvPointer: r.iterator.lvIndex,
-		rowLength: make([]uint, r.f.mapHeight),
-	}
-	if uint32((rp.lvPointer-1)>>r.f.logValuesPerMap) != r.mapIndex {
-		panic("lvPointer does not point to currentMap")
-	}
-	for i := range rp.rowLength {
-		row := r.currentMap[i]
-		if row == nil {
-			var err error
-			row, err = r.f.getFilterMapRow(r.mapIndex, uint32(i))
-			if err != nil {
-				return nil, err
-			}
-		}
-		rp.rowLength[i] = uint(len(row))
-	}
-	return rp, nil
-}
-
-func (f *FilterMaps) revertFilterMap(rp *revertPoint) (filterMap, error) {
-	fm := make(filterMap, f.mapHeight)
-	mapIndex := uint32((rp.lvPointer - 1) >> r.f.logValuesPerMap)
-	for rowIndex, rowLen := range rp.rowLength {
-		row, err := f.getFilterMapRow(mapIndex, uint32(rowIndex))
-		if err != nil {
-			return nil, err
-		}
-		if uint(len(row)) < rowLen {
-			return nil, errors.New("cannot revert (row too short)")
-		}
-		fm[rowIndex] = make(FilterRow, rowLen)
-		copy(fm[rowIndex], row[:rowLen])
-	}
-	return fm, nil
+	headLvIndex uint64
+	mapIndex    uint32
+	headMap     filterMap
 }
 
 func (f *FilterMaps) emptyFilterMap() filterMap {
-	fm := make(filterMap, f.mapHeight)
-	for i := range fm {
-		fm[i] = make(FilterRow, 0, f.valuesPerMap/f.mapHeight)
-	}
-	return fm
-}
-
-func (f *FilterMaps) transparentFilterMap() filterMap {
 	return make(filterMap, f.mapHeight)
 }
 
@@ -441,7 +468,11 @@ func (l *logIterator) updateChainView(cv *chainView) bool {
 	return true
 }
 
-func (l *logIterator) next() error { //TODO end of indexed range, no delimiter at end
+func (l *logIterator) finished() bool {
+	return xxx
+}
+
+func (l *logIterator) next() (bool, error) { //TODO end of indexed range, no delimiter at end
 	if l.delimiter {
 		l.delimiter = false
 		l.blockNumber++

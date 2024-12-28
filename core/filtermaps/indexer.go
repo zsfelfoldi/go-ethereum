@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	cachedRevertPoints = 64              // revert points for most recent blocks in memory
+	cachedRevertPoints = 16              // revert points for most recent blocks in memory
 	logFrequency       = time.Second * 8 // log info frequency during long indexing/unindexing process
 )
 
@@ -46,11 +46,6 @@ func (f *FilterMaps) updateLoop() {
 	f.indexLock.Lock()
 	f.updateMapCache()
 	f.indexLock.Unlock()
-	if rp, err := f.newUpdateBatch().makeRevertPoint(); err == nil {
-		f.revertPoints[rp.blockNumber] = rp
-	} else {
-		log.Error("Error creating head revert point", "error", err)
-	}
 
 	var (
 		headEventCh = make(chan core.ChainEvent, 10)
@@ -59,6 +54,7 @@ func (f *FilterMaps) updateLoop() {
 		stop        bool
 		syncMatcher *FilterMapsMatcherBackend
 	)
+	f.setTargetHead(head)
 
 	matcherSync := func() {
 		if syncMatcher != nil && f.initialized && f.headBlockHash == head.Hash() {
@@ -99,6 +95,7 @@ func (f *FilterMaps) updateLoop() {
 			}
 			break
 		}
+		f.setTargetHead(head)
 	}
 	for head == nil {
 		wait()
@@ -191,4 +188,48 @@ func (f *FilterMaps) WaitIdle() {
 			return
 		}
 	}
+}
+
+func (f *FilterMaps) setTargetHead(head *types.Header) error {
+	if head.Hash() == f.chainView.getBlockHash(f.chainView.headNumber()) {
+		return
+	}
+
+	f.indexLock.Lock()
+	defer f.indexLock.Unlock()
+
+	newView := newChainView(f.chain, head.Number.Uint64(), head.Hash())
+	headNum := f.headBlockNumber
+	if newHeadNum := newView.headNumber(); newHeadNum < headNum {
+		headNum = newHeadNum
+	}
+	for newView.getBlockHash(headNum) != f.chainView.getBlockHash(headNum) {
+		if headNum == 0 {
+			return errors.New("no common ancestor found")
+		}
+		headNum--
+	}
+	f.chainView = newView
+	if headNum == f.headBlockNumber {
+		return nil
+	}
+	nextLvPointer, err := f.getBlockLvPointer(headNum + 1)
+	if err != nil {
+		return err
+	}
+	newRange := f.filterMapsRange
+	newRange.headBlockNumber = headNum
+	newRange.headBlockHash = newView.getBlockHash(headNum)
+	newRange.headLvPointer = nextLvPointer - 1
+	newRange.headMapIndex = uint32(newRange.headLvPointer >> f.logValuesPerMap)
+	batch := f.db.NewBatch()
+	for blockNumber := headNum + 1; blockNumber <= oldHeadNum; blockNumber++ {
+		f.deleteBlockLvPointer(batch, blockNumber)
+		delete(f.revertPoints, blockNumber)
+	}
+	for mapIndex := newRange.headMapIndex + 1; mapIndex <= f.headMapIndex; mapIndex++ {
+		f.deleteMapBlockPtr(batch, mapIndex)
+	}
+	f.setRange(batch, newRange)
+	return batch.Write()
 }
