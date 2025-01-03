@@ -250,11 +250,18 @@ func (s *singleMatcher) getMatches(ctx context.Context, mapIndices []uint32) ([]
 	params := s.backend.GetParams()
 	results := make([]potentialMatches, len(mapIndices))
 	for i, mapIndex := range mapIndices {
-		filterRow, err := s.backend.GetFilterMapRow(ctx, mapIndex, params.rowIndex(mapIndex>>params.logMapsPerEpoch, s.value))
-		if err != nil {
-			return nil, err
+		var filterRows []FilterRow
+		for alternativeIndex := uint32(0); ; alternativeIndex++ {
+			filterRow, err := s.backend.GetFilterMapRow(ctx, mapIndex, params.rowIndex(mapIndex>>params.logMapsPerEpoch, alternativeIndex, s.value))
+			if err != nil {
+				return nil, err
+			}
+			filterRows = append(filterRows, filterRow)
+			if len(filterRow) < params.maxRowLength {
+				break
+			}
 		}
-		results[i] = params.potentialMatches(filterRow, mapIndex, s.value)
+		results[i] = params.potentialMatches(filterRows, mapIndex, s.value)
 	}
 	return results, nil
 }

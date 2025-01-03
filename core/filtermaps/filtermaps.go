@@ -38,9 +38,9 @@ import (
 type checkpoint []epochCheckpoint
 
 type epochCheckpoint struct {
-	blockNumber  uint64
+	blockNumber  uint64 // block that generated the last log value of the given epoch
 	blockHash    common.Hash
-	firstLvIndex uint64 // next log value index after the given block
+	firstLvIndex uint64 // first log value index of the given block
 }
 
 var checkpoints = []checkpoint{}
@@ -68,8 +68,7 @@ type FilterMaps struct {
 	history, unindexLimit uint64
 	noHistory             bool
 	Params
-	chain         blockchain
-	matcherSyncCh chan *FilterMapsMatcherBackend
+	chain blockchain
 
 	db ethdb.KeyValueStore
 
@@ -78,7 +77,7 @@ type FilterMaps struct {
 	// Matcher backend can read them under indexLock read lock.
 	indexLock sync.RWMutex
 	filterMapsRange
-	chainView *chainView // always consistent with the log index
+	indexedView *chainView // always consistent with the log index
 	// filterMapCache caches certain filter maps (headCacheSize most recent maps
 	// and one tail map) that are expected to be frequently accessed and modified
 	// while updating the structure. Note that the set of cached maps depends
@@ -97,13 +96,19 @@ type FilterMaps struct {
 	matchers     map[*FilterMapsMatcherBackend]struct{}
 
 	// fields only accessed by the indexer (no mutex required).
-	revertPoints                                                           *lru.Cache[uint64, *renderedMap]
+	renderSnapshots                                                        *lru.Cache[uint64, *renderedMap]
 	startHeadUpdate, loggedHeadUpdate, loggedTailExtend, loggedTailUnindex bool
 	startedHeadUpdate, startedTailExtend, startedTailUnindex               time.Time
 	lastLogHeadUpdate, lastLogTailExtend, lastLogTailUnindex               time.Time
 	ptrHeadUpdate, ptrTailExtend, ptrTailUnindex                           uint64
 
-	waitIdleCh chan chan bool
+	targetHead         *types.Header
+	targetView         *chainView
+	matcherSyncRequest *FilterMapsMatcherBackend
+	stop               bool
+	headEventCh        chan core.ChainEvent
+	matcherSyncCh      chan *FilterMapsMatcherBackend
+	waitIdleCh         chan chan bool
 }
 
 // filterMap is a full or partial in-memory representation of a filter map where
@@ -179,12 +184,12 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 			headBlockHash:   rs.HeadBlockHash,
 			tailParentHash:  rs.TailParentHash,
 		},
-		matcherSyncCh:  make(chan *FilterMapsMatcherBackend),
-		matchers:       make(map[*FilterMapsMatcherBackend]struct{}),
-		filterMapCache: make(map[uint32]filterMap),
-		blockPtrCache:  lru.NewCache[uint32, uint64](1000),
-		lvPointerCache: lru.NewCache[uint64, uint64](1000),
-		revertPoints:   lru.NewCache[uint64, *renderedMap](cachedRevertPoints),
+		matcherSyncCh:   make(chan *FilterMapsMatcherBackend),
+		matchers:        make(map[*FilterMapsMatcherBackend]struct{}),
+		filterMapCache:  make(map[uint32]filterMap),
+		blockPtrCache:   lru.NewCache[uint32, uint64](1000),
+		lvPointerCache:  lru.NewCache[uint64, uint64](1000),
+		renderSnapshots: lru.NewCache[uint64, *renderedMap](cachedRevertPoints),
 	}
 	if fm.initialized {
 		fm.tailBlockLvPointer, err = fm.getBlockLvPointer(fm.tailBlockNumber)
@@ -216,7 +221,7 @@ func (f *FilterMaps) reset() bool {
 	f.indexLock.Lock()
 	f.filterMapsRange = filterMapsRange{}
 	f.filterMapCache = make(map[uint32]filterMap)
-	f.revertPoints.Purge()
+	f.renderSnapshots.Purge()
 	f.blockPtrCache.Purge()
 	f.lvPointerCache.Purge()
 	f.indexLock.Unlock()
@@ -265,7 +270,7 @@ func (f *FilterMaps) removeDbWithPrefix(prefix []byte, action string) bool {
 // setRange updates the covered range and also adds the changes to the given batch.
 // Note that this function assumes that the index write lock is being held.
 func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRange) {
-	if f.chainView != nil && f.chainView.getHash(newRange.headBlockNumber) != newRange.headBlockHash {
+	if f.indexedView != nil && f.indexedView.getHash(newRange.headBlockNumber) != newRange.headBlockHash {
 		panic("indexed range inconsistent with canonical chain")
 	}
 	f.filterMapsRange = newRange

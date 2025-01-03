@@ -146,7 +146,7 @@ func (p *Params) potentialMatches(rows []FilterRow, mapIndex uint32, logValue co
 	// Column index is 32 bits long while there are 2**16 valid log value indices
 	// in the map's range, so this can also happen by accident with 1 in 2**16
 	// chance, in which case we have a false positive.
-	for _, row := range rows {
+	for i, row := range rows {
 		for _, columnIndex := range row {
 			if potentialSubIndex := (((((((columnIndex * mul4) ^ xor2) * mul3) - sub2) * mul2) ^ xor1) * mul1) - sub1; potentialSubIndex < uint32(p.valuesPerMap) {
 				results = append(results, uint64(mapIndex)<<p.logValuesPerMap+uint64(potentialSubIndex))
@@ -154,6 +154,9 @@ func (p *Params) potentialMatches(rows []FilterRow, mapIndex uint32, logValue co
 		}
 		if len(row) < p.maxRowLength {
 			break
+		}
+		if i == len(rows)-1 {
+			panic("potentialMatches: insufficient list of row alternatives")
 		}
 	}
 	sort.Sort(results)
