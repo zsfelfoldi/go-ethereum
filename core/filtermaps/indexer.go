@@ -146,7 +146,7 @@ func (f *FilterMaps) tryMakeHeadRendererFromCheckpoint() *mapRenderer {
 
 func (f *FilterMaps) tryUpdateTail() bool {
 	for f.firstIndexedBlock > f.tailTarget() {
-		tailRenderer := tryMakeTailRenderer()
+		tailRenderer := f.tryMakeTailRenderer()
 		if tailRenderer == nil {
 			return false
 		}
