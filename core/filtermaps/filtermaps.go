@@ -35,7 +35,7 @@ import (
 
 // checkpoint allows the log indexer to start indexing from the given block
 // instead of genesis at the correct absolute log value index.
-type checkpoint []epochCheckpoint
+type checkpointList []epochCheckpoint
 
 type epochCheckpoint struct {
 	blockNumber  uint64 // block that generated the last log value of the given epoch
@@ -43,7 +43,7 @@ type epochCheckpoint struct {
 	firstLvIndex uint64 // first log value index of the given block
 }
 
-var checkpoints = []checkpoint{}
+var checkpoints = []checkpointList{}
 
 const headCacheSize = 4 // maximum number of recent filter maps cached in memory
 
@@ -141,12 +141,13 @@ type filterMapsRange struct {
 	headBlockNumber    uint64
 	headBlockHash      common.Hash
 	headBlockDelimiter uint64 // zero if lastIndexedBlock != headBlockNumber
-	// fully rendered maps between firstRenderedMap .. lastRenderedMap
-	// firstRenderedMap-mapsPerEpoch .. firstRenderedMap-mapsPerEpoch+tailPartialEpoch-1
-	firstRenderedMap, lastRenderedMap, tailPartialEpoch uint32
-	// all log values belonging to blocks between firstIndexedBlock .. lastIndexedBlock
-	// are fully rendered
-	// blockLvPointers are available between firstIndexedBlock .. lastIndexedBlock
+	// if initialized then all maps are rendered between firstRenderedMap and
+	// lastRenderedMap
+	// some rendered maps might exist between tailMapLimit and firstRenderedMap-1
+	firstRenderedMap, lastRenderedMap uint32
+	// if initialized then all log values belonging to blocks between
+	// firstIndexedBlock and lastIndexedBlock are fully rendered
+	// blockLvPointers are available between firstIndexedBlock and lastIndexedBlock
 	firstIndexedBlock, lastIndexedBlock uint64
 }
 
@@ -155,7 +156,7 @@ func (fmr *filterMapsRange) mapCount() uint32 {
 	if !fmr.initialized {
 		return 0
 	}
-	return fmr.headMapIndex + 1 - fmr.tailMapIndex
+	return fmr.lastRenderedMap + 1 - fmr.firstRenderedMap
 }
 
 // NewFilterMaps creates a new FilterMaps and starts the indexer in order to keep

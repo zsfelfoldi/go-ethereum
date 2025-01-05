@@ -55,6 +55,93 @@ type renderedMap struct {
 	headDelimiter uint64   // if finished then points to the future block delimiter of the head block
 }
 
+func (f *FilterMaps) renderMaps(lastMap uint32) (*mapRenderer, error) {
+	snapshot := f.findLastSnapshot(lastMap)
+	startBlock, startLvPtr, err := f.findLastMapBoundary(lastMap)
+	if err != nil {
+		return nil, err
+	}
+	if startLvPtr == 0 {
+		startBlock, startLvPtr = f.findCheckpoint(lastMap)
+	}
+	nextMap := uint32((startLvPtr + f.valuesPerMap - 1) >> f.logValuesPerMap)
+	if snapshot != nil && snapshot.mapIndex >= nextMap {
+		return f.renderMapsFromSnapshot(snapshot)
+	}
+	if nextMap > lastMap {
+		return nil, nil
+	}
+	return f.renderMapsInRange(nextMap, lastMap, startBlock, startLvPtr)
+}
+
+func (f *FilterMaps) findLastSnapshot(lastMap uint32) *renderedMap {
+	var best *renderedMap
+	for _, blockNumber := range f.renderSnapshots.Keys() {
+		if cp := f.renderSnapshots.Get(blockNumber); cp != nil &&
+			f.targetView.getBlockHash(blockNumber) == cp.lastBlockHash &&
+			cp.mapIndex <= lastMap && (best == nil || blockNumber > best.lastBlock) {
+			best = cp
+		}
+	}
+	return best
+}
+
+func (f *FilterMaps) findLastMapBoundary(lastMap uint32) (startBlock, startLvPtr uint64, err error) {
+	if !f.initialized {
+		return 0, 0, nil
+	}
+	if lastMap > f.lastRenderedMap {
+		lastMap = f.lastRenderedMap
+	}
+	tailMapLimit := f.tailMapLimit()
+	for nextMap := lastMap + 1; nextMap > tailMapLimit; nextMap-- {
+		if nextMap <= f.firstRenderedMap && !f.hasMap(nextMap-1) {
+			continue
+		}
+		lastBlock, err := f.getLastBlockOfMap(nextMap - 1)
+		if err != nil {
+			return 0, 0, err
+		}
+		if lastBlock >= f.indexedView.headNumber() || f.targetView.getBlockHash(lastBlock) != f.indexedView.getBlockHash(lastBlock) {
+			// map is not full or inconsistent with targetView; roll back
+			continue
+		}
+		lvPtr, err := f.getBlockLvPointer(nextMap - 1)
+		if err != nil {
+			return 0, 0, err
+		}
+		return lastBlock, lvPtr, nil
+	}
+	return 0, 0, nil
+}
+
+func (f *FilterMaps) tailMapLimit() uint32 {
+	if f.firstRenderedMap == 0 {
+		return 0
+	}
+	return ((f.firstRenderedMap - 1) >> f.logMapsPerEpoch) << f.logMapsPerEpoch
+}
+
+func (f *FilterMaps) findCheckpoint(lastMap uint32) (startBlock, startLvPtr uint64) {
+	epoch := lastMap >> f.logMapsPerEpoch
+	if epoch == 0 {
+		return
+	}
+	epoch--
+	for _, checkpointList := range checkpoints {
+		var cp epochCheckpoint
+		if epoch >= len(checkpointList) {
+			cp = checkpointList[len(checkpointList)-1]
+		} else {
+			cp = checkpointList[epoch]
+		}
+		if cp.blockNumber > startBlock && f.targetView.getBlockHash(cp.blockNumber) == cp.blockHash {
+			startBlock, startLvPtr = cp.blockNumber, cp.firstLvIndex
+		}
+	}
+	return
+}
+
 func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, error) {
 	iter, err := f.newLogIteratorFromBlockDelimiter(cp.lastBlock, cp.lastDelimiter)
 	if err != nil {
