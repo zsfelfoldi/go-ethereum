@@ -132,7 +132,7 @@ func (f *FilterMaps) tryMakeHeadRendererFromMapBoundary() *mapRenderer {
 	if firstMap < f.firstRenderedMap {
 		return nil
 	}
-	if r, err := f.renderMapsInRange(firstMap, math.MaxUint32); err == nil {
+	if r, err := f.renderMapsFromMapBoundary(firstMap, math.MaxUint32); err == nil {
 		return r
 	} else {
 		log.Error("Error initializing head map renderer at map boundary", "firstMap", firstMap, "error", err)

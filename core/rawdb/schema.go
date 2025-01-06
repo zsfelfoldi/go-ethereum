@@ -148,8 +148,8 @@ var (
 	FilterMapsPrefix        = []byte("fm-")
 	filterMapsRangeKey      = append(FilterMapsPrefix, byte('R'))
 	filterMapRowPrefix      = append(FilterMapsPrefix, byte('r')) // filterMapRowPrefix + mapRowIndex (uint64 big endian) -> filter row
-	filterMapBlockPtrPrefix = append(FilterMapsPrefix, byte('b')) // filterMapBlockPtrPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
-	blockLVPrefix           = append(FilterMapsPrefix, byte('p')) // blockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
+	filterMapLastBlockPrefix = append(FilterMapsPrefix, byte('b')) // filterMapLastBlockPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
+	filterMapBlockLVPrefix  = append(FilterMapsPrefix, byte('p')) // filterMapBlockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
 
 	preimageCounter    = metrics.NewRegisteredCounter("db/preimage/total", nil)
 	preimageHitCounter = metrics.NewRegisteredCounter("db/preimage/hits", nil)
@@ -360,14 +360,14 @@ func filterMapRowKey(mapRowIndex uint64) []byte {
 	return key
 }
 
-// filterMapBlockPtrKey = filterMapBlockPtrPrefix + mapIndex (uint32 big endian)
-func filterMapBlockPtrKey(mapIndex uint32) []byte {
-	key := append(filterMapBlockPtrPrefix, make([]byte, 4)...)
-	binary.BigEndian.PutUint32(key[len(filterMapBlockPtrPrefix):], mapIndex)
+// filterMapLastBlockKey = filterMapLastBlockPrefix + mapIndex (uint32 big endian)
+func filterMapLastBlockKey(mapIndex uint32) []byte {
+	key := append(filterMapLastBlockPrefix, make([]byte, 4)...)
+	binary.BigEndian.PutUint32(key[len(filterMapLastBlockPrefix):], mapIndex)
 	return key
 }
 
-// blockLVKey = blockLVPrefix + num (uint64 big endian)
-func blockLVKey(number uint64) []byte {
-	return append(blockLVPrefix, encodeBlockNumber(number)...)
+// filterMapBlockLVKey = filterMapBlockLVPrefix + num (uint64 big endian)
+func filterMapBlockLVKey(number uint64) []byte {
+	return append(filterMapBlockLVPrefix, encodeBlockNumber(number)...)
 }

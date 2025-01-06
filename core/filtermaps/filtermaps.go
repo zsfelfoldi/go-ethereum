@@ -85,7 +85,8 @@ type FilterMaps struct {
 	filterMapCache map[uint32]filterMap
 
 	// also accessed by indexer and matcher backend but no locking needed.
-	blockPtrCache  *lru.Cache[uint32, uint64]
+	hasMapCache    *lru.Cache[uint32, bool]
+	lastBlockCache *lru.Cache[uint32, uint64]
 	lvPointerCache *lru.Cache[uint64, uint64]
 
 	// the matchers set and the fields of FilterMapsMatcherBackend instances are
@@ -162,7 +163,7 @@ func (fmr *filterMapsRange) mapCount() uint32 {
 // NewFilterMaps creates a new FilterMaps and starts the indexer in order to keep
 // the structure in sync with the given blockchain.
 func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, history, unindexLimit uint64, noHistory bool) *FilterMaps {
-	rs, err := rawdb.ReadFilterMapsRange(db)
+	rs, initialized, err := rawdb.ReadFilterMapsRange(db)
 	if err != nil {
 		log.Error("Error reading log index range", "error", err)
 	}
@@ -177,18 +178,20 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 		unindexLimit: unindexLimit,
 		Params:       params,
 		filterMapsRange: filterMapsRange{
-			initialized:     rs.Initialized,
-			headLvPointer:   rs.HeadLvPointer,
-			tailLvPointer:   rs.TailLvPointer,
-			headBlockNumber: rs.HeadBlockNumber,
-			tailBlockNumber: rs.TailBlockNumber,
-			headBlockHash:   rs.HeadBlockHash,
-			tailParentHash:  rs.TailParentHash,
+			initialized:        initialized,
+			headBlockHash:      rs.HeadBlockHash,
+			headBlockNumber:    rs.HeadBlockNumber,
+			headBlockDelimiter: rs.HeadBlockDelimiter,
+			firstIndexedBlock:  rs.FirstIndexedBlock,
+			lastIndexedBlock:   rs.LastIndexedBlock,
+			firstRenderedMap:   rs.FirstRenderedMap,
+			lastRenderedMap:    rs.LastRenderedMap,
 		},
 		matcherSyncCh:   make(chan *FilterMapsMatcherBackend),
 		matchers:        make(map[*FilterMapsMatcherBackend]struct{}),
 		filterMapCache:  make(map[uint32]filterMap),
-		blockPtrCache:   lru.NewCache[uint32, uint64](1000),
+		hasMapCache:     lru.NewCache[uint32, bool](params.mapsPerEpoch),
+		lastBlockCache:  lru.NewCache[uint32, uint64](1000),
 		lvPointerCache:  lru.NewCache[uint64, uint64](1000),
 		renderSnapshots: lru.NewCache[uint64, *renderedMap](cachedRevertPoints),
 	}
@@ -223,7 +226,8 @@ func (f *FilterMaps) reset() bool {
 	f.filterMapsRange = filterMapsRange{}
 	f.filterMapCache = make(map[uint32]filterMap)
 	f.renderSnapshots.Purge()
-	f.blockPtrCache.Purge()
+	f.hasMapCache.Purge()
+	f.lastBlockCache.Purge()
 	f.lvPointerCache.Purge()
 	f.indexLock.Unlock()
 	// deleting the range first ensures that resetDb will be called again at next
@@ -275,17 +279,20 @@ func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRan
 		panic("indexed range inconsistent with canonical chain")
 	}
 	f.filterMapsRange = newRange
-	rs := rawdb.FilterMapsRange{
-		//TODO
-		Initialized:     newRange.initialized,
-		HeadLvPointer:   newRange.headLvPointer,
-		TailLvPointer:   newRange.tailLvPointer,
-		HeadBlockNumber: newRange.headBlockNumber,
-		TailBlockNumber: newRange.tailBlockNumber,
-		HeadBlockHash:   newRange.headBlockHash,
-		TailParentHash:  newRange.tailParentHash,
+	if newRange.initialized {
+		rs := rawdb.FilterMapsRange{
+			HeadBlockHash:      newRange.headBlockHash,
+			HeadBlockNumber:    newRange.headBlockNumber,
+			headBlockDelimiter: newRange.headBlockDelimiter,
+			FirstIndexedBlock:  newRange.firstIndexedBlock,
+			LastIndexedBlock:   newRange.lastIndexedBlock,
+			FirstRenderedMap:   newRange.firstRenderedMap,
+			LastRenderedMap:    newRange.lastRenderedMap,
+		}
+		rawdb.WriteFilterMapsRange(batch, rs)
+	} else {
+		rawdb.DeleteFilterMapsRange(batch)
 	}
-	rawdb.WriteFilterMapsRange(batch, rs)
 	f.updateMapCache()
 	f.updateMatchersValidRange()
 }
@@ -426,30 +433,44 @@ func (f *FilterMaps) deleteBlockLvPointer(batch ethdb.Batch, blockNumber uint64)
 	rawdb.DeleteBlockLvPointer(batch, blockNumber)
 }
 
-// getMapBlockPtr returns the number of the block that generated the first log
+func (f *FilterMaps) hasMap(mapIndex uint32) (bool, error) {
+	if hasMap, ok := f.hasMapCache.Get(mapIndex); ok {
+		return hasMap, nil
+	}
+	hasMap, err := rawdb.HasFilterMap(f.db, mapIndex)
+	if err != nil {
+		return false, err
+	}
+	f.hasMapCache.Add(mapIndex, hasMap)
+	return hasMap, nil
+}
+
+// getLastBlockOfMap returns the number of the block that generated the last log
 // value entry of the given map.
-func (f *FilterMaps) getMapBlockPtr(mapIndex uint32) (uint64, error) {
-	if blockPtr, ok := f.blockPtrCache.Get(mapIndex); ok {
+func (f *FilterMaps) getLastBlockOfMap(mapIndex uint32) (uint64, error) {
+	if blockPtr, ok := f.lastBlockCache.Get(mapIndex); ok {
 		return blockPtr, nil
 	}
-	blockPtr, err := rawdb.ReadFilterMapBlockPtr(f.db, mapIndex)
+	blockPtr, err := rawdb.ReadFilterMapLastBlock(f.db, mapIndex)
 	if err != nil {
 		return 0, err
 	}
-	f.blockPtrCache.Add(mapIndex, blockPtr)
+	f.lastBlockCache.Add(mapIndex, blockPtr)
 	return blockPtr, nil
 }
 
-// storeMapBlockPtr stores the number of the block that generated the first log
-// value entry of the given map.
-func (f *FilterMaps) storeMapBlockPtr(batch ethdb.Batch, mapIndex uint32, blockPtr uint64) {
-	f.blockPtrCache.Add(mapIndex, blockPtr)
-	rawdb.WriteFilterMapBlockPtr(batch, mapIndex, blockPtr)
+// storeLastBlockOfMap stores the number of the block that generated the last
+// log value entry of the given map.
+func (f *FilterMaps) storeLastBlockOfMap(batch ethdb.Batch, mapIndex uint32, blockPtr uint64) {
+	f.lastBlockCache.Add(mapIndex, blockPtr)
+	f.hasMapCache.Add(mapIndex, true)
+	rawdb.WriteFilterMapLastBlock(batch, mapIndex, blockPtr)
 }
 
-// deleteMapBlockPtr deletes the number of the block that generated the first log
-// value entry of the given map.
-func (f *FilterMaps) deleteMapBlockPtr(batch ethdb.Batch, mapIndex uint32) {
-	f.blockPtrCache.Remove(mapIndex)
-	rawdb.DeleteFilterMapBlockPtr(batch, mapIndex)
+// deleteLastBlockOfMap deletes the number of the block that generated the last
+// log value entry of the given map.
+func (f *FilterMaps) deleteLastBlockOfMap(batch ethdb.Batch, mapIndex uint32) {
+	f.lastBlockCache.Remove(mapIndex)
+	f.hasMapCache.Add(mapIndex, false)
+	rawdb.DeleteFilterMapLastBlock(batch, mapIndex)
 }
