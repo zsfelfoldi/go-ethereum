@@ -85,7 +85,6 @@ type FilterMaps struct {
 	filterMapCache map[uint32]filterMap
 
 	// also accessed by indexer and matcher backend but no locking needed.
-	hasMapCache    *lru.Cache[uint32, bool]
 	lastBlockCache *lru.Cache[uint32, uint64]
 	lvPointerCache *lru.Cache[uint64, uint64]
 
@@ -141,23 +140,17 @@ type filterMapsRange struct {
 	initialized        bool
 	headBlockNumber    uint64
 	headBlockHash      common.Hash
-	headBlockDelimiter uint64 // zero if lastIndexedBlock != headBlockNumber
+	headBlockDelimiter uint64 // zero if afterLastIndexedBlock != headBlockNumber
 	// if initialized then all maps are rendered between firstRenderedMap and
-	// lastRenderedMap
-	// some rendered maps might exist between tailMapLimit and firstRenderedMap-1
-	firstRenderedMap, lastRenderedMap uint32
+	// afterLastRenderedMap-1
+	firstRenderedMap, afterLastRenderedMap uint32
+	// if tailPartialEpoch > 0 then maps between firstRenderedMap-mapsPerEpoch and
+	// firstRenderedMap-mapsPerEpoch+tailPartialEpoch-1 are rendered
+	tailPartialEpoch uint32
 	// if initialized then all log values belonging to blocks between
-	// firstIndexedBlock and lastIndexedBlock are fully rendered
-	// blockLvPointers are available between firstIndexedBlock and lastIndexedBlock
-	firstIndexedBlock, lastIndexedBlock uint64
-}
-
-// mapCount returns the number of maps fully or partially included in the range.
-func (fmr *filterMapsRange) mapCount() uint32 {
-	if !fmr.initialized {
-		return 0
-	}
-	return fmr.lastRenderedMap + 1 - fmr.firstRenderedMap
+	// firstIndexedBlock and afterLastIndexedBlock are fully rendered
+	// blockLvPointers are available between firstIndexedBlock and afterLastIndexedBlock-1
+	firstIndexedBlock, afterLastIndexedBlock uint64
 }
 
 // NewFilterMaps creates a new FilterMaps and starts the indexer in order to keep
@@ -178,19 +171,19 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 		unindexLimit: unindexLimit,
 		Params:       params,
 		filterMapsRange: filterMapsRange{
-			initialized:        initialized,
-			headBlockHash:      rs.HeadBlockHash,
-			headBlockNumber:    rs.HeadBlockNumber,
-			headBlockDelimiter: rs.HeadBlockDelimiter,
-			firstIndexedBlock:  rs.FirstIndexedBlock,
-			lastIndexedBlock:   rs.LastIndexedBlock,
-			firstRenderedMap:   rs.FirstRenderedMap,
-			lastRenderedMap:    rs.LastRenderedMap,
+			initialized:           initialized,
+			headBlockHash:         rs.HeadBlockHash,
+			headBlockNumber:       rs.HeadBlockNumber,
+			headBlockDelimiter:    rs.HeadBlockDelimiter,
+			firstIndexedBlock:     rs.FirstIndexedBlock,
+			afterLastIndexedBlock: rs.AfterLastIndexedBlock,
+			firstRenderedMap:      rs.FirstRenderedMap,
+			afterLastRenderedMap:  rs.AfterLastRenderedMap,
+			tailPartialEpoch:      rs.TailPartialEpoch,
 		},
 		matcherSyncCh:   make(chan *FilterMapsMatcherBackend),
 		matchers:        make(map[*FilterMapsMatcherBackend]struct{}),
 		filterMapCache:  make(map[uint32]filterMap),
-		hasMapCache:     lru.NewCache[uint32, bool](params.mapsPerEpoch),
 		lastBlockCache:  lru.NewCache[uint32, uint64](1000),
 		lvPointerCache:  lru.NewCache[uint64, uint64](1000),
 		renderSnapshots: lru.NewCache[uint64, *renderedMap](cachedRevertPoints),
@@ -226,7 +219,6 @@ func (f *FilterMaps) reset() bool {
 	f.filterMapsRange = filterMapsRange{}
 	f.filterMapCache = make(map[uint32]filterMap)
 	f.renderSnapshots.Purge()
-	f.hasMapCache.Purge()
 	f.lastBlockCache.Purge()
 	f.lvPointerCache.Purge()
 	f.indexLock.Unlock()
@@ -234,6 +226,46 @@ func (f *FilterMaps) reset() bool {
 	// startup and any leftover data will be removed even if it cannot finish now.
 	rawdb.DeleteFilterMapsRange(f.db)
 	return f.removeDbWithPrefix(rawdb.FilterMapsPrefix, "Resetting log index database")
+}
+
+// expects targetView to be non-nil
+func (f *FilterMaps) init() {
+	var bestIdx, bestLen int
+	for idx, checkpointList := range checkpoints {
+		// binary search for the last matching epoch head
+		min, max := 0, len(checkpointList)
+		for min < max {
+			mid := (first + last + 1) / 2
+			cp := checkpointList[mid-1]
+			if f.targetView.getBlockHash(cp.blockNumber) == cp.blockHash {
+				min = mid
+			} else {
+				max = mid - 1
+			}
+		}
+		if max > bestLen {
+			bestIdx, bestLen = idx, max
+		}
+	}
+	for epoch := 0; epoch < bestLen; epoch++ {
+		cp := checkpoints[bestIdx][epoch]
+		f.storeLastBlockOfMap(batch, (uint32(epoch+1)<<f.logMapsPerEpoch)-1, cp.blockNumber)
+		f.storeBlockLvPointer(batch, cp.blockNumber, cp.firstLvIndex)
+	}
+	f.indexedView = f.targetView
+	fmr := filterMapsRange{
+		initialized:     true,
+		headBlockHash:   f.targetView.getBlockHash(f.targetView.headNumber),
+		headBlockNumber: f.targetView.headNumber,
+	}
+	if bestLen > 0 {
+		cp := checkpoints[bestIdx][bestLen-1]
+		fmr.firstIndexedBlock = cp.blockNumber + 1
+		fmr.afterLastIndexedBlock = cp.blockNumber + 1
+		fmr.firstRenderedMap = uint32(bestLen) << f.logMapsPerEpoch
+		fmr.afterLastRenderedMap = uint32(bestLen) << f.logMapsPerEpoch
+	}
+	f.setRange(batch, fmr)
 }
 
 // removeDbWithPrefix removes data with the given prefix from the database and
@@ -281,13 +313,14 @@ func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRan
 	f.filterMapsRange = newRange
 	if newRange.initialized {
 		rs := rawdb.FilterMapsRange{
-			HeadBlockHash:      newRange.headBlockHash,
-			HeadBlockNumber:    newRange.headBlockNumber,
-			headBlockDelimiter: newRange.headBlockDelimiter,
-			FirstIndexedBlock:  newRange.firstIndexedBlock,
-			LastIndexedBlock:   newRange.lastIndexedBlock,
-			FirstRenderedMap:   newRange.firstRenderedMap,
-			LastRenderedMap:    newRange.lastRenderedMap,
+			HeadBlockHash:         newRange.headBlockHash,
+			HeadBlockNumber:       newRange.headBlockNumber,
+			headBlockDelimiter:    newRange.headBlockDelimiter,
+			FirstIndexedBlock:     newRange.firstIndexedBlock,
+			AfterLastIndexedBlock: newRange.afterLastIndexedBlock,
+			FirstRenderedMap:      newRange.firstRenderedMap,
+			AfterLastRenderedMap:  newRange.afterLastRenderedMap,
+			TailPartialEpoch:      newRange.tailPartialEpoch,
 		}
 		rawdb.WriteFilterMapsRange(batch, rs)
 	} else {
@@ -433,18 +466,6 @@ func (f *FilterMaps) deleteBlockLvPointer(batch ethdb.Batch, blockNumber uint64)
 	rawdb.DeleteBlockLvPointer(batch, blockNumber)
 }
 
-func (f *FilterMaps) hasMap(mapIndex uint32) (bool, error) {
-	if hasMap, ok := f.hasMapCache.Get(mapIndex); ok {
-		return hasMap, nil
-	}
-	hasMap, err := rawdb.HasFilterMap(f.db, mapIndex)
-	if err != nil {
-		return false, err
-	}
-	f.hasMapCache.Add(mapIndex, hasMap)
-	return hasMap, nil
-}
-
 // getLastBlockOfMap returns the number of the block that generated the last log
 // value entry of the given map.
 func (f *FilterMaps) getLastBlockOfMap(mapIndex uint32) (uint64, error) {
@@ -463,7 +484,6 @@ func (f *FilterMaps) getLastBlockOfMap(mapIndex uint32) (uint64, error) {
 // log value entry of the given map.
 func (f *FilterMaps) storeLastBlockOfMap(batch ethdb.Batch, mapIndex uint32, blockPtr uint64) {
 	f.lastBlockCache.Add(mapIndex, blockPtr)
-	f.hasMapCache.Add(mapIndex, true)
 	rawdb.WriteFilterMapLastBlock(batch, mapIndex, blockPtr)
 }
 
@@ -471,6 +491,30 @@ func (f *FilterMaps) storeLastBlockOfMap(batch ethdb.Batch, mapIndex uint32, blo
 // log value entry of the given map.
 func (f *FilterMaps) deleteLastBlockOfMap(batch ethdb.Batch, mapIndex uint32) {
 	f.lastBlockCache.Remove(mapIndex)
-	f.hasMapCache.Add(mapIndex, false)
 	rawdb.DeleteFilterMapLastBlock(batch, mapIndex)
+}
+
+func (f *FilterMaps) deleteTailEpoch(epoch uint32) error {
+	setRange ...
+	lastBlock, err := f.getLastBlockOfMap(((epoch + 1) << f.mapsPerEpoch) - 1)
+	if err != nil {
+		return err
+	}
+	var firstBlock uint64
+	if epoch > 0 {
+		firstBlock, err = f.getLastBlockOfMap((epoch << f.mapsPerEpoch) - 1)
+		if err != nil {
+			return err
+		}
+		firstBlock++
+	}
+	if err := rawdb.DeleteFilterMapRows(f.db, f.mapRowIndex(epoch<<f.mapsPerEpoch, 0), f.mapRowIndex((epoch+1)<<f.mapsPerEpoch, 0)); err != nil {
+		return err
+	}
+	if err := rawdb.DeleteFilterMapLastBlocks(f.db, epoch<<f.mapsPerEpoch, ((epoch+1)<<f.mapsPerEpoch)-1); err != nil { // keep last enrty
+		return err
+	}
+	if err := rawdb.DeleteBlockLvPointers(f.db, firstBlock, lastBlock); err != nil { // keep last enrty
+		return err
+	}
 }

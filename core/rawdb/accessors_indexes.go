@@ -234,6 +234,10 @@ func WriteFilterMapRow(db ethdb.KeyValueWriter, mapRowIndex uint64, row []uint32
 	}
 }
 
+func DeleteFilterMapRows(db ethdb.KeyValueRangeDeleter, firstMapRowIndex, afterLastMapRowIndex uint64) {
+	db.DeleteRange(filterMapRowKey(firstMapRowIndex), filterMapRowKey(afterLastMapRowIndex))
+}
+
 // ReadFilterMapLastBlock retrieves the number of the block that generated the
 // last log value entry of the given map.
 func ReadFilterMapLastBlock(db ethdb.KeyValueReader, mapIndex uint32) (uint64, error) {
@@ -245,11 +249,6 @@ func ReadFilterMapLastBlock(db ethdb.KeyValueReader, mapIndex uint32) (uint64, e
 		return 0, errors.New("Invalid block number encoding")
 	}
 	return binary.BigEndian.Uint64(encPtr), nil
-}
-
-// HasFilterMap returns true if the given filter map is present in the database.
-func HasFilterMap(db ethdb.KeyValueReader, mapIndex uint32) (bool, error) {
-	return db.Has(filterMapLastBlockKey(mapIndex))
 }
 
 // WriteFilterMapLastBlock stores the number of the block that generated the
@@ -268,6 +267,10 @@ func DeleteFilterMapLastBlock(db ethdb.KeyValueWriter, mapIndex uint32) {
 	if err := db.Delete(filterMapLastBlockKey(mapIndex)); err != nil {
 		log.Crit("Failed to delete filter map block pointer", "err", err)
 	}
+}
+
+func DeleteFilterMapLastBlocks(db ethdb.KeyValueRangeDeleter, firstMapIndex, afterLastMapIndex uint64) {
+	db.DeleteRange(filterMapLastBlockKey(firstMapIndex), filterMapLastBlockKey(afterLastMapIndex))
 }
 
 // ReadBlockLvPointer retrieves the starting log value index where the log values
@@ -301,13 +304,17 @@ func DeleteBlockLvPointer(db ethdb.KeyValueWriter, blockNumber uint64) {
 	}
 }
 
+func DeleteBlockLvPointers(db ethdb.KeyValueRangeDeleter, firstBlockNumber, afterLastBlockNumber uint64) {
+	db.DeleteRange(filterMapBlockLVKey(firstBlockNumber), filterMapBlockLVKey(afterLastBlockNumber))
+}
+
 // FilterMapsRange is a storage representation of the block range covered by the
 // filter maps structure and the corresponting log value index range.
 type FilterMapsRange struct {
-	HeadBlockHash                       common.Hash
-	HeadBlockNumber, HeadBlockDelimiter uint64
-	FirstIndexedBlock, LastIndexedBlock uint64
-	FirstRenderedMap, LastRenderedMap   uint32
+	HeadBlockHash                                            common.Hash
+	HeadBlockNumber, HeadBlockDelimiter                      uint64
+	FirstIndexedBlock, AfterLastIndexedBlock                 uint64
+	FirstRenderedMap, AfterLastRenderedMap, TailPartialEpoch uint32
 }
 
 // ReadFilterMapsRange retrieves the filter maps range data. Note that if the

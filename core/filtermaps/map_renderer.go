@@ -55,50 +55,45 @@ type renderedMap struct {
 	headDelimiter uint64   // if finished then points to the future block delimiter of the head block
 }
 
-func (f *FilterMaps) renderMapsUntil(lastMap uint32) (*mapRenderer, error) {
-	snapshot := f.findLastSnapshot(lastMap)
-	startBlock, startLvPtr, err := f.findLastMapBoundary(lastMap)
+func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error) {
+	snapshot := f.findLastSnapshotBefore(afterLastMap)
+	startBlock, startLvPtr, err := f.findLastMapBoundaryBefore(afterLastMap)
 	if err != nil {
 		return nil, err
-	}
-	if startLvPtr == 0 {
-		startBlock, startLvPtr = f.findCheckpoint(lastMap)
 	}
 	nextMap := uint32((startLvPtr + f.valuesPerMap - 1) >> f.logValuesPerMap)
 	if snapshot != nil && snapshot.mapIndex >= nextMap {
 		return f.renderMapsFromSnapshot(snapshot)
 	}
-	if nextMap > lastMap {
+	if nextMap >= afterLastMap {
 		return nil, nil
 	}
-	return f.renderMapsFromMapBoundary(nextMap, lastMap, startBlock, startLvPtr)
+	return f.renderMapsFromMapBoundary(nextMap, afterLastMap, startBlock, startLvPtr)
 }
 
-func (f *FilterMaps) findLastSnapshot(lastMap uint32) *renderedMap {
+func (f *FilterMaps) findLastSnapshotBefore(afterLastMap uint32) *renderedMap {
 	var best *renderedMap
 	for _, blockNumber := range f.renderSnapshots.Keys() {
 		if cp := f.renderSnapshots.Get(blockNumber); cp != nil &&
 			f.targetView.getBlockHash(blockNumber) == cp.lastBlockHash &&
-			cp.mapIndex <= lastMap && (best == nil || blockNumber > best.lastBlock) {
+			cp.mapIndex < afterLastMap && (best == nil || blockNumber > best.lastBlock) {
 			best = cp
 		}
 	}
 	return best
 }
 
-func (f *FilterMaps) findLastMapBoundary(lastMap uint32) (startBlock, startLvPtr uint64, err error) {
+func (f *FilterMaps) findLastMapBoundaryBefore(afterLastMap uint32) (startBlock, startLvPtr uint64, err error) {
 	if !f.initialized {
 		return 0, 0, nil
 	}
-	if lastMap > f.lastRenderedMap {
-		lastMap = f.lastRenderedMap
-	}
-	tailMapLimit := f.tailMapLimit()
-	for nextMap := lastMap + 1; nextMap > tailMapLimit; nextMap-- {
-		if nextMap <= f.firstRenderedMap && !f.hasMap(nextMap-1) {
-			continue
+	mapIndex := afterLastMap
+	for {
+		var ok bool
+		if mapIndex, ok = f.lastMapBoundaryBefore(mapIndex); !ok {
+			return 0, 0, nil
 		}
-		lastBlock, err := f.getLastBlockOfMap(nextMap - 1)
+		lastBlock, err := f.getLastBlockOfMap(mapIndex)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -106,40 +101,35 @@ func (f *FilterMaps) findLastMapBoundary(lastMap uint32) (startBlock, startLvPtr
 			// map is not full or inconsistent with targetView; roll back
 			continue
 		}
-		lvPtr, err := f.getBlockLvPointer(nextMap - 1)
+		lvPtr, err := f.getBlockLvPointer(lastBlock)
 		if err != nil {
 			return 0, 0, err
 		}
 		return lastBlock, lvPtr, nil
 	}
-	return 0, 0, nil
 }
 
-func (f *FilterMaps) tailMapLimit() uint32 {
-	if f.firstRenderedMap == 0 {
-		return 0
+func (f *FilterMaps) lastMapBoundaryBefore(mapIndex uint32) (uint32, bool) {
+	if !f.initialized || f.afterLastRenderedMap == 0 {
+		return 0, false
 	}
-	return ((f.firstRenderedMap - 1) >> f.logMapsPerEpoch) << f.logMapsPerEpoch
-}
-
-func (f *FilterMaps) findCheckpoint(lastMap uint32) (startBlock, startLvPtr uint64) {
-	epoch := lastMap >> f.logMapsPerEpoch
-	if epoch == 0 {
-		return
+	if mapIndex > f.afterLastRenderedMap {
+		mapIndex = f.afterLastRenderedMap
 	}
-	epoch--
-	for _, checkpointList := range checkpoints {
-		var cp epochCheckpoint
-		if epoch >= len(checkpointList) {
-			cp = checkpointList[len(checkpointList)-1]
-		} else {
-			cp = checkpointList[epoch]
+	if mapIndex > f.firstRenderedMap {
+		return mapIndex - 1, true
+	}
+	if mapIndex+f.mapsPerEpoch > f.firstRenderedMap {
+		if mapIndex > f.firstRenderedMap-f.mapsPerEpoch+f.tailPartialEpoch {
+			mapIndex = f.firstRenderedMap - f.mapsPerEpoch + f.tailPartialEpoch
 		}
-		if cp.blockNumber > startBlock && f.targetView.getBlockHash(cp.blockNumber) == cp.blockHash {
-			startBlock, startLvPtr = cp.blockNumber, cp.firstLvIndex
-		}
+	} else {
+		mapIndex = (mapIndex >> f.logMapsPerEpoch) << f.logMapsPerEpoch
 	}
-	return
+	if mapIndex == 0 {
+		return 0, false
+	}
+	return mapIndex - 1, true
 }
 
 func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, error) {
@@ -162,7 +152,7 @@ func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, erro
 	}, nil
 }
 
-func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, lastMap uint32, startBlock, startLvPtr uint64) (*mapRenderer, error) {
+func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, afterLastMap uint32, startBlock, startLvPtr uint64) (*mapRenderer, error) {
 	iter, err := f.newLogIteratorFromMapBoundary(firstMap, startBlock, startLvPtr)
 	if err != nil {
 		return nil, err
@@ -176,7 +166,7 @@ func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, lastMap uint32, startBl
 			lastBlockHash: iter.blockHash,
 		},
 		finishedMaps: make(map[uint32]*renderedMap),
-		lastMap:      lastMap,
+		afterLastMap: afterLastMap,
 		iterator:     iter,
 	}, nil
 }
@@ -307,16 +297,16 @@ func (r *mapRenderer) writeFinishedMaps() error {
 		}
 		newRange.headBlockNumber = r.targetChain.headNumber()
 		newRange.headBlockHash = r.targetChain.getBlockHash(newRange.headBlockNumber)
-		newRange.lastRenderedMap = lastMap
+		newRange.afterLastRenderedMap = afterLastMap
 		lm := r.finishedMaps[lastMap]
 		if lm.finished {
-			newRange.lastIndexedBlock = newRange.headBlockNumber
+			newRange.afterLastIndexedBlock = newRange.headBlockNumber + 1
 			if lm.lastBlock != newRange.headBlockNumber {
 				panic("map rendering finished but last block != head block")
 			}
 			newRange.headBlockDelimiter = lm.headDelimiter
 		} else {
-			newRange.lastIndexedBlock = lm.lastBlock - 1 //TODO ??afterLast
+			newRange.afterLastIndexedBlock = lm.lastBlock
 			newRange.headBlockDelimiter = 0
 		}
 	} else {
