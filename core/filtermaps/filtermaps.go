@@ -120,6 +120,12 @@ type FilterMaps struct {
 // as transparent (uncached/unchanged).
 type filterMap []FilterRow
 
+func (fm filterMap) copy() filterMap {
+	c := make(filterMap, len(fm))
+	copy(c, fm)
+	return c
+}
+
 // FilterRow encodes a single row of a filter map as a list of column indices.
 // Note that the values are always stored in the same order as they were added
 // and if the same column index is added twice, it is also stored twice.
@@ -188,14 +194,9 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 		lvPointerCache:  lru.NewCache[uint64, uint64](1000),
 		renderSnapshots: lru.NewCache[uint64, *renderedMap](cachedRevertPoints),
 	}
-	if fm.initialized {
-		fm.tailBlockLvPointer, err = fm.getBlockLvPointer(fm.tailBlockNumber)
-		if err != nil {
-			log.Error("Error fetching tail block pointer, resetting log index", "error", err)
-			fm.filterMapsRange = filterMapsRange{} // updateLoop resets the database
-		}
-		log.Trace("Log index head", "number", fm.headBlockNumber, "hash", fm.headBlockHash.String(), "log value pointer", fm.headLvPointer)
-		log.Trace("Log index tail", "number", fm.tailBlockNumber, "parentHash", fm.tailParentHash.String(), "log value pointer", fm.tailBlockLvPointer)
+	if fm.initialized && fm.afterLastIndexedBlock > fm.firstIndexedBlock {
+		log.Trace("Log index head", "number", fm.headBlockNumber, "hash", fm.headBlockHash.String(), "log value pointer", fm.headBlockDelimiter)
+		log.Trace("Log index range", "first block", fm.firstIndexedBlock, "last block", fm.afterLastIndexedBlock-1, "first map", fm.firstRenderedMap, "last map", fm.afterLastRenderedMap-1)
 	}
 	return fm
 }
@@ -203,7 +204,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 // Start starts the indexer.
 func (f *FilterMaps) Start() {
 	f.closeWg.Add(1)
-	go f.updateLoop()
+	go f.indexerLoop()
 }
 
 // Stop ensures that the indexer is fully stopped before returning.
@@ -229,13 +230,13 @@ func (f *FilterMaps) reset() bool {
 }
 
 // expects targetView to be non-nil
-func (f *FilterMaps) init() {
+func (f *FilterMaps) init() error {
 	var bestIdx, bestLen int
 	for idx, checkpointList := range checkpoints {
 		// binary search for the last matching epoch head
 		min, max := 0, len(checkpointList)
 		for min < max {
-			mid := (first + last + 1) / 2
+			mid := (min + max + 1) / 2
 			cp := checkpointList[mid-1]
 			if f.targetView.getBlockHash(cp.blockNumber) == cp.blockHash {
 				min = mid
@@ -247,6 +248,7 @@ func (f *FilterMaps) init() {
 			bestIdx, bestLen = idx, max
 		}
 	}
+	batch := f.db.NewBatch()
 	for epoch := 0; epoch < bestLen; epoch++ {
 		cp := checkpoints[bestIdx][epoch]
 		f.storeLastBlockOfMap(batch, (uint32(epoch+1)<<f.logMapsPerEpoch)-1, cp.blockNumber)
@@ -266,6 +268,7 @@ func (f *FilterMaps) init() {
 		fmr.afterLastRenderedMap = uint32(bestLen) << f.logMapsPerEpoch
 	}
 	f.setRange(batch, fmr)
+	return batch.Write()
 }
 
 // removeDbWithPrefix removes data with the given prefix from the database and
@@ -307,15 +310,17 @@ func (f *FilterMaps) removeDbWithPrefix(prefix []byte, action string) bool {
 // setRange updates the covered range and also adds the changes to the given batch.
 // Note that this function assumes that the index write lock is being held.
 func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRange) {
-	if f.indexedView != nil && f.indexedView.getHash(newRange.headBlockNumber) != newRange.headBlockHash {
+	if f.indexedView != nil && f.indexedView.getBlockHash(newRange.headBlockNumber) != newRange.headBlockHash {
 		panic("indexed range inconsistent with canonical chain")
 	}
 	f.filterMapsRange = newRange
+	f.updateMapCache()
+	f.updateMatchersValidRange()
 	if newRange.initialized {
 		rs := rawdb.FilterMapsRange{
 			HeadBlockHash:         newRange.headBlockHash,
 			HeadBlockNumber:       newRange.headBlockNumber,
-			headBlockDelimiter:    newRange.headBlockDelimiter,
+			HeadBlockDelimiter:    newRange.headBlockDelimiter,
 			FirstIndexedBlock:     newRange.firstIndexedBlock,
 			AfterLastIndexedBlock: newRange.afterLastIndexedBlock,
 			FirstRenderedMap:      newRange.firstRenderedMap,
@@ -326,8 +331,6 @@ func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRan
 	} else {
 		rawdb.DeleteFilterMapsRange(batch)
 	}
-	f.updateMapCache()
-	f.updateMatchersValidRange()
 }
 
 // updateMapCache updates the maps covered by the filterMapCache according to the
@@ -338,17 +341,16 @@ func (f *FilterMaps) updateMapCache() {
 		return
 	}
 	newFilterMapCache := make(map[uint32]filterMap)
-	firstMap, afterLastMap := uint32(f.tailBlockLvPointer>>f.logValuesPerMap), uint32((f.headLvPointer+f.valuesPerMap-1)>>f.logValuesPerMap)
-	headCacheFirst := firstMap + 1
-	if afterLastMap > headCacheFirst+headCacheSize {
-		headCacheFirst = afterLastMap - headCacheSize
+	headCacheFirst := f.firstRenderedMap + 1
+	if f.afterLastRenderedMap > headCacheFirst+headCacheSize {
+		headCacheFirst = f.afterLastRenderedMap - headCacheSize
 	}
-	fm := f.filterMapCache[firstMap]
+	fm := f.filterMapCache[f.firstRenderedMap]
 	if fm == nil {
 		fm = make(filterMap, f.mapHeight)
 	}
-	newFilterMapCache[firstMap] = fm
-	for mapIndex := headCacheFirst; mapIndex < afterLastMap; mapIndex++ {
+	newFilterMapCache[f.firstRenderedMap] = fm
+	for mapIndex := headCacheFirst; mapIndex < f.afterLastRenderedMap; mapIndex++ {
 		fm := f.filterMapCache[mapIndex]
 		if fm == nil {
 			fm = make(filterMap, f.mapHeight)
@@ -367,11 +369,60 @@ func (f *FilterMaps) updateMapCache() {
 // Note that this function assumes that the indexer read lock is being held when
 // called from outside the updateLoop goroutine.
 func (f *FilterMaps) getLogByLvIndex(lvIndex uint64) (*types.Log, error) {
-	iter, err := f.newLogIterator(lvIndex)
+	mapIndex := uint32(lvIndex >> f.logValuesPerMap)
+	if mapIndex < f.firstRenderedMap || mapIndex >= f.afterLastRenderedMap {
+		return nil, nil
+	}
+	// find possible block range based on map to block pointers
+	lastBlockNumber, err := f.getLastBlockOfMap(mapIndex)
+	var firstBlockNumber uint64
+	if mapIndex > 0 {
+		firstBlockNumber, err = f.getLastBlockOfMap(mapIndex - 1)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if firstBlockNumber < f.firstIndexedBlock {
+		firstBlockNumber = f.firstIndexedBlock
+	}
+	// find block with binary search based on block to log value index pointers
+	for firstBlockNumber < lastBlockNumber {
+		midBlockNumber := (firstBlockNumber + lastBlockNumber + 1) / 2
+		midLvPointer, err := f.getBlockLvPointer(midBlockNumber)
+		if err != nil {
+			return nil, err
+		}
+		if lvIndex < midLvPointer {
+			lastBlockNumber = midBlockNumber - 1
+		} else {
+			firstBlockNumber = midBlockNumber
+		}
+	}
+	// get block receipts
+	receipts := f.chain.GetReceiptsByHash(f.indexedView.getBlockHash(firstBlockNumber))
+	if receipts == nil {
+		return nil, errors.New("receipts not found")
+	}
+	lvPointer, err := f.getBlockLvPointer(firstBlockNumber)
 	if err != nil {
 		return nil, err
 	}
-	return iter.log(), nil
+	// iterate through receipts to find the exact log starting at lvIndex
+	for _, receipt := range receipts {
+		for _, log := range receipt.Logs {
+			if lvPointer > lvIndex {
+				// lvIndex does not point to the first log value (address value)
+				// generated by a log as true matches should always do, so it
+				// is considered a false positive (no log and no error returned).
+				return nil, nil
+			}
+			if lvPointer == lvIndex {
+				return log, nil // potential match
+			}
+			lvPointer += uint64(len(log.Topics) + 1)
+		}
+	}
+	return nil, nil
 }
 
 // getFilterMapRow returns the given row of the given map. If the row is empty
@@ -438,8 +489,11 @@ func (f *FilterMaps) mapRowIndex(mapIndex, rowIndex uint32) uint64 {
 // Note that this function assumes that the indexer read lock is being held when
 // called from outside the updateLoop goroutine.
 func (f *FilterMaps) getBlockLvPointer(blockNumber uint64) (uint64, error) {
-	if blockNumber > f.headBlockNumber {
-		return f.headLvPointer, nil
+	if blockNumber > f.headBlockNumber && f.headBlockNumber+1 == f.afterLastIndexedBlock {
+		return f.headBlockDelimiter, nil
+	}
+	if blockNumber < f.firstIndexedBlock || blockNumber >= f.afterLastIndexedBlock {
+		return 0, errUnindexedRange
 	}
 	if lvPointer, ok := f.lvPointerCache.Get(blockNumber); ok {
 		return lvPointer, nil
@@ -495,26 +549,32 @@ func (f *FilterMaps) deleteLastBlockOfMap(batch ethdb.Batch, mapIndex uint32) {
 }
 
 func (f *FilterMaps) deleteTailEpoch(epoch uint32) error {
-	setRange ...
-	lastBlock, err := f.getLastBlockOfMap(((epoch + 1) << f.mapsPerEpoch) - 1)
+	firstMap := epoch << f.mapsPerEpoch
+	lastBlock, err := f.getLastBlockOfMap(firstMap + f.mapsPerEpoch - 1)
 	if err != nil {
 		return err
 	}
 	var firstBlock uint64
 	if epoch > 0 {
-		firstBlock, err = f.getLastBlockOfMap((epoch << f.mapsPerEpoch) - 1)
+		firstBlock, err = f.getLastBlockOfMap(firstMap - 1)
 		if err != nil {
 			return err
 		}
 		firstBlock++
 	}
-	if err := rawdb.DeleteFilterMapRows(f.db, f.mapRowIndex(epoch<<f.mapsPerEpoch, 0), f.mapRowIndex((epoch+1)<<f.mapsPerEpoch, 0)); err != nil {
-		return err
+	fmr := f.filterMapsRange
+	if f.firstRenderedMap == firstMap && f.afterLastRenderedMap > firstMap+f.mapsPerEpoch && f.tailPartialEpoch == 0 {
+		fmr.firstRenderedMap = firstMap + f.mapsPerEpoch
+		fmr.firstIndexedBlock = lastBlock + 1
+	} else if f.firstRenderedMap == firstMap+f.mapsPerEpoch {
+		fmr.tailPartialEpoch = 0
+	} else {
+		return errors.New("invalid tail epoch number")
 	}
-	if err := rawdb.DeleteFilterMapLastBlocks(f.db, epoch<<f.mapsPerEpoch, ((epoch+1)<<f.mapsPerEpoch)-1); err != nil { // keep last enrty
-		return err
-	}
-	if err := rawdb.DeleteBlockLvPointers(f.db, firstBlock, lastBlock); err != nil { // keep last enrty
-		return err
-	}
+	f.setRange(f.db, fmr)
+	rawdb.DeleteFilterMapRows(f.db, f.mapRowIndex(firstMap, 0), f.mapRowIndex(firstMap+f.mapsPerEpoch, 0))
+	rawdb.DeleteFilterMapLastBlocks(f.db, firstMap, firstMap+f.mapsPerEpoch-1) // keep last enrty
+	rawdb.DeleteBlockLvPointers(f.db, firstBlock, lastBlock)                   // keep last enrty
+	//TODO remove from cache
+	return nil
 }

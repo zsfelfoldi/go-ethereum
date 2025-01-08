@@ -235,7 +235,9 @@ func WriteFilterMapRow(db ethdb.KeyValueWriter, mapRowIndex uint64, row []uint32
 }
 
 func DeleteFilterMapRows(db ethdb.KeyValueRangeDeleter, firstMapRowIndex, afterLastMapRowIndex uint64) {
-	db.DeleteRange(filterMapRowKey(firstMapRowIndex), filterMapRowKey(afterLastMapRowIndex))
+	if err := db.DeleteRange(filterMapRowKey(firstMapRowIndex), filterMapRowKey(afterLastMapRowIndex)); err != nil {
+		log.Crit("Failed to delete range of filter map rows", "err", err)
+	}
 }
 
 // ReadFilterMapLastBlock retrieves the number of the block that generated the
@@ -257,7 +259,7 @@ func WriteFilterMapLastBlock(db ethdb.KeyValueWriter, mapIndex uint32, blockNumb
 	var encPtr [8]byte
 	binary.BigEndian.PutUint64(encPtr[:], blockNumber)
 	if err := db.Put(filterMapLastBlockKey(mapIndex), encPtr[:]); err != nil {
-		log.Crit("Failed to store filter map block pointer", "err", err)
+		log.Crit("Failed to store filter map last block pointer", "err", err)
 	}
 }
 
@@ -265,12 +267,14 @@ func WriteFilterMapLastBlock(db ethdb.KeyValueWriter, mapIndex uint32, blockNumb
 // last log value entry of the given map.
 func DeleteFilterMapLastBlock(db ethdb.KeyValueWriter, mapIndex uint32) {
 	if err := db.Delete(filterMapLastBlockKey(mapIndex)); err != nil {
-		log.Crit("Failed to delete filter map block pointer", "err", err)
+		log.Crit("Failed to delete filter map last block pointer", "err", err)
 	}
 }
 
-func DeleteFilterMapLastBlocks(db ethdb.KeyValueRangeDeleter, firstMapIndex, afterLastMapIndex uint64) {
-	db.DeleteRange(filterMapLastBlockKey(firstMapIndex), filterMapLastBlockKey(afterLastMapIndex))
+func DeleteFilterMapLastBlocks(db ethdb.KeyValueRangeDeleter, firstMapIndex, afterLastMapIndex uint32) {
+	if err := db.DeleteRange(filterMapLastBlockKey(firstMapIndex), filterMapLastBlockKey(afterLastMapIndex)); err != nil {
+		log.Crit("Failed to delete range of filter map last block pointers", "err", err)
+	}
 }
 
 // ReadBlockLvPointer retrieves the starting log value index where the log values
@@ -305,7 +309,9 @@ func DeleteBlockLvPointer(db ethdb.KeyValueWriter, blockNumber uint64) {
 }
 
 func DeleteBlockLvPointers(db ethdb.KeyValueRangeDeleter, firstBlockNumber, afterLastBlockNumber uint64) {
-	db.DeleteRange(filterMapBlockLVKey(firstBlockNumber), filterMapBlockLVKey(afterLastBlockNumber))
+	if err := db.DeleteRange(filterMapBlockLVKey(firstBlockNumber), filterMapBlockLVKey(afterLastBlockNumber)); err != nil {
+		log.Crit("Failed to delete range of block log value pointers", "err", err)
+	}
 }
 
 // FilterMapsRange is a storage representation of the block range covered by the

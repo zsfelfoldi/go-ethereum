@@ -30,6 +30,7 @@ import (
 
 const (
 	valuesPerCallback = 10000
+	maxMapsPerBatch   = 16
 )
 
 var (
@@ -39,14 +40,14 @@ var (
 type mapRenderer struct {
 	f            *FilterMaps
 	targetChain  *chainView
-	lastMap      uint32
+	afterLastMap uint32
 	currentMap   *renderedMap
 	finishedMaps map[uint32]*renderedMap
 	iterator     *logIterator
 }
 
 type renderedMap struct {
-	rm            filterMap
+	filterMap     filterMap
 	mapIndex      uint32
 	lastBlock     uint64
 	lastBlockHash common.Hash
@@ -74,7 +75,7 @@ func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error)
 func (f *FilterMaps) findLastSnapshotBefore(afterLastMap uint32) *renderedMap {
 	var best *renderedMap
 	for _, blockNumber := range f.renderSnapshots.Keys() {
-		if cp := f.renderSnapshots.Get(blockNumber); cp != nil &&
+		if cp, _ := f.renderSnapshots.Get(blockNumber); cp != nil &&
 			f.targetView.getBlockHash(blockNumber) == cp.lastBlockHash &&
 			cp.mapIndex < afterLastMap && (best == nil || blockNumber > best.lastBlock) {
 			best = cp
@@ -97,7 +98,7 @@ func (f *FilterMaps) findLastMapBoundaryBefore(afterLastMap uint32) (startBlock,
 		if err != nil {
 			return 0, 0, err
 		}
-		if lastBlock >= f.indexedView.headNumber() || f.targetView.getBlockHash(lastBlock) != f.indexedView.getBlockHash(lastBlock) {
+		if lastBlock >= f.indexedView.headNumber || f.targetView.getBlockHash(lastBlock) != f.indexedView.getBlockHash(lastBlock) {
 			// map is not full or inconsistent with targetView; roll back
 			continue
 		}
@@ -133,21 +134,21 @@ func (f *FilterMaps) lastMapBoundaryBefore(mapIndex uint32) (uint32, bool) {
 }
 
 func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, error) {
-	iter, err := f.newLogIteratorFromBlockDelimiter(cp.lastBlock, cp.lastDelimiter)
+	iter, err := f.newLogIteratorFromBlockDelimiter(cp.lastBlock)
 	if err != nil {
 		return nil, err
 	}
 	return &mapRenderer{
 		f: f,
 		currentMap: &renderedMap{
-			rm:            cp.rm.copy(),
+			filterMap:     cp.filterMap.copy(),
 			mapIndex:      cp.mapIndex,
 			lastBlock:     cp.lastBlock,
 			lastBlockHash: cp.lastBlockHash,
 			blockLvPtrs:   cp.blockLvPtrs,
 		},
 		finishedMaps: make(map[uint32]*renderedMap),
-		lastMap:      math.MaxUint32,
+		afterLastMap: math.MaxUint32,
 		iterator:     iter,
 	}, nil
 }
@@ -160,7 +161,7 @@ func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, afterLastMap uint32, st
 	return &mapRenderer{
 		f: f,
 		currentMap: &renderedMap{
-			rm:            f.emptyFilterMap(),
+			filterMap:     f.emptyFilterMap(),
 			mapIndex:      firstMap,
 			lastBlock:     iter.blockNumber,
 			lastBlockHash: iter.blockHash,
@@ -173,7 +174,7 @@ func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, afterLastMap uint32, st
 
 func (r *mapRenderer) makeCheckpoint() *renderedMap {
 	return &renderedMap{
-		rm:            r.currentMap.rm.copy(),
+		filterMap:     r.currentMap.filterMap.copy(),
 		mapIndex:      r.currentMap.mapIndex,
 		lastBlock:     r.iterator.blockNumber,
 		lastBlockHash: r.iterator.blockHash,
@@ -190,20 +191,20 @@ func (r *mapRenderer) renderMaps(stopFn func() bool) (bool, error) {
 		}
 		// map finished
 		r.finishedMaps[r.currentMap.mapIndex] = r.currentMap
-		if len(r.finishedMaps) >= mapsPerBatch {
+		if len(r.finishedMaps) >= maxMapsPerBatch {
 			if err := r.writeFinishedMaps(); err != nil {
 				return false, err
 			}
 		}
-		if r.currentMap.mapIndex == r.lastMap || r.iterator.finished() {
+		if r.currentMap.mapIndex+1 == r.afterLastMap || r.iterator.finished {
 			if err := r.writeFinishedMaps(); err != nil {
 				return false, err
 			}
 			return true, nil
 		}
 		r.currentMap = &renderedMap{
-			rm:       f.emptyFilterMap(),
-			mapIndex: r.currentMap.mapIndex + 1,
+			filterMap: r.f.emptyFilterMap(),
+			mapIndex:  r.currentMap.mapIndex + 1,
 		}
 	}
 }
@@ -213,7 +214,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 		return false, errChainUpdate
 	}
 	var waitCnt, rowCnt int
-	for r.iterator.lvIndex < uint64(r.mapIndex+1)<<r.logValuesPerMap && !r.iterator.finished {
+	for r.iterator.lvIndex < uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap && !r.iterator.finished {
 		waitCnt++
 		if waitCnt >= valuesPerCallback {
 			if stopFn() {
@@ -221,8 +222,8 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 			}
 			waitCnt = 0
 		}
-		if r.iterator.lvIndex == (uint64(r.mapIndex+1)<<r.logValuesPerMap)-1 {
-			r.f.storeLastBlockOfMap(r.mapIndex, r.iterator.blockNumber)
+		if r.iterator.lvIndex == (uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap)-1 {
+			r.f.storeLastBlockOfMap(r.currentMap.mapIndex, r.iterator.blockNumber)
 		}
 		if r.iterator.blockStart {
 			r.f.storeBlockLvPointer(r.iterator.blockNumber, r.iterator.lvIndex)
@@ -233,7 +234,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 				rowIndex = r.f.rowIndex(mapIndex>>r.f.logMapsPerEpoch, alternativeIndex, logValue)
 				if r.currentMap[rowIndex] == nil {
 					var err error
-					r.currentMap[rowIndex], err = r.f.getFilterMapRow(r.mapIndex, rowIndex)
+					r.currentMap[rowIndex], err = r.f.getFilterMapRow(r.currentMap.mapIndex, rowIndex)
 					if err != nil {
 						return false, err
 					}
@@ -295,7 +296,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 			fm := r.finishedMaps[firstMap]
 			newRange.firstIndexedBlock = fm.lastBlock + 1 - uint64(len(fm.blockLvPtrs)) //TODO ??afterLast
 		}
-		newRange.headBlockNumber = r.targetChain.headNumber()
+		newRange.headBlockNumber = r.targetChain.headNumber
 		newRange.headBlockHash = r.targetChain.getBlockHash(newRange.headBlockNumber)
 		newRange.afterLastRenderedMap = afterLastMap
 		lm := r.finishedMaps[lastMap]
@@ -333,7 +334,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	// add or update filter rows
 	for rowIndex := 0; rowIndex < r.f.mapHeight; rowIndex++ {
 		for mapIndex := firstMap; mapIndex <= lastMap; mapIndex++ {
-			row := r.finishedMaps[mapIndex].rm[rowIndex]
+			row := r.finishedMaps[mapIndex].filterMap[rowIndex]
 			if fm := r.f.filterMapCache[mapIndex]; fm != nil && bytes.Equal(row, fm[rowIndex]) {
 				continue
 			}
@@ -342,22 +343,16 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	}
 	// add or update block pointers
 	for mapIndex := firstMap; mapIndex <= lastMap; mapIndex++ {
-		rm := r.finishedMaps[mapIndex]
-		r.f.storeLastBlockNumber(batch, mapIndex, rm.lastBlock)
-		blockNumber := rm.lastBlock + 1 - uint64(len(rm.blockLvPtrs))
-		for _, lvPtr := range rm.blockLvPtrs {
+		filterMap := r.finishedMaps[mapIndex]
+		r.f.storeLastBlockNumber(batch, mapIndex, filterMap.lastBlock)
+		blockNumber := filterMap.lastBlock + 1 - uint64(len(filterMap.blockLvPtrs))
+		for _, lvPtr := range filterMap.blockLvPtrs {
 			r.f.storeBlockLvPointer(batch, blockNumber, lvPtr)
 		}
 	}
 
 	r.finishedMaps = make(map[uint32]*renderedMap)
 	return batch.Write()
-}
-
-type renderedMap struct {
-	headLvIndex uint64
-	mapIndex    uint32
-	headMap     filterMap
 }
 
 func (f *FilterMaps) emptyFilterMap() filterMap {
@@ -367,63 +362,63 @@ func (f *FilterMaps) emptyFilterMap() filterMap {
 type chainView struct {
 	chain        blockchain
 	nonCanonical []*types.Header
-	number       uint64
-	hash         common.Hash
+	headNumber   uint64
+	headHash     common.Hash
 }
 
 func newChainView(chain blockchain, number uint64, hash common.Hash) *chainView {
 	cv := &chainView{
-		chain:  chain,
-		number: number,
-		hash:   hash,
+		chain:      chain,
+		headNumber: number,
+		hash:       hash,
 	}
 	cv.extendNonCanonical()
 	return cv
 }
 
 func (cv *chainView) extendNonCanonical() bool {
-	for cv.hash != cv.chain.GetCanonicalHash(cv.number) {
-		header := cv.chain.GetHeader(cv.hash, cv.number)
+	for cv.headHash != cv.chain.GetCanonicalHash(cv.headNumber) {
+		header := cv.chain.GetHeader(cv.headHash, cv.headNumber)
 		if header == nil {
-			log.Error("Header not found", "number", cv.number, "hash", cv.hash)
+			log.Error("Header not found", "number", cv.headNumber, "hash", cv.headHash)
 			return false
 		}
 		cv.nonCanonical = append(cv.nonCanonical, header)
-		cv.number, cv.hash = cv.number-1, header.ParentHash
+		cv.headNumber, cv.headHash = cv.headNumber-1, header.ParentHash
 	}
 	return true
 }
 
 func (cv *chainView) getBlockHash(number uint64) common.Hash {
-	if number <= cv.number {
+	if number <= cv.headNumber {
 		hash := cv.chain.GetCanonicalHash(number)
 		if !cv.extendNonCanonical() {
 			return common.Hash{}
 		}
-		if number <= cv.number {
+		if number <= cv.headNumber {
 			return hash
 		}
 	}
-	if number-cv.number > uint64(len(cv.nonCanonical)) {
+	if number-cv.headNumber > uint64(len(cv.nonCanonical)) {
 		return common.Hash{}
 	}
-	return cv.nonCanonical[len(cv.nonCanonical)+1-int(number-cv.number)].Hash()
+	return cv.nonCanonical[len(cv.nonCanonical)+1-int(number-cv.headNumber)].Hash()
 }
 
 func (cv *chainView) getHeader(number uint64) *types.Header {
-	if number <= cv.number {
+	if number <= cv.headNumber {
 		hash := cv.chain.GetCanonicalHash(number)
 		if !cv.extendNonCanonical() {
 			return nil
 		}
-		if number <= cv.number {
+		if number <= cv.headNumber {
 			return cv.chain.GetHeader(hash, number)
 		}
 	}
-	if number-cv.number > uint64(len(cv.nonCanonical)) {
+	if number-cv.headNumber > uint64(len(cv.nonCanonical)) {
 		return nil
 	}
-	return cv.nonCanonical[len(cv.nonCanonical)+1-int(number-cv.number)]
+	return cv.nonCanonical[len(cv.nonCanonical)+1-int(number-cv.headNumber)]
 }
 
 type logIterator struct {
@@ -441,6 +436,9 @@ var errUnindexedRange = errors.New("unindexed range")
 func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logIterator, error) {
 	if blockNumber > f.targetView.headNumber {
 		return nil, errors.New("iterator entry point after target chain head")
+	}
+	if blockNumber < f.firstIndexedBlock || blockNumber >= f.afterLastIndexedBlock {
+		return nil, errUnindexedRange
 	}
 	blockHash := f.targetView.getBlockHash(blockNumber)
 	if indexedView.getBlockHash(blockNumber) != blockHash {

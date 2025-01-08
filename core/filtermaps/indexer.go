@@ -47,7 +47,7 @@ func (f *FilterMaps) indexerLoop() {
 	f.updateMapCache()
 	f.indexLock.Unlock()
 	f.headEventCh = make(chan core.ChainEvent, 10)
-	sub := f.chain.SubscribeChainEvent(headEventCh)
+	sub := f.chain.SubscribeChainEvent(f.headEventCh)
 	defer sub.Unsubscribe()
 	f.setTargetHead(f.chain.CurrentBlock())
 
@@ -149,12 +149,6 @@ func (f *FilterMaps) tailTargetBlock() uint64 {
 		return 0
 	}
 	return f.headBlockNumber + 1 - f.history
-}
-
-func (f *FilterMaps) deleteTailEpoch(epoch uint32) error {
-	rawdb.DeleteFilterMapRows(f.db)
-	rawdb.DeleteFilterMapLastBlocks(f.db)
-	rawdb.DeleteBlockLvPointers(f.db)
 }
 
 func (f *FilterMaps) waitForEvent() {
