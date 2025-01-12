@@ -19,11 +19,8 @@ package filtermaps
 import (
 	"errors"
 	"math"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 )
@@ -213,7 +210,8 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 	if !r.iterator.updateChainView(r.f.targetView) {
 		return false, errChainUpdate
 	}
-	var waitCnt, rowCnt int
+	epoch := r.currentMap.mapIndex >> r.f.logMapsPerEpoch
+	var waitCnt int
 	for r.iterator.lvIndex < uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap && !r.iterator.finished {
 		waitCnt++
 		if waitCnt >= valuesPerCallback {
@@ -222,48 +220,29 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 			}
 			waitCnt = 0
 		}
-		if r.iterator.lvIndex == (uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap)-1 {
-			r.f.storeLastBlockOfMap(r.currentMap.mapIndex, r.iterator.blockNumber)
-		}
+		r.currentMap.lastBlock = r.iterator.blockNumber
+		r.currentMap.lastBlockHash = r.iterator.blockHash
 		if r.iterator.blockStart {
-			r.f.storeBlockLvPointer(r.iterator.blockNumber, r.iterator.lvIndex)
+			r.currentMap.blockLvPtrs = append(r.currentMap.blockLvPtrs, r.iterator.lvIndex)
 		}
 		if logValue := r.iterator.getValueHash(); logValue != (common.Hash{}) {
 			var rowIndex uint32
 			for alternativeIndex := uint32(0); ; alternativeIndex++ {
-				rowIndex = r.f.rowIndex(mapIndex>>r.f.logMapsPerEpoch, alternativeIndex, logValue)
-				if r.currentMap[rowIndex] == nil {
-					var err error
-					r.currentMap[rowIndex], err = r.f.getFilterMapRow(r.currentMap.mapIndex, rowIndex)
-					if err != nil {
-						return false, err
-					}
-				}
-				if len(r.currentMap[rowIndex]) < r.f.maxRowLength {
+				rowIndex = r.f.rowIndex(epoch, alternativeIndex, logValue)
+				if uint32(len(r.currentMap.filterMap[rowIndex])) < r.f.maxRowLength {
 					break
 				}
 			}
-			r.currentMap[rowIndex] = append(r.currentMap[rowIndex], r.f.columnIndex(r.iterator.lvIndex, logValue))
+			r.currentMap.filterMap[rowIndex] = append(r.currentMap.filterMap[rowIndex], r.f.columnIndex(r.iterator.lvIndex, logValue))
 		}
 		if err := r.iterator.next(); err != nil {
 			return false, err
-		}
-		if (r.iterator.delimiter || r.iterator.finished) &&
-			r.iterator.blockNumber > newRange.headBlockNumber {
-			// update head block pointer if newer than current one
-			newRange.headBlockNumber = r.iterator.blockNumber
-			newRange.headBlockHash = r.iterator.blockHash
-			newRange.headLvPointer = r.iterator.lvIndex
-			// save new render checkpoint
-			r.f.renderSnapshots[r.iterator.blockNumber] = r.makeCheckpoint()
 		}
 		if r.iterator.finished {
 			r.currentMap.finished = true
 			r.currentMap.headDelimiter = r.iterator.lvIndex
 		}
 	}
-	r.currentMap.lastBlock = r.iterator.blockNumber
-	r.currentMap.lastBlockHash = r.iterator.blockHash
 	return true, nil
 }
 
@@ -286,10 +265,10 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	batch := r.f.db.NewBatch()
 	// update filterMapsRange
 	newRange := r.f.filterMapsRange
-	if r.lastMap == math.MaxUint32 {
+	if r.afterLastMap == math.MaxUint32 {
 		// head update
 		//TODO remove old data if necessary
-		r.f.indexedView = r.targetView
+		r.f.indexedView = r.f.targetView
 		if !newRange.initialized {
 			newRange.initialized = true
 			newRange.firstRenderedMap = firstMap
@@ -298,7 +277,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 		}
 		newRange.headBlockNumber = r.targetChain.headNumber
 		newRange.headBlockHash = r.targetChain.getBlockHash(newRange.headBlockNumber)
-		newRange.afterLastRenderedMap = afterLastMap
+		newRange.afterLastRenderedMap = lastMap + 1
 		lm := r.finishedMaps[lastMap]
 		if lm.finished {
 			newRange.afterLastIndexedBlock = newRange.headBlockNumber + 1
@@ -315,7 +294,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 		if !newRange.initialized {
 			return errors.New("tail extension of uninitialized log index")
 		}
-		if lastBlock := r.finishedMaps[lastMap].lastBlock; r.targetView.getBlockHash(lastBlock) != r.f.indexedView.getBlockHash(lastBlock) {
+		if lastBlock := r.finishedMaps[lastMap].lastBlock; r.f.targetView.getBlockHash(lastBlock) != r.f.indexedView.getBlockHash(lastBlock) {
 			return errChainUpdate
 		}
 		if firstMap != newRange.firstRenderedMap-r.f.mapsPerEpoch+newRange.tailPartialEpoch {
@@ -332,10 +311,10 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	}
 	r.f.setRange(batch, newRange)
 	// add or update filter rows
-	for rowIndex := 0; rowIndex < r.f.mapHeight; rowIndex++ {
+	for rowIndex := uint32(0); rowIndex < r.f.mapHeight; rowIndex++ {
 		for mapIndex := firstMap; mapIndex <= lastMap; mapIndex++ {
 			row := r.finishedMaps[mapIndex].filterMap[rowIndex]
-			if fm := r.f.filterMapCache[mapIndex]; fm != nil && bytes.Equal(row, fm[rowIndex]) {
+			if fm := r.f.filterMapCache[mapIndex]; fm != nil && row.Equal(fm[rowIndex]) {
 				continue
 			}
 			r.f.storeFilterMapRow(batch, mapIndex, rowIndex, row)
@@ -344,7 +323,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	// add or update block pointers
 	for mapIndex := firstMap; mapIndex <= lastMap; mapIndex++ {
 		filterMap := r.finishedMaps[mapIndex]
-		r.f.storeLastBlockNumber(batch, mapIndex, filterMap.lastBlock)
+		r.f.storeLastBlockOfMap(batch, mapIndex, filterMap.lastBlock)
 		blockNumber := filterMap.lastBlock + 1 - uint64(len(filterMap.blockLvPtrs))
 		for _, lvPtr := range filterMap.blockLvPtrs {
 			r.f.storeBlockLvPointer(batch, blockNumber, lvPtr)
@@ -370,7 +349,7 @@ func newChainView(chain blockchain, number uint64, hash common.Hash) *chainView 
 	cv := &chainView{
 		chain:      chain,
 		headNumber: number,
-		hash:       hash,
+		headHash:   hash,
 	}
 	cv.extendNonCanonical()
 	return cv
@@ -423,6 +402,7 @@ func (cv *chainView) getHeader(number uint64) *types.Header {
 
 type logIterator struct {
 	chainView                       *chainView
+	getReceiptsByHash               func(common.Hash) types.Receipts
 	blockNumber                     uint64
 	blockHash                       common.Hash
 	receipts                        types.Receipts
@@ -441,7 +421,7 @@ func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logI
 		return nil, errUnindexedRange
 	}
 	blockHash := f.targetView.getBlockHash(blockNumber)
-	if indexedView.getBlockHash(blockNumber) != blockHash {
+	if f.indexedView.getBlockHash(blockNumber) != blockHash {
 		return nil, errors.New("target and indexed views diverged at iterator entry point")
 	}
 	var lvIndex uint64
@@ -457,13 +437,13 @@ func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logI
 	}
 	finished := blockNumber == f.targetView.headNumber
 	return &logIterator{
-		chainView:   f.targetView,
-		blockNumber: blockNumber,
-		blockHash:   blockHash,
-		receipts:    receipts,
-		finished:    finished,
-		delimiter:   !finished,
-		lvIndex:     lvIndex,
+		chainView:         f.targetView,
+		getReceiptsByHash: f.chain.GetReceiptsByHash,
+		blockNumber:       blockNumber,
+		blockHash:         blockHash,
+		finished:          finished,
+		delimiter:         !finished,
+		lvIndex:           lvIndex,
 	}, nil
 }
 
@@ -472,7 +452,7 @@ func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, 
 		return nil, errors.New("iterator entry point after target chain head")
 	}
 	blockHash := f.targetView.getBlockHash(startBlock)
-	if indexedView.getBlockHash(startBlock) != blockHash {
+	if f.indexedView.getBlockHash(startBlock) != blockHash {
 		return nil, errors.New("target and indexed views diverged at iterator entry point")
 	}
 	// get block receipts
@@ -482,12 +462,13 @@ func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, 
 	}
 	// initialize iterator at block start
 	l := &logIterator{
-		chainView:   f.targetView,
-		blockNumber: startBlock,
-		blockHash:   blockHash,
-		receipts:    receipts,
-		blockStart:  true,
-		lvIndex:     startLvPtr,
+		chainView:         f.targetView,
+		getReceiptsByHash: f.chain.GetReceiptsByHash,
+		blockNumber:       startBlock,
+		blockHash:         blockHash,
+		receipts:          receipts,
+		blockStart:        true,
+		lvIndex:           startLvPtr,
 	}
 	l.nextValid()
 	targetIndex := uint64(mapIndex) << f.logValuesPerMap
@@ -518,7 +499,7 @@ func (l *logIterator) next() error {
 	if l.delimiter {
 		l.delimiter = false
 		l.blockNumber++
-		l.receipts = f.chain.GetReceiptsByHash(f.targetView.getBlockHash(l.blockNumber))
+		l.receipts = l.getReceiptsByHash(l.chainView.getBlockHash(l.blockNumber))
 		if l.receipts == nil {
 			return errors.New("receipts not found")
 		}
@@ -532,12 +513,12 @@ func (l *logIterator) next() error {
 }
 
 func (l *logIterator) nextValid() {
-	for ; l.txIndex < len(receipts); l.txIndex++ {
-		receipt := l.receipts[l.txindex]
+	for ; l.txIndex < len(l.receipts); l.txIndex++ {
+		receipt := l.receipts[l.txIndex]
 		for ; l.logIndex < len(receipt.Logs); l.logIndex++ {
 			log := receipt.Logs[l.logIndex]
 			if l.topicIndex <= len(log.Topics) {
-				return nil
+				return
 			}
 			l.topicIndex = 0
 		}
@@ -563,7 +544,7 @@ func (l *logIterator) getValueHash() common.Hash {
 	if l.delimiter || l.finished {
 		return common.Hash{}
 	}
-	log := l.receipts[l.txindex].Logs[l.logIndex]
+	log := l.receipts[l.txIndex].Logs[l.logIndex]
 	if l.topicIndex == 0 {
 		return addressValue(log.Address)
 	}

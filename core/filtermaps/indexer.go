@@ -17,13 +17,10 @@
 package filtermaps
 
 import (
-	"errors"
 	"math"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 )
@@ -60,6 +57,22 @@ func (f *FilterMaps) indexerLoop() {
 			if f.tryUpdateTail() {
 				f.waitForEvent()
 			}
+		}
+	}
+}
+
+// WaitIdle blocks until the indexer is in an idle state while synced up to the
+// latest chain head.
+func (f *FilterMaps) WaitIdle() {
+	if f.noHistory {
+		f.closeWg.Wait()
+		return
+	}
+	for {
+		ch := make(chan bool)
+		f.waitIdleCh <- ch
+		if <-ch {
+			return
 		}
 	}
 }

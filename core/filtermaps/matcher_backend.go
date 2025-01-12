@@ -45,9 +45,9 @@ func (f *FilterMaps) NewMatcherBackend() *FilterMapsMatcherBackend {
 
 	fm := &FilterMapsMatcherBackend{
 		f:          f,
-		valid:      f.initialized,
-		firstValid: f.tailBlockNumber,
-		lastValid:  f.headBlockNumber,
+		valid:      f.initialized && f.afterLastIndexedBlock > f.firstIndexedBlock,
+		firstValid: f.firstIndexedBlock,
+		lastValid:  f.afterLastIndexedBlock - 1,
 	}
 	f.matchers[fm] = struct{}{}
 	return fm
@@ -125,13 +125,13 @@ func (fm *FilterMapsMatcherBackend) synced(head *types.Header) {
 		Valid:        fm.valid,
 		FirstValid:   fm.firstValid,
 		LastValid:    fm.lastValid,
-		Indexed:      fm.f.initialized,
-		FirstIndexed: fm.f.tailBlockNumber,
-		LastIndexed:  fm.f.headBlockNumber,
+		Indexed:      fm.f.hasIndexedBlocks(),
+		FirstIndexed: fm.f.firstIndexedBlock,
+		LastIndexed:  fm.f.afterLastIndexedBlock - 1,
 	}
-	fm.valid = fm.f.initialized
-	fm.firstValid = fm.f.tailBlockNumber
-	fm.lastValid = fm.f.headBlockNumber
+	fm.valid = fm.f.hasIndexedBlocks()
+	fm.firstValid = fm.f.firstIndexedBlock
+	fm.lastValid = fm.f.afterLastIndexedBlock - 1
 	fm.syncCh = nil
 }
 
@@ -182,17 +182,17 @@ func (f *FilterMaps) updateMatchersValidRange() {
 	defer f.matchersLock.Unlock()
 
 	for fm := range f.matchers {
-		if !f.initialized {
+		if !f.hasIndexedBlocks() {
 			fm.valid = false
 		}
 		if !fm.valid {
 			continue
 		}
-		if fm.firstValid < f.tailBlockNumber {
-			fm.firstValid = f.tailBlockNumber
+		if fm.firstValid < f.firstIndexedBlock {
+			fm.firstValid = f.firstIndexedBlock
 		}
-		if fm.lastValid > f.headBlockNumber {
-			fm.lastValid = f.headBlockNumber
+		if fm.lastValid >= f.afterLastIndexedBlock {
+			fm.lastValid = f.afterLastIndexedBlock - 1
 		}
 		if fm.firstValid > fm.lastValid {
 			fm.valid = false

@@ -134,6 +134,18 @@ func (fm filterMap) copy() filterMap {
 // simpler.
 type FilterRow []uint32
 
+func (a FilterRow) Equal(b FilterRow) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, v := range a {
+		if b[i] != v {
+			return false
+		}
+	}
+	return true
+}
+
 // filterMapsRange describes the block range that has been indexed and the log
 // value index range it has been mapped to.
 // Note that tailBlockLvPointer points to the earliest log value index belonging
@@ -157,6 +169,10 @@ type filterMapsRange struct {
 	// firstIndexedBlock and afterLastIndexedBlock are fully rendered
 	// blockLvPointers are available between firstIndexedBlock and afterLastIndexedBlock-1
 	firstIndexedBlock, afterLastIndexedBlock uint64
+}
+
+func (fmr *filterMapsRange) hasIndexedBlocks() bool {
+	return fmr.initialized && fmr.afterLastIndexedBlock > fmr.firstIndexedBlock
 }
 
 // NewFilterMaps creates a new FilterMaps and starts the indexer in order to keep

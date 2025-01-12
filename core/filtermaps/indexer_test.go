@@ -45,15 +45,16 @@ func TestIndexerRandomRange(t *testing.T) {
 	defer ts.close()
 
 	forks := make([][]common.Hash, 10)
-	ts.chain.addBlocks(1000, 5, 2, 4, false) // 50 log values per block
+	ts.chain.addBlocks(1000, 5, 2, 4, false) // 51 log values per block
 	for i := range forks {
 		if i != 0 {
 			forkBlock := rand.Intn(1000)
 			ts.chain.setHead(forkBlock)
-			ts.chain.addBlocks(1000-forkBlock, 5, 2, 4, false) // 50 log values per block
+			ts.chain.addBlocks(1000-forkBlock, 5, 2, 4, false) // 51 log values per block
 		}
 		forks[i] = ts.chain.getCanonicalChain()
 	}
+	lvPerBlock := uint64(51)
 	ts.setHistory(0, false)
 	var (
 		history    int
@@ -89,31 +90,28 @@ func TestIndexerRandomRange(t *testing.T) {
 		if !ts.fm.initialized {
 			t.Fatalf("filterMapsRange not initialized while indexing is enabled")
 		}
-		var (
-			tail   int
-			tpHash common.Hash
-		)
+		var tail uint64
 		if history > 0 && history <= head {
-			tail = head + 1 - history
+			tail = uint64(head + 1 - history)
 		}
+		tailLvPtr := uint64(tail) * lvPerBlock
 		if tail > 0 {
-			tpHash = forks[fork][tail-1]
+			tailLvPtr -= lvPerBlock // no logs in genesis block
 		}
-		if ts.fm.headBlockNumber != uint64(head) || ts.fm.headBlockHash != forks[fork][head] {
-			ts.t.Fatalf("Invalid index head (expected #%d %v, got #%d %v)", head, forks[fork][head], ts.fm.headBlockNumber, ts.fm.headBlockHash)
+		tailEpoch := tailLvPtr >> (testParams.logValuesPerMap + testParams.logMapsPerEpoch)
+		tailLvPtr = tailEpoch << (testParams.logValuesPerMap + testParams.logMapsPerEpoch)
+		tail = (tailLvPtr + lvPerBlock - 1) / lvPerBlock
+		if tail > 0 {
+			tail++
 		}
-		if ts.fm.tailBlockNumber != uint64(tail) || ts.fm.tailParentHash != tpHash {
-			ts.t.Fatalf("Invalid index head (expected #%d %v, got #%d %v)", tail, tpHash, ts.fm.tailBlockNumber, ts.fm.tailParentHash)
+		if ts.fm.afterLastIndexedBlock != uint64(head+1) || ts.fm.headBlockNumber != uint64(head) || ts.fm.headBlockHash != forks[fork][head] {
+			ts.t.Fatalf("Invalid index head (expected #%d %v, got #%d %v)", head, forks[fork][head], ts.fm.afterLastIndexedBlock-1, ts.fm.headBlockHash)
 		}
-		expLvCount := uint64(head+1-tail) * 50
-		if tail == 0 {
-			expLvCount -= 50 // no logs in genesis block
+		if ts.fm.headBlockDelimiter != uint64(head)*lvPerBlock-1 {
+			ts.t.Fatalf("Invalid index head delimiter pointer (expected %d, got %d)", uint64(head)*lvPerBlock-1, ts.fm.headBlockDelimiter)
 		}
-		if ts.fm.headLvPointer-ts.fm.tailBlockLvPointer != expLvCount {
-			ts.t.Fatalf("Invalid number of log values (expected %d, got %d)", expLvCount, ts.fm.headLvPointer-ts.fm.tailBlockLvPointer)
-		}
-		if ts.fm.tailBlockLvPointer-ts.fm.tailLvPointer >= ts.params.valuesPerMap {
-			ts.t.Fatalf("Invalid number of leftover tail log values (expected < %d, got %d)", ts.params.valuesPerMap, ts.fm.tailBlockLvPointer-ts.fm.tailLvPointer)
+		if ts.fm.firstIndexedBlock != tail {
+			ts.t.Fatalf("Invalid index tail block (expected #%d, got #%d)", tail, ts.fm.firstIndexedBlock)
 		}
 	}
 }

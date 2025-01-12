@@ -257,7 +257,7 @@ func (s *singleMatcher) getMatches(ctx context.Context, mapIndices []uint32) ([]
 				return nil, err
 			}
 			filterRows = append(filterRows, filterRow)
-			if len(filterRow) < params.maxRowLength {
+			if uint32(len(filterRow)) < params.maxRowLength {
 				break
 			}
 		}

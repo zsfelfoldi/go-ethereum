@@ -35,7 +35,7 @@ func TestSingleMatch(t *testing.T) {
 		var lvHash common.Hash
 		crand.Read(lvHash[:])
 		row := FilterRow{params.columnIndex(lvIndex, lvHash)}
-		matches := params.potentialMatches(row, mapIndex, lvHash)
+		matches := params.potentialMatches([]FilterRow{row}, mapIndex, lvHash)
 		// check if it has been reverse transformed correctly
 		if len(matches) != 1 {
 			t.Fatalf("Invalid length of matches (got %d, expected 1)", len(matches))
@@ -84,9 +84,20 @@ func TestPotentialMatches(t *testing.T) {
 			j := rand.Intn(i)
 			row[i], row[j] = row[j], row[i]
 		}
+		// split up into a list of rows if longer than allowed
+		rows := make([]FilterRow, len(row)/int(params.maxRowLength)+1)
+		for i := range rows {
+			if len(row) > int(params.maxRowLength) {
+				rows[i] = row[:params.maxRowLength]
+				row = row[params.maxRowLength:]
+			} else {
+				rows[i] = row
+				row = FilterRow{}
+			}
+		}
 		// check retrieved matches while also counting false positives
 		for i, lvHash := range lvHashes {
-			matches := params.potentialMatches(row, mapIndex, lvHash)
+			matches := params.potentialMatches(rows, mapIndex, lvHash)
 			if i < testPmLen {
 				// check single entry match
 				if len(matches) < 1 {

@@ -47,7 +47,7 @@ func (p *Params) deriveFields() {
 	p.mapHeight = uint32(1) << p.logMapHeight
 	p.mapsPerEpoch = uint32(1) << p.logMapsPerEpoch
 	p.valuesPerMap = uint64(1) << p.logValuesPerMap
-	p.maxValuesPerRow = p.valuesPerMap * maxRowLengthRatio / p.mapHeight
+	p.maxRowLength = uint32(p.valuesPerMap * maxRowLengthRatio / uint64(p.mapHeight))
 }
 
 // addressValue returns the log value hash of a log emitting address.
@@ -152,7 +152,7 @@ func (p *Params) potentialMatches(rows []FilterRow, mapIndex uint32, logValue co
 				results = append(results, uint64(mapIndex)<<p.logValuesPerMap+uint64(potentialSubIndex))
 			}
 		}
-		if len(row) < p.maxRowLength {
+		if uint32(len(row)) < p.maxRowLength {
 			break
 		}
 		if i == len(rows)-1 {
