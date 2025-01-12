@@ -54,9 +54,17 @@ type renderedMap struct {
 }
 
 func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error) {
+	fmt.Println("rmb", afterLastMap, f.indexedView != nil, f.targetView != nil)
+	if f.indexedView == nil {
+		panic("aaaaaaaaaaaaaaaa")
+	}
+	if f.targetView == nil {
+		panic("bbbbbbbbbbbbbbbb")
+	}
 	snapshot := f.findLastSnapshotBefore(afterLastMap)
 	startBlock, startLvPtr, err := f.findLastMapBoundaryBefore(afterLastMap)
 	if err != nil {
+		fmt.Println(" flmbb err", err)
 		return nil, err
 	}
 	nextMap := uint32((startLvPtr + f.valuesPerMap - 1) >> f.logValuesPerMap)
@@ -64,6 +72,7 @@ func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error)
 		return f.renderMapsFromSnapshot(snapshot)
 	}
 	if nextMap >= afterLastMap {
+		fmt.Println(" nothing to render", nextMap, afterLastMap)
 		return nil, nil
 	}
 	return f.renderMapsFromMapBoundary(nextMap, afterLastMap, startBlock, startLvPtr)
@@ -89,10 +98,13 @@ func (f *FilterMaps) findLastMapBoundaryBefore(afterLastMap uint32) (startBlock,
 	for {
 		var ok bool
 		if mapIndex, ok = f.lastMapBoundaryBefore(mapIndex); !ok {
+			fmt.Println(" lmbb none")
 			return 0, 0, nil
 		}
+		fmt.Println(" lmbb", mapIndex)
 		lastBlock, err := f.getLastBlockOfMap(mapIndex)
 		if err != nil {
+			fmt.Println(" glbm err", err)
 			return 0, 0, err
 		}
 		if lastBlock >= f.indexedView.headNumber || f.targetView.getBlockHash(lastBlock) != f.indexedView.getBlockHash(lastBlock) {
@@ -101,6 +113,7 @@ func (f *FilterMaps) findLastMapBoundaryBefore(afterLastMap uint32) (startBlock,
 		}
 		lvPtr, err := f.getBlockLvPointer(lastBlock)
 		if err != nil {
+			fmt.Println(" gblp err", err)
 			return 0, 0, err
 		}
 		return lastBlock, lvPtr, nil
@@ -272,6 +285,9 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	if r.afterLastMap == math.MaxUint32 {
 		// head update
 		//TODO remove old data if necessary
+		if r.f.targetView == nil {
+			panic("xxxxxxxxxx")
+		}
 		r.f.indexedView = r.f.targetView
 		if !newRange.initialized {
 			newRange.initialized = true

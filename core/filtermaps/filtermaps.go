@@ -210,7 +210,10 @@ func NewFilterMaps(db ethdb.KeyValueStore, chain blockchain, params Params, hist
 		lvPointerCache:  lru.NewCache[uint64, uint64](1000),
 		renderSnapshots: lru.NewCache[uint64, *renderedMap](cachedRevertPoints),
 	}
-	if fm.initialized && fm.afterLastIndexedBlock > fm.firstIndexedBlock {
+	if fm.initialized {
+		fm.indexedView = newChainView(chain, fm.headBlockNumber, fm.headBlockHash)
+	}
+	if fm.hasIndexedBlocks() {
 		log.Trace("Log index head", "number", fm.headBlockNumber, "hash", fm.headBlockHash.String(), "log value pointer", fm.headBlockDelimiter)
 		log.Trace("Log index range", "first block", fm.firstIndexedBlock, "last block", fm.afterLastIndexedBlock-1, "first map", fm.firstRenderedMap, "last map", fm.afterLastRenderedMap-1)
 	}
@@ -234,6 +237,7 @@ func (f *FilterMaps) Stop() {
 func (f *FilterMaps) reset() bool {
 	f.indexLock.Lock()
 	f.filterMapsRange = filterMapsRange{}
+	f.indexedView = nil
 	f.filterMapCache = make(map[uint32]filterMap)
 	f.renderSnapshots.Purge()
 	f.lastBlockCache.Purge()
@@ -270,7 +274,6 @@ func (f *FilterMaps) init() error {
 		f.storeLastBlockOfMap(batch, (uint32(epoch+1)<<f.logMapsPerEpoch)-1, cp.blockNumber)
 		f.storeBlockLvPointer(batch, cp.blockNumber, cp.firstLvIndex)
 	}
-	f.indexedView = f.targetView
 	fmr := filterMapsRange{
 		initialized:     true,
 		headBlockHash:   f.targetView.getBlockHash(f.targetView.headNumber),
@@ -282,6 +285,9 @@ func (f *FilterMaps) init() error {
 		fmr.afterLastIndexedBlock = cp.blockNumber + 1
 		fmr.firstRenderedMap = uint32(bestLen) << f.logMapsPerEpoch
 		fmr.afterLastRenderedMap = uint32(bestLen) << f.logMapsPerEpoch
+	}
+	if f.targetView == nil {
+		panic("xxxxxxxxxx")
 	}
 	f.indexedView = f.targetView
 	f.setRange(batch, fmr)
@@ -566,7 +572,7 @@ func (f *FilterMaps) deleteLastBlockOfMap(batch ethdb.Batch, mapIndex uint32) {
 }
 
 func (f *FilterMaps) deleteTailEpoch(epoch uint32) error {
-	firstMap := epoch << f.mapsPerEpoch
+	firstMap := epoch << f.logMapsPerEpoch
 	lastBlock, err := f.getLastBlockOfMap(firstMap + f.mapsPerEpoch - 1)
 	if err != nil {
 		return err

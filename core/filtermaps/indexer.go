@@ -125,18 +125,23 @@ func (f *FilterMaps) tryUpdateHead() bool {
 
 func (f *FilterMaps) tryUpdateTail() bool {
 	for {
+		fmt.Println("t1")
 		f.processEvents()
 		if f.stop || !f.targetHeadIndexed() {
+			fmt.Println("t2")
 			return false
 		}
 		firstEpoch := f.firstRenderedMap >> f.logMapsPerEpoch
 		if firstEpoch > 0 {
 			if f.needTailEpoch(firstEpoch - 1) {
+				fmt.Println("t6 ext")
 				tailRenderer, err := f.renderMapsBefore(f.firstRenderedMap)
 				if tailRenderer == nil {
+					fmt.Println("t3")
 					return false
 				}
 				done, err := tailRenderer.renderMaps(func() bool {
+					fmt.Println("t4")
 					f.processEvents()
 					return f.stop || !f.targetHeadIndexed()
 				})
@@ -144,24 +149,30 @@ func (f *FilterMaps) tryUpdateTail() bool {
 					log.Error("Log index tail rendering failed", "error", err)
 				}
 				if !done {
+					fmt.Println("t5")
 					return false
 				}
 				continue
 			} else if f.tailPartialEpoch > 0 {
+				fmt.Println("t7 del")
 				if err := f.deleteTailEpoch(firstEpoch - 1); err != nil {
 					log.Error("Log index partial tail epoch unindexing failed", "error", err)
+					fmt.Println("t8")
 					return false
 				}
 				continue
 			}
 		}
 		if !f.needTailEpoch(firstEpoch) {
+			fmt.Println("t9 del")
 			if err := f.deleteTailEpoch(firstEpoch); err != nil {
 				log.Error("Log index tail epoch unindexing failed", "error", err)
+				fmt.Println("t10", err)
 				return false
 			}
 			continue
 		}
+		fmt.Println("t11")
 		return true
 	}
 }
