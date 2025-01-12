@@ -107,8 +107,8 @@ func TestIndexerRandomRange(t *testing.T) {
 		if ts.fm.afterLastIndexedBlock != uint64(head+1) || ts.fm.headBlockNumber != uint64(head) || ts.fm.headBlockHash != forks[fork][head] {
 			ts.t.Fatalf("Invalid index head (expected #%d %v, got #%d %v)", head, forks[fork][head], ts.fm.afterLastIndexedBlock-1, ts.fm.headBlockHash)
 		}
-		if ts.fm.headBlockDelimiter != uint64(head)*lvPerBlock-1 {
-			ts.t.Fatalf("Invalid index head delimiter pointer (expected %d, got %d)", uint64(head)*lvPerBlock-1, ts.fm.headBlockDelimiter)
+		if ts.fm.headBlockDelimiter != uint64(head)*lvPerBlock {
+			ts.t.Fatalf("Invalid index head delimiter pointer (expected %d, got %d)", uint64(head)*lvPerBlock, ts.fm.headBlockDelimiter)
 		}
 		if ts.fm.firstIndexedBlock != tail {
 			ts.t.Fatalf("Invalid index tail block (expected #%d, got #%d)", tail, ts.fm.firstIndexedBlock)

@@ -17,6 +17,7 @@
 package filtermaps
 
 import (
+	"fmt"
 	"math"
 	"time"
 
@@ -50,19 +51,30 @@ func (f *FilterMaps) indexerLoop() {
 
 	for !f.stop {
 		if !f.initialized {
+			fmt.Println("init")
 			if err := f.init(); err != nil {
 				log.Error("Error initializing log index", "error", err)
+				fmt.Println(" fail", err)
 				f.waitForEvent()
 				continue
 			}
+			fmt.Println(" success")
 		}
 		if !f.targetHeadIndexed() {
+			fmt.Println("tryUpdateHead")
 			if !f.tryUpdateHead() {
+				fmt.Println(" fail; wait")
 				f.waitForEvent()
+			} else {
+				fmt.Println(" success")
 			}
 		} else {
+			fmt.Println("tryUpdateTail")
 			if f.tryUpdateTail() {
+				fmt.Println(" success; wait")
 				f.waitForEvent()
+			} else {
+				fmt.Println(" interrupted")
 			}
 		}
 	}
@@ -88,21 +100,26 @@ func (f *FilterMaps) tryUpdateHead() bool {
 	for f.targetView == nil {
 		return false
 	}
+	fmt.Println("h1")
 	headRenderer, err := f.renderMapsBefore(math.MaxUint32)
 	if err != nil {
 		log.Error("Error creating log index head renderer", "error", err)
 		return false
 	}
+	fmt.Println("h2")
 	if headRenderer == nil {
 		return true
 	}
+	fmt.Println("h3")
 	if _, err := headRenderer.renderMaps(func() bool {
+		fmt.Println("h4")
 		f.processEvents()
 		return f.stop
 	}); err != nil {
 		log.Error("Log index head rendering failed", "error", err)
 		return false
 	}
+	fmt.Println("h5")
 	return true
 }
 

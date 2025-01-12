@@ -18,6 +18,7 @@ package filtermaps
 
 import (
 	"errors"
+	"fmt"
 	"math"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -36,7 +37,6 @@ var (
 
 type mapRenderer struct {
 	f            *FilterMaps
-	targetChain  *chainView
 	afterLastMap uint32
 	currentMap   *renderedMap
 	finishedMaps map[uint32]*renderedMap
@@ -207,12 +207,15 @@ func (r *mapRenderer) renderMaps(stopFn func() bool) (bool, error) {
 }
 
 func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
+	fmt.Println("rcm1")
 	if !r.iterator.updateChainView(r.f.targetView) {
 		return false, errChainUpdate
 	}
 	epoch := r.currentMap.mapIndex >> r.f.logMapsPerEpoch
 	var waitCnt int
 	for r.iterator.lvIndex < uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap && !r.iterator.finished {
+		fmt.Println("rcm2", r.iterator.lvIndex, r.iterator.blockNumber, r.iterator.txIndex, r.iterator.logIndex, r.iterator.topicIndex,
+			r.iterator.blockStart, r.iterator.delimiter, r.iterator.finished)
 		waitCnt++
 		if waitCnt >= valuesPerCallback {
 			if stopFn() {
@@ -243,6 +246,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 			r.currentMap.headDelimiter = r.iterator.lvIndex
 		}
 	}
+	fmt.Println("rcm3")
 	return true, nil
 }
 
@@ -275,8 +279,8 @@ func (r *mapRenderer) writeFinishedMaps() error {
 			fm := r.finishedMaps[firstMap]
 			newRange.firstIndexedBlock = fm.lastBlock + 1 - uint64(len(fm.blockLvPtrs)) //TODO ??afterLast
 		}
-		newRange.headBlockNumber = r.targetChain.headNumber
-		newRange.headBlockHash = r.targetChain.getBlockHash(newRange.headBlockNumber)
+		newRange.headBlockNumber = r.f.targetView.headNumber
+		newRange.headBlockHash = r.f.targetView.getBlockHash(newRange.headBlockNumber)
 		newRange.afterLastRenderedMap = lastMap + 1
 		lm := r.finishedMaps[lastMap]
 		if lm.finished {
@@ -499,7 +503,8 @@ func (l *logIterator) next() error {
 	if l.delimiter {
 		l.delimiter = false
 		l.blockNumber++
-		l.receipts = l.getReceiptsByHash(l.chainView.getBlockHash(l.blockNumber))
+		l.blockHash = l.chainView.getBlockHash(l.blockNumber)
+		l.receipts = l.getReceiptsByHash(l.blockHash)
 		if l.receipts == nil {
 			return errors.New("receipts not found")
 		}
@@ -508,6 +513,7 @@ func (l *logIterator) next() error {
 		l.topicIndex++
 		l.blockStart = false
 	}
+	l.lvIndex++
 	l.nextValid()
 	return nil
 }
@@ -524,7 +530,11 @@ func (l *logIterator) nextValid() {
 		}
 		l.logIndex = 0
 	}
-	l.delimiter = true
+	if l.blockNumber == l.chainView.headNumber {
+		l.finished = true
+	} else {
+		l.delimiter = true
+	}
 }
 
 /*func (l *logIterator) getLog() (*types.Log, *types.Header) {
