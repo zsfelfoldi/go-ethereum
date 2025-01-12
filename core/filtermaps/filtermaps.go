@@ -283,6 +283,7 @@ func (f *FilterMaps) init() error {
 		fmr.firstRenderedMap = uint32(bestLen) << f.logMapsPerEpoch
 		fmr.afterLastRenderedMap = uint32(bestLen) << f.logMapsPerEpoch
 	}
+	f.indexedView = f.targetView
 	f.setRange(batch, fmr)
 	return batch.Write()
 }

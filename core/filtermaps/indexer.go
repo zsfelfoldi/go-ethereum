@@ -49,6 +49,13 @@ func (f *FilterMaps) indexerLoop() {
 	f.setTargetHead(f.chain.CurrentBlock())
 
 	for !f.stop {
+		if !f.initialized {
+			if err := f.init(); err != nil {
+				log.Error("Error initializing log index", "error", err)
+				f.waitForEvent()
+				continue
+			}
+		}
 		if !f.targetHeadIndexed() {
 			if !f.tryUpdateHead() {
 				f.waitForEvent()
