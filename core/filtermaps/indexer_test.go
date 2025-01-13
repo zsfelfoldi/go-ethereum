@@ -90,19 +90,20 @@ func TestIndexerRandomRange(t *testing.T) {
 		if !ts.fm.initialized {
 			t.Fatalf("filterMapsRange not initialized while indexing is enabled")
 		}
-		var tail uint64
+		var tailBlock uint64
 		if history > 0 && history <= head {
-			tail = uint64(head + 1 - history)
+			tailBlock = uint64(head + 1 - history)
 		}
-		tailLvPtr := uint64(tail) * lvPerBlock
-		if tail > 0 {
-			tailLvPtr -= lvPerBlock // no logs in genesis block
+		var tailEpoch uint32
+		if tailBlock > 0 {
+			tailLvPtr := uint64(tailBlock-1)*lvPerBlock + 1 // no logs in genesis block, only delimiter
+			tailEpoch = uint32(tailLvPtr >> (testParams.logValuesPerMap + testParams.logMapsPerEpoch))
 		}
-		tailEpoch := tailLvPtr >> (testParams.logValuesPerMap + testParams.logMapsPerEpoch)
-		tailLvPtr = tailEpoch << (testParams.logValuesPerMap + testParams.logMapsPerEpoch)
-		tail = (tailLvPtr + lvPerBlock - 1) / lvPerBlock
-		if tail > 0 {
-			tail++
+		var expTailBlock uint64
+		if tailEpoch > 0 {
+			tailLvPtr := uint64(tailEpoch) << (testParams.logValuesPerMap + testParams.logMapsPerEpoch) // first available lv ptr
+			// (expTailBlock-1)*lvPerBlock+1 >= tailLvPtr
+			expTailBlock = (tailLvPtr + lvPerBlock*2 - 2) / lvPerBlock
 		}
 		if ts.fm.afterLastIndexedBlock != uint64(head+1) || ts.fm.headBlockNumber != uint64(head) || ts.fm.headBlockHash != forks[fork][head] {
 			ts.t.Fatalf("Invalid index head (expected #%d %v, got #%d %v)", head, forks[fork][head], ts.fm.afterLastIndexedBlock-1, ts.fm.headBlockHash)
@@ -110,8 +111,8 @@ func TestIndexerRandomRange(t *testing.T) {
 		if ts.fm.headBlockDelimiter != uint64(head)*lvPerBlock {
 			ts.t.Fatalf("Invalid index head delimiter pointer (expected %d, got %d)", uint64(head)*lvPerBlock, ts.fm.headBlockDelimiter)
 		}
-		if ts.fm.firstIndexedBlock != tail {
-			ts.t.Fatalf("Invalid index tail block (expected #%d, got #%d)", tail, ts.fm.firstIndexedBlock)
+		if ts.fm.firstIndexedBlock != expTailBlock {
+			ts.t.Fatalf("Invalid index tail block (expected #%d, got #%d)", expTailBlock, ts.fm.firstIndexedBlock)
 		}
 	}
 }

@@ -100,48 +100,38 @@ func (f *FilterMaps) tryUpdateHead() bool {
 	for f.targetView == nil {
 		return false
 	}
-	fmt.Println("h1")
 	headRenderer, err := f.renderMapsBefore(math.MaxUint32)
 	if err != nil {
 		log.Error("Error creating log index head renderer", "error", err)
 		return false
 	}
-	fmt.Println("h2")
 	if headRenderer == nil {
 		return true
 	}
-	fmt.Println("h3")
 	if _, err := headRenderer.renderMaps(func() bool {
-		fmt.Println("h4")
 		f.processEvents()
 		return f.stop
 	}); err != nil {
 		log.Error("Log index head rendering failed", "error", err)
 		return false
 	}
-	fmt.Println("h5")
 	return true
 }
 
 func (f *FilterMaps) tryUpdateTail() bool {
 	for {
-		fmt.Println("t1")
 		f.processEvents()
 		if f.stop || !f.targetHeadIndexed() {
-			fmt.Println("t2")
 			return false
 		}
 		firstEpoch := f.firstRenderedMap >> f.logMapsPerEpoch
 		if firstEpoch > 0 {
 			if f.needTailEpoch(firstEpoch - 1) {
-				fmt.Println("t6 ext")
 				tailRenderer, err := f.renderMapsBefore(f.firstRenderedMap)
 				if tailRenderer == nil {
-					fmt.Println("t3")
 					return false
 				}
 				done, err := tailRenderer.renderMaps(func() bool {
-					fmt.Println("t4")
 					f.processEvents()
 					return f.stop || !f.targetHeadIndexed()
 				})
@@ -149,22 +139,19 @@ func (f *FilterMaps) tryUpdateTail() bool {
 					log.Error("Log index tail rendering failed", "error", err)
 				}
 				if !done {
-					fmt.Println("t5")
 					return false
 				}
 				continue
 			} else if f.tailPartialEpoch > 0 {
-				fmt.Println("t7 del")
 				if err := f.deleteTailEpoch(firstEpoch - 1); err != nil {
 					log.Error("Log index partial tail epoch unindexing failed", "error", err)
-					fmt.Println("t8")
+					fmt.Println("t8 err", err)
 					return false
 				}
 				continue
 			}
 		}
 		if !f.needTailEpoch(firstEpoch) {
-			fmt.Println("t9 del")
 			if err := f.deleteTailEpoch(firstEpoch); err != nil {
 				log.Error("Log index tail epoch unindexing failed", "error", err)
 				fmt.Println("t10", err)
@@ -172,22 +159,21 @@ func (f *FilterMaps) tryUpdateTail() bool {
 			}
 			continue
 		}
-		fmt.Println("t11")
 		return true
 	}
 }
 
 func (f *FilterMaps) needTailEpoch(epoch uint32) bool {
-	lastMap := ((epoch + 1) << f.logMapsPerEpoch) - 1
-	if lastMap >= f.afterLastRenderedMap {
+	tailTarget := f.tailTargetBlock()
+	if tailTarget < f.firstIndexedBlock {
 		return true
 	}
-	lastBlock, err := f.getLastBlockOfMap(lastMap)
+	tailLvIndex, err := f.getBlockLvPointer(tailTarget)
 	if err != nil {
-		log.Error("Could not get last block of epoch", "error", err)
+		log.Error("Could not get lv index of tail block", "error", err)
 		return true
 	}
-	return lastBlock >= f.tailTargetBlock()
+	return uint64(epoch+1)<<(f.logValuesPerMap+f.logMapsPerEpoch) > tailLvIndex
 }
 
 // tailTargetBlock returns the target value for the tail block number according to the

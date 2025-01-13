@@ -336,6 +336,9 @@ func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRan
 	if f.indexedView != nil && f.indexedView.getBlockHash(newRange.headBlockNumber) != newRange.headBlockHash {
 		panic("indexed range inconsistent with canonical chain")
 	}
+	if newRange.firstRenderedMap > newRange.afterLastRenderedMap {
+		panic("qqqq")
+	}
 	f.filterMapsRange = newRange
 	f.updateMapCache()
 	f.updateMatchersValidRange()
@@ -515,9 +518,9 @@ func (f *FilterMaps) getBlockLvPointer(blockNumber uint64) (uint64, error) {
 	if blockNumber > f.headBlockNumber && f.headBlockNumber+1 == f.afterLastIndexedBlock {
 		return f.headBlockDelimiter, nil
 	}
-	if blockNumber < f.firstIndexedBlock || blockNumber >= f.afterLastIndexedBlock {
+	/*if blockNumber < f.firstIndexedBlock || blockNumber >= f.afterLastIndexedBlock {
 		return 0, errUnindexedRange
-	}
+	}*/ //TODO
 	if lvPointer, ok := f.lvPointerCache.Get(blockNumber); ok {
 		return lvPointer, nil
 	}
