@@ -127,9 +127,8 @@ func (db *Database) DeleteRange(start, end []byte) error {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
-	s, e := string(start), string(end)
 	for key := range db.db {
-		if key >= s && key < e {
+		if key >= string(start) && key < string(end) {
 			delete(db.db, key)
 		}
 	}
