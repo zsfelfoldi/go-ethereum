@@ -64,6 +64,7 @@ func (f *FilterMaps) indexerLoop() {
 			fmt.Println("tryUpdateHead")
 			if !f.tryUpdateHead() {
 				fmt.Println(" fail; wait")
+				panic(nil) //TODO
 				f.waitForEvent()
 			} else {
 				fmt.Println(" success")
@@ -97,24 +98,31 @@ func (f *FilterMaps) WaitIdle() {
 }
 
 func (f *FilterMaps) tryUpdateHead() bool {
-	for f.targetView == nil {
+	if f.targetView == nil {
 		return false
 	}
+	fmt.Println(" headRenderer create")
 	headRenderer, err := f.renderMapsBefore(math.MaxUint32)
 	if err != nil {
+		fmt.Println(" headRenderer create err", err)
 		log.Error("Error creating log index head renderer", "error", err)
 		return false
 	}
+	fmt.Println(" headRenderer created")
 	if headRenderer == nil {
 		return true
 	}
+	fmt.Println(" headRenderer start")
 	if _, err := headRenderer.renderMaps(func() bool {
+		fmt.Println(" headRenderer events")
 		f.processEvents()
 		return f.stop
 	}); err != nil {
+		fmt.Println(" headRenderer err", err)
 		log.Error("Log index head rendering failed", "error", err)
 		return false
 	}
+	fmt.Println(" headRenderer stop")
 	return true
 }
 
@@ -239,6 +247,9 @@ func (f *FilterMaps) setTargetHead(head *types.Header) {
 }
 
 func (f *FilterMaps) targetHeadIndexed() bool {
+	if f.targetHead != nil {
+		fmt.Println("targetHeadIndexed", f.initialized, f.targetHead.Hash(), f.headBlockHash, f.afterLastIndexedBlock, f.headBlockNumber, f.headBlockDelimiter)
+	}
 	return f.initialized && f.targetHead != nil &&
 		f.targetHead.Hash() == f.headBlockHash && f.afterLastIndexedBlock == f.headBlockNumber+1
 }
