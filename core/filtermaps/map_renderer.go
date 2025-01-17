@@ -373,52 +373,58 @@ func (f *FilterMaps) emptyFilterMap() filterMap {
 }
 
 type chainView struct {
-	chain        blockchain
-	nonCanonical []*types.Header
-	headNumber   uint64
-	headHash     common.Hash
+	chain      blockchain
+	headNumber uint64
+	hashes     []common.Hash // block hashes starting backwards from headNumber until first canonical hash
 }
 
 func newChainView(chain blockchain, number uint64, hash common.Hash) *chainView {
 	cv := &chainView{
 		chain:      chain,
 		headNumber: number,
-		headHash:   hash,
+		hashes:     []common.Hash{hash},
 	}
 	cv.extendNonCanonical()
 	return cv
 }
 
 func (cv *chainView) extendNonCanonical() bool {
-	for cv.headHash != cv.chain.GetCanonicalHash(cv.headNumber) {
-		header := cv.chain.GetHeader(cv.headHash, cv.headNumber)
-		if header == nil {
-			log.Error("Header not found", "number", cv.headNumber, "hash", cv.headHash)
+
+	for {
+		hash, number := cv.hashes[len(cv.hashes)-1], cv.headNumber-uint64(len(cv.hashes)-1)
+		if cv.chain.GetCanonicalHash(number) == hash {
+			return true
+		}
+		if number == 0 {
+			log.Error("Unknown genesis block hash found")
 			return false
 		}
-		cv.nonCanonical = append(cv.nonCanonical, header)
-		cv.headNumber, cv.headHash = cv.headNumber-1, header.ParentHash
+		header := cv.chain.GetHeader(hash, number)
+		if header == nil {
+			log.Error("Header not found", "number", number, "hash", hash)
+			return false
+		}
+		cv.hashes = append(cv.hashes, header.ParentHash)
 	}
-	return true
 }
 
 func (cv *chainView) getBlockHash(number uint64) common.Hash {
-	if number <= cv.headNumber {
+	if number > cv.headNumber {
+		return common.Hash{}
+	}
+	if number+uint64(len(cv.hashes)) <= cv.headNumber {
 		hash := cv.chain.GetCanonicalHash(number)
 		if !cv.extendNonCanonical() {
 			return common.Hash{}
 		}
-		if number <= cv.headNumber {
+		if number+uint64(len(cv.hashes)) <= cv.headNumber {
 			return hash
 		}
 	}
-	if number-cv.headNumber > uint64(len(cv.nonCanonical)) {
-		return common.Hash{}
-	}
-	return cv.nonCanonical[len(cv.nonCanonical)+1-int(number-cv.headNumber)].Hash()
+	return cv.hashes[cv.headNumber-number]
 }
 
-func (cv *chainView) getHeader(number uint64) *types.Header {
+/*func (cv *chainView) getHeader(number uint64) *types.Header {
 	if number <= cv.headNumber {
 		hash := cv.chain.GetCanonicalHash(number)
 		if !cv.extendNonCanonical() {
@@ -432,7 +438,7 @@ func (cv *chainView) getHeader(number uint64) *types.Header {
 		return nil
 	}
 	return cv.nonCanonical[len(cv.nonCanonical)+1-int(number-cv.headNumber)]
-}
+}*/ //TODO
 
 type logIterator struct {
 	chainView                       *chainView
