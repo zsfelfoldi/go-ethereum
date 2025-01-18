@@ -20,9 +20,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -36,11 +38,12 @@ var (
 )
 
 type mapRenderer struct {
-	f            *FilterMaps
-	afterLastMap uint32
-	currentMap   *renderedMap
-	finishedMaps map[uint32]*renderedMap
-	iterator     *logIterator
+	f                                *FilterMaps
+	afterLastMap                     uint32
+	currentMap                       *renderedMap
+	finishedMaps                     map[uint32]*renderedMap
+	firstFinished, afterLastFinished uint32
+	iterator                         *logIterator
 }
 
 type renderedMap struct {
@@ -160,9 +163,11 @@ func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, erro
 			lastBlock:   cp.lastBlock,
 			blockLvPtrs: cp.blockLvPtrs,
 		},
-		finishedMaps: make(map[uint32]*renderedMap),
-		afterLastMap: math.MaxUint32,
-		iterator:     iter,
+		finishedMaps:      make(map[uint32]*renderedMap),
+		firstFinished:     cp.mapIndex,
+		afterLastFinished: cp.mapIndex,
+		afterLastMap:      math.MaxUint32,
+		iterator:          iter,
 	}, nil
 }
 
@@ -180,9 +185,11 @@ func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, afterLastMap uint32, st
 			mapIndex:  firstMap,
 			lastBlock: iter.blockNumber,
 		},
-		finishedMaps: make(map[uint32]*renderedMap),
-		afterLastMap: afterLastMap,
-		iterator:     iter,
+		finishedMaps:      make(map[uint32]*renderedMap),
+		firstFinished:     firstMap,
+		afterLastFinished: firstMap,
+		afterLastMap:      afterLastMap,
+		iterator:          iter,
 	}, nil
 }
 
@@ -205,13 +212,14 @@ func (r *mapRenderer) renderMaps(stopFn func() bool) (bool, error) {
 		}
 		// map finished
 		r.finishedMaps[r.currentMap.mapIndex] = r.currentMap
+		r.afterLastFinished++
 		if len(r.finishedMaps) >= maxMapsPerBatch {
 			if err := r.writeFinishedMaps(); err != nil {
 				fmt.Println("rm wfm1 err", err)
 				return false, err
 			}
 		}
-		if r.currentMap.mapIndex+1 == r.afterLastMap || r.iterator.finished {
+		if r.afterLastFinished == r.afterLastMap || r.iterator.finished {
 			if err := r.writeFinishedMaps(); err != nil {
 				fmt.Println("rm wfm2 err", err)
 				return false, err
@@ -220,7 +228,7 @@ func (r *mapRenderer) renderMaps(stopFn func() bool) (bool, error) {
 		}
 		r.currentMap = &renderedMap{
 			filterMap: r.f.emptyFilterMap(),
-			mapIndex:  r.currentMap.mapIndex + 1,
+			mapIndex:  r.afterLastFinished,
 		}
 	}
 }
@@ -280,87 +288,13 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	r.f.indexLock.Lock()
 	defer r.f.indexLock.Unlock()
 
-	firstMap, lastMap := uint32(math.MaxUint32), uint32(0)
-	for m := range r.finishedMaps {
-		if m < firstMap {
-			firstMap = m
-		}
-		if m > lastMap {
-			lastMap = m
-		}
-	}
 	batch := r.f.db.NewBatch()
-	// update filterMapsRange
-	newRange := r.f.filterMapsRange
-	if r.afterLastMap >= r.f.afterLastRenderedMap {
-		// last rendered map replaced; update head pointers
-		//TODO remove old data if necessary
-		if r.f.targetView == nil {
-			panic("xxxxxxxxxx")
-		}
-		r.f.indexedView = r.f.targetView
-		if !newRange.initialized {
-			newRange.initialized = true
-			newRange.firstRenderedMap = firstMap
-			newRange.firstIndexedBlock = r.finishedMaps[firstMap].firstBlock()
-		}
-		newRange.headBlockNumber = r.f.targetView.headNumber
-		newRange.headBlockHash = r.f.targetView.getBlockHash(newRange.headBlockNumber)
-		if firstMap < newRange.firstRenderedMap {
-			// new first rendered map; update tail pointers
-			newRange.firstRenderedMap = firstMap
-			newRange.tailPartialEpoch = 0
-			newRange.firstIndexedBlock = r.finishedMaps[firstMap].firstBlock()
-		}
-		newRange.afterLastRenderedMap = lastMap + 1
-		lm := r.finishedMaps[lastMap]
-		fmt.Println("writeFinishedMaps lastMap finished", lastMap, lm.finished)
-		if lm.finished {
-			newRange.afterLastIndexedBlock = newRange.headBlockNumber + 1
-			if lm.lastBlock != newRange.headBlockNumber {
-				fmt.Println("xxx", lastMap, lm.lastBlock, newRange.headBlockNumber)
-				panic("map rendering finished but last block != head block")
-			}
-			newRange.headBlockDelimiter = lm.headDelimiter
-		} else {
-			newRange.afterLastIndexedBlock = lm.lastBlock
-			newRange.headBlockDelimiter = 0
-		}
-	} else {
-		// last rendered map not replaced; ensure that target chain view matches
-		// indexed chain view on the rendered section
-		if !newRange.initialized {
-			return errors.New("tail extension of uninitialized log index")
-		}
-		if lastBlock := r.finishedMaps[lastMap].lastBlock; r.f.targetView.getBlockHash(lastBlock) != r.f.indexedView.getBlockHash(lastBlock) {
-			return errChainUpdate
-		}
-		if firstMap != newRange.firstRenderedMap-r.f.mapsPerEpoch+newRange.tailPartialEpoch {
-			fmt.Println("aaa", firstMap, newRange.firstRenderedMap, r.f.mapsPerEpoch, newRange.tailPartialEpoch)
-			return errors.New("tail extension: first map invalid")
-		}
-		newRange.tailPartialEpoch = lastMap + 1 + r.f.mapsPerEpoch - newRange.firstRenderedMap
-		if newRange.tailPartialEpoch > r.f.mapsPerEpoch {
-			return errors.New("tail extension: last map invalid")
-		}
-		if newRange.tailPartialEpoch == r.f.mapsPerEpoch { // tail epoch completed
-			newRange.firstRenderedMap -= r.f.mapsPerEpoch
-			if newRange.firstRenderedMap > 0 {
-				lastBlock, err := r.f.getLastBlockOfMap(newRange.firstRenderedMap - 1)
-				if err != nil {
-					return err
-				}
-				newRange.firstIndexedBlock = lastBlock + 1
-			} else {
-				newRange.firstIndexedBlock = 0
-			}
-			newRange.tailPartialEpoch = 0
-		}
+	if err := r.updateRange(batch); err != nil {
+		return err
 	}
-	r.f.setRange(batch, newRange)
 	// add or update filter rows
 	for rowIndex := uint32(0); rowIndex < r.f.mapHeight; rowIndex++ {
-		for mapIndex := firstMap; mapIndex <= lastMap; mapIndex++ {
+		for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 			row := r.finishedMaps[mapIndex].filterMap[rowIndex]
 			if fm := r.f.filterMapCache[mapIndex]; fm != nil && row.Equal(fm[rowIndex]) {
 				continue
@@ -369,7 +303,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 		}
 	}
 	// add or update block pointers
-	for mapIndex := firstMap; mapIndex <= lastMap; mapIndex++ {
+	for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 		renderedMap := r.finishedMaps[mapIndex]
 		r.f.storeLastBlockOfMap(batch, mapIndex, renderedMap.lastBlock)
 		fmt.Println("storeLastBlockOfMap", mapIndex, renderedMap.lastBlock)
@@ -382,6 +316,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	}
 
 	r.finishedMaps = make(map[uint32]*renderedMap)
+	r.firstFinished = r.afterLastFinished
 	//return batch.Write()  //TODO
 	batch.Write()
 	fmt.Println("write range", r.f.filterMapsRange)
@@ -405,28 +340,105 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	if _, err := r.f.getLastBlockOfMap(r.f.afterLastRenderedMap - 1); err != nil {
 		panic(err)
 	}
-
 	return nil
 }
 
-func (r *mapRenderer) updateRenderedRange(fmr *filterMapsRange, first, last, before uint32) error {
-	if before >= fmr.afterLastRenderedMap {
-		if first >= fmr.firstRenderedMap {
-			fmr.afterLastRenderedMap = last + 1
-			return nil
-		}
-		if fmr.tailPartialEpoch != 0 {
-			fmr.firstRenderedMap -= r.f.mapsPerEpoch
-			fmr.afterLastRenderedMap = fmr.firstRenderedMap + fmr.tailPartialEpoch
-			if first >= fmr.firstRenderedMap {
-				fmr.afterLastRenderedMap = last + 1
-				return nil
+func (r *mapRenderer) updateRange(batch ethdb.Batch) error {
+	// update filterMapsRange
+	newRange := r.f.filterMapsRange
+	if err := r.addRenderedRange(&newRange); err != nil {
+		return err
+	}
+	if newRange.firstRenderedMap != r.f.firstRenderedMap {
+		// first rendered map changed; update first indexed block
+		if newRange.firstRenderedMap > 0 {
+			lastBlock, err := r.f.getLastBlockOfMap(newRange.firstRenderedMap - 1)
+			if err != nil {
+				return err
 			}
+			newRange.firstIndexedBlock = lastBlock + 1
+		} else {
+			newRange.firstIndexedBlock = 0
 		}
-		fmr.firstRenderedMap = first
-		fmr.afterLastRenderedMap = last + 1
+	}
+	if newRange.afterLastRenderedMap == r.afterLastFinished {
+		// last rendered map replaced; update last indexed block and head pointers
+		if r.f.targetView == nil {
+			panic("xxxxxxxxxx")
+		}
+		r.f.indexedView = r.f.targetView
+		newRange.headBlockNumber = r.f.targetView.headNumber
+		newRange.headBlockHash = r.f.targetView.getBlockHash(newRange.headBlockNumber)
+		newRange.afterLastRenderedMap = r.afterLastFinished
+		lm := r.finishedMaps[r.afterLastFinished-1]
+		fmt.Println("writeFinishedMaps afterLastFinished finished", r.afterLastFinished, lm.finished)
+		if lm.finished {
+			newRange.afterLastIndexedBlock = newRange.headBlockNumber + 1
+			if lm.lastBlock != newRange.headBlockNumber {
+				fmt.Println("xxx", r.afterLastFinished, lm.lastBlock, newRange.headBlockNumber)
+				panic("map rendering finished but last block != head block")
+			}
+			newRange.headBlockDelimiter = lm.headDelimiter
+		} else {
+			newRange.afterLastIndexedBlock = lm.lastBlock
+			newRange.headBlockDelimiter = 0
+		}
+
+	} else {
+		// last rendered map not replaced; ensure that target chain view matches
+		// indexed chain view on the rendered section
+		if lastBlock := r.finishedMaps[r.afterLastFinished-1].lastBlock; r.f.targetView.getBlockHash(lastBlock) != r.f.indexedView.getBlockHash(lastBlock) {
+			return errChainUpdate
+		}
+	}
+	r.f.setRange(batch, newRange)
+	return nil
+}
+
+func (r *mapRenderer) addRenderedRange(fmr *filterMapsRange) error {
+	if !fmr.initialized {
+		return errors.New("log index not initialized")
+	}
+	type endpoint struct {
+		m uint32
+		d int
+	}
+	endpoints := []endpoint{{fmr.firstRenderedMap, 1}, {fmr.afterLastRenderedMap, -1}, {r.firstFinished, 1}, {r.afterLastFinished, -101}, {r.afterLastMap, 100}}
+	if fmr.tailPartialEpoch > 0 {
+		endpoints = append(endpoints, []endpoint{{fmr.firstRenderedMap - r.f.mapsPerEpoch, 1}, {fmr.firstRenderedMap - r.f.mapsPerEpoch + fmr.tailPartialEpoch, -1}}...)
+	}
+	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].m < endpoints[j].m })
+	var (
+		sum    int
+		merged []uint32
+		last   bool
+	)
+	for i, e := range endpoints {
+		sum += e.d
+		if i < len(endpoints)-1 && endpoints[i+1].m == e.m {
+			continue
+		}
+		if (sum > 0) != last {
+			merged = append(merged, e.m)
+			last = !last
+		}
+	}
+	if len(merged) == 2 {
+		fmr.tailPartialEpoch = 0
+		fmr.firstRenderedMap = merged[0]
+		fmr.afterLastRenderedMap = merged[1]
 		return nil
 	}
+	if len(merged) == 4 {
+		if merged[2] != merged[0]+r.f.mapsPerEpoch {
+			return errors.New("invalid tail partial epoch")
+		}
+		fmr.tailPartialEpoch = merged[1] - merged[0]
+		fmr.firstRenderedMap = merged[2]
+		fmr.afterLastRenderedMap = merged[3]
+		return nil
+	}
+	return errors.New("invalid number of rendered sections")
 }
 
 func (f *FilterMaps) emptyFilterMap() filterMap {
@@ -587,7 +599,7 @@ func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, 
 }
 
 func (l *logIterator) updateChainView(cv *chainView) bool {
-	if cv.getBlockHash(l.blockNumber) != l.blockHash {
+	if cv.getBlockHash(l.blockNumber) != l.chainView.getBlockHash(l.blockNumber) {
 		return false
 	}
 	l.chainView = cv

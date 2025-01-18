@@ -102,8 +102,8 @@ func TestIndexerRandomRange(t *testing.T) {
 		var expTailBlock uint64
 		if tailEpoch > 0 {
 			tailLvPtr := uint64(tailEpoch) << (testParams.logValuesPerMap + testParams.logMapsPerEpoch) // first available lv ptr
-			// (expTailBlock-1)*lvPerBlock+1 >= tailLvPtr
-			expTailBlock = (tailLvPtr + lvPerBlock*2 - 2) / lvPerBlock
+			// (expTailBlock-1)*lvPerBlock >= tailLvPtr
+			expTailBlock = (tailLvPtr + lvPerBlock*2 - 1) / lvPerBlock
 		}
 		if ts.fm.afterLastIndexedBlock != uint64(head+1) || ts.fm.headBlockNumber != uint64(head) || ts.fm.headBlockHash != forks[fork][head] {
 			ts.t.Fatalf("Invalid index head (expected #%d %v, got #%d %v)", head, forks[fork][head], ts.fm.afterLastIndexedBlock-1, ts.fm.headBlockHash)

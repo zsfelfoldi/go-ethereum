@@ -75,7 +75,7 @@ func (f *FilterMaps) indexerLoop() {
 				fmt.Println(" success; wait")
 				f.waitForEvent()
 			} else {
-				fmt.Println(" interrupted")
+				fmt.Println(" interrupted") //TODO keep renderer
 			}
 		}
 	}
