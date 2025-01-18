@@ -247,9 +247,9 @@ func (f *FilterMaps) setTargetHead(head *types.Header) {
 }
 
 func (f *FilterMaps) targetHeadIndexed() bool {
-	if f.targetHead != nil {
+	/*if f.targetHead != nil {
 		fmt.Println("targetHeadIndexed", f.initialized, f.targetHead.Hash(), f.headBlockHash, f.afterLastIndexedBlock, f.headBlockNumber, f.headBlockDelimiter)
-	}
+	}*/
 	return f.initialized && f.targetHead != nil &&
 		f.targetHead.Hash() == f.headBlockHash && f.afterLastIndexedBlock == f.headBlockNumber+1
 }

@@ -67,9 +67,9 @@ func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error)
 		panic("bbbbbbbbbbbbbbbb")
 	}
 	snapshot := f.findLastSnapshotBefore(afterLastMap)
-	fmt.Println(" flmbb start")
+	//fmt.Println(" flmbb start")
 	nextMap, startBlock, startLvPtr, err := f.findLastMapBoundaryBefore(afterLastMap)
-	fmt.Println(" flmbb", nextMap, startBlock, startLvPtr)
+	//fmt.Println(" flmbb", nextMap, startBlock, startLvPtr)
 	if err != nil {
 		fmt.Println(" flmbb err", err)
 		return nil, err
@@ -96,8 +96,8 @@ func (f *FilterMaps) findLastSnapshotBefore(afterLastMap uint32) *renderedMap {
 }
 
 func (f *FilterMaps) findLastMapBoundaryBefore(afterLastMap uint32) (nextMap uint32, startBlock, startLvPtr uint64, err error) {
-	fmt.Println("flmbb", afterLastMap)
-	fmt.Println(" indexed", f.firstRenderedMap, f.afterLastRenderedMap, f.firstIndexedBlock, f.afterLastIndexedBlock)
+	//fmt.Println("flmbb", afterLastMap)
+	//fmt.Println(" indexed", f.firstRenderedMap, f.afterLastRenderedMap, f.firstIndexedBlock, f.afterLastIndexedBlock)
 	if !f.initialized {
 		return 0, 0, 0, nil
 	}
@@ -107,7 +107,7 @@ func (f *FilterMaps) findLastMapBoundaryBefore(afterLastMap uint32) (nextMap uin
 		if mapIndex, ok = f.lastMapBoundaryBefore(mapIndex); !ok {
 			return 0, 0, 0, nil
 		}
-		fmt.Println(" lmbb", mapIndex)
+		//fmt.Println(" lmbb", mapIndex)
 		lastBlock, err := f.getLastBlockOfMap(mapIndex)
 		if err != nil {
 			fmt.Println(" glbm err", err)
@@ -172,9 +172,9 @@ func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, erro
 }
 
 func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, afterLastMap uint32, startBlock, startLvPtr uint64) (*mapRenderer, error) {
-	fmt.Println(" newLogIteratorFromMapBoundary start")
+	//fmt.Println(" newLogIteratorFromMapBoundary start")
 	iter, err := f.newLogIteratorFromMapBoundary(firstMap, startBlock, startLvPtr)
-	fmt.Println(" newLogIteratorFromMapBoundary done")
+	//fmt.Println(" newLogIteratorFromMapBoundary done")
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +240,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 	epoch := r.currentMap.mapIndex >> r.f.logMapsPerEpoch
 	var waitCnt int
 
-	fmt.Println("renderCurrentMap", r.currentMap.mapIndex)
+	//fmt.Println("renderCurrentMap", r.currentMap.mapIndex)
 	for r.iterator.lvIndex < uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap && !r.iterator.finished {
 		if r.iterator.lvIndex == 0 {
 			r.currentMap.blockLvPtrs = []uint64{0}
@@ -253,10 +253,10 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 			waitCnt = 0
 		}
 		r.currentMap.lastBlock = r.iterator.blockNumber
-		fmt.Println(" lastBlock", r.currentMap.lastBlock)
+		//fmt.Println(" lastBlock", r.currentMap.lastBlock)
 		if r.iterator.delimiter {
 			r.currentMap.lastBlock++
-			fmt.Println(" blockLvPtr", r.iterator.lvIndex)
+			//fmt.Println(" blockLvPtr", r.iterator.lvIndex)
 			r.currentMap.blockLvPtrs = append(r.currentMap.blockLvPtrs, r.iterator.lvIndex+1)
 		}
 		if logValue := r.iterator.getValueHash(); logValue != (common.Hash{}) {
@@ -277,7 +277,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 		r.currentMap.finished = true
 		r.currentMap.headDelimiter = r.iterator.lvIndex
 	}
-	fmt.Println("renderCurrentMap done", r.currentMap.mapIndex, r.currentMap.finished, r.currentMap.headDelimiter)
+	//fmt.Println("renderCurrentMap done", r.currentMap.mapIndex, r.currentMap.finished, r.currentMap.headDelimiter)
 	return true, nil
 }
 
@@ -306,11 +306,11 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 		renderedMap := r.finishedMaps[mapIndex]
 		r.f.storeLastBlockOfMap(batch, mapIndex, renderedMap.lastBlock)
-		fmt.Println("storeLastBlockOfMap", mapIndex, renderedMap.lastBlock)
+		//fmt.Println("storeLastBlockOfMap", mapIndex, renderedMap.lastBlock)
 		blockNumber := renderedMap.firstBlock()
 		for _, lvPtr := range renderedMap.blockLvPtrs {
 			r.f.storeBlockLvPointer(batch, blockNumber, lvPtr)
-			fmt.Println("storeBlockLvPointer", blockNumber, lvPtr)
+			//fmt.Println("storeBlockLvPointer", blockNumber, lvPtr)
 			blockNumber++
 		}
 	}
@@ -319,7 +319,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	r.firstFinished = r.afterLastFinished
 	//return batch.Write()  //TODO
 	batch.Write()
-	fmt.Println("write range", r.f.filterMapsRange)
+	//fmt.Println("write range", r.f.filterMapsRange)
 	if r.f.afterLastRenderedMap == r.f.firstRenderedMap {
 		return nil
 	}
@@ -371,11 +371,11 @@ func (r *mapRenderer) updateRange(batch ethdb.Batch) error {
 		newRange.headBlockHash = r.f.targetView.getBlockHash(newRange.headBlockNumber)
 		newRange.afterLastRenderedMap = r.afterLastFinished
 		lm := r.finishedMaps[r.afterLastFinished-1]
-		fmt.Println("writeFinishedMaps afterLastFinished finished", r.afterLastFinished, lm.finished)
+		//fmt.Println("writeFinishedMaps afterLastFinished finished", r.afterLastFinished, lm.finished)
 		if lm.finished {
 			newRange.afterLastIndexedBlock = newRange.headBlockNumber + 1
 			if lm.lastBlock != newRange.headBlockNumber {
-				fmt.Println("xxx", r.afterLastFinished, lm.lastBlock, newRange.headBlockNumber)
+				//fmt.Println("xxx", r.afterLastFinished, lm.lastBlock, newRange.headBlockNumber)
 				panic("map rendering finished but last block != head block")
 			}
 			newRange.headBlockDelimiter = lm.headDelimiter
@@ -587,7 +587,7 @@ func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, 
 	}
 	// iterate to map boundary
 	for l.lvIndex < targetIndex {
-		fmt.Println(l, f.indexedView.headNumber, f.targetView.headNumber)
+		//fmt.Println(l, f.indexedView.headNumber, f.targetView.headNumber)
 		if l.finished {
 			panic("iterator finished") //TODO log error
 		}
