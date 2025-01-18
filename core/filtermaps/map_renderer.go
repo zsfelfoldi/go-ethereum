@@ -47,7 +47,6 @@ type renderedMap struct {
 	filterMap     filterMap
 	mapIndex      uint32
 	lastBlock     uint64
-	lastBlockHash common.Hash
 	blockLvPtrs   []uint64 // start pointers of blocks starting in this map; last one is lastBlock
 	finished      bool     // iterator finished; all values rendered
 	headDelimiter uint64   // if finished then points to the future block delimiter of the head block
@@ -85,7 +84,7 @@ func (f *FilterMaps) findLastSnapshotBefore(afterLastMap uint32) *renderedMap {
 	var best *renderedMap
 	for _, blockNumber := range f.renderSnapshots.Keys() {
 		if cp, _ := f.renderSnapshots.Get(blockNumber); cp != nil &&
-			f.targetView.getBlockHash(blockNumber) == cp.lastBlockHash &&
+			//TODO f.targetView.getBlockHash(blockNumber) == cp.lastBlockHash &&
 			cp.mapIndex < afterLastMap && (best == nil || blockNumber > best.lastBlock) {
 			best = cp
 		}
@@ -156,11 +155,10 @@ func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, erro
 	return &mapRenderer{
 		f: f,
 		currentMap: &renderedMap{
-			filterMap:     cp.filterMap.copy(),
-			mapIndex:      cp.mapIndex,
-			lastBlock:     cp.lastBlock,
-			lastBlockHash: cp.lastBlockHash,
-			blockLvPtrs:   cp.blockLvPtrs,
+			filterMap:   cp.filterMap.copy(),
+			mapIndex:    cp.mapIndex,
+			lastBlock:   cp.lastBlock,
+			blockLvPtrs: cp.blockLvPtrs,
 		},
 		finishedMaps: make(map[uint32]*renderedMap),
 		afterLastMap: math.MaxUint32,
@@ -178,10 +176,9 @@ func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, afterLastMap uint32, st
 	return &mapRenderer{
 		f: f,
 		currentMap: &renderedMap{
-			filterMap:     f.emptyFilterMap(),
-			mapIndex:      firstMap,
-			lastBlock:     iter.blockNumber,
-			lastBlockHash: iter.blockHash,
+			filterMap: f.emptyFilterMap(),
+			mapIndex:  firstMap,
+			lastBlock: iter.blockNumber,
 		},
 		finishedMaps: make(map[uint32]*renderedMap),
 		afterLastMap: afterLastMap,
@@ -194,7 +191,6 @@ func (r *mapRenderer) makeCheckpoint() *renderedMap {
 		filterMap:     r.currentMap.filterMap.copy(),
 		mapIndex:      r.currentMap.mapIndex,
 		lastBlock:     r.iterator.blockNumber,
-		lastBlockHash: r.iterator.blockHash,
 		blockLvPtrs:   r.currentMap.blockLvPtrs,
 		finished:      true,
 		headDelimiter: r.iterator.lvIndex,
@@ -238,6 +234,9 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 
 	fmt.Println("renderCurrentMap", r.currentMap.mapIndex)
 	for r.iterator.lvIndex < uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap && !r.iterator.finished {
+		if r.iterator.lvIndex == 0 {
+			r.currentMap.blockLvPtrs = []uint64{0}
+		}
 		waitCnt++
 		if waitCnt >= valuesPerCallback {
 			if stopFn() {
@@ -246,11 +245,11 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 			waitCnt = 0
 		}
 		r.currentMap.lastBlock = r.iterator.blockNumber
-		r.currentMap.lastBlockHash = r.iterator.blockHash
 		fmt.Println(" lastBlock", r.currentMap.lastBlock)
-		if r.iterator.blockStart {
+		if r.iterator.delimiter {
+			r.currentMap.lastBlock++
 			fmt.Println(" blockLvPtr", r.iterator.lvIndex)
-			r.currentMap.blockLvPtrs = append(r.currentMap.blockLvPtrs, r.iterator.lvIndex)
+			r.currentMap.blockLvPtrs = append(r.currentMap.blockLvPtrs, r.iterator.lvIndex+1)
 		}
 		if logValue := r.iterator.getValueHash(); logValue != (common.Hash{}) {
 			var rowIndex uint32
@@ -293,8 +292,8 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	batch := r.f.db.NewBatch()
 	// update filterMapsRange
 	newRange := r.f.filterMapsRange
-	if r.afterLastMap == math.MaxUint32 {
-		// head update
+	if r.afterLastMap >= r.f.afterLastRenderedMap {
+		// last rendered map replaced; update head pointers
 		//TODO remove old data if necessary
 		if r.f.targetView == nil {
 			panic("xxxxxxxxxx")
@@ -308,6 +307,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 		newRange.headBlockNumber = r.f.targetView.headNumber
 		newRange.headBlockHash = r.f.targetView.getBlockHash(newRange.headBlockNumber)
 		if firstMap < newRange.firstRenderedMap {
+			// new first rendered map; update tail pointers
 			newRange.firstRenderedMap = firstMap
 			newRange.tailPartialEpoch = 0
 			newRange.firstIndexedBlock = r.finishedMaps[firstMap].firstBlock()
@@ -327,7 +327,8 @@ func (r *mapRenderer) writeFinishedMaps() error {
 			newRange.headBlockDelimiter = 0
 		}
 	} else {
-		// tail extension
+		// last rendered map not replaced; ensure that target chain view matches
+		// indexed chain view on the rendered section
 		if !newRange.initialized {
 			return errors.New("tail extension of uninitialized log index")
 		}
@@ -408,6 +409,26 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	return nil
 }
 
+func (r *mapRenderer) updateRenderedRange(fmr *filterMapsRange, first, last, before uint32) error {
+	if before >= fmr.afterLastRenderedMap {
+		if first >= fmr.firstRenderedMap {
+			fmr.afterLastRenderedMap = last + 1
+			return nil
+		}
+		if fmr.tailPartialEpoch != 0 {
+			fmr.firstRenderedMap -= r.f.mapsPerEpoch
+			fmr.afterLastRenderedMap = fmr.firstRenderedMap + fmr.tailPartialEpoch
+			if first >= fmr.firstRenderedMap {
+				fmr.afterLastRenderedMap = last + 1
+				return nil
+			}
+		}
+		fmr.firstRenderedMap = first
+		fmr.afterLastRenderedMap = last + 1
+		return nil
+	}
+}
+
 func (f *FilterMaps) emptyFilterMap() filterMap {
 	return make(filterMap, f.mapHeight)
 }
@@ -484,7 +505,6 @@ type logIterator struct {
 	chainView                       *chainView
 	getReceiptsByHash               func(common.Hash) types.Receipts
 	blockNumber                     uint64
-	blockHash                       common.Hash
 	receipts                        types.Receipts
 	blockStart, delimiter, finished bool
 	txIndex, logIndex, topicIndex   int
@@ -520,7 +540,6 @@ func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logI
 		chainView:         f.targetView,
 		getReceiptsByHash: f.chain.GetReceiptsByHash,
 		blockNumber:       blockNumber,
-		blockHash:         blockHash,
 		finished:          finished,
 		delimiter:         !finished,
 		lvIndex:           lvIndex,
@@ -545,7 +564,6 @@ func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, 
 		chainView:         f.targetView,
 		getReceiptsByHash: f.chain.GetReceiptsByHash,
 		blockNumber:       startBlock,
-		blockHash:         blockHash,
 		receipts:          receipts,
 		blockStart:        true,
 		lvIndex:           startLvPtr,
@@ -583,8 +601,7 @@ func (l *logIterator) next() error {
 	if l.delimiter {
 		l.delimiter = false
 		l.blockNumber++
-		l.blockHash = l.chainView.getBlockHash(l.blockNumber)
-		l.receipts = l.getReceiptsByHash(l.blockHash)
+		l.receipts = l.getReceiptsByHash(l.chainView.getBlockHash(l.blockNumber))
 		if l.receipts == nil {
 			return errors.New("receipts not found")
 		}
