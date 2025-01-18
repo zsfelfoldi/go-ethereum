@@ -133,10 +133,14 @@ func (f *FilterMaps) tryUpdateTail() bool {
 			return false
 		}
 		firstEpoch := f.firstRenderedMap >> f.logMapsPerEpoch
+		fmt.Println(" tail 1", firstEpoch)
 		if firstEpoch > 0 {
+			fmt.Println(" tail 2")
 			if f.needTailEpoch(firstEpoch - 1) {
+				fmt.Println(" tail 3")
 				tailRenderer, err := f.renderMapsBefore(f.firstRenderedMap)
 				if tailRenderer == nil {
+					fmt.Println(" tail 4")
 					return false
 				}
 				done, err := tailRenderer.renderMaps(func() bool {
@@ -147,10 +151,12 @@ func (f *FilterMaps) tryUpdateTail() bool {
 					log.Error("Log index tail rendering failed", "error", err)
 				}
 				if !done {
+					fmt.Println(" tail 5")
 					return false
 				}
 				continue
 			} else if f.tailPartialEpoch > 0 {
+				fmt.Println(" tail 6 del")
 				if err := f.deleteTailEpoch(firstEpoch - 1); err != nil {
 					log.Error("Log index partial tail epoch unindexing failed", "error", err)
 					fmt.Println("t8 err", err)
@@ -159,7 +165,9 @@ func (f *FilterMaps) tryUpdateTail() bool {
 				continue
 			}
 		}
+		fmt.Println(" tail 7")
 		if !f.needTailEpoch(firstEpoch) {
+			fmt.Println(" tail 8 del")
 			if err := f.deleteTailEpoch(firstEpoch); err != nil {
 				log.Error("Log index tail epoch unindexing failed", "error", err)
 				fmt.Println("t10", err)
@@ -172,8 +180,8 @@ func (f *FilterMaps) tryUpdateTail() bool {
 }
 
 func (f *FilterMaps) needTailEpoch(epoch uint32) bool {
-	fmt.Println("needTailEpoch", epoch)
 	tailTarget := f.tailTargetBlock()
+	fmt.Println("needTailEpoch", epoch, tailTarget, f.firstIndexedBlock)
 	if tailTarget < f.firstIndexedBlock {
 		fmt.Println(" 1 true")
 		return true
@@ -185,7 +193,7 @@ func (f *FilterMaps) needTailEpoch(epoch uint32) bool {
 		return true
 	}
 	fmt.Println(" 3", uint64(epoch+1)<<(f.logValuesPerMap+f.logMapsPerEpoch) >= tailLvIndex)
-	return uint64(epoch+1)<<(f.logValuesPerMap+f.logMapsPerEpoch) > tailLvIndex
+	return uint64(epoch+1)<<(f.logValuesPerMap+f.logMapsPerEpoch) >= tailLvIndex
 }
 
 // tailTargetBlock returns the target value for the tail block number according to the
