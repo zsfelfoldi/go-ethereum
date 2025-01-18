@@ -69,7 +69,7 @@ func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error)
 	snapshot := f.findLastSnapshotBefore(afterLastMap)
 	//fmt.Println(" flmbb start")
 	nextMap, startBlock, startLvPtr, err := f.findLastMapBoundaryBefore(afterLastMap)
-	//fmt.Println(" flmbb", nextMap, startBlock, startLvPtr)
+	fmt.Println(" flmbb", nextMap, startBlock, startLvPtr)
 	if err != nil {
 		fmt.Println(" flmbb err", err)
 		return nil, err
@@ -240,7 +240,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 	epoch := r.currentMap.mapIndex >> r.f.logMapsPerEpoch
 	var waitCnt int
 
-	//fmt.Println("renderCurrentMap", r.currentMap.mapIndex)
+	fmt.Println("renderCurrentMap", r.currentMap.mapIndex)
 	for r.iterator.lvIndex < uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap && !r.iterator.finished {
 		if r.iterator.lvIndex == 0 {
 			r.currentMap.blockLvPtrs = []uint64{0}
@@ -277,7 +277,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 		r.currentMap.finished = true
 		r.currentMap.headDelimiter = r.iterator.lvIndex
 	}
-	//fmt.Println("renderCurrentMap done", r.currentMap.mapIndex, r.currentMap.finished, r.currentMap.headDelimiter)
+	fmt.Println("renderCurrentMap done", r.currentMap.mapIndex, r.currentMap.finished, r.currentMap.headDelimiter)
 	return true, nil
 }
 
@@ -290,6 +290,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 
 	batch := r.f.db.NewBatch()
 	if err := r.updateRange(batch); err != nil {
+		fmt.Println("updateRange err", err)
 		return err
 	}
 	// add or update filter rows
@@ -346,17 +347,22 @@ func (r *mapRenderer) writeFinishedMaps() error {
 func (r *mapRenderer) updateRange(batch ethdb.Batch) error {
 	// update filterMapsRange
 	newRange := r.f.filterMapsRange
+	fmt.Println("addRenderedRange", r.firstFinished, r.afterLastFinished, r.afterLastMap)
+	fmt.Println(" before", newRange)
 	if err := r.addRenderedRange(&newRange); err != nil {
 		return err
 	}
+	fmt.Println(" after", newRange)
 	if newRange.firstRenderedMap != r.f.firstRenderedMap {
 		// first rendered map changed; update first indexed block
 		if newRange.firstRenderedMap > 0 {
 			lastBlock, err := r.f.getLastBlockOfMap(newRange.firstRenderedMap - 1)
 			if err != nil {
+				fmt.Println(" lastBlock err", err)
 				return err
 			}
 			newRange.firstIndexedBlock = lastBlock + 1
+			fmt.Println(" firstIndexedBlock", newRange.firstIndexedBlock)
 		} else {
 			newRange.firstIndexedBlock = 0
 		}
@@ -388,9 +394,11 @@ func (r *mapRenderer) updateRange(batch ethdb.Batch) error {
 		// last rendered map not replaced; ensure that target chain view matches
 		// indexed chain view on the rendered section
 		if lastBlock := r.finishedMaps[r.afterLastFinished-1].lastBlock; r.f.targetView.getBlockHash(lastBlock) != r.f.indexedView.getBlockHash(lastBlock) {
+			fmt.Println(" errChainUpdate")
 			return errChainUpdate
 		}
 	}
+	fmt.Println(" setRange", newRange)
 	r.f.setRange(batch, newRange)
 	return nil
 }

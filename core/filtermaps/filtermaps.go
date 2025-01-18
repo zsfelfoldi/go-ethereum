@@ -19,6 +19,7 @@ package filtermaps
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -575,6 +576,7 @@ func (f *FilterMaps) deleteLastBlockOfMap(batch ethdb.Batch, mapIndex uint32) {
 }
 
 func (f *FilterMaps) deleteTailEpoch(epoch uint32) error {
+	fmt.Println("deleteTailEpoch", epoch)
 	firstMap := epoch << f.logMapsPerEpoch
 	lastBlock, err := f.getLastBlockOfMap(firstMap + f.mapsPerEpoch - 1)
 	if err != nil {

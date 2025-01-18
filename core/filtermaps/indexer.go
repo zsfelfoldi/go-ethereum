@@ -172,15 +172,19 @@ func (f *FilterMaps) tryUpdateTail() bool {
 }
 
 func (f *FilterMaps) needTailEpoch(epoch uint32) bool {
+	fmt.Println("needTailEpoch", epoch)
 	tailTarget := f.tailTargetBlock()
 	if tailTarget < f.firstIndexedBlock {
+		fmt.Println(" 1 true")
 		return true
 	}
 	tailLvIndex, err := f.getBlockLvPointer(tailTarget)
 	if err != nil {
 		log.Error("Could not get lv index of tail block", "error", err)
+		fmt.Println(" 2 true")
 		return true
 	}
+	fmt.Println(" 3", uint64(epoch+1)<<(f.logValuesPerMap+f.logMapsPerEpoch) >= tailLvIndex)
 	return uint64(epoch+1)<<(f.logValuesPerMap+f.logMapsPerEpoch) > tailLvIndex
 }
 
