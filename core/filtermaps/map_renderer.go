@@ -241,10 +241,10 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 	var waitCnt int
 
 	fmt.Println("renderCurrentMap", r.currentMap.mapIndex)
+	if r.iterator.lvIndex == 0 {
+		r.currentMap.blockLvPtrs = []uint64{0}
+	}
 	for r.iterator.lvIndex < uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap && !r.iterator.finished {
-		if r.iterator.lvIndex == 0 {
-			r.currentMap.blockLvPtrs = []uint64{0}
-		}
 		waitCnt++
 		if waitCnt >= valuesPerCallback {
 			if stopFn() {
