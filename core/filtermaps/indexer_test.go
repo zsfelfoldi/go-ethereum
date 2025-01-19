@@ -306,8 +306,6 @@ func (tc *testChain) GetReceiptsByHash(hash common.Hash) types.Receipts {
 
 func (tc *testChain) addBlocks(count, maxTxPerBlock, maxLogsPerReceipt, maxTopicsPerLog int, random bool) {
 	tc.lock.Lock()
-	defer tc.lock.Unlock()
-
 	blockGen := func(i int, gen *core.BlockGen) {
 		var txCount int
 		if random {
@@ -379,20 +377,22 @@ func (tc *testChain) addBlocks(count, maxTxPerBlock, maxLogsPerReceipt, maxTopic
 			tc.receipts[hash] = types.Receipts{}
 		}
 	}
-	tc.setTargetView()
+	tc.lock.Unlock()
+	tc.setTargetHead()
 }
 
 func (tc *testChain) setHead(headNum int) {
 	tc.lock.Lock()
-	defer tc.lock.Unlock()
-
 	tc.canonical = tc.canonical[:headNum+1]
-	tc.setTargetView()
+	tc.lock.Unlock()
+	tc.setTargetHead()
 }
 
-func (tc *testChain) setTargetView() {
-	head := tc.blocks[tc.canonical[len(tc.canonical)-1]].Header()
-	tc.ts.fm.SetTargetView(NewStoredChainView(tc, head.Number.Uint64(), head.Hash()))
+func (tc *testChain) setTargetHead() {
+	head := tc.CurrentBlock()
+	if tc.ts.fm != nil {
+		tc.ts.fm.SetTargetView(NewStoredChainView(tc, head.Number.Uint64(), head.Hash()))
+	}
 }
 
 func (tc *testChain) getCanonicalChain() []common.Hash {
@@ -407,9 +407,8 @@ func (tc *testChain) getCanonicalChain() []common.Hash {
 // restore an earlier state of the chain
 func (tc *testChain) setCanonicalChain(cc []common.Hash) {
 	tc.lock.Lock()
-	defer tc.lock.Unlock()
-
 	tc.canonical = make([]common.Hash, len(cc))
 	copy(tc.canonical, cc)
-	tc.setTargetView()
+	tc.lock.Unlock()
+	tc.setTargetHead()
 }

@@ -44,6 +44,7 @@ func (f *FilterMaps) indexerLoop() {
 	f.indexLock.Unlock()
 
 	for !f.stop {
+		fmt.Println("loop")
 		if !f.initialized {
 			fmt.Println("init")
 			if err := f.init(); err != nil {
@@ -76,6 +77,10 @@ func (f *FilterMaps) indexerLoop() {
 }
 
 func (f *FilterMaps) SetTargetView(targetView chainView) {
+	if f.noHistory {
+		return
+	}
+	fmt.Println("SetTargetView", targetView.headNumber(), targetView.getBlockId(targetView.headNumber()))
 	f.targetViewCh <- targetView
 }
 
@@ -242,6 +247,7 @@ func (f *FilterMaps) processEvents() {
 }
 
 func (f *FilterMaps) setTargetView(targetView chainView) {
+	fmt.Println("setTargetView", targetView.headNumber(), targetView.getBlockId(targetView.headNumber()))
 	if equalViews(f.targetView, targetView) {
 		return
 	}

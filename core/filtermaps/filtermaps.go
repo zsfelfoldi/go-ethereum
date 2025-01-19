@@ -171,6 +171,7 @@ type lastBlockOfMap struct {
 // NewFilterMaps creates a new FilterMaps and starts the indexer in order to keep
 // the structure in sync with the given blockchain.
 func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, history, unindexLimit uint64, noHistory bool) *FilterMaps {
+	fmt.Println("create")
 	rs, initialized, err := rawdb.ReadFilterMapsRange(db)
 	if err != nil {
 		log.Error("Error reading log index range", "error", err)
@@ -180,7 +181,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 		db:           db,
 		closeCh:      make(chan struct{}),
 		waitIdleCh:   make(chan chan bool),
-		targetViewCh: make(chan chainView, 10),
+		targetViewCh: make(chan chainView),
 		history:      history,
 		noHistory:    noHistory,
 		unindexLimit: unindexLimit,
@@ -203,13 +204,15 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 		lvPointerCache:  lru.NewCache[uint64, uint64](1000),
 		renderSnapshots: lru.NewCache[uint64, *renderedMap](cachedRevertPoints),
 	}
+	f.targetView = initView
 	if f.initialized {
-		f.indexedView = f.initChainView(initView)
+		f.indexedView = f.initChainView(f.targetView)
 	}
 	if f.hasIndexedBlocks() {
 		log.Trace("Log index head", "number", f.targetBlockNumber, "id", f.targetBlockId.String(), "log value pointer", f.headBlockDelimiter)
 		log.Trace("Log index range", "first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1, "first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1)
 	}
+	fmt.Println("created")
 	return f
 }
 
@@ -217,11 +220,13 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 func (f *FilterMaps) Start() {
 	f.closeWg.Add(1)
 	go f.indexerLoop()
+	fmt.Println("loop started")
 }
 
 func (f *FilterMaps) initChainView(chainView chainView) chainView {
 	mapIndex := f.afterLastRenderedMap
 	for {
+		fmt.Println(" icv mapindex", mapIndex)
 		var ok bool
 		mapIndex, ok = f.lastMapBoundaryBefore(mapIndex)
 		if !ok {
@@ -233,9 +238,11 @@ func (f *FilterMaps) initChainView(chainView chainView) chainView {
 			break
 		}
 		if chainView.getBlockId(lastBlockNumber)==lastBlockId {
+	fmt.Println(" icv done", lastBlockNumber)
 			return newLimitedChainView(chainView, lastBlockNumber, f.targetBlockNumber)
 		}
 	}
+	fmt.Println(" icv done genesis")
 	return newLimitedChainView(chainView, 0, f.targetBlockNumber)
 }
 
@@ -289,7 +296,7 @@ func (f *FilterMaps) init() error {
 	}
 	fmr := filterMapsRange{
 		initialized:     true,
-		targetBlockId:  	  f.targetView.getBlockId(f.targetView.headNumber()),
+		targetBlockId:   f.targetView.getBlockId(f.targetView.headNumber()),
 		targetBlockNumber: f.targetView.headNumber(),
 	}
 	if bestLen > 0 {
@@ -298,9 +305,6 @@ func (f *FilterMaps) init() error {
 		fmr.afterLastIndexedBlock = cp.blockNumber + 1
 		fmr.firstRenderedMap = uint32(bestLen) << f.logMapsPerEpoch
 		fmr.afterLastRenderedMap = uint32(bestLen) << f.logMapsPerEpoch
-	}
-	if f.targetView == nil {
-		panic("xxxxxxxxxx")
 	}
 	f.indexedView = f.targetView
 	f.setRange(batch, fmr)

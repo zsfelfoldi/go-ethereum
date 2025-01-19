@@ -104,7 +104,6 @@ func (cv *storedChainView) getReceipts(number uint64) types.Receipts {
 }
 
 func (cv *storedChainView) extendNonCanonical() bool {
-
 	for {
 		hash, number := cv.hashes[len(cv.hashes)-1], cv.head-uint64(len(cv.hashes)-1)
 		if cv.chain.GetCanonicalHash(number) == hash {
@@ -170,7 +169,7 @@ func (cv *limitedChainView) getBlockId(number uint64) common.Hash {
 	if number > cv.knownLimit {
 		return common.Hash{} //TODO dummy hash?
 	}
-	return cv.parent.getBlockHash(number)
+	return cv.parent.getBlockId(number)
 }
 
 func (cv *limitedChainView) getReceipts(number uint64) types.Receipts {
