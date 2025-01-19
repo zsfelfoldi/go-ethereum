@@ -289,6 +289,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	defer r.f.indexLock.Unlock()
 
 	batch := r.f.db.NewBatch()
+	oldRange := r.f.filterMapsRange
 	if err := r.updateRange(batch); err != nil {
 		fmt.Println("updateRange err", err)
 		return err
@@ -302,20 +303,38 @@ func (r *mapRenderer) writeFinishedMaps() error {
 			}
 			r.f.storeFilterMapRow(batch, mapIndex, rowIndex, row)
 		}
+		if r.f.afterLastRenderedMap == r.afterLastFinished { // head updated; remove future entries
+			for mapIndex := r.afterLastFinished; mapIndex < oldRange.afterLastRenderedMap; mapIndex++ {
+				if fm := r.f.filterMapCache[mapIndex]; fm != nil && len(fm[rowIndex]) == 0 {
+					continue
+				}
+				r.f.storeFilterMapRow(batch, mapIndex, rowIndex, nil)
+			}
+		}
 	}
 	// add or update block pointers
+	blockNumber := r.finishedMaps[r.firstFinished].firstBlock()
 	for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 		renderedMap := r.finishedMaps[mapIndex]
 		r.f.storeLastBlockOfMap(batch, mapIndex, renderedMap.lastBlock)
 		//fmt.Println("storeLastBlockOfMap", mapIndex, renderedMap.lastBlock)
-		blockNumber := renderedMap.firstBlock()
+		if blockNumber != renderedMap.firstBlock() {
+			panic("non-continuous block numbers")
+		}
 		for _, lvPtr := range renderedMap.blockLvPtrs {
 			r.f.storeBlockLvPointer(batch, blockNumber, lvPtr)
 			//fmt.Println("storeBlockLvPointer", blockNumber, lvPtr)
 			blockNumber++
 		}
 	}
-
+	if r.f.afterLastRenderedMap == r.afterLastFinished { // head updated; remove future entries
+		for mapIndex := r.afterLastFinished; mapIndex < oldRange.afterLastRenderedMap; mapIndex++ {
+			r.f.deleteLastBlockOfMap(batch, mapIndex)
+		}
+		for ; blockNumber < oldRange.afterLastIndexedBlock; blockNumber++ {
+			r.f.deleteBlockLvPointer(batch, blockNumber)
+		}
+	}
 	r.finishedMaps = make(map[uint32]*renderedMap)
 	r.firstFinished = r.afterLastFinished
 	//return batch.Write()  //TODO
