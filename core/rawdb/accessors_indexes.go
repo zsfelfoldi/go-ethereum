@@ -242,23 +242,26 @@ func DeleteFilterMapRows(db ethdb.KeyValueRangeDeleter, firstMapRowIndex, afterL
 
 // ReadFilterMapLastBlock retrieves the number of the block that generated the
 // last log value entry of the given map.
-func ReadFilterMapLastBlock(db ethdb.KeyValueReader, mapIndex uint32) (uint64, error) {
-	encPtr, err := db.Get(filterMapLastBlockKey(mapIndex))
+func ReadFilterMapLastBlock(db ethdb.KeyValueReader, mapIndex uint32) (uint64, common.Hash, error) {
+	enc, err := db.Get(filterMapLastBlockKey(mapIndex))
 	if err != nil {
-		return 0, err
+		return 0, common.Hash{}, err
 	}
-	if len(encPtr) != 8 {
-		return 0, errors.New("Invalid block number encoding")
+	if len(enc) != 40 {
+		return 0, common.Hash{}, errors.New("Invalid block number and id encoding")
 	}
-	return binary.BigEndian.Uint64(encPtr), nil
+	var id common.Hash
+	copy(id[:], enc[8:])
+	return binary.BigEndian.Uint64(enc[:8]), id, nil
 }
 
 // WriteFilterMapLastBlock stores the number of the block that generated the
 // last log value entry of the given map.
-func WriteFilterMapLastBlock(db ethdb.KeyValueWriter, mapIndex uint32, blockNumber uint64) {
-	var encPtr [8]byte
-	binary.BigEndian.PutUint64(encPtr[:], blockNumber)
-	if err := db.Put(filterMapLastBlockKey(mapIndex), encPtr[:]); err != nil {
+func WriteFilterMapLastBlock(db ethdb.KeyValueWriter, mapIndex uint32, blockNumber uint64, id common.Hash) {
+	var enc [40]byte
+	binary.BigEndian.PutUint64(enc[:8], blockNumber)
+	copy(enc[8:], id[:])
+	if err := db.Put(filterMapLastBlockKey(mapIndex), enc[:]); err != nil {
 		log.Crit("Failed to store filter map last block pointer", "err", err)
 	}
 }
@@ -317,8 +320,8 @@ func DeleteBlockLvPointers(db ethdb.KeyValueRangeDeleter, firstBlockNumber, afte
 // FilterMapsRange is a storage representation of the block range covered by the
 // filter maps structure and the corresponting log value index range.
 type FilterMapsRange struct {
-	HeadBlockHash                                            common.Hash
-	HeadBlockNumber, HeadBlockDelimiter                      uint64
+	TargetBlockId                                            common.Hash
+	TargetBlockNumber, HeadBlockDelimiter                    uint64
 	FirstIndexedBlock, AfterLastIndexedBlock                 uint64
 	FirstRenderedMap, AfterLastRenderedMap, TailPartialEpoch uint32
 }

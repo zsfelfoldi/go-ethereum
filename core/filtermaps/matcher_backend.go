@@ -112,7 +112,7 @@ func (fm *FilterMapsMatcherBackend) GetLogByLvIndex(ctx context.Context, lvIndex
 // be synced up to the given head in a single step. Still, the latest chain head
 // should be passed as a parameter and the existing log index should be consistent
 // with that chain.
-func (fm *FilterMapsMatcherBackend) synced(head *types.Header) {
+func (fm *FilterMapsMatcherBackend) synced(headNumber uint64) {
 	fm.f.indexLock.RLock()
 	fm.f.matchersLock.Lock()
 	defer func() {
@@ -121,7 +121,7 @@ func (fm *FilterMapsMatcherBackend) synced(head *types.Header) {
 	}()
 
 	fm.syncCh <- SyncRange{
-		Head:         head,
+		HeadNumber:   headNumber,
 		Valid:        fm.valid,
 		FirstValid:   fm.firstValid,
 		LastValid:    fm.lastValid,
@@ -144,11 +144,10 @@ func (fm *FilterMapsMatcherBackend) synced(head *types.Header) {
 // chain since the previous SyncLogIndex or the creation of the matcher backend.
 func (fm *FilterMapsMatcherBackend) SyncLogIndex(ctx context.Context) (SyncRange, error) {
 	if fm.f.noHistory {
-		head := fm.f.chain.CurrentBlock()
-		if head == nil {
+		if !fm.f.initialized {
 			return SyncRange{}, errors.New("canonical chain head not available")
 		}
-		return SyncRange{Head: head}, nil
+		return SyncRange{HeadNumber: fm.f.targetBlockNumber}, nil
 	}
 	// add SyncRange return channel, ensuring that
 	syncCh := make(chan SyncRange, 1)
@@ -163,9 +162,6 @@ func (fm *FilterMapsMatcherBackend) SyncLogIndex(ctx context.Context) (SyncRange
 	}
 	select {
 	case vr := <-syncCh:
-		if vr.Head == nil {
-			return SyncRange{}, errors.New("canonical chain head not available")
-		}
 		return vr, nil
 	case <-ctx.Done():
 		return SyncRange{}, ctx.Err()

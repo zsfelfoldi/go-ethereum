@@ -25,7 +25,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/log"
 )
 
 const (
@@ -50,6 +49,7 @@ type renderedMap struct {
 	filterMap     filterMap
 	mapIndex      uint32
 	lastBlock     uint64
+	lastBlockId   common.Hash
 	blockLvPtrs   []uint64 // start pointers of blocks starting in this map; last one is lastBlock
 	finished      bool     // iterator finished; all values rendered
 	headDelimiter uint64   // if finished then points to the future block delimiter of the head block
@@ -87,7 +87,7 @@ func (f *FilterMaps) findLastSnapshotBefore(afterLastMap uint32) *renderedMap {
 	var best *renderedMap
 	for _, blockNumber := range f.renderSnapshots.Keys() {
 		if cp, _ := f.renderSnapshots.Get(blockNumber); cp != nil &&
-			//TODO f.targetView.getBlockHash(blockNumber) == cp.lastBlockHash &&
+			f.targetView.getBlockId(blockNumber) == cp.lastBlockId &&
 			cp.mapIndex < afterLastMap && (best == nil || blockNumber > best.lastBlock) {
 			best = cp
 		}
@@ -108,13 +108,13 @@ func (f *FilterMaps) findLastMapBoundaryBefore(afterLastMap uint32) (nextMap uin
 			return 0, 0, 0, nil
 		}
 		//fmt.Println(" lmbb", mapIndex)
-		lastBlock, err := f.getLastBlockOfMap(mapIndex)
+		lastBlock, _, err := f.getLastBlockOfMap(mapIndex)
 		if err != nil {
 			fmt.Println(" glbm err", err)
 			return 0, 0, 0, err
 		}
-		if lastBlock >= f.indexedView.headNumber || lastBlock >= f.targetView.headNumber ||
-			f.targetView.getBlockHash(lastBlock) != f.indexedView.getBlockHash(lastBlock) {
+		if lastBlock >= f.indexedView.headNumber() || lastBlock >= f.targetView.headNumber() ||
+			!matchViews(f.indexedView, f.targetView, lastBlock) {
 			// map is not full or inconsistent with targetView; roll back
 			continue
 		}
@@ -277,6 +277,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 		r.currentMap.finished = true
 		r.currentMap.headDelimiter = r.iterator.lvIndex
 	}
+	r.currentMap.lastBlockId = r.f.targetView.getBlockId(r.currentMap.lastBlock)
 	fmt.Println("renderCurrentMap done", r.currentMap.mapIndex, r.currentMap.finished, r.currentMap.headDelimiter)
 	return true, nil
 }
@@ -316,7 +317,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	blockNumber := r.finishedMaps[r.firstFinished].firstBlock()
 	for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 		renderedMap := r.finishedMaps[mapIndex]
-		r.f.storeLastBlockOfMap(batch, mapIndex, renderedMap.lastBlock)
+		r.f.storeLastBlockOfMap(batch, mapIndex, renderedMap.lastBlock, renderedMap.lastBlockId)
 		//fmt.Println("storeLastBlockOfMap", mapIndex, renderedMap.lastBlock)
 		if blockNumber != renderedMap.firstBlock() {
 			panic("non-continuous block numbers")
@@ -343,21 +344,21 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	if r.f.afterLastRenderedMap == r.f.firstRenderedMap {
 		return nil
 	}
-	if _, err := r.f.getBlockLvPointer(r.f.firstIndexedBlock); err != nil {
+	if _, err := r.f.getBlockLvPointer(r.f.firstIndexedBlock); err != nil { //TODO remove, add test
 		panic(err)
 	}
 	if _, err := r.f.getBlockLvPointer(r.f.afterLastIndexedBlock - 1); err != nil {
 		panic(err)
 	}
-	if _, err := r.f.getLastBlockOfMap(r.f.firstRenderedMap); err != nil {
+	if _, _, err := r.f.getLastBlockOfMap(r.f.firstRenderedMap); err != nil {
 		panic(err)
 	}
 	if r.f.firstRenderedMap > 0 {
-		if _, err := r.f.getLastBlockOfMap(r.f.firstRenderedMap - 1); err != nil {
+		if _, _, err := r.f.getLastBlockOfMap(r.f.firstRenderedMap - 1); err != nil {
 			panic(err)
 		}
 	}
-	if _, err := r.f.getLastBlockOfMap(r.f.afterLastRenderedMap - 1); err != nil {
+	if _, _, err := r.f.getLastBlockOfMap(r.f.afterLastRenderedMap - 1); err != nil {
 		panic(err)
 	}
 	return nil
@@ -375,7 +376,7 @@ func (r *mapRenderer) updateRange(batch ethdb.Batch) error {
 	if newRange.firstRenderedMap != r.f.firstRenderedMap {
 		// first rendered map changed; update first indexed block
 		if newRange.firstRenderedMap > 0 {
-			lastBlock, err := r.f.getLastBlockOfMap(newRange.firstRenderedMap - 1)
+			lastBlock, _, err := r.f.getLastBlockOfMap(newRange.firstRenderedMap - 1)
 			if err != nil {
 				fmt.Println(" lastBlock err", err)
 				return err
@@ -392,15 +393,15 @@ func (r *mapRenderer) updateRange(batch ethdb.Batch) error {
 			panic("xxxxxxxxxx")
 		}
 		r.f.indexedView = r.f.targetView
-		newRange.headBlockNumber = r.f.targetView.headNumber
-		newRange.headBlockHash = r.f.targetView.getBlockHash(newRange.headBlockNumber)
+		newRange.targetBlockNumber = r.f.targetView.headNumber()
+		newRange.targetBlockId = r.f.targetView.getBlockId(newRange.targetBlockNumber)
 		newRange.afterLastRenderedMap = r.afterLastFinished
 		lm := r.finishedMaps[r.afterLastFinished-1]
 		//fmt.Println("writeFinishedMaps afterLastFinished finished", r.afterLastFinished, lm.finished)
 		if lm.finished {
-			newRange.afterLastIndexedBlock = newRange.headBlockNumber + 1
-			if lm.lastBlock != newRange.headBlockNumber {
-				//fmt.Println("xxx", r.afterLastFinished, lm.lastBlock, newRange.headBlockNumber)
+			newRange.afterLastIndexedBlock = newRange.targetBlockNumber + 1
+			if lm.lastBlock != newRange.targetBlockNumber {
+				//fmt.Println("xxx", r.afterLastFinished, lm.lastBlock, newRange.targetBlockNumber)
 				panic("map rendering finished but last block != head block")
 			}
 			newRange.headBlockDelimiter = lm.headDelimiter
@@ -412,7 +413,7 @@ func (r *mapRenderer) updateRange(batch ethdb.Batch) error {
 	} else {
 		// last rendered map not replaced; ensure that target chain view matches
 		// indexed chain view on the rendered section
-		if lastBlock := r.finishedMaps[r.afterLastFinished-1].lastBlock; r.f.targetView.getBlockHash(lastBlock) != r.f.indexedView.getBlockHash(lastBlock) {
+		if lastBlock := r.finishedMaps[r.afterLastFinished-1].lastBlock; !matchViews(r.f.indexedView, r.f.targetView, lastBlock) {
 			fmt.Println(" errChainUpdate")
 			return errChainUpdate
 		}
@@ -472,77 +473,8 @@ func (f *FilterMaps) emptyFilterMap() filterMap {
 	return make(filterMap, f.mapHeight)
 }
 
-type chainView struct {
-	chain      blockchain
-	headNumber uint64
-	hashes     []common.Hash // block hashes starting backwards from headNumber until first canonical hash
-}
-
-func newChainView(chain blockchain, number uint64, hash common.Hash) *chainView {
-	cv := &chainView{
-		chain:      chain,
-		headNumber: number,
-		hashes:     []common.Hash{hash},
-	}
-	cv.extendNonCanonical()
-	return cv
-}
-
-func (cv *chainView) extendNonCanonical() bool {
-
-	for {
-		hash, number := cv.hashes[len(cv.hashes)-1], cv.headNumber-uint64(len(cv.hashes)-1)
-		if cv.chain.GetCanonicalHash(number) == hash {
-			return true
-		}
-		if number == 0 {
-			log.Error("Unknown genesis block hash found")
-			return false
-		}
-		header := cv.chain.GetHeader(hash, number)
-		if header == nil {
-			log.Error("Header not found", "number", number, "hash", hash)
-			return false
-		}
-		cv.hashes = append(cv.hashes, header.ParentHash)
-	}
-}
-
-func (cv *chainView) getBlockHash(number uint64) common.Hash {
-	if number > cv.headNumber {
-		return common.Hash{}
-	}
-	if number+uint64(len(cv.hashes)) <= cv.headNumber {
-		hash := cv.chain.GetCanonicalHash(number)
-		if !cv.extendNonCanonical() {
-			return common.Hash{}
-		}
-		if number+uint64(len(cv.hashes)) <= cv.headNumber {
-			return hash
-		}
-	}
-	return cv.hashes[cv.headNumber-number]
-}
-
-/*func (cv *chainView) getHeader(number uint64) *types.Header {
-	if number <= cv.headNumber {
-		hash := cv.chain.GetCanonicalHash(number)
-		if !cv.extendNonCanonical() {
-			return nil
-		}
-		if number <= cv.headNumber {
-			return cv.chain.GetHeader(hash, number)
-		}
-	}
-	if number-cv.headNumber > uint64(len(cv.nonCanonical)) {
-		return nil
-	}
-	return cv.nonCanonical[len(cv.nonCanonical)+1-int(number-cv.headNumber)]
-}*/ //TODO
-
 type logIterator struct {
-	chainView                       *chainView
-	getReceiptsByHash               func(common.Hash) types.Receipts
+	chainView                       chainView
 	blockNumber                     uint64
 	receipts                        types.Receipts
 	blockStart, delimiter, finished bool
@@ -553,18 +485,17 @@ type logIterator struct {
 var errUnindexedRange = errors.New("unindexed range")
 
 func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logIterator, error) {
-	if blockNumber > f.targetView.headNumber {
+	if blockNumber > f.targetView.headNumber() {
 		return nil, errors.New("iterator entry point after target chain head")
 	}
 	if blockNumber < f.firstIndexedBlock || blockNumber >= f.afterLastIndexedBlock {
 		return nil, errUnindexedRange
 	}
-	blockHash := f.targetView.getBlockHash(blockNumber)
-	if f.indexedView.getBlockHash(blockNumber) != blockHash {
+	if !matchViews(f.indexedView, f.targetView, blockNumber) {
 		return nil, errors.New("target and indexed views diverged at iterator entry point")
 	}
 	var lvIndex uint64
-	if blockNumber == f.headBlockNumber {
+	if blockNumber == f.targetBlockNumber {
 		lvIndex = f.headBlockDelimiter
 	} else {
 		var err error
@@ -574,38 +505,35 @@ func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logI
 		}
 		lvIndex--
 	}
-	finished := blockNumber == f.targetView.headNumber
+	finished := blockNumber == f.targetView.headNumber()
 	return &logIterator{
-		chainView:         f.targetView,
-		getReceiptsByHash: f.chain.GetReceiptsByHash,
-		blockNumber:       blockNumber,
-		finished:          finished,
-		delimiter:         !finished,
-		lvIndex:           lvIndex,
+		chainView:   f.targetView,
+		blockNumber: blockNumber,
+		finished:    finished,
+		delimiter:   !finished,
+		lvIndex:     lvIndex,
 	}, nil
 }
 
 func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, startLvPtr uint64) (*logIterator, error) {
-	if startBlock > f.targetView.headNumber {
+	if startBlock > f.targetView.headNumber() {
 		return nil, errors.New("iterator entry point after target chain head")
 	}
-	blockHash := f.targetView.getBlockHash(startBlock)
-	if f.indexedView.getBlockHash(startBlock) != blockHash {
+	if !matchViews(f.indexedView, f.targetView, startBlock) {
 		return nil, errors.New("target and indexed views diverged at iterator entry point")
 	}
 	// get block receipts
-	receipts := f.chain.GetReceiptsByHash(blockHash)
+	receipts := f.targetView.getReceipts(startBlock)
 	if receipts == nil {
 		return nil, errors.New("receipts not found")
 	}
 	// initialize iterator at block start
 	l := &logIterator{
-		chainView:         f.targetView,
-		getReceiptsByHash: f.chain.GetReceiptsByHash,
-		blockNumber:       startBlock,
-		receipts:          receipts,
-		blockStart:        true,
-		lvIndex:           startLvPtr,
+		chainView:   f.targetView,
+		blockNumber: startBlock,
+		receipts:    receipts,
+		blockStart:  true,
+		lvIndex:     startLvPtr,
 	}
 	l.nextValid()
 	targetIndex := uint64(mapIndex) << f.logValuesPerMap
@@ -614,7 +542,7 @@ func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, 
 	}
 	// iterate to map boundary
 	for l.lvIndex < targetIndex {
-		//fmt.Println(l, f.indexedView.headNumber, f.targetView.headNumber)
+		//fmt.Println(l, f.indexedView.headNumber(), f.targetView.headNumber())
 		if l.finished {
 			panic("iterator finished") //TODO log error
 		}
@@ -625,8 +553,8 @@ func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, 
 	return l, nil
 }
 
-func (l *logIterator) updateChainView(cv *chainView) bool {
-	if cv.getBlockHash(l.blockNumber) != l.chainView.getBlockHash(l.blockNumber) {
+func (l *logIterator) updateChainView(cv chainView) bool {
+	if !matchViews(cv, l.chainView, l.blockNumber) {
 		return false
 	}
 	l.chainView = cv
@@ -640,7 +568,7 @@ func (l *logIterator) next() error {
 	if l.delimiter {
 		l.delimiter = false
 		l.blockNumber++
-		l.receipts = l.getReceiptsByHash(l.chainView.getBlockHash(l.blockNumber))
+		l.receipts = l.chainView.getReceipts(l.blockNumber)
 		if l.receipts == nil {
 			return errors.New("receipts not found")
 		}
@@ -666,7 +594,7 @@ func (l *logIterator) nextValid() {
 		}
 		l.logIndex = 0
 	}
-	if l.blockNumber == l.chainView.headNumber {
+	if l.blockNumber == l.chainView.headNumber() {
 		l.finished = true
 	} else {
 		l.delimiter = true

@@ -30,7 +30,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -105,8 +104,8 @@ func TestIndexerRandomRange(t *testing.T) {
 			// (expTailBlock-1)*lvPerBlock >= tailLvPtr
 			expTailBlock = (tailLvPtr + lvPerBlock*2 - 1) / lvPerBlock
 		}
-		if ts.fm.afterLastIndexedBlock != uint64(head+1) || ts.fm.headBlockNumber != uint64(head) || ts.fm.headBlockHash != forks[fork][head] {
-			ts.t.Fatalf("Invalid index head (expected #%d %v, got #%d %v)", head, forks[fork][head], ts.fm.afterLastIndexedBlock-1, ts.fm.headBlockHash)
+		if ts.fm.afterLastIndexedBlock != uint64(head+1) || ts.fm.targetBlockNumber != uint64(head) || ts.fm.targetBlockId != forks[fork][head] {
+			ts.t.Fatalf("Invalid index head (expected #%d %v, got #%d %v)", head, forks[fork][head], ts.fm.afterLastIndexedBlock-1, ts.fm.targetBlockId)
 		}
 		if ts.fm.headBlockDelimiter != uint64(head)*lvPerBlock {
 			ts.t.Fatalf("Invalid index head delimiter pointer (expected %d, got %d)", uint64(head)*lvPerBlock, ts.fm.headBlockDelimiter)
@@ -195,20 +194,22 @@ type testSetup struct {
 func newTestSetup(t *testing.T) *testSetup {
 	params := testParams
 	params.deriveFields()
-	return &testSetup{
+	ts := &testSetup{
 		t:        t,
-		chain:    newTestChain(),
 		db:       rawdb.NewMemoryDatabase(),
 		params:   params,
 		dbHashes: make(map[string]common.Hash),
 	}
+	ts.chain = ts.newTestChain()
+	return ts
 }
 
 func (ts *testSetup) setHistory(history uint64, noHistory bool) {
 	if ts.fm != nil {
 		ts.fm.Stop()
 	}
-	ts.fm = NewFilterMaps(ts.db, ts.chain, ts.params, history, 1, noHistory)
+	head := ts.chain.CurrentBlock()
+	ts.fm = NewFilterMaps(ts.db, NewStoredChainView(ts.chain, head.Number.Uint64(), head.Hash()), ts.params, history, 1, noHistory)
 	ts.fm.Start()
 }
 
@@ -250,16 +251,17 @@ func (ts *testSetup) close() {
 }
 
 type testChain struct {
-	db            ethdb.Database
-	lock          sync.RWMutex
-	canonical     []common.Hash
-	chainHeadFeed event.Feed
-	blocks        map[common.Hash]*types.Block
-	receipts      map[common.Hash]types.Receipts
+	ts        *testSetup
+	db        ethdb.Database
+	lock      sync.RWMutex
+	canonical []common.Hash
+	blocks    map[common.Hash]*types.Block
+	receipts  map[common.Hash]types.Receipts
 }
 
-func newTestChain() *testChain {
+func (ts *testSetup) newTestChain() *testChain {
 	return &testChain{
+		ts:       ts,
 		blocks:   make(map[common.Hash]*types.Block),
 		receipts: make(map[common.Hash]types.Receipts),
 	}
@@ -273,10 +275,6 @@ func (tc *testChain) CurrentBlock() *types.Header {
 		return nil
 	}
 	return tc.blocks[tc.canonical[len(tc.canonical)-1]].Header()
-}
-
-func (tc *testChain) SubscribeChainEvent(ch chan<- core.ChainEvent) event.Subscription {
-	return tc.chainHeadFeed.Subscribe(ch)
 }
 
 func (tc *testChain) GetHeader(hash common.Hash, number uint64) *types.Header {
@@ -381,7 +379,7 @@ func (tc *testChain) addBlocks(count, maxTxPerBlock, maxLogsPerReceipt, maxTopic
 			tc.receipts[hash] = types.Receipts{}
 		}
 	}
-	tc.chainHeadFeed.Send(core.ChainEvent{Header: tc.blocks[tc.canonical[len(tc.canonical)-1]].Header()})
+	tc.setTargetView()
 }
 
 func (tc *testChain) setHead(headNum int) {
@@ -389,7 +387,12 @@ func (tc *testChain) setHead(headNum int) {
 	defer tc.lock.Unlock()
 
 	tc.canonical = tc.canonical[:headNum+1]
-	tc.chainHeadFeed.Send(core.ChainEvent{Header: tc.blocks[tc.canonical[len(tc.canonical)-1]].Header()})
+	tc.setTargetView()
+}
+
+func (tc *testChain) setTargetView() {
+	head := tc.blocks[tc.canonical[len(tc.canonical)-1]].Header()
+	tc.ts.fm.SetTargetView(NewStoredChainView(tc, head.Number.Uint64(), head.Hash()))
 }
 
 func (tc *testChain) getCanonicalChain() []common.Hash {
@@ -408,5 +411,5 @@ func (tc *testChain) setCanonicalChain(cc []common.Hash) {
 
 	tc.canonical = make([]common.Hash, len(cc))
 	copy(tc.canonical, cc)
-	tc.chainHeadFeed.Send(core.ChainEvent{Header: tc.blocks[tc.canonical[len(tc.canonical)-1]].Header()})
+	tc.setTargetView()
 }

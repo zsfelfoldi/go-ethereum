@@ -21,8 +21,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -44,10 +42,6 @@ func (f *FilterMaps) indexerLoop() {
 	f.indexLock.Lock()
 	f.updateMapCache()
 	f.indexLock.Unlock()
-	f.headEventCh = make(chan core.ChainEvent, 10)
-	sub := f.chain.SubscribeChainEvent(f.headEventCh)
-	defer sub.Unsubscribe()
-	f.setTargetHead(f.chain.CurrentBlock())
 
 	for !f.stop {
 		if !f.initialized {
@@ -79,6 +73,10 @@ func (f *FilterMaps) indexerLoop() {
 			}
 		}
 	}
+}
+
+func (f *FilterMaps) SetTargetView(targetView chainView) {
+	f.targetViewCh <- targetView
 }
 
 // WaitIdle blocks until the indexer is in an idle state while synced up to the
@@ -199,32 +197,27 @@ func (f *FilterMaps) needTailEpoch(epoch uint32) bool {
 // tailTargetBlock returns the target value for the tail block number according to the
 // log history parameter and the current index head.
 func (f *FilterMaps) tailTargetBlock() uint64 {
-	if f.history == 0 || f.headBlockNumber < f.history {
+	if f.history == 0 || f.targetBlockNumber < f.history {
 		return 0
 	}
-	return f.headBlockNumber + 1 - f.history
+	return f.targetBlockNumber + 1 - f.history
 }
 
 func (f *FilterMaps) waitForEvent() {
 	for f.targetHeadIndexed() {
 		if f.matcherSyncRequest != nil {
-			f.matcherSyncRequest.synced(f.targetHead)
+			f.matcherSyncRequest.synced(f.targetBlockNumber)
 			f.matcherSyncRequest = nil
 		}
 		select {
-		case ev := <-f.headEventCh:
-			f.setTargetHead(ev.Header)
+		case targetView := <-f.targetViewCh:
+			f.setTargetView(targetView)
 		case f.matcherSyncRequest = <-f.matcherSyncCh:
-			f.setTargetHead(f.chain.CurrentBlock())
 		case <-f.closeCh:
 			f.stop = true
 			return
 		case ch := <-f.waitIdleCh:
-			f.setTargetHead(f.chain.CurrentBlock())
 			ch <- f.targetHeadIndexed()
-		case <-time.After(time.Second * 20):
-			// keep updating log index during syncing
-			f.setTargetHead(f.chain.CurrentBlock())
 		}
 	}
 }
@@ -232,36 +225,29 @@ func (f *FilterMaps) waitForEvent() {
 func (f *FilterMaps) processEvents() {
 	for {
 		if f.matcherSyncRequest != nil && f.targetHeadIndexed() {
-			f.matcherSyncRequest.synced(f.targetHead)
+			f.matcherSyncRequest.synced(f.targetBlockNumber)
 			f.matcherSyncRequest = nil
 		}
 		select {
-		case ev := <-f.headEventCh:
-			f.setTargetHead(ev.Header)
+		case targetView := <-f.targetViewCh:
+			f.setTargetView(targetView)
 		case f.matcherSyncRequest = <-f.matcherSyncCh:
-			f.setTargetHead(f.chain.CurrentBlock())
 		case <-f.closeCh:
 			f.stop = true
 			return
 		default:
-			f.setTargetHead(f.chain.CurrentBlock())
 			return
 		}
 	}
 }
 
-func (f *FilterMaps) setTargetHead(head *types.Header) {
-	if head == nil || (f.targetHead != nil && head.Hash() == f.targetHead.Hash()) {
+func (f *FilterMaps) setTargetView(targetView chainView) {
+	if equalViews(f.targetView, targetView) {
 		return
 	}
-	f.targetHead = head
-	f.targetView = newChainView(f.chain, head.Number.Uint64(), head.Hash())
+	f.targetView = targetView
 }
 
 func (f *FilterMaps) targetHeadIndexed() bool {
-	/*if f.targetHead != nil {
-		fmt.Println("targetHeadIndexed", f.initialized, f.targetHead.Hash(), f.headBlockHash, f.afterLastIndexedBlock, f.headBlockNumber, f.headBlockDelimiter)
-	}*/
-	return f.initialized && f.targetHead != nil &&
-		f.targetHead.Hash() == f.headBlockHash && f.afterLastIndexedBlock == f.headBlockNumber+1
+	return equalViews(f.targetView, f.indexedView) && f.afterLastIndexedBlock == f.targetBlockNumber+1
 }

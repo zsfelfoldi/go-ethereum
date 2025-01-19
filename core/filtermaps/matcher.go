@@ -51,7 +51,7 @@ type MatcherBackend interface {
 // all states of the chain since the previous SyncLogIndex or the creation of
 // the matcher backend.
 type SyncRange struct {
-	Head *types.Header
+	HeadNumber uint64
 	// block range where the index has not changed since the last matcher sync
 	// and therefore the set of matches found in this region is guaranteed to
 	// be valid and complete.
