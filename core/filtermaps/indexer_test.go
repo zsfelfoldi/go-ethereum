@@ -66,7 +66,6 @@ func TestIndexerRandomRange(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		switch rand.Intn(3) {
 		case 0:
-			fmt.Println("*** t0")
 			// change history settings
 			switch rand.Intn(10) {
 			case 0:
@@ -76,28 +75,30 @@ func TestIndexerRandomRange(t *testing.T) {
 			default:
 				history, noHistory = rand.Intn(1000)+1, false
 			}
+			fmt.Println("*** t0", history, noHistory)
 			ts.testDisableSnapshots = rand.Intn(2) == 0
 			ts.setHistory(uint64(history), noHistory)
 		case 1:
-			fmt.Println("*** t1")
+			fmt.Println("*** t1 b", fork, head)
 			// change head to random position of random fork
 			fork, head = rand.Intn(len(forks)), rand.Intn(1001)
+			fmt.Println("*** t1 a", fork, head)
 			ts.chain.setCanonicalChain(forks[fork][:head+1])
 		case 2:
 			if head < 1000 {
 				// add blocks after the current head
 				fmt.Println("*** t2 extend head b", head, ts.testDisableSnapshots)
 				head += rand.Intn(1000-head) + 1
-				fmt.Println("*** extend head a", head)
+				fmt.Println("*** t2 extend head a", head)
 				ts.fm.testSnapshotUsed = false
-				checkSnapshot = true
+				checkSnapshot = !noHistory
 				ts.chain.setCanonicalChain(forks[fork][:head+1])
 			}
 		}
 		ts.fm.WaitIdle()
 		if checkSnapshot {
 			if ts.fm.testSnapshotUsed == ts.fm.testDisableSnapshots {
-				//TODO ts.t.Fatalf("Invalid snapshot used state after head extension (used: %v, disabled: %v)", ts.fm.testSnapshotUsed, ts.fm.testDisableSnapshots)
+				ts.t.Fatalf("Invalid snapshot used state after head extension (used: %v, disabled: %v)", ts.fm.testSnapshotUsed, ts.fm.testDisableSnapshots)
 			}
 			checkSnapshot = false
 		}

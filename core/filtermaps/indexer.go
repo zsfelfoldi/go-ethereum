@@ -212,12 +212,14 @@ func (f *FilterMaps) waitForEvent() {
 		}
 		select {
 		case targetView := <-f.targetViewCh:
+			fmt.Println("### targetView", targetView.headNumber())
 			f.setTargetView(targetView)
 		case f.matcherSyncRequest = <-f.matcherSyncCh:
 		case <-f.closeCh:
 			f.stop = true
 			return
 		case ch := <-f.waitIdleCh:
+			fmt.Println("### waitIdle", f.targetHeadIndexed())
 			ch <- f.targetHeadIndexed()
 		}
 	}
@@ -231,6 +233,7 @@ func (f *FilterMaps) processEvents() {
 		}
 		select {
 		case targetView := <-f.targetViewCh:
+			fmt.Println("### targetView pe", targetView.headNumber())
 			f.setTargetView(targetView)
 		case f.matcherSyncRequest = <-f.matcherSyncCh:
 		case <-f.closeCh:

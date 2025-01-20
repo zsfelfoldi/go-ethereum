@@ -60,6 +60,7 @@ func (r *renderedMap) firstBlock() uint64 {
 }
 
 func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error) {
+	fmt.Println("renderMapsBefore", afterLastMap, f.testDisableSnapshots)
 	if f.indexedView == nil {
 		panic("aaaaaaaaaaaaaaaa")
 	}

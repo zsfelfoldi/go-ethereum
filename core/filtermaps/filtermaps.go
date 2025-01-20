@@ -204,13 +204,6 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 	f.targetView = initView
 	if f.initialized {
 		f.indexedView = f.initChainView(f.targetView)
-		if !f.testDisableSnapshots && f.afterLastIndexedBlock == f.targetBlockNumber+1 &&
-		 f.firstRenderedMap < f.afterLastRenderedMap {
-			// previous target head rendered; load last map as snapshot
-			if err:=f.loadHeadSnapshot();err!=nil {
-				log.Error("Could not load head filter map snapshot", "error", err)
-			}
-		}
 	}
 	if f.hasIndexedBlocks() {
 		log.Trace("Log index head", "number", f.targetBlockNumber, "id", f.targetBlockId.String(), "log value pointer", f.headBlockDelimiter)
@@ -222,6 +215,14 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 
 // Start starts the indexer.
 func (f *FilterMaps) Start() {
+	if !f.testDisableSnapshots && f.initialized &&
+	 f.afterLastIndexedBlock == f.targetBlockNumber+1 &&
+	 f.firstRenderedMap < f.afterLastRenderedMap {
+		// previous target head rendered; load last map as snapshot
+		if err:=f.loadHeadSnapshot();err!=nil {
+			log.Error("Could not load head filter map snapshot", "error", err)
+		}
+	}
 	f.closeWg.Add(1)
 	go f.indexerLoop()
 	fmt.Println("loop started")
