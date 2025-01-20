@@ -23,6 +23,7 @@ import (
 	"math/big"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -379,7 +380,7 @@ func (s *Ethereum) Start() error {
 
 func (s *Ethereum) newChainView(head *types.Header) *filtermaps.StoredChainView {
 	if head == nil {
-		return nil	//TODO ???
+		return nil
 	}
 	return filtermaps.NewStoredChainView(s.blockchain, head.Number.Uint64(), head.Hash())
 }
@@ -389,14 +390,43 @@ func (s *Ethereum) updateFilterMapsHeads() {
 	sub := s.blockchain.SubscribeChainEvent(headEventCh)
 	defer sub.Unsubscribe()
 	
+	head := s.blockchain.CurrentBlock()
+	targetView := s.newChainView(head) // nil if already sent to channel
+	
+	setHead := func(newHead *types.Header) {
+		if newHead == nil {
+			return
+		}
+		if head == nil || newHead.Hash() != head.Hash() {
+			head = newHead
+			targetView = s.newChainView(head)
+		}
+	}
+	
 	for {
-		select {
-			case ev := <-headEventCh:
-				s.filterMaps.SetTargetView(s.newChainView(ev.Header))
-			case ch := <-s.closeFilterMaps:
-				close(ch)
-				return
-		}		
+		if targetView != nil {
+			select {
+				case s.filterMaps.TargetViewCh <- targetView:
+					targetView = nil
+				case ev := <-headEventCh:
+					setHead(ev.Header)
+				case <-time.After(time.Second * 10):
+					setHead(s.blockchain.CurrentBlock())
+				case ch := <-s.closeFilterMaps:
+					close(ch)
+					return
+			}
+		} else {
+			select {
+				case ev := <-headEventCh:
+					setHead(ev.Header)
+				case <-time.After(time.Second * 10):
+					setHead(s.blockchain.CurrentBlock())
+				case ch := <-s.closeFilterMaps:
+					close(ch)
+					return
+			}
+		}
 	}
 }
 
