@@ -44,8 +44,6 @@ type epochCheckpoint struct {
 
 var checkpoints = []checkpointList{}
 
-const headCacheSize = 4 // maximum number of recent filter maps cached in memory
-
 // FilterMaps is the in-memory representation of the log index structure that is
 // responsible for building and updating the index according to the canonical
 // chain.
@@ -67,13 +65,9 @@ type FilterMaps struct {
 	indexLock sync.RWMutex
 	filterMapsRange
 	indexedView chainView // always consistent with the log index
-	// filterMapCache caches certain filter maps (headCacheSize most recent maps
-	// and one tail map) that are expected to be frequently accessed and modified
-	// while updating the structure. Note that the set of cached maps depends
-	// only on filterMapsRange and rows of other maps are not cached here.
-	filterMapCache map[uint32]filterMap
 
 	// also accessed by indexer and matcher backend but no locking needed.
+	filterMapCache *lru.Cache[uint32, filterMap]
 	lastBlockCache *lru.Cache[uint32, lastBlockOfMap]
 	lvPointerCache *lru.Cache[uint64, uint64]
 
@@ -97,6 +91,9 @@ type FilterMaps struct {
 	targetViewCh       chan chainView
 	matcherSyncCh      chan *FilterMapsMatcherBackend
 	waitIdleCh         chan chan bool
+	
+	// test hooks
+	testDisableSnapshots, testSnapshotUsed bool
 }
 
 // filterMap is a full or partial in-memory representation of a filter map where
@@ -199,7 +196,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 		},
 		matcherSyncCh:   make(chan *FilterMapsMatcherBackend),
 		matchers:        make(map[*FilterMapsMatcherBackend]struct{}),
-		filterMapCache:  make(map[uint32]filterMap),
+		filterMapCache:  lru.NewCache[uint32, filterMap](3),	//TODO named consts
 		lastBlockCache:  lru.NewCache[uint32, lastBlockOfMap](1000),
 		lvPointerCache:  lru.NewCache[uint64, uint64](1000),
 		renderSnapshots: lru.NewCache[uint64, *renderedMap](cachedRevertPoints),
@@ -207,6 +204,13 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 	f.targetView = initView
 	if f.initialized {
 		f.indexedView = f.initChainView(f.targetView)
+		if !f.testDisableSnapshots && f.afterLastIndexedBlock == f.targetBlockNumber+1 &&
+		 f.firstRenderedMap < f.afterLastRenderedMap {
+			// previous target head rendered; load last map as snapshot
+			if err:=f.loadHeadSnapshot();err!=nil {
+				log.Error("Could not load head filter map snapshot", "error", err)
+			}
+		}
 	}
 	if f.hasIndexedBlocks() {
 		log.Trace("Log index head", "number", f.targetBlockNumber, "id", f.targetBlockId.String(), "log value pointer", f.headBlockDelimiter)
@@ -258,7 +262,7 @@ func (f *FilterMaps) reset() bool {
 	f.indexLock.Lock()
 	f.filterMapsRange = filterMapsRange{}
 	f.indexedView = nil
-	f.filterMapCache = make(map[uint32]filterMap)
+	f.filterMapCache.Purge()
 	f.renderSnapshots.Purge()
 	f.lastBlockCache.Purge()
 	f.lvPointerCache.Purge()
@@ -357,7 +361,6 @@ func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRan
 		panic("qqqq")
 	}
 	f.filterMapsRange = newRange
-	f.updateMapCache()
 	f.updateMatchersValidRange()
 	if newRange.initialized {
 		rs := rawdb.FilterMapsRange{
@@ -374,33 +377,6 @@ func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRan
 	} else {
 		rawdb.DeleteFilterMapsRange(batch)
 	}
-}
-
-// updateMapCache updates the maps covered by the filterMapCache according to the
-// covered range.
-// Note that this function assumes that the index write lock is being held.
-func (f *FilterMaps) updateMapCache() {
-	if !f.initialized {
-		return
-	}
-	newFilterMapCache := make(map[uint32]filterMap)
-	headCacheFirst := f.firstRenderedMap + 1
-	if f.afterLastRenderedMap > headCacheFirst+headCacheSize {
-		headCacheFirst = f.afterLastRenderedMap - headCacheSize
-	}
-	fm := f.filterMapCache[f.firstRenderedMap]
-	if fm == nil {
-		fm = make(filterMap, f.mapHeight)
-	}
-	newFilterMapCache[f.firstRenderedMap] = fm
-	for mapIndex := headCacheFirst; mapIndex < f.afterLastRenderedMap; mapIndex++ {
-		fm := f.filterMapCache[mapIndex]
-		if fm == nil {
-			fm = make(filterMap, f.mapHeight)
-		}
-		newFilterMapCache[mapIndex] = fm
-	}
-	f.filterMapCache = newFilterMapCache
 }
 
 // getLogByLvIndex returns the log at the given log value index. If the index does
@@ -468,50 +444,28 @@ func (f *FilterMaps) getLogByLvIndex(lvIndex uint64) (*types.Log, error) {
 	return nil, nil
 }
 
-// getFilterMapRow returns the given row of the given map. If the row is empty
-// then a non-nil zero length row is returned.
-// Note that the returned slices should not be modified, they should be copied
-// on write.
-// Note that the function assumes that the indexLock is not being held (should
-// only be called from the updateLoop goroutine).
-func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, error) {
-	fm := f.filterMapCache[mapIndex]
-	if fm != nil && fm[rowIndex] != nil {
-		return fm[rowIndex], nil
+func (f *FilterMaps) getFilterMap(mapIndex uint32) (filterMap, error) {
+	if fm, ok := f.filterMapCache.Get(mapIndex); ok {
+		return fm, nil
 	}
-	row, err := rawdb.ReadFilterMapRow(f.db, f.mapRowIndex(mapIndex, rowIndex))
-	if err != nil {
-		return nil, err
+	fm := make(filterMap, f.mapHeight)
+	for rowIndex := range fm {
+		var err error
+		fm[rowIndex], err = f.getFilterMapRow(mapIndex, uint32(rowIndex))
+		if err != nil {
+			return nil, err
+		}
 	}
-	if fm != nil {
-		f.indexLock.Lock()
-		fm[rowIndex] = FilterRow(row)
-		f.indexLock.Unlock()
-	}
-	return FilterRow(row), nil
+	f.filterMapCache.Add(mapIndex, fm)
+	return fm, nil
 }
 
-// getFilterMapRowUncached returns the given row of the given map. If the row is
-// empty then a non-nil zero length row is returned.
-// This function bypasses the memory cache which is mostly useful for processing
-// the head and tail maps during the indexing process and should be used by the
-// matcher backend which rarely accesses the same row twice and therefore does
-// not really benefit from caching anyways.
-// The function is unaffected by the indexLock mutex.
-func (f *FilterMaps) getFilterMapRowUncached(mapIndex, rowIndex uint32) (FilterRow, error) {
+func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, error) {
 	row, err := rawdb.ReadFilterMapRow(f.db, f.mapRowIndex(mapIndex, rowIndex))
 	return FilterRow(row), err
 }
 
-// storeFilterMapRow stores a row at the given row index of the given map and also
-// caches it in filterMapCache if the given map is cached.
-// Note that empty rows are not stored in the database and therefore there is no
-// separate delete function; deleting a row is the same as storing an empty row.
-// Note that this function assumes that the indexer write lock is being held.
 func (f *FilterMaps) storeFilterMapRow(batch ethdb.Batch, mapIndex, rowIndex uint32, row FilterRow) {
-	if fm := f.filterMapCache[mapIndex]; fm != nil {
-		fm[rowIndex] = row
-	}
 	rawdb.WriteFilterMapRow(batch, f.mapRowIndex(mapIndex, rowIndex), []uint32(row))
 }
 
@@ -617,8 +571,16 @@ func (f *FilterMaps) deleteTailEpoch(epoch uint32) error {
 	}
 	f.setRange(f.db, fmr)
 	rawdb.DeleteFilterMapRows(f.db, f.mapRowIndex(firstMap, 0), f.mapRowIndex(firstMap+f.mapsPerEpoch, 0))
+	for mapIndex := firstMap; mapIndex < firstMap+f.mapsPerEpoch; mapIndex++ {
+		f.filterMapCache.Remove(mapIndex)
+	}
 	rawdb.DeleteFilterMapLastBlocks(f.db, firstMap, firstMap+f.mapsPerEpoch-1) // keep last enrty
+	for mapIndex := firstMap; mapIndex < firstMap+f.mapsPerEpoch-1; mapIndex++ {
+		f.lastBlockCache.Remove(mapIndex)
+	}
 	rawdb.DeleteBlockLvPointers(f.db, firstBlock, lastBlock)                   // keep last enrty
-	//TODO remove from cache
+	for blockNumber := firstBlock; blockNumber < lastBlock; blockNumber++ {
+		f.lvPointerCache.Remove(blockNumber)
+	}
 	return nil
 }

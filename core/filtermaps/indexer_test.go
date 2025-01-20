@@ -19,6 +19,7 @@ package filtermaps
 import (
 	crand "crypto/rand"
 	"crypto/sha256"
+	"fmt"
 	"math/big"
 	"math/rand"
 	"sync"
@@ -56,14 +57,16 @@ func TestIndexerRandomRange(t *testing.T) {
 	lvPerBlock := uint64(51)
 	ts.setHistory(0, false)
 	var (
-		history    int
-		noHistory  bool
-		fork, head = len(forks) - 1, 1000
+		history       int
+		noHistory     bool
+		fork, head    = len(forks) - 1, 1000
+		checkSnapshot bool
 	)
 	ts.fm.WaitIdle()
 	for i := 0; i < 200; i++ {
-		switch rand.Intn(2) {
+		switch rand.Intn(3) {
 		case 0:
+			fmt.Println("*** t0")
 			// change history settings
 			switch rand.Intn(10) {
 			case 0:
@@ -73,13 +76,31 @@ func TestIndexerRandomRange(t *testing.T) {
 			default:
 				history, noHistory = rand.Intn(1000)+1, false
 			}
+			ts.testDisableSnapshots = rand.Intn(2) == 0
 			ts.setHistory(uint64(history), noHistory)
 		case 1:
-			// change head
+			fmt.Println("*** t1")
+			// change head to random position of random fork
 			fork, head = rand.Intn(len(forks)), rand.Intn(1001)
 			ts.chain.setCanonicalChain(forks[fork][:head+1])
+		case 2:
+			if head < 1000 {
+				// add blocks after the current head
+				fmt.Println("*** t2 extend head b", head, ts.testDisableSnapshots)
+				head += rand.Intn(1000-head) + 1
+				fmt.Println("*** extend head a", head)
+				ts.fm.testSnapshotUsed = false
+				checkSnapshot = true
+				ts.chain.setCanonicalChain(forks[fork][:head+1])
+			}
 		}
 		ts.fm.WaitIdle()
+		if checkSnapshot {
+			if ts.fm.testSnapshotUsed == ts.fm.testDisableSnapshots {
+				//TODO ts.t.Fatalf("Invalid snapshot used state after head extension (used: %v, disabled: %v)", ts.fm.testSnapshotUsed, ts.fm.testDisableSnapshots)
+			}
+			checkSnapshot = false
+		}
 		if noHistory {
 			if ts.fm.initialized {
 				t.Fatalf("filterMapsRange initialized while indexing is disabled")
@@ -183,12 +204,13 @@ func TestIndexerCompareDb(t *testing.T) {
 }
 
 type testSetup struct {
-	t        *testing.T
-	fm       *FilterMaps
-	db       ethdb.Database
-	chain    *testChain
-	params   Params
-	dbHashes map[string]common.Hash
+	t                    *testing.T
+	fm                   *FilterMaps
+	db                   ethdb.Database
+	chain                *testChain
+	params               Params
+	dbHashes             map[string]common.Hash
+	testDisableSnapshots bool
 }
 
 func newTestSetup(t *testing.T) *testSetup {
@@ -210,6 +232,7 @@ func (ts *testSetup) setHistory(history uint64, noHistory bool) {
 	}
 	head := ts.chain.CurrentBlock()
 	ts.fm = NewFilterMaps(ts.db, NewStoredChainView(ts.chain, head.Number.Uint64(), head.Hash()), ts.params, history, 1, noHistory)
+	ts.fm.testDisableSnapshots = ts.testDisableSnapshots
 	ts.fm.Start()
 }
 

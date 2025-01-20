@@ -75,7 +75,7 @@ func (fm *FilterMapsMatcherBackend) Close() {
 // on write.
 // GetFilterMapRow implements MatcherBackend.
 func (fm *FilterMapsMatcherBackend) GetFilterMapRow(ctx context.Context, mapIndex, rowIndex uint32) (FilterRow, error) {
-	return fm.f.getFilterMapRowUncached(mapIndex, rowIndex)
+	return fm.f.getFilterMapRow(mapIndex, rowIndex)
 }
 
 // GetBlockLvPointer returns the starting log value index where the log values

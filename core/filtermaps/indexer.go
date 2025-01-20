@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	cachedRevertPoints = 16              // revert points for most recent blocks in memory
+	cachedRevertPoints = 8               // revert points for most recent blocks in memory
 	logFrequency       = time.Second * 8 // log info frequency during long indexing/unindexing process
 )
 
@@ -38,10 +38,6 @@ func (f *FilterMaps) indexerLoop() {
 		f.reset()
 		return
 	}
-
-	f.indexLock.Lock()
-	f.updateMapCache()
-	f.indexLock.Unlock()
 
 	for !f.stop {
 		fmt.Println("loop")

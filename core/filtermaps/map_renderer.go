@@ -66,7 +66,6 @@ func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error)
 	if f.targetView == nil {
 		panic("bbbbbbbbbbbbbbbb")
 	}
-	snapshot := f.findLastSnapshotBefore(afterLastMap)
 	//fmt.Println(" flmbb start")
 	nextMap, startBlock, startLvPtr, err := f.findLastMapBoundaryBefore(afterLastMap)
 	fmt.Println(" flmbb", nextMap, startBlock, startLvPtr)
@@ -74,7 +73,7 @@ func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error)
 		fmt.Println(" flmbb err", err)
 		return nil, err
 	}
-	if snapshot != nil && snapshot.mapIndex >= nextMap {
+	if snapshot := f.findLastSnapshotBefore(afterLastMap); snapshot != nil && snapshot.mapIndex >= nextMap {
 		return f.renderMapsFromSnapshot(snapshot)
 	}
 	if nextMap >= afterLastMap {
@@ -85,12 +84,22 @@ func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error)
 
 func (f *FilterMaps) findLastSnapshotBefore(afterLastMap uint32) *renderedMap {
 	var best *renderedMap
+	fmt.Println("*** findLastSnapshotBefore", afterLastMap)
 	for _, blockNumber := range f.renderSnapshots.Keys() {
-		if cp, _ := f.renderSnapshots.Get(blockNumber); cp != nil &&
-			f.targetView.getBlockId(blockNumber) == cp.lastBlockId &&
+		fmt.Println(" key", blockNumber)
+		if cp, _ := f.renderSnapshots.Get(blockNumber); cp != nil {
+			fmt.Println("  cp", blockNumber <= f.targetView.headNumber() && f.targetView.getBlockId(blockNumber) == cp.lastBlockId, f.targetView.headNumber(), cp)
+		}
+		if cp, _ := f.renderSnapshots.Get(blockNumber); cp != nil && blockNumber < f.afterLastIndexedBlock &&
+			blockNumber <= f.targetView.headNumber() && f.targetView.getBlockId(blockNumber) == cp.lastBlockId &&
 			cp.mapIndex < afterLastMap && (best == nil || blockNumber > best.lastBlock) {
 			best = cp
 		}
+	}
+	if best != nil {
+		fmt.Println("*** findLastSnapshotBefore", afterLastMap, best.lastBlock)
+	} else {
+		fmt.Println("*** findLastSnapshotBefore", afterLastMap, "none")
 	}
 	return best
 }
@@ -151,8 +160,11 @@ func (f *FilterMaps) lastMapBoundaryBefore(mapIndex uint32) (uint32, bool) {
 }
 
 func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, error) {
+	fmt.Println("renderMapsFromSnapshot", cp.lastBlock)
+	f.testSnapshotUsed = true
 	iter, err := f.newLogIteratorFromBlockDelimiter(cp.lastBlock)
 	if err != nil {
+		fmt.Println(" rmfs err", err)
 		return nil, err
 	}
 	return &mapRenderer{
@@ -193,15 +205,54 @@ func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, afterLastMap uint32, st
 	}, nil
 }
 
-func (r *mapRenderer) makeCheckpoint() *renderedMap {
-	return &renderedMap{
+func (r *mapRenderer) makeSnapshot() {
+	r.f.renderSnapshots.Add(r.iterator.blockNumber, &renderedMap{
 		filterMap:     r.currentMap.filterMap.copy(),
 		mapIndex:      r.currentMap.mapIndex,
 		lastBlock:     r.iterator.blockNumber,
+		lastBlockId:   r.f.targetView.getBlockId(r.currentMap.lastBlock),
 		blockLvPtrs:   r.currentMap.blockLvPtrs,
 		finished:      true,
 		headDelimiter: r.iterator.lvIndex,
+	})
+	fmt.Println("*** added snapshot", r.iterator.blockNumber)
+}
+
+func (f *FilterMaps) loadHeadSnapshot() error {
+	fm, err := f.getFilterMap(f.afterLastRenderedMap - 1)
+	if err != nil {
+		return err
 	}
+	lastBlock, _, err := f.getLastBlockOfMap(f.afterLastRenderedMap - 1)
+	if err != nil {
+		return err
+	}
+	var firstBlock uint64
+	if f.afterLastRenderedMap > 1 {
+		prevLastBlock, _, err := f.getLastBlockOfMap(f.afterLastRenderedMap - 2)
+		if err != nil {
+			return err
+		}
+		firstBlock = prevLastBlock + 1
+	}
+	lvPtrs := make([]uint64, lastBlock+1-firstBlock)
+	for i := range lvPtrs {
+		lvPtrs[i], err = f.getBlockLvPointer(firstBlock + uint64(i))
+		if err != nil {
+			return err
+		}
+	}
+	f.renderSnapshots.Add(f.targetBlockNumber, &renderedMap{
+		filterMap:     fm,
+		mapIndex:      f.afterLastRenderedMap - 1,
+		lastBlock:     f.targetBlockNumber,
+		lastBlockId:   f.targetBlockId,
+		blockLvPtrs:   lvPtrs,
+		finished:      true,
+		headDelimiter: f.headBlockDelimiter,
+	})
+	fmt.Println("*** loaded head snapshot", f.targetBlockNumber)
+	return nil
 }
 
 func (r *mapRenderer) renderMaps(stopFn func() bool) (bool, error) {
@@ -272,6 +323,10 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 		if err := r.iterator.next(); err != nil {
 			return false, err
 		}
+		if !r.f.testDisableSnapshots && r.afterLastMap >= r.f.afterLastRenderedMap &&
+			(r.iterator.delimiter || r.iterator.finished) {
+			r.makeSnapshot()
+		}
 	}
 	if r.iterator.finished {
 		r.currentMap.finished = true
@@ -299,18 +354,31 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	for rowIndex := uint32(0); rowIndex < r.f.mapHeight; rowIndex++ {
 		for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 			row := r.finishedMaps[mapIndex].filterMap[rowIndex]
-			if fm := r.f.filterMapCache[mapIndex]; fm != nil && row.Equal(fm[rowIndex]) {
+			if fm, _ := r.f.filterMapCache.Get(mapIndex); fm != nil && row.Equal(fm[rowIndex]) {
 				continue
 			}
 			r.f.storeFilterMapRow(batch, mapIndex, rowIndex, row)
 		}
 		if r.f.afterLastRenderedMap == r.afterLastFinished { // head updated; remove future entries
 			for mapIndex := r.afterLastFinished; mapIndex < oldRange.afterLastRenderedMap; mapIndex++ {
-				if fm := r.f.filterMapCache[mapIndex]; fm != nil && len(fm[rowIndex]) == 0 {
+				if fm, _ := r.f.filterMapCache.Get(mapIndex); fm != nil && len(fm[rowIndex]) == 0 {
 					continue
 				}
 				r.f.storeFilterMapRow(batch, mapIndex, rowIndex, nil)
 			}
+		}
+	}
+	// update filter map cache
+	if r.f.afterLastRenderedMap == r.afterLastFinished {
+		for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
+			r.f.filterMapCache.Add(mapIndex, r.finishedMaps[mapIndex].filterMap)
+		}
+		for mapIndex := r.afterLastFinished; mapIndex < oldRange.afterLastRenderedMap; mapIndex++ {
+			r.f.filterMapCache.Remove(mapIndex)
+		}
+	} else {
+		for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
+			r.f.filterMapCache.Remove(mapIndex)
 		}
 	}
 	// add or update block pointers
@@ -489,6 +557,7 @@ func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logI
 		return nil, errors.New("iterator entry point after target chain head")
 	}
 	if blockNumber < f.firstIndexedBlock || blockNumber >= f.afterLastIndexedBlock {
+		fmt.Println(" range err", blockNumber, f.firstIndexedBlock, f.afterLastIndexedBlock)
 		return nil, errUnindexedRange
 	}
 	if !matchViews(f.indexedView, f.targetView, blockNumber) {
