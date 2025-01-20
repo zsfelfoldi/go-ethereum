@@ -368,6 +368,9 @@ func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRan
 	} else {
 		rawdb.DeleteFilterMapsRange(batch)
 	}
+	if f.hasIndexedBlocks() {
+		log.Info("Updated log index range", "first", newRange.firstIndexedBlock, "last", newRange.afterLastIndexedBlock-1)
+	}
 }
 
 // getLogByLvIndex returns the log at the given log value index. If the index does

@@ -23,12 +23,14 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 const (
 	valuesPerCallback = 10000
-	maxMapsPerBatch   = 16
+	maxMapsPerBatch   = 1
 )
 
 var (
@@ -260,6 +262,10 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 	if r.iterator.lvIndex == 0 {
 		r.currentMap.blockLvPtrs = []uint64{0}
 	}
+	type lvPos struct { rowIndex, alternativeIndex uint32 }
+	rowIndexCache := lru.NewCache[common.Hash, lvPos](10000)
+	defer rowIndexCache.Purge()
+
 	for r.iterator.lvIndex < uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap && !r.iterator.finished {
 		waitCnt++
 		if waitCnt >= valuesPerCallback {
@@ -274,14 +280,19 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 			r.currentMap.blockLvPtrs = append(r.currentMap.blockLvPtrs, r.iterator.lvIndex+1)
 		}
 		if logValue := r.iterator.getValueHash(); logValue != (common.Hash{}) {
-			var rowIndex uint32
-			for alternativeIndex := uint32(0); ; alternativeIndex++ {
-				rowIndex = r.f.rowIndex(epoch, alternativeIndex, logValue)
-				if uint32(len(r.currentMap.filterMap[rowIndex])) < r.f.maxRowLength {
-					break
-				}
+			lvp, cached := rowIndexCache.Get(logValue)
+			if !cached {
+				lvp = lvPos{rowIndex: r.f.rowIndex(epoch, 0, logValue)}
 			}
-			r.currentMap.filterMap[rowIndex] = append(r.currentMap.filterMap[rowIndex], r.f.columnIndex(r.iterator.lvIndex, logValue))
+			for uint32(len(r.currentMap.filterMap[lvp.rowIndex])) == r.f.maxRowLength {
+				lvp.alternativeIndex++
+				lvp.rowIndex = r.f.rowIndex(epoch, lvp.alternativeIndex, logValue)
+				cached = false
+			}
+			r.currentMap.filterMap[lvp.rowIndex] = append(r.currentMap.filterMap[lvp.rowIndex], r.f.columnIndex(r.iterator.lvIndex, logValue))
+			if !cached {
+				rowIndexCache.Add(logValue, lvp)
+			}
 		}
 		if err := r.iterator.next(); err != nil {
 			return false, err
@@ -296,6 +307,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 		r.currentMap.headDelimiter = r.iterator.lvIndex
 	}
 	r.currentMap.lastBlockId = r.f.targetView.getBlockId(r.currentMap.lastBlock)
+	log.Info("Map rendered", "mapIndex", r.currentMap.mapIndex)
 	return true, nil
 }
 

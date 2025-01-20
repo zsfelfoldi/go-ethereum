@@ -33,6 +33,7 @@ const (
 func (f *FilterMaps) indexerLoop() {
 	defer f.closeWg.Done()
 
+	log.Info("Started log indexer")
 	if f.noHistory {
 		f.reset()
 		return
@@ -85,6 +86,7 @@ func (f *FilterMaps) tryUpdateHead() bool {
 	if f.targetView == nil {
 		return false
 	}
+	log.Info("Log index head rendering started")
 	headRenderer, err := f.renderMapsBefore(math.MaxUint32)
 	if err != nil {
 		log.Error("Error creating log index head renderer", "error", err)
@@ -211,6 +213,7 @@ func (f *FilterMaps) setTargetView(targetView chainView) {
 		return
 	}
 	f.targetView = targetView
+	log.Info("Updated log index target head", "number", targetView.headNumber())
 }
 
 func (f *FilterMaps) targetHeadIndexed() bool {
