@@ -62,14 +62,14 @@ type blockchain interface {
 	GetReceiptsByHash(hash common.Hash) types.Receipts
 }
 
-type storedChainView struct {
+type StoredChainView struct {
 	chain  blockchain
 	head   uint64
 	hashes []common.Hash // block hashes starting backwards from headNumber until first canonical hash
 }
 
-func NewStoredChainView(chain blockchain, number uint64, hash common.Hash) *storedChainView {
-	cv := &storedChainView{
+func NewStoredChainView(chain blockchain, number uint64, hash common.Hash) *StoredChainView {
+	cv := &StoredChainView{
 		chain:  chain,
 		head:   number,
 		hashes: []common.Hash{hash},
@@ -78,32 +78,32 @@ func NewStoredChainView(chain blockchain, number uint64, hash common.Hash) *stor
 	return cv
 }
 
-func (cv *storedChainView) headNumber() uint64 {
+func (cv *StoredChainView) headNumber() uint64 {
 	return cv.head
 }
 
-func (cv *storedChainView) getBlockHash(number uint64) common.Hash {
+func (cv *StoredChainView) getBlockHash(number uint64) common.Hash {
 	if number >= cv.head {
 		panic("invalid block number")
 	}
 	return cv.blockHash(number)
 }
 
-func (cv *storedChainView) getBlockId(number uint64) common.Hash {
+func (cv *StoredChainView) getBlockId(number uint64) common.Hash {
 	if number > cv.head {
 		panic("invalid block number")
 	}
 	return cv.blockHash(number)
 }
 
-func (cv *storedChainView) getReceipts(number uint64) types.Receipts {
+func (cv *StoredChainView) getReceipts(number uint64) types.Receipts {
 	if number > cv.head {
 		panic("invalid block number")
 	}
 	return cv.chain.GetReceiptsByHash(cv.blockHash(number))
 }
 
-func (cv *storedChainView) extendNonCanonical() bool {
+func (cv *StoredChainView) extendNonCanonical() bool {
 	for {
 		hash, number := cv.hashes[len(cv.hashes)-1], cv.head-uint64(len(cv.hashes)-1)
 		if cv.chain.GetCanonicalHash(number) == hash {
@@ -122,7 +122,7 @@ func (cv *storedChainView) extendNonCanonical() bool {
 	}
 }
 
-func (cv *storedChainView) blockHash(number uint64) common.Hash {
+func (cv *StoredChainView) blockHash(number uint64) common.Hash {
 	if number+uint64(len(cv.hashes)) <= cv.head {
 		hash := cv.chain.GetCanonicalHash(number)
 		if !cv.extendNonCanonical() {
