@@ -59,13 +59,6 @@ func (f *FilterMaps) indexerLoop() {
 	}
 }
 
-func (f *FilterMaps) SetTargetView(targetView chainView) {
-	if f.noHistory {
-		return
-	}
-	f.targetViewCh <- targetView
-}
-
 // WaitIdle blocks until the indexer is in an idle state while synced up to the
 // latest chain head.
 func (f *FilterMaps) WaitIdle() {
@@ -177,7 +170,7 @@ func (f *FilterMaps) waitForEvent() {
 			f.matcherSyncRequest = nil
 		}
 		select {
-		case targetView := <-f.targetViewCh:
+		case targetView := <-f.TargetViewCh:
 			f.setTargetView(targetView)
 		case f.matcherSyncRequest = <-f.matcherSyncCh:
 		case <-f.closeCh:
@@ -196,7 +189,7 @@ func (f *FilterMaps) processEvents() {
 			f.matcherSyncRequest = nil
 		}
 		select {
-		case targetView := <-f.targetViewCh:
+		case targetView := <-f.TargetViewCh:
 			f.setTargetView(targetView)
 		case f.matcherSyncRequest = <-f.matcherSyncCh:
 		case <-f.closeCh:

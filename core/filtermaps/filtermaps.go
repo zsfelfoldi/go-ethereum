@@ -87,7 +87,7 @@ type FilterMaps struct {
 	targetView         chainView
 	matcherSyncRequest *FilterMapsMatcherBackend
 	stop               bool
-	targetViewCh       chan chainView
+	TargetViewCh       chan chainView
 	matcherSyncCh      chan *FilterMapsMatcherBackend
 	waitIdleCh         chan chan bool
 
@@ -176,7 +176,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 		db:           db,
 		closeCh:      make(chan struct{}),
 		waitIdleCh:   make(chan chan bool),
-		targetViewCh: make(chan chainView),
+		TargetViewCh: make(chan chainView),
 		history:      history,
 		noHistory:    noHistory,
 		unindexLimit: unindexLimit,

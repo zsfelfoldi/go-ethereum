@@ -409,7 +409,9 @@ func (tc *testChain) setHead(headNum int) {
 func (tc *testChain) setTargetHead() {
 	head := tc.CurrentBlock()
 	if tc.ts.fm != nil {
-		tc.ts.fm.SetTargetView(NewStoredChainView(tc, head.Number.Uint64(), head.Hash()))
+		if !tc.ts.fm.noHistory {
+			tc.ts.fm.TargetViewCh <- NewStoredChainView(tc, head.Number.Uint64(), head.Hash())
+		}
 	}
 }
 
