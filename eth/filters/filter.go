@@ -169,7 +169,7 @@ func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([
 	}
 	if !syncRange.Indexed {
 		// fallback to completely unindexed search
-		headNum := syncRange.Head.Number.Uint64()
+		headNum := syncRange.HeadNumber
 		if firstBlock > headNum {
 			firstBlock = headNum
 		}
@@ -182,7 +182,7 @@ func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([
 		return f.unindexedLogs(ctx, firstBlock, lastBlock)
 	}
 
-	headBlock := syncRange.Head.Number.Uint64() // Head is guaranteed != nil
+	headBlock := syncRange.HeadNumber // Head is guaranteed != nil
 	// if haveMatches == true then matches correspond to the block number range
 	// between matchFirst and matchLast
 	var (
@@ -299,7 +299,7 @@ func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([
 		if err != nil {
 			return matches, err
 		}
-		headBlock = syncRange.Head.Number.Uint64() // Head is guaranteed != nil
+		headBlock = syncRange.HeadNumber // Head is guaranteed != nil
 		if !syncRange.Valid {
 			matches, haveMatches, matchFirst, matchLast = nil, false, 0, 0
 		} else {

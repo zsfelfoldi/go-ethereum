@@ -87,6 +87,7 @@ type Ethereum struct {
 	closeBloomHandler chan struct{}
 
 	filterMaps *filtermaps.FilterMaps
+	closeFilterMaps chan chan struct{}
 
 	APIBackend *EthAPIBackend
 
@@ -225,7 +226,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		return nil, err
 	}
 	eth.bloomIndexer.Start(eth.blockchain)
-	eth.filterMaps = filtermaps.NewFilterMaps(chainDb, eth.blockchain, filtermaps.DefaultParams, config.LogHistory, 1000, config.LogNoHistory)
+	eth.filterMaps = filtermaps.NewFilterMaps(chainDb, eth.newChainView(eth.blockchain.CurrentBlock()), filtermaps.DefaultParams, config.LogHistory, 1000, config.LogNoHistory)
+	eth.closeFilterMaps = make(chan chan struct{})
 
 	if config.BlobPool.Datadir != "" {
 		config.BlobPool.Datadir = stack.ResolvePath(config.BlobPool.Datadir)
@@ -371,7 +373,31 @@ func (s *Ethereum) Start() error {
 
 	// start log indexer
 	s.filterMaps.Start()
+	go s.updateFilterMapsHeads()
 	return nil
+}
+
+func (s *Ethereum) newChainView(head *types.Header) *filtermaps.StoredChainView {
+	if head == nil {
+		return nil	//TODO ???
+	}
+	return filtermaps.NewStoredChainView(s.blockchain, head.Number.Uint64(), head.Hash())
+}
+
+func (s *Ethereum) updateFilterMapsHeads() {
+	headEventCh := make(chan core.ChainEvent, 10)
+	sub := s.blockchain.SubscribeChainEvent(headEventCh)
+	defer sub.Unsubscribe()
+	
+	for {
+		select {
+			case ev := <-headEventCh:
+				s.filterMaps.SetTargetView(s.newChainView(ev.Header))
+			case ch := <-s.closeFilterMaps:
+				close(ch)
+				return
+		}		
+	}
 }
 
 func (s *Ethereum) setupDiscovery() error {
@@ -416,6 +442,9 @@ func (s *Ethereum) Stop() error {
 	// Then stop everything else.
 	s.bloomIndexer.Close()
 	close(s.closeBloomHandler)
+	ch := make(chan struct{})	
+	s.closeFilterMaps <- ch
+	<-ch
 	s.filterMaps.Stop()
 	s.txPool.Close()
 	s.blockchain.Stop()
