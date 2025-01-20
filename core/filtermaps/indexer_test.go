@@ -86,12 +86,12 @@ func TestIndexerRandomRange(t *testing.T) {
 			ts.chain.setCanonicalChain(forks[fork][:head+1])
 		case 2:
 			if head < 1000 {
+				checkSnapshot = !noHistory && head != 0 // no snapshot generated for block 0
 				// add blocks after the current head
 				fmt.Println("*** t2 extend head b", head, ts.testDisableSnapshots)
 				head += rand.Intn(1000-head) + 1
 				fmt.Println("*** t2 extend head a", head)
 				ts.fm.testSnapshotUsed = false
-				checkSnapshot = !noHistory
 				ts.chain.setCanonicalChain(forks[fork][:head+1])
 			}
 		}
