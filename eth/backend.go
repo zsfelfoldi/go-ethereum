@@ -387,13 +387,25 @@ func (s *Ethereum) newChainView(head *types.Header) *filtermaps.StoredChainView 
 
 func (s *Ethereum) updateFilterMapsHeads() {
 	headEventCh := make(chan core.ChainEvent, 10)
+	blockProcCh := make(chan bool, 10)
 	sub := s.blockchain.SubscribeChainEvent(headEventCh)
-	defer sub.Unsubscribe()
-	sub2 := s.blockchain.SubscribeBlockProcessingEvent(s.filterMaps.BlockProcessingCh)
-	defer sub2.Unsubscribe()
+	sub2 := s.blockchain.SubscribeBlockProcessingEvent(blockProcCh)
+	defer func() {
+		sub.Unsubscribe()
+		sub2.Unsubscribe()
+		for {
+			select {
+				case <-headEventCh:
+				case <-blockProcCh:
+				default:
+					return
+			}
+		}
+	}()
 	
 	head := s.blockchain.CurrentBlock()
 	targetView := s.newChainView(head) // nil if already sent to channel
+	var blockProc, lastBlockProc bool
 	
 	setHead := func(newHead *types.Header) {
 		if newHead == nil {
@@ -406,12 +418,28 @@ func (s *Ethereum) updateFilterMapsHeads() {
 	}
 	
 	for {
-		if targetView != nil {
+		if blockProc != lastBlockProc {
+			select {
+				case s.filterMaps.BlockProcessingCh <- blockProc:
+					lastBlockProc = blockProc
+				case ev := <-headEventCh:
+					setHead(ev.Header)
+				case blockProc = <-blockProcCh:
+					fmt.Println("block proc feed", blockProc)
+				case <-time.After(time.Second * 10):
+					setHead(s.blockchain.CurrentBlock())
+				case ch := <-s.closeFilterMaps:
+					close(ch)
+					return
+			}
+		} else if targetView != nil {
 			select {
 				case s.filterMaps.TargetViewCh <- targetView:
 					targetView = nil
 				case ev := <-headEventCh:
 					setHead(ev.Header)
+				case blockProc = <-blockProcCh:
+					fmt.Println("block proc feed", blockProc)
 				case <-time.After(time.Second * 10):
 					setHead(s.blockchain.CurrentBlock())
 				case ch := <-s.closeFilterMaps:
@@ -424,6 +452,8 @@ func (s *Ethereum) updateFilterMapsHeads() {
 					setHead(ev.Header)
 				case <-time.After(time.Second * 10):
 					setHead(s.blockchain.CurrentBlock())
+				case blockProc = <-blockProcCh:
+					fmt.Println("block proc feed", blockProc)
 				case ch := <-s.closeFilterMaps:
 					close(ch)
 					return
