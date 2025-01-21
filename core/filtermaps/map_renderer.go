@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	valuesPerCallback = 10000
+	valuesPerCallback = 1000
 	maxMapsPerBatch   = 1
 )
 
