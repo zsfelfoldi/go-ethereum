@@ -17,6 +17,7 @@
 package filtermaps
 
 import (
+	"fmt"
 	"math"
 	"time"
 
@@ -189,6 +190,7 @@ func (f *FilterMaps) processSingleEvent(blocking bool) bool {
 			f.setTargetView(targetView)
 		case f.matcherSyncRequest = <-f.matcherSyncCh:
 		case f.blockProcessing = <-f.BlockProcessingCh:
+			fmt.Println("block processing", f.blockProcessing)
 		case <-f.closeCh:
 			f.stop = true
 		case ch := <-f.waitIdleCh:
@@ -200,6 +202,7 @@ func (f *FilterMaps) processSingleEvent(blocking bool) bool {
 			f.setTargetView(targetView)
 		case f.matcherSyncRequest = <-f.matcherSyncCh:
 		case f.blockProcessing = <-f.BlockProcessingCh:
+			fmt.Println("block processing", f.blockProcessing)
 		case <-f.closeCh:
 			f.stop = true
 		default:
