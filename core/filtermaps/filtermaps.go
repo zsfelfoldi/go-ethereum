@@ -90,6 +90,7 @@ type FilterMaps struct {
 	TargetViewCh       chan chainView
 	matcherSyncCh      chan *FilterMapsMatcherBackend
 	waitIdleCh         chan chan bool
+	tailRenderer 		*mapRenderer
 
 	// test hooks
 	testDisableSnapshots, testSnapshotUsed bool
@@ -369,7 +370,8 @@ func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRan
 		rawdb.DeleteFilterMapsRange(batch)
 	}
 	if f.hasIndexedBlocks() {
-		log.Info("Updated log index range", "first", newRange.firstIndexedBlock, "last", newRange.afterLastIndexedBlock-1)
+		log.Info("Updated log index range", "firstBlock", newRange.firstIndexedBlock, "lastBlock", newRange.afterLastIndexedBlock-1,
+		 "firstMap", newRange.firstRenderedMap, "lastMap", newRange.afterLastRenderedMap-1)
 	}
 }
 

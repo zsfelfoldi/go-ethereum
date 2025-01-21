@@ -52,7 +52,7 @@ func (f *FilterMaps) indexerLoop() {
 				f.waitForEvent()
 			}
 		} else {
-			if f.tryUpdateTail() { //TODO keep renderer
+			if f.tryUpdateTail() {
 				f.waitForEvent()
 			}
 		}
@@ -105,9 +105,23 @@ func (f *FilterMaps) tryUpdateTail() bool {
 			return false
 		}
 		firstEpoch := f.firstRenderedMap >> f.logMapsPerEpoch
+
+		tailRenderer := f.tailRenderer
+		f.tailRenderer = nil
+		if tailRenderer != nil && tailRenderer.afterLastMap != f.firstRenderedMap {
+			tailRenderer = nil
+		}
+
 		if firstEpoch > 0 {
 			if f.needTailEpoch(firstEpoch - 1) {
-				tailRenderer, err := f.renderMapsBefore(f.firstRenderedMap)
+				if tailRenderer == nil {
+					var err error
+					tailRenderer, err = f.renderMapsBefore(f.firstRenderedMap)
+					if err != nil {
+						log.Error("Error creating log index tail renderer", "error", err)
+						return false
+					}
+				}
 				if tailRenderer == nil {
 					return false
 				}
@@ -119,6 +133,7 @@ func (f *FilterMaps) tryUpdateTail() bool {
 					log.Error("Log index tail rendering failed", "error", err)
 				}
 				if !done {
+					f.tailRenderer = tailRenderer // only keep tail renderer if interrupted by stopFn
 					return false
 				}
 				continue

@@ -157,7 +157,7 @@ func (cv *limitedChainView) getBlockHash(number uint64) common.Hash {
 		panic("invalid block number")
 	}
 	if number > cv.knownLimit {
-		return common.Hash{} //TODO dummy hash?
+		return common.Hash{}
 	}
 	return cv.parent.getBlockHash(number)
 }
@@ -167,7 +167,7 @@ func (cv *limitedChainView) getBlockId(number uint64) common.Hash {
 		panic("invalid block number")
 	}
 	if number > cv.knownLimit {
-		return common.Hash{} //TODO dummy hash?
+		return common.Hash{}
 	}
 	return cv.parent.getBlockId(number)
 }

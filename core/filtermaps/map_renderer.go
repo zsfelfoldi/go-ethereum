@@ -605,20 +605,6 @@ func (l *logIterator) nextValid() {
 	}
 }
 
-//TODO
-/*func (l *logIterator) getLog() (*types.Log, *types.Header) {
-	if l.finished {
-		return nil, nil
-	}
-	if l.delimiter {
-		return nil, l.chainView.getHeader(l.blockNumber)
-	}
-	if l.topicIndex != 0 {
-		return nil, nil
-	}
-	return l.receipts[l.txindex].Logs[l.logIndex]
-}*/
-
 func (l *logIterator) getValueHash() common.Hash {
 	if l.delimiter || l.finished {
 		return common.Hash{}
