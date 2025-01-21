@@ -2372,6 +2372,9 @@ func (bc *BlockChain) reorg(oldHead *types.Header, newHead *types.Header) error 
 // updating. It relies on the additional SetCanonical call to finalize the entire
 // procedure.
 func (bc *BlockChain) InsertBlockWithoutSetHead(block *types.Block, makeWitness bool) (*stateless.Witness, error) {
+	bc.blockProcFeed.Send(true)
+	defer bc.blockProcFeed.Send(false)
+
 	if !bc.chainmu.TryLock() {
 		return nil, errChainStopped
 	}
