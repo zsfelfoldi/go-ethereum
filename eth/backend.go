@@ -389,6 +389,8 @@ func (s *Ethereum) updateFilterMapsHeads() {
 	headEventCh := make(chan core.ChainEvent, 10)
 	sub := s.blockchain.SubscribeChainEvent(headEventCh)
 	defer sub.Unsubscribe()
+	sub2 := s.blockchain.SubscribeBlockProcessingEvent(s.filterMaps.BlockProcessingCh)
+	defer sub2.Unsubscribe()
 	
 	head := s.blockchain.CurrentBlock()
 	targetView := s.newChainView(head) // nil if already sent to channel
