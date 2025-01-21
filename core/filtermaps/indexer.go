@@ -178,41 +178,45 @@ func (f *FilterMaps) tailTargetBlock() uint64 {
 	return f.targetBlockNumber + 1 - f.history
 }
 
-func (f *FilterMaps) waitForEvent() {
-	for f.targetHeadIndexed() {
-		if f.matcherSyncRequest != nil {
-			f.matcherSyncRequest.synced(f.targetBlockNumber)
-			f.matcherSyncRequest = nil
-		}
+func (f *FilterMaps) processSingleEvent(blocking bool) bool {
+	if f.matcherSyncRequest != nil {
+		f.matcherSyncRequest.synced(f.targetBlockNumber)
+		f.matcherSyncRequest = nil
+	}
+	if blocking {
 		select {
 		case targetView := <-f.TargetViewCh:
 			f.setTargetView(targetView)
 		case f.matcherSyncRequest = <-f.matcherSyncCh:
+		case f.blockProcessing = <-f.BlockProcessingCh:
 		case <-f.closeCh:
 			f.stop = true
-			return
 		case ch := <-f.waitIdleCh:
-			ch <- f.targetHeadIndexed()
+			ch <- !f.blockProcessing && f.targetHeadIndexed()
 		}
+	} else {
+		select {
+		case targetView := <-f.TargetViewCh:
+			f.setTargetView(targetView)
+		case f.matcherSyncRequest = <-f.matcherSyncCh:
+		case f.blockProcessing = <-f.BlockProcessingCh:
+		case <-f.closeCh:
+			f.stop = true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func (f *FilterMaps) waitForEvent() {
+	for !f.stop && (f.blockProcessing || f.targetHeadIndexed()) {
+		f.processSingleEvent(true)
 	}
 }
 
 func (f *FilterMaps) processEvents() {
-	for {
-		if f.matcherSyncRequest != nil && f.targetHeadIndexed() {
-			f.matcherSyncRequest.synced(f.targetBlockNumber)
-			f.matcherSyncRequest = nil
-		}
-		select {
-		case targetView := <-f.TargetViewCh:
-			f.setTargetView(targetView)
-		case f.matcherSyncRequest = <-f.matcherSyncCh:
-		case <-f.closeCh:
-			f.stop = true
-			return
-		default:
-			return
-		}
+	for !f.stop && f.processSingleEvent(f.blockProcessing) {
 	}
 }
 
