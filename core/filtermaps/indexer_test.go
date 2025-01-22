@@ -226,7 +226,7 @@ func (ts *testSetup) setHistory(history uint64, noHistory bool) {
 		ts.fm.Stop()
 	}
 	head := ts.chain.CurrentBlock()
-	ts.fm = NewFilterMaps(ts.db, NewStoredChainView(ts.chain, head.Number.Uint64(), head.Hash()), ts.params, history, 1, noHistory)
+	ts.fm = NewFilterMaps(ts.db, NewStoredChainView(ts.chain, head.Number.Uint64(), head.Hash()), ts.params, history, 1, noHistory, "")
 	ts.fm.testDisableSnapshots = ts.testDisableSnapshots
 	ts.fm.Start()
 }

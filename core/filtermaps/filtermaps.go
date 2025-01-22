@@ -243,7 +243,7 @@ func (f *FilterMaps) initChainView(chainView chainView) chainView {
 			log.Error("Could not initialize indexed chain view", "error", err)
 			break
 		}
-		if chainView.getBlockId(lastBlockNumber) == lastBlockId {
+		if lastBlockNumber <= chainView.headNumber() && chainView.getBlockId(lastBlockNumber) == lastBlockId {
 			return newLimitedChainView(chainView, lastBlockNumber, f.targetBlockNumber)
 		}
 	}

@@ -18,6 +18,7 @@ package filtermaps
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 
@@ -272,6 +273,9 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 			if stopFn() {
 				return false, nil
 			}
+			if !r.iterator.updateChainView(r.f.targetView) {
+				return false, errChainUpdate
+			}
 			waitCnt = 0
 		}
 		r.currentMap.lastBlock = r.iterator.blockNumber
@@ -327,6 +331,7 @@ func (r *mapRenderer) writeFinishedMaps(stopFn func() bool) error {
 	if err != nil {
 		return err
 	}
+	renderedView := r.f.targetView // stopFn callback might still change targetView while writing finished maps
 
 	batch := r.f.db.NewBatch()
 	var writeCnt int
@@ -405,7 +410,7 @@ func (r *mapRenderer) writeFinishedMaps(stopFn func() bool) error {
 	}
 	r.finishedMaps = make(map[uint32]*renderedMap)
 	r.firstFinished = r.afterLastFinished
-	r.f.indexedView = r.f.targetView
+	r.f.indexedView = renderedView
 	r.f.setRange(batch, newRange, true)
 	if err := batch.Write(); err != nil {
 		log.Crit("Error writing log index update batch", "error", err)
@@ -472,6 +477,7 @@ func (r *mapRenderer) getUpdatedRange() (filterMapsRange, error) {
 		if lm.finished {
 			newRange.afterLastIndexedBlock = newRange.targetBlockNumber + 1
 			if lm.lastBlock != newRange.targetBlockNumber {
+				fmt.Println("***", newRange.targetBlockNumber, lm.lastBlock, lm.headDelimiter)
 				panic("map rendering finished but last block != head block")
 			}
 			newRange.headBlockDelimiter = lm.headDelimiter
@@ -616,6 +622,7 @@ func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, 
 	// iterate to map boundary
 	for l.lvIndex < targetIndex {
 		if l.finished {
+			fmt.Println("***", l.lvIndex, targetIndex)
 			panic("iterator already finished")
 		}
 		if err := l.next(); err != nil {
