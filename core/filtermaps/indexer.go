@@ -252,6 +252,7 @@ func (f *FilterMaps) exportCheckpoints() {
 	defer w.Close()
 
 	epochCount := f.afterLastRenderedMap >> f.logMapsPerEpoch
+	log.Info("Exporting log index checkpoints", "epochs", epochCount, "file", f.exportFileName)
 	w.WriteString("\t{\n")
 	for epoch := uint32(0); epoch < epochCount; epoch++ {
 		lastBlock, lastBlockId, err := f.getLastBlockOfMap((epoch+1)<<f.logMapsPerEpoch - 1)
