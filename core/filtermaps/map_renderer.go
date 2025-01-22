@@ -22,15 +22,14 @@ import (
 	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/common/lru"
-	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 )
 
 const (
 	valuesPerCallback = 1000
-	maxMapsPerBatch   = 1
+	maxMapsPerBatch   = 8
 )
 
 var (
@@ -262,7 +261,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 	if r.iterator.lvIndex == 0 {
 		r.currentMap.blockLvPtrs = []uint64{0}
 	}
-	type lvPos struct { rowIndex, alternativeIndex uint32 }
+	type lvPos struct{ rowIndex, alternativeIndex uint32 }
 	rowIndexCache := lru.NewCache[common.Hash, lvPos](10000)
 	defer rowIndexCache.Purge()
 
@@ -318,11 +317,18 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	r.f.indexLock.Lock()
 	defer r.f.indexLock.Unlock()
 
-	batch := r.f.db.NewBatch()
 	oldRange := r.f.filterMapsRange
-	if err := r.updateRange(batch); err != nil {
+	tempRange, err := r.getUpdatedRange(false)
+	if err != nil {
 		return err
 	}
+	newRange, err := r.getUpdatedRange(true)
+	if err != nil {
+		return err
+	}
+
+	batch := r.f.db.NewBatch()
+	r.f.setRange(batch, tempRange, false)
 	// add or update filter rows
 	for rowIndex := uint32(0); rowIndex < r.f.mapHeight; rowIndex++ {
 		for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
@@ -332,7 +338,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 			}
 			r.f.storeFilterMapRow(batch, mapIndex, rowIndex, row)
 		}
-		if r.f.afterLastRenderedMap == r.afterLastFinished { // head updated; remove future entries
+		if newRange.afterLastRenderedMap == r.afterLastFinished { // head updated; remove future entries
 			for mapIndex := r.afterLastFinished; mapIndex < oldRange.afterLastRenderedMap; mapIndex++ {
 				if fm, _ := r.f.filterMapCache.Get(mapIndex); fm != nil && len(fm[rowIndex]) == 0 {
 					continue
@@ -342,7 +348,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 		}
 	}
 	// update filter map cache
-	if r.f.afterLastRenderedMap == r.afterLastFinished {
+	if newRange.afterLastRenderedMap == r.afterLastFinished {
 		for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 			r.f.filterMapCache.Add(mapIndex, r.finishedMaps[mapIndex].filterMap)
 		}
@@ -367,7 +373,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 			blockNumber++
 		}
 	}
-	if r.f.afterLastRenderedMap == r.afterLastFinished { // head updated; remove future entries
+	if newRange.afterLastRenderedMap == r.afterLastFinished { // head updated; remove future entries
 		for mapIndex := r.afterLastFinished; mapIndex < oldRange.afterLastRenderedMap; mapIndex++ {
 			r.f.deleteLastBlockOfMap(batch, mapIndex)
 		}
@@ -377,22 +383,28 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	}
 	r.finishedMaps = make(map[uint32]*renderedMap)
 	r.firstFinished = r.afterLastFinished
+	r.f.setRange(batch, newRange, true)
 	return batch.Write()
-	return nil
 }
 
-func (r *mapRenderer) updateRange(batch ethdb.Batch) error {
+func (r *mapRenderer) getUpdatedRange(finished bool) (filterMapsRange, error) {
 	// update filterMapsRange
 	newRange := r.f.filterMapsRange
-	if err := r.addRenderedRange(&newRange); err != nil {
-		return err
+	var afterLastFinished uint32
+	if finished {
+		afterLastFinished = r.afterLastFinished
+	} else {
+		afterLastFinished = r.firstFinished
+	}
+	if err := newRange.addRenderedRange(r.firstFinished, afterLastFinished, r.afterLastMap, r.f.mapHeight); err != nil {
+		return filterMapsRange{}, err
 	}
 	if newRange.firstRenderedMap != r.f.firstRenderedMap {
 		// first rendered map changed; update first indexed block
 		if newRange.firstRenderedMap > 0 {
 			lastBlock, _, err := r.f.getLastBlockOfMap(newRange.firstRenderedMap - 1)
 			if err != nil {
-				return err
+				return filterMapsRange{}, err
 			}
 			newRange.firstIndexedBlock = lastBlock + 1
 		} else {
@@ -421,14 +433,13 @@ func (r *mapRenderer) updateRange(batch ethdb.Batch) error {
 		// last rendered map not replaced; ensure that target chain view matches
 		// indexed chain view on the rendered section
 		if lastBlock := r.finishedMaps[r.afterLastFinished-1].lastBlock; !matchViews(r.f.indexedView, r.f.targetView, lastBlock) {
-			return errChainUpdate
+			return filterMapsRange{}, errChainUpdate
 		}
 	}
-	r.f.setRange(batch, newRange)
-	return nil
+	return newRange, nil
 }
 
-func (r *mapRenderer) addRenderedRange(fmr *filterMapsRange) error {
+func (fmr *filterMapsRange) addRenderedRange(firstRendered, afterLastRendered, afterLastRemoved, mapsPerEpoch uint32) error {
 	if !fmr.initialized {
 		return errors.New("log index not initialized")
 	}
@@ -436,9 +447,9 @@ func (r *mapRenderer) addRenderedRange(fmr *filterMapsRange) error {
 		m uint32
 		d int
 	}
-	endpoints := []endpoint{{fmr.firstRenderedMap, 1}, {fmr.afterLastRenderedMap, -1}, {r.firstFinished, 1}, {r.afterLastFinished, -101}, {r.afterLastMap, 100}}
+	endpoints := []endpoint{{fmr.firstRenderedMap, 1}, {fmr.afterLastRenderedMap, -1}, {firstRendered, 1}, {afterLastRendered, -101}, {afterLastRemoved, 100}}
 	if fmr.tailPartialEpoch > 0 {
-		endpoints = append(endpoints, []endpoint{{fmr.firstRenderedMap - r.f.mapsPerEpoch, 1}, {fmr.firstRenderedMap - r.f.mapsPerEpoch + fmr.tailPartialEpoch, -1}}...)
+		endpoints = append(endpoints, []endpoint{{fmr.firstRenderedMap - mapsPerEpoch, 1}, {fmr.firstRenderedMap - mapsPerEpoch + fmr.tailPartialEpoch, -1}}...)
 	}
 	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].m < endpoints[j].m })
 	var (
@@ -456,6 +467,12 @@ func (r *mapRenderer) addRenderedRange(fmr *filterMapsRange) error {
 			last = !last
 		}
 	}
+	if len(merged) == 0 {
+		fmr.tailPartialEpoch = 0
+		fmr.firstRenderedMap = firstRendered
+		fmr.afterLastRenderedMap = firstRendered
+		return nil
+	}
 	if len(merged) == 2 {
 		fmr.tailPartialEpoch = 0
 		fmr.firstRenderedMap = merged[0]
@@ -463,7 +480,7 @@ func (r *mapRenderer) addRenderedRange(fmr *filterMapsRange) error {
 		return nil
 	}
 	if len(merged) == 4 {
-		if merged[2] != merged[0]+r.f.mapsPerEpoch {
+		if merged[2] != merged[0]+mapsPerEpoch {
 			return errors.New("invalid tail partial epoch")
 		}
 		fmr.tailPartialEpoch = merged[1] - merged[0]
