@@ -19,6 +19,7 @@ package filtermaps
 import (
 	"fmt"
 	"math"
+	"os"
 	"time"
 
 	"github.com/ethereum/go-ethereum/log"
@@ -237,4 +238,33 @@ func (f *FilterMaps) setTargetView(targetView chainView) {
 
 func (f *FilterMaps) targetHeadIndexed() bool {
 	return equalViews(f.targetView, f.indexedView) && f.afterLastIndexedBlock == f.targetBlockNumber+1
+}
+
+func (f *FilterMaps) exportCheckpoints() {
+	if f.exportFileName == "" {
+		return
+	}
+	w, err := os.Create(f.exportFileName)
+	if err != nil {
+		log.Error("Error creating checkpoint export file", "name", f.exportFileName, "error", err)
+		return
+	}
+	defer w.Close()
+
+	epochCount := f.afterLastRenderedMap >> f.logMapsPerEpoch
+	w.WriteString("\t{\n")
+	for epoch := uint32(0); epoch < epochCount; epoch++ {
+		lastBlock, lastBlockId, err := f.getLastBlockOfMap((epoch+1)<<f.logMapsPerEpoch - 1)
+		if err != nil {
+			log.Error("Error fetching last block of epoch", "epoch", epoch, "error", err)
+			return
+		}
+		lvPtr, err := f.getBlockLvPointer(lastBlock)
+		if err != nil {
+			log.Error("Error fetching log value pointer of last block", "block", lastBlock, "error", err)
+			return
+		}
+		w.WriteString(fmt.Sprintf("\t\t{%d, common.HexToHash(\"0x%064x\"), %d}\n", lastBlock, lastBlockId, lvPtr))
+	}
+	w.WriteString("\t},\n")
 }

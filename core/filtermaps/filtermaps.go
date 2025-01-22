@@ -41,7 +41,12 @@ type epochCheckpoint struct {
 	firstLvIndex uint64 // first log value index of the given block
 }
 
-var checkpoints = []checkpointList{}
+var checkpoints = []checkpointList{
+	{
+		{111, common.HexToHash("0x00"), 444},
+		{111, common.HexToHash("0x00"), 444},
+	},
+}
 
 // FilterMaps is the in-memory representation of the log index structure that is
 // responsible for building and updating the index according to the canonical
@@ -54,6 +59,7 @@ type FilterMaps struct {
 	closeWg               sync.WaitGroup
 	history, unindexLimit uint64
 	noHistory             bool
+	exportFileName        string
 	Params
 
 	db ethdb.KeyValueStore
@@ -169,7 +175,7 @@ type lastBlockOfMap struct {
 
 // NewFilterMaps creates a new FilterMaps and starts the indexer in order to keep
 // the structure in sync with the given blockchain.
-func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, history, unindexLimit uint64, noHistory bool) *FilterMaps {
+func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, history, unindexLimit uint64, noHistory bool, exportFileName string) *FilterMaps {
 	rs, initialized, err := rawdb.ReadFilterMapsRange(db)
 	if err != nil {
 		log.Error("Error reading log index range", "error", err)
@@ -184,6 +190,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 		history:           history,
 		noHistory:         noHistory,
 		unindexLimit:      unindexLimit,
+		exportFileName:    exportFileName,
 		Params:            params,
 		filterMapsRange: filterMapsRange{
 			initialized:           initialized,
@@ -212,6 +219,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 		log.Trace("Log index head", "number", f.targetBlockNumber, "id", f.targetBlockId.String(), "log value pointer", f.headBlockDelimiter)
 		log.Trace("Log index range", "first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1, "first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1)
 	}
+	f.exportCheckpoints()
 	return f
 }
 
