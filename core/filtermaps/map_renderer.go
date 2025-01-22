@@ -318,11 +318,11 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	defer r.f.indexLock.Unlock()
 
 	oldRange := r.f.filterMapsRange
-	tempRange, err := r.getUpdatedRange(false)
+	tempRange, err := r.getTempRange()
 	if err != nil {
 		return err
 	}
-	newRange, err := r.getUpdatedRange(true)
+	newRange, err := r.getUpdatedRange()
 	if err != nil {
 		return err
 	}
@@ -383,20 +383,48 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	}
 	r.finishedMaps = make(map[uint32]*renderedMap)
 	r.firstFinished = r.afterLastFinished
+	r.f.indexedView = r.f.targetView
 	r.f.setRange(batch, newRange, true)
 	return batch.Write()
 }
 
-func (r *mapRenderer) getUpdatedRange(finished bool) (filterMapsRange, error) {
+func (r *mapRenderer) getTempRange() (filterMapsRange, error) {
+	tempRange := r.f.filterMapsRange
+	if err := tempRange.addRenderedRange(r.firstFinished, r.firstFinished, r.afterLastMap, r.f.mapsPerEpoch); err != nil {
+		return filterMapsRange{}, err
+	}
+	if tempRange.firstRenderedMap != r.f.firstRenderedMap {
+		// first rendered map changed; update first indexed block
+		if tempRange.firstRenderedMap > 0 {
+			lastBlock, _, err := r.f.getLastBlockOfMap(tempRange.firstRenderedMap - 1)
+			if err != nil {
+				return filterMapsRange{}, err
+			}
+			tempRange.firstIndexedBlock = lastBlock + 1
+		} else {
+			tempRange.firstIndexedBlock = 0
+		}
+	}
+	if tempRange.afterLastRenderedMap != r.f.afterLastRenderedMap {
+		// first rendered map changed; update first indexed block
+		if tempRange.afterLastRenderedMap > 0 {
+			lastBlock, _, err := r.f.getLastBlockOfMap(tempRange.afterLastRenderedMap - 1)
+			if err != nil {
+				return filterMapsRange{}, err
+			}
+			tempRange.afterLastIndexedBlock = lastBlock + 1
+		} else {
+			tempRange.afterLastIndexedBlock = 0
+		}
+		tempRange.headBlockDelimiter = 0
+	}
+	return tempRange, nil
+}
+
+func (r *mapRenderer) getUpdatedRange() (filterMapsRange, error) {
 	// update filterMapsRange
 	newRange := r.f.filterMapsRange
-	var afterLastFinished uint32
-	if finished {
-		afterLastFinished = r.afterLastFinished
-	} else {
-		afterLastFinished = r.firstFinished
-	}
-	if err := newRange.addRenderedRange(r.firstFinished, afterLastFinished, r.afterLastMap, r.f.mapHeight); err != nil {
+	if err := newRange.addRenderedRange(r.firstFinished, r.afterLastFinished, r.afterLastMap, r.f.mapsPerEpoch); err != nil {
 		return filterMapsRange{}, err
 	}
 	if newRange.firstRenderedMap != r.f.firstRenderedMap {
@@ -412,11 +440,9 @@ func (r *mapRenderer) getUpdatedRange(finished bool) (filterMapsRange, error) {
 		}
 	}
 	if newRange.afterLastRenderedMap == r.afterLastFinished {
-		// last rendered map replaced; update last indexed block and head pointers
-		r.f.indexedView = r.f.targetView
+		// last rendered map changed; update last indexed block and head pointers
 		newRange.targetBlockNumber = r.f.targetView.headNumber()
 		newRange.targetBlockId = r.f.targetView.getBlockId(newRange.targetBlockNumber)
-		newRange.afterLastRenderedMap = r.afterLastFinished
 		lm := r.finishedMaps[r.afterLastFinished-1]
 		if lm.finished {
 			newRange.afterLastIndexedBlock = newRange.targetBlockNumber + 1

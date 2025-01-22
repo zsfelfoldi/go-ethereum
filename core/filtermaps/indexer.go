@@ -83,6 +83,7 @@ func (f *FilterMaps) tryUpdateHead() bool {
 	log.Info("Log index head rendering started")
 	headRenderer, err := f.renderMapsBefore(math.MaxUint32)
 	if err != nil {
+		fmt.Println("chr err", err)
 		log.Error("Error creating log index head renderer", "error", err)
 		return false
 	}
@@ -93,6 +94,7 @@ func (f *FilterMaps) tryUpdateHead() bool {
 		f.processEvents()
 		return f.stop
 	}); err != nil {
+		fmt.Println("hr err", err)
 		log.Error("Log index head rendering failed", "error", err)
 		return false
 	}
@@ -119,6 +121,7 @@ func (f *FilterMaps) tryUpdateTail() bool {
 					var err error
 					tailRenderer, err = f.renderMapsBefore(f.firstRenderedMap)
 					if err != nil {
+						fmt.Println("ctr err", err)
 						log.Error("Error creating log index tail renderer", "error", err)
 						return false
 					}
@@ -131,6 +134,7 @@ func (f *FilterMaps) tryUpdateTail() bool {
 					return f.stop || !f.targetHeadIndexed()
 				})
 				if err != nil {
+					fmt.Println("tr err", err)
 					log.Error("Log index tail rendering failed", "error", err)
 				}
 				if !done {

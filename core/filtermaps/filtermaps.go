@@ -357,7 +357,7 @@ func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRan
 	}
 	f.filterMapsRange = newRange
 	if updateMatchers {
-		f.updateMatchersValidRange()
+		f.updateMatchersValidRange() //TODO update with common ancestor
 	}
 	if newRange.initialized {
 		rs := rawdb.FilterMapsRange{
