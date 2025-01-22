@@ -206,6 +206,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 	f.targetView = initView
 	if f.initialized {
 		f.indexedView = f.initChainView(f.targetView)
+		f.targetBlockId = f.indexedView.getBlockId(f.targetBlockNumber)
 	}
 	if f.hasIndexedBlocks() {
 		log.Trace("Log index head", "number", f.targetBlockNumber, "id", f.targetBlockId.String(), "log value pointer", f.headBlockDelimiter)

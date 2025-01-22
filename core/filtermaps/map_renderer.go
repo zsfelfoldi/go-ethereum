@@ -29,6 +29,7 @@ import (
 
 const (
 	valuesPerCallback = 1000
+	writesPerBatch    = 100
 	maxMapsPerBatch   = 8
 )
 
@@ -234,12 +235,12 @@ func (r *mapRenderer) renderMaps(stopFn func() bool) (bool, error) {
 		r.finishedMaps[r.currentMap.mapIndex] = r.currentMap
 		r.afterLastFinished++
 		if len(r.finishedMaps) >= maxMapsPerBatch {
-			if err := r.writeFinishedMaps(); err != nil {
+			if err := r.writeFinishedMaps(stopFn); err != nil {
 				return false, err
 			}
 		}
 		if r.afterLastFinished == r.afterLastMap || r.iterator.finished {
-			if err := r.writeFinishedMaps(); err != nil {
+			if err := r.writeFinishedMaps(stopFn); err != nil {
 				return false, err
 			}
 			return true, nil
@@ -310,7 +311,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 	return true, nil
 }
 
-func (r *mapRenderer) writeFinishedMaps() error {
+func (r *mapRenderer) writeFinishedMaps(stopFn func() bool) error {
 	if len(r.finishedMaps) == 0 {
 		return nil
 	}
@@ -328,6 +329,21 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	}
 
 	batch := r.f.db.NewBatch()
+	var writeCnt int
+	checkWriteCnt := func() {
+		writeCnt++
+		if writeCnt == writesPerBatch {
+			writeCnt = 0
+			if err := batch.Write(); err != nil {
+				log.Crit("Error writing log index update batch", "error", err)
+			}
+			// do not exit while in partially written state but do allow processing
+			// events and pausing while block processing is in progress
+			stopFn()
+			batch = r.f.db.NewBatch()
+		}
+	}
+
 	r.f.setRange(batch, tempRange, false)
 	// add or update filter rows
 	for rowIndex := uint32(0); rowIndex < r.f.mapHeight; rowIndex++ {
@@ -337,6 +353,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 				continue
 			}
 			r.f.storeFilterMapRow(batch, mapIndex, rowIndex, row)
+			checkWriteCnt()
 		}
 		if newRange.afterLastRenderedMap == r.afterLastFinished { // head updated; remove future entries
 			for mapIndex := r.afterLastFinished; mapIndex < oldRange.afterLastRenderedMap; mapIndex++ {
@@ -344,6 +361,7 @@ func (r *mapRenderer) writeFinishedMaps() error {
 					continue
 				}
 				r.f.storeFilterMapRow(batch, mapIndex, rowIndex, nil)
+				checkWriteCnt()
 			}
 		}
 	}
@@ -365,27 +383,34 @@ func (r *mapRenderer) writeFinishedMaps() error {
 	for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 		renderedMap := r.finishedMaps[mapIndex]
 		r.f.storeLastBlockOfMap(batch, mapIndex, renderedMap.lastBlock, renderedMap.lastBlockId)
+		checkWriteCnt()
 		if blockNumber != renderedMap.firstBlock() {
 			panic("non-continuous block numbers")
 		}
 		for _, lvPtr := range renderedMap.blockLvPtrs {
 			r.f.storeBlockLvPointer(batch, blockNumber, lvPtr)
+			checkWriteCnt()
 			blockNumber++
 		}
 	}
 	if newRange.afterLastRenderedMap == r.afterLastFinished { // head updated; remove future entries
 		for mapIndex := r.afterLastFinished; mapIndex < oldRange.afterLastRenderedMap; mapIndex++ {
 			r.f.deleteLastBlockOfMap(batch, mapIndex)
+			checkWriteCnt()
 		}
 		for ; blockNumber < oldRange.afterLastIndexedBlock; blockNumber++ {
 			r.f.deleteBlockLvPointer(batch, blockNumber)
+			checkWriteCnt()
 		}
 	}
 	r.finishedMaps = make(map[uint32]*renderedMap)
 	r.firstFinished = r.afterLastFinished
 	r.f.indexedView = r.f.targetView
 	r.f.setRange(batch, newRange, true)
-	return batch.Write()
+	if err := batch.Write(); err != nil {
+		log.Crit("Error writing log index update batch", "error", err)
+	}
+	return nil
 }
 
 func (r *mapRenderer) getTempRange() (filterMapsRange, error) {
