@@ -87,7 +87,7 @@ type Ethereum struct {
 	bloomIndexer      *core.ChainIndexer             // Bloom indexer operating during block imports
 	closeBloomHandler chan struct{}
 
-	filterMaps *filtermaps.FilterMaps
+	filterMaps      *filtermaps.FilterMaps
 	closeFilterMaps chan chan struct{}
 
 	APIBackend *EthAPIBackend
@@ -227,7 +227,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		return nil, err
 	}
 	eth.bloomIndexer.Start(eth.blockchain)
-	eth.filterMaps = filtermaps.NewFilterMaps(chainDb, eth.newChainView(eth.blockchain.CurrentBlock()), filtermaps.DefaultParams, config.LogHistory, 1000, config.LogNoHistory)
+	eth.filterMaps = filtermaps.NewFilterMaps(chainDb, eth.newChainView(eth.blockchain.CurrentBlock()), filtermaps.DefaultParams, config.LogHistory, 1000, config.LogNoHistory, config.LogExportCheckpoints)
 	eth.closeFilterMaps = make(chan chan struct{})
 
 	if config.BlobPool.Datadir != "" {
@@ -395,18 +395,18 @@ func (s *Ethereum) updateFilterMapsHeads() {
 		sub2.Unsubscribe()
 		for {
 			select {
-				case <-headEventCh:
-				case <-blockProcCh:
-				default:
-					return
+			case <-headEventCh:
+			case <-blockProcCh:
+			default:
+				return
 			}
 		}
 	}()
-	
+
 	head := s.blockchain.CurrentBlock()
 	targetView := s.newChainView(head) // nil if already sent to channel
 	var blockProc, lastBlockProc bool
-	
+
 	setHead := func(newHead *types.Header) {
 		if newHead == nil {
 			return
@@ -416,47 +416,47 @@ func (s *Ethereum) updateFilterMapsHeads() {
 			targetView = s.newChainView(head)
 		}
 	}
-	
+
 	for {
 		if blockProc != lastBlockProc {
 			select {
-				case s.filterMaps.BlockProcessingCh <- blockProc:
-					lastBlockProc = blockProc
-				case ev := <-headEventCh:
-					setHead(ev.Header)
-				case blockProc = <-blockProcCh:
-					fmt.Println("block proc feed", blockProc)
-				case <-time.After(time.Second * 10):
-					setHead(s.blockchain.CurrentBlock())
-				case ch := <-s.closeFilterMaps:
-					close(ch)
-					return
+			case s.filterMaps.BlockProcessingCh <- blockProc:
+				lastBlockProc = blockProc
+			case ev := <-headEventCh:
+				setHead(ev.Header)
+			case blockProc = <-blockProcCh:
+				fmt.Println("block proc feed", blockProc)
+			case <-time.After(time.Second * 10):
+				setHead(s.blockchain.CurrentBlock())
+			case ch := <-s.closeFilterMaps:
+				close(ch)
+				return
 			}
 		} else if targetView != nil {
 			select {
-				case s.filterMaps.TargetViewCh <- targetView:
-					targetView = nil
-				case ev := <-headEventCh:
-					setHead(ev.Header)
-				case blockProc = <-blockProcCh:
-					fmt.Println("block proc feed", blockProc)
-				case <-time.After(time.Second * 10):
-					setHead(s.blockchain.CurrentBlock())
-				case ch := <-s.closeFilterMaps:
-					close(ch)
-					return
+			case s.filterMaps.TargetViewCh <- targetView:
+				targetView = nil
+			case ev := <-headEventCh:
+				setHead(ev.Header)
+			case blockProc = <-blockProcCh:
+				fmt.Println("block proc feed", blockProc)
+			case <-time.After(time.Second * 10):
+				setHead(s.blockchain.CurrentBlock())
+			case ch := <-s.closeFilterMaps:
+				close(ch)
+				return
 			}
 		} else {
 			select {
-				case ev := <-headEventCh:
-					setHead(ev.Header)
-				case <-time.After(time.Second * 10):
-					setHead(s.blockchain.CurrentBlock())
-				case blockProc = <-blockProcCh:
-					fmt.Println("block proc feed", blockProc)
-				case ch := <-s.closeFilterMaps:
-					close(ch)
-					return
+			case ev := <-headEventCh:
+				setHead(ev.Header)
+			case <-time.After(time.Second * 10):
+				setHead(s.blockchain.CurrentBlock())
+			case blockProc = <-blockProcCh:
+				fmt.Println("block proc feed", blockProc)
+			case ch := <-s.closeFilterMaps:
+				close(ch)
+				return
 			}
 		}
 	}
@@ -504,7 +504,7 @@ func (s *Ethereum) Stop() error {
 	// Then stop everything else.
 	s.bloomIndexer.Close()
 	close(s.closeBloomHandler)
-	ch := make(chan struct{})	
+	ch := make(chan struct{})
 	s.closeFilterMaps <- ch
 	<-ch
 	s.filterMaps.Stop()

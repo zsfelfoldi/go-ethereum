@@ -88,6 +88,7 @@ var (
 		utils.TransactionHistoryFlag,
 		utils.LogHistoryFlag,
 		utils.LogNoHistoryFlag,
+		utils.LogExportCheckpointsFlag,
 		utils.StateHistoryFlag,
 		utils.LightServeFlag,    // deprecated
 		utils.LightIngressFlag,  // deprecated
