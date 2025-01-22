@@ -19,6 +19,7 @@ package filtermaps
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -247,21 +248,38 @@ type singleMatcher struct {
 
 // getMatches implements matcher
 func (s *singleMatcher) getMatches(ctx context.Context, mapIndices []uint32) ([]potentialMatches, error) {
+	fmt.Println("getMatches")
 	params := s.backend.GetParams()
-	results := make([]potentialMatches, len(mapIndices))
-	for i, mapIndex := range mapIndices {
-		var filterRows []FilterRow
-		for alternativeIndex := uint32(0); ; alternativeIndex++ {
-			filterRow, err := s.backend.GetFilterMapRow(ctx, mapIndex, params.rowIndex(mapIndex>>params.logMapsPerEpoch, alternativeIndex, s.value))
+	filterRows := make([][]FilterRow, len(mapIndices))
+	done := make([]bool, len(mapIndices)) // enough filter row alternatives retrieved for given map index
+	needMore := len(mapIndices)           //number of map indices where more rows are needed
+	for alternativeIndex := uint32(0); needMore > 0; alternativeIndex++ {
+		fmt.Println(" alt", alternativeIndex, needMore)
+		lastEpoch, rowIndex := uint32(math.MaxUint32), uint32(0)
+		for i, mapIndex := range mapIndices {
+			if done[i] {
+				continue
+			}
+			epoch := mapIndex >> params.logMapsPerEpoch
+			if epoch != lastEpoch { // usually all map indices are in the same epoch, rarely in two epochs
+				lastEpoch = epoch
+				rowIndex = params.rowIndex(lastEpoch, alternativeIndex, s.value)
+			}
+			filterRow, err := s.backend.GetFilterMapRow(ctx, mapIndex, rowIndex)
 			if err != nil {
 				return nil, err
 			}
-			filterRows = append(filterRows, filterRow)
+			filterRows[i] = append(filterRows[i], filterRow)
 			if uint32(len(filterRow)) < params.maxRowLength {
-				break
+				done[i] = true
+				needMore--
 			}
 		}
-		results[i] = params.potentialMatches(filterRows, mapIndex, s.value)
+	}
+
+	results := make([]potentialMatches, len(mapIndices))
+	for i, mapIndex := range mapIndices {
+		results[i] = params.potentialMatches(filterRows[i], mapIndex, s.value)
 	}
 	return results, nil
 }

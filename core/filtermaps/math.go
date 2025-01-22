@@ -24,7 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-const maxRowLengthRatio = 8
+const maxRowLengthRatio = 256
 
 type Params struct {
 	logMapHeight    uint // log2(mapHeight)
