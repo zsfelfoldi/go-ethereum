@@ -41,13 +41,6 @@ type epochCheckpoint struct {
 	firstLvIndex uint64 // first log value index of the given block
 }
 
-var checkpoints = []checkpointList{
-	{
-		{111, common.HexToHash("0x00"), 444},
-		{111, common.HexToHash("0x00"), 444},
-	},
-}
-
 // FilterMaps is the in-memory representation of the log index structure that is
 // responsible for building and updating the index according to the canonical
 // chain.

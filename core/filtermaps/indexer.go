@@ -265,7 +265,7 @@ func (f *FilterMaps) exportCheckpoints() {
 			log.Error("Error fetching log value pointer of last block", "block", lastBlock, "error", err)
 			return
 		}
-		w.WriteString(fmt.Sprintf("\t\t{%d, common.HexToHash(\"0x%064x\"), %d}\n", lastBlock, lastBlockId, lvPtr))
+		w.WriteString(fmt.Sprintf("\t\t{%d, common.HexToHash(\"0x%064x\"), %d},\n", lastBlock, lastBlockId, lvPtr))
 	}
 	w.WriteString("\t},\n")
 }
