@@ -28,7 +28,7 @@ const maxRowLengthRatio = 256
 
 type Params struct {
 	logMapHeight    uint // log2(mapHeight)
-	logMapsPerEpoch uint // log2(mmapsPerEpochapsPerEpoch)
+	logMapsPerEpoch uint // log2(mapsPerEpoch)
 	logValuesPerMap uint // log2(logValuesPerMap)
 	// derived fields
 	mapHeight    uint32 // filter map height (number of rows)
@@ -39,8 +39,8 @@ type Params struct {
 
 var DefaultParams = Params{
 	logMapHeight:    16,
-	logMapsPerEpoch: 6,
-	logValuesPerMap: 20,
+	logMapsPerEpoch: 10,
+	logValuesPerMap: 16,
 }
 
 func (p *Params) deriveFields() {
