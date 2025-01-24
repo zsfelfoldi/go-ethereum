@@ -39,8 +39,8 @@ type Params struct {
 
 var DefaultParams = Params{
 	logMapHeight:    16,
-	logMapsPerEpoch: 10,
-	logValuesPerMap: 16,
+	logMapsPerEpoch: 8,
+	logValuesPerMap: 18,
 }
 
 func (p *Params) deriveFields() {
