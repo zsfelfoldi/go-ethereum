@@ -96,9 +96,8 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 	// If the list of addresses is empty then it creates a "wild card" matcher
 	// that signals every index as a potential match.
 	matchAddress := make(matchAny, len(addresses))
-	var stats matcherStats
 	for i, address := range addresses {
-		matchAddress[i] = &singleMatcher{backend: backend, value: addressValue(address), stats: &stats}
+		matchAddress[i] = &singleMatcher{backend: backend, value: addressValue(address)}
 	}
 	matchers[0] = matchAddress
 	for i, topicList := range topics {
@@ -108,7 +107,7 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 		// every index as a potential match.
 		matchTopic := make(matchAny, len(topicList))
 		for j, topic := range topicList {
-			matchTopic[j] = &singleMatcher{backend: backend, value: topicValue(topic), stats: &stats}
+			matchTopic[j] = &singleMatcher{backend: backend, value: topicValue(topic)}
 		}
 		matchers[i+1] = matchTopic
 	}
@@ -179,7 +178,8 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 		wg.Done()
 	}
 
-	for i := 0; i < 1; i++ { //TODO 4
+	start := time.Now()
+	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go worker()
 	}
@@ -214,7 +214,11 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 			}
 		}
 	}
-	stats.log()
+	log.Info("Log search finished", "elapsed", time.Since(start))
+	for i, m := range matchers {
+		log.Info("Single matcher stats", "index", i)
+		m.(matchAny)[0].(*singleMatcher).stats.log()
+	}
 	return logs, nil
 }
 
@@ -286,7 +290,7 @@ type matcherInstance interface {
 }
 
 func getAllMatches(ctx context.Context, matcher matcher, mapIndices []uint32) ([]potentialMatches, error) {
-	//fmt.Println("getAllMatches", len(mapIndices))
+	//fmt.Println("getAllMatches", mapIndices[0]>>16)
 	instance := matcher.newInstance(mapIndices)
 	resultsMap := make(map[uint32]potentialMatches)
 	for alternativeIndex := uint32(0); len(resultsMap) < len(mapIndices); alternativeIndex++ {
@@ -320,7 +324,7 @@ func getAllMatches(ctx context.Context, matcher matcher, mapIndices []uint32) ([
 type singleMatcher struct {
 	backend MatcherBackend
 	value   common.Hash
-	stats   *matcherStats
+	stats   matcherStats
 }
 
 type singleMatcherInstance struct {
@@ -345,7 +349,7 @@ func (m *singleMatcherInstance) getMoreMatches(ctx context.Context, alternativeI
 	var st int
 	m.stats.set(&st, stOther)
 	params := m.backend.GetParams()
-	//fmt.Println(" getMoreMatches 1", m.value)
+	//fmt.Println(" sm alt", alternativeIndex, "mapIndices", len(m.mapIndices))
 	lastEpoch, rowIndex := uint32(math.MaxUint32), uint32(0)
 	for _, mapIndex := range m.mapIndices {
 		filterRows, ok := m.filterRows[mapIndex]
@@ -549,11 +553,40 @@ func mergeResults(results []potentialMatches) potentialMatches {
 // gives a match at X+offset. Note that matchSequence can be used recursively to
 // detect any log value sequence.
 type matchSequence struct {
-	// emptyRate == totalCount << 32 + emptyCount (atomically accessed)
-	baseEmptyRate, nextEmptyRate uint64 // first in struct to ensure 8 byte alignment
-	params                       *Params
-	base, next                   matcher
-	offset                       uint64
+	params     *Params
+	base, next matcher
+	offset     uint64
+
+	statsLock            sync.Mutex
+	baseStats, nextStats matchSeqStats
+}
+
+type matchSeqStats struct {
+	totalCount, nonEmptyCount, totalCost uint64
+}
+
+func (ms *matchSeqStats) add(nonEmpty bool, alternativeIndex uint32) {
+	ms.totalCount++
+	if nonEmpty {
+		ms.nonEmptyCount++
+	}
+	ms.totalCost += uint64(alternativeIndex + 1)
+}
+
+func (ms *matchSeqStats) addStats(add matchSeqStats) {
+	ms.totalCount += add.totalCount
+	ms.nonEmptyCount += add.nonEmptyCount
+	ms.totalCost += add.totalCost
+}
+
+func (m *matchSequence) baseFirst() bool {
+	m.statsLock.Lock()
+	bf := float64(m.baseStats.totalCost)*float64(m.nextStats.totalCount)+
+		float64(m.baseStats.nonEmptyCount)*float64(m.nextStats.totalCost) <
+		float64(m.baseStats.totalCost)*float64(m.nextStats.nonEmptyCount)+
+			float64(m.nextStats.totalCost)*float64(m.baseStats.totalCount)
+	m.statsLock.Unlock()
+	return bf
 }
 
 // newMatchSequence creates a recursive sequence matcher from a list of underlying
@@ -611,12 +644,8 @@ func (m *matchSequence) newInstance(mapIndices []uint32) matcherInstance {
 
 func (m *matchSequenceInstance) getMoreMatches(ctx context.Context, alternativeIndex uint32) (matchedResults []matcherResult, err error) {
 	// decide whether to evaluate base or next matcher first
-	baseEmptyRate := atomic.LoadUint64(&m.baseEmptyRate)
-	nextEmptyRate := atomic.LoadUint64(&m.nextEmptyRate)
-	baseTotal, baseEmpty := baseEmptyRate>>32, uint64(uint32(baseEmptyRate))
-	nextTotal, nextEmpty := nextEmptyRate>>32, uint64(uint32(nextEmptyRate))
-	baseFirst := baseEmpty*nextTotal >= nextEmpty*baseTotal/2
-	//fmt.Println("*** matchSeq ofs", m.offset, "baseFirst", baseFirst, "alt", alternativeIndex)
+	baseFirst := m.baseFirst()
+	//fmt.Println("*** matchSeq ofs", m.offset, "baseFirst", baseFirst, "alt", alternativeIndex, "bt be nt ne", baseTotal, baseEmpty, nextTotal, nextEmpty)
 	if baseFirst {
 		if err := m.evalBase(ctx, alternativeIndex); err != nil {
 			return nil, err
@@ -655,16 +684,18 @@ func (m *matchSequenceInstance) evalBase(ctx context.Context, alternativeIndex u
 	if err != nil {
 		return err
 	}
-	var dropIndices []uint32
+	var (
+		dropIndices []uint32
+		stats       matchSeqStats
+	)
 	for _, r := range results {
 		m.baseResults[r.mapIndex] = r.matches
 		delete(m.baseRequested, r.mapIndex)
-		if r.matches != nil && len(r.matches) == 0 {
-			atomic.AddUint64(&m.baseEmptyRate, 0x100000001)
-		} else {
-			atomic.AddUint64(&m.baseEmptyRate, 0x100000000)
-		}
+		stats.add(r.matches == nil || len(r.matches) != 0, alternativeIndex)
 	}
+	m.statsLock.Lock()
+	m.baseStats.addStats(stats)
+	m.statsLock.Unlock()
 	for _, r := range results {
 		if m.dropNext(r.mapIndex) {
 			dropIndices = append(dropIndices, r.mapIndex)
@@ -684,16 +715,18 @@ func (m *matchSequenceInstance) evalNext(ctx context.Context, alternativeIndex u
 	if err != nil {
 		return err
 	}
-	var dropIndices []uint32
+	var (
+		dropIndices []uint32
+		stats       matchSeqStats
+	)
 	for _, r := range results {
 		m.nextResults[r.mapIndex] = r.matches
 		delete(m.nextRequested, r.mapIndex)
-		if r.matches != nil && len(r.matches) == 0 {
-			atomic.AddUint64(&m.nextEmptyRate, 0x100000001)
-		} else {
-			atomic.AddUint64(&m.nextEmptyRate, 0x100000000)
-		}
+		stats.add(r.matches == nil || len(r.matches) != 0, alternativeIndex)
 	}
+	m.statsLock.Lock()
+	m.nextStats.addStats(stats)
+	m.statsLock.Unlock()
 	for _, r := range results {
 		if r.mapIndex > 0 && m.dropBase(r.mapIndex-1) {
 			dropIndices = append(dropIndices, r.mapIndex-1)
@@ -748,6 +781,7 @@ func (m *matchSequenceInstance) dropNext(mapIndex uint32) bool {
 }
 
 func (m *matchSequenceInstance) dropIndices(dropIndices []uint32) {
+	//fmt.Println("ms", m.offset, "drop", len(dropIndices))
 	for _, mapIndex := range dropIndices {
 		delete(m.needMatched, mapIndex)
 	}
