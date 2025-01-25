@@ -752,7 +752,7 @@ func (m *matchSequenceInstance) dropBase(mapIndex uint32) bool {
 			(len(next) > 0 && next[len(next)-1] >= (uint64(mapIndex)<<m.params.logValuesPerMap)+m.offset) {
 			return false
 		}
-		if nextNext := m.nextResults[mapIndex]; nextNext == nil ||
+		if nextNext := m.nextResults[mapIndex+1]; nextNext == nil ||
 			(len(nextNext) > 0 && nextNext[0] < (uint64(mapIndex+1)<<m.params.logValuesPerMap)+m.offset) {
 			return false
 		}
