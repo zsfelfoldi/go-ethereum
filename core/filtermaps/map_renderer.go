@@ -257,13 +257,12 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 	if !r.iterator.updateChainView(r.f.targetView) {
 		return false, errChainUpdate
 	}
-	epoch := r.currentMap.mapIndex >> r.f.logMapsPerEpoch
 	var waitCnt int
 
 	if r.iterator.lvIndex == 0 {
 		r.currentMap.blockLvPtrs = []uint64{0}
 	}
-	type lvPos struct{ rowIndex, alternativeIndex uint32 }
+	type lvPos struct{ rowIndex, layerIndex uint32 }
 	rowIndexCache := lru.NewCache[common.Hash, lvPos](10000)
 	defer rowIndexCache.Purge()
 
@@ -286,11 +285,11 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 		if logValue := r.iterator.getValueHash(); logValue != (common.Hash{}) {
 			lvp, cached := rowIndexCache.Get(logValue)
 			if !cached {
-				lvp = lvPos{rowIndex: r.f.rowIndex(epoch, 0, logValue)}
+				lvp = lvPos{rowIndex: r.f.rowIndex(r.currentMap.mapIndex, 0, logValue)}
 			}
-			for uint32(len(r.currentMap.filterMap[lvp.rowIndex])) == r.f.maxRowLength {
-				lvp.alternativeIndex++
-				lvp.rowIndex = r.f.rowIndex(epoch, lvp.alternativeIndex, logValue)
+			for uint32(len(r.currentMap.filterMap[lvp.rowIndex])) >= r.f.maxRowLength(lvp.layerIndex) {
+				lvp.layerIndex++
+				lvp.rowIndex = r.f.rowIndex(r.currentMap.mapIndex, lvp.layerIndex, logValue)
 				cached = false
 			}
 			r.currentMap.filterMap[lvp.rowIndex] = append(r.currentMap.filterMap[lvp.rowIndex], r.f.columnIndex(r.iterator.lvIndex, logValue))

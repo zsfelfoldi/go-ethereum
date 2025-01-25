@@ -85,14 +85,15 @@ func TestPotentialMatches(t *testing.T) {
 			row[i], row[j] = row[j], row[i]
 		}
 		// split up into a list of rows if longer than allowed
-		rows := make([]FilterRow, len(row)/int(params.maxRowLength)+1)
-		for i := range rows {
-			if len(row) > int(params.maxRowLength) {
-				rows[i] = row[:params.maxRowLength]
-				row = row[params.maxRowLength:]
+		var rows []FilterRow
+		for layerIndex := uint32(0); row != nil; layerIndex++ {
+			maxLen := int(params.maxRowLength(layerIndex))
+			if len(row) > maxLen {
+				rows = append(rows, row[:maxLen])
+				row = row[maxLen:]
 			} else {
-				rows[i] = row
-				row = FilterRow{}
+				rows = append(rows, row)
+				row = nil
 			}
 		}
 		// check retrieved matches while also counting false positives

@@ -215,9 +215,11 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 		}
 	}
 	log.Info("Log search finished", "elapsed", time.Since(start))
-	for i, m := range matchers {
-		log.Info("Single matcher stats", "index", i)
-		m.(matchAny)[0].(*singleMatcher).stats.log()
+	for i, ma := range matchers {
+		for j, m := range ma.(matchAny) {
+			log.Info("Single matcher stats", "matchSequence", i, "matchAny", j)
+			m.(*singleMatcher).stats.log()
+		}
 	}
 	return logs, nil
 }
@@ -254,24 +256,24 @@ const (
 
 var stNames = []string{"", "rowCalc", "fetchFirst", "fetchMore", "process", "other"}
 
-type matcherStats struct {
+type timeStats struct {
 	dt, cnt [stCount]int64
 }
 
-func (ms *matcherStats) set(state *int, newState int) {
-	if ms == nil || newState == *state {
+func (ts *timeStats) set(state *int, newState int) {
+	if ts == nil || newState == *state {
 		return
 	}
 	now := int64(mclock.Now())
-	atomic.AddInt64(&ms.dt[*state], now)
-	atomic.AddInt64(&ms.dt[newState], -now)
-	atomic.AddInt64(&ms.cnt[newState], 1)
+	atomic.AddInt64(&ts.dt[*state], now)
+	atomic.AddInt64(&ts.dt[newState], -now)
+	atomic.AddInt64(&ts.cnt[newState], 1)
 	*state = newState
 }
 
-func (ms *matcherStats) log() {
+func (ts *timeStats) log() {
 	for i := 1; i < stCount; i++ {
-		log.Info("Matcher stats", "name", stNames[i], "dt", time.Duration(ms.dt[i]), "count", ms.cnt[i])
+		log.Info("Matcher stats", "name", stNames[i], "dt", time.Duration(ts.dt[i]), "count", ts.cnt[i])
 	}
 }
 
@@ -285,7 +287,7 @@ type matcherResult struct {
 }
 
 type matcherInstance interface {
-	getMoreMatches(ctx context.Context, alternativeIndex uint32) ([]matcherResult, error)
+	getMoreMatches(ctx context.Context, layerIndex uint32) ([]matcherResult, error)
 	dropIndices(mapIndices []uint32)
 }
 
@@ -293,9 +295,9 @@ func getAllMatches(ctx context.Context, matcher matcher, mapIndices []uint32) ([
 	//fmt.Println("getAllMatches", mapIndices[0]>>16)
 	instance := matcher.newInstance(mapIndices)
 	resultsMap := make(map[uint32]potentialMatches)
-	for alternativeIndex := uint32(0); len(resultsMap) < len(mapIndices); alternativeIndex++ {
-		//fmt.Println(" alt", alternativeIndex, len(resultsMap), len(mapIndices))
-		results, err := instance.getMoreMatches(ctx, alternativeIndex)
+	for layerIndex := uint32(0); len(resultsMap) < len(mapIndices); layerIndex++ {
+		//fmt.Println(" alt", layerIndex, len(resultsMap), len(mapIndices))
+		results, err := instance.getMoreMatches(ctx, layerIndex)
 
 		/*var sum, nilc uint64 //***
 		for _, r := range results {
@@ -324,7 +326,7 @@ func getAllMatches(ctx context.Context, matcher matcher, mapIndices []uint32) ([
 type singleMatcher struct {
 	backend MatcherBackend
 	value   common.Hash
-	stats   matcherStats
+	stats   timeStats
 }
 
 type singleMatcherInstance struct {
@@ -345,24 +347,24 @@ func (m *singleMatcher) newInstance(mapIndices []uint32) matcherInstance {
 	}
 }
 
-func (m *singleMatcherInstance) getMoreMatches(ctx context.Context, alternativeIndex uint32) (results []matcherResult, err error) {
+func (m *singleMatcherInstance) getMoreMatches(ctx context.Context, layerIndex uint32) (results []matcherResult, err error) {
 	var st int
 	m.stats.set(&st, stOther)
 	params := m.backend.GetParams()
-	//fmt.Println(" sm alt", alternativeIndex, "mapIndices", len(m.mapIndices))
-	lastEpoch, rowIndex := uint32(math.MaxUint32), uint32(0)
+	//fmt.Println(" sm alt", layerIndex, "mapIndices", len(m.mapIndices))
+	maskedMapIndex, rowIndex := uint32(math.MaxUint32), uint32(0)
 	for _, mapIndex := range m.mapIndices {
 		filterRows, ok := m.filterRows[mapIndex]
 		if !ok {
 			continue
 		}
-		epoch := mapIndex >> params.logMapsPerEpoch
-		if epoch != lastEpoch { // usually all map indices are in the same epoch, rarely in two epochs
-			lastEpoch = epoch
+		if mm := params.maskedMapIndex(mapIndex, layerIndex); mm != maskedMapIndex {
+			// only recalculate rowIndex when necessary
 			m.stats.set(&st, stRowCalc)
-			rowIndex = params.rowIndex(lastEpoch, alternativeIndex, m.value)
+			maskedMapIndex = mm
+			rowIndex = params.rowIndex(mapIndex, layerIndex, m.value)
 		}
-		if alternativeIndex == 0 {
+		if layerIndex == 0 {
 			m.stats.set(&st, stFetchFirst)
 		} else {
 			m.stats.set(&st, stFetchMore)
@@ -374,7 +376,7 @@ func (m *singleMatcherInstance) getMoreMatches(ctx context.Context, alternativeI
 			return nil, err
 		}
 		filterRows = append(filterRows, filterRow)
-		if uint32(len(filterRow)) < params.maxRowLength {
+		if uint32(len(filterRow)) < params.maxRowLength(layerIndex) {
 			m.stats.set(&st, stProcess)
 			results = append(results, matcherResult{
 				mapIndex: mapIndex,
@@ -464,7 +466,7 @@ func (m matchAny) newInstance(mapIndices []uint32) matcherInstance {
 	}
 }
 
-func (m *matchAnyInstance) getMoreMatches(ctx context.Context, alternativeIndex uint32) (mergedResults []matcherResult, err error) {
+func (m *matchAnyInstance) getMoreMatches(ctx context.Context, layerIndex uint32) (mergedResults []matcherResult, err error) {
 	if len(m.matchAny) == 0 {
 		// return "wild card" results (potentialMatches(nil) is interpreted as a
 		// potential match at every log value index of the map).
@@ -477,7 +479,7 @@ func (m *matchAnyInstance) getMoreMatches(ctx context.Context, alternativeIndex 
 		return mergedResults, nil
 	}
 	for i, childInstance := range m.childInstances {
-		results, err := childInstance.getMoreMatches(ctx, alternativeIndex)
+		results, err := childInstance.getMoreMatches(ctx, layerIndex)
 		if err != nil {
 			return nil, err
 		}
@@ -558,22 +560,22 @@ type matchSequence struct {
 	offset     uint64
 
 	statsLock            sync.Mutex
-	baseStats, nextStats matchSeqStats
+	baseStats, nextStats matchOrderStats
 }
 
-type matchSeqStats struct {
+type matchOrderStats struct {
 	totalCount, nonEmptyCount, totalCost uint64
 }
 
-func (ms *matchSeqStats) add(nonEmpty bool, alternativeIndex uint32) {
+func (ms *matchOrderStats) add(nonEmpty bool, layerIndex uint32) {
 	ms.totalCount++
 	if nonEmpty {
 		ms.nonEmptyCount++
 	}
-	ms.totalCost += uint64(alternativeIndex + 1)
+	ms.totalCost += uint64(layerIndex + 1)
 }
 
-func (ms *matchSeqStats) addStats(add matchSeqStats) {
+func (ms *matchOrderStats) addStats(add matchOrderStats) {
 	ms.totalCount += add.totalCount
 	ms.nonEmptyCount += add.nonEmptyCount
 	ms.totalCost += add.totalCost
@@ -642,20 +644,20 @@ func (m *matchSequence) newInstance(mapIndices []uint32) matcherInstance {
 	}
 }
 
-func (m *matchSequenceInstance) getMoreMatches(ctx context.Context, alternativeIndex uint32) (matchedResults []matcherResult, err error) {
+func (m *matchSequenceInstance) getMoreMatches(ctx context.Context, layerIndex uint32) (matchedResults []matcherResult, err error) {
 	// decide whether to evaluate base or next matcher first
 	baseFirst := m.baseFirst()
-	//fmt.Println("*** matchSeq ofs", m.offset, "baseFirst", baseFirst, "alt", alternativeIndex, "bt be nt ne", baseTotal, baseEmpty, nextTotal, nextEmpty)
+	//fmt.Println("*** matchSeq ofs", m.offset, "baseFirst", baseFirst, "alt", layerIndex, "bt be nt ne", baseTotal, baseEmpty, nextTotal, nextEmpty)
 	if baseFirst {
-		if err := m.evalBase(ctx, alternativeIndex); err != nil {
+		if err := m.evalBase(ctx, layerIndex); err != nil {
 			return nil, err
 		}
 	}
-	if err := m.evalNext(ctx, alternativeIndex); err != nil {
+	if err := m.evalNext(ctx, layerIndex); err != nil {
 		return nil, err
 	}
 	if !baseFirst {
-		if err := m.evalBase(ctx, alternativeIndex); err != nil {
+		if err := m.evalBase(ctx, layerIndex); err != nil {
 			return nil, err
 		}
 	}
@@ -679,19 +681,19 @@ func (m *matchSequenceInstance) getMoreMatches(ctx context.Context, alternativeI
 	return matchedResults, nil
 }
 
-func (m *matchSequenceInstance) evalBase(ctx context.Context, alternativeIndex uint32) error {
-	results, err := m.baseInstance.getMoreMatches(ctx, alternativeIndex)
+func (m *matchSequenceInstance) evalBase(ctx context.Context, layerIndex uint32) error {
+	results, err := m.baseInstance.getMoreMatches(ctx, layerIndex)
 	if err != nil {
 		return err
 	}
 	var (
 		dropIndices []uint32
-		stats       matchSeqStats
+		stats       matchOrderStats
 	)
 	for _, r := range results {
 		m.baseResults[r.mapIndex] = r.matches
 		delete(m.baseRequested, r.mapIndex)
-		stats.add(r.matches == nil || len(r.matches) != 0, alternativeIndex)
+		stats.add(r.matches == nil || len(r.matches) != 0, layerIndex)
 	}
 	m.statsLock.Lock()
 	m.baseStats.addStats(stats)
@@ -710,19 +712,19 @@ func (m *matchSequenceInstance) evalBase(ctx context.Context, alternativeIndex u
 	return nil
 }
 
-func (m *matchSequenceInstance) evalNext(ctx context.Context, alternativeIndex uint32) error {
-	results, err := m.nextInstance.getMoreMatches(ctx, alternativeIndex)
+func (m *matchSequenceInstance) evalNext(ctx context.Context, layerIndex uint32) error {
+	results, err := m.nextInstance.getMoreMatches(ctx, layerIndex)
 	if err != nil {
 		return err
 	}
 	var (
 		dropIndices []uint32
-		stats       matchSeqStats
+		stats       matchOrderStats
 	)
 	for _, r := range results {
 		m.nextResults[r.mapIndex] = r.matches
 		delete(m.nextRequested, r.mapIndex)
-		stats.add(r.matches == nil || len(r.matches) != 0, alternativeIndex)
+		stats.add(r.matches == nil || len(r.matches) != 0, layerIndex)
 	}
 	m.statsLock.Lock()
 	m.nextStats.addStats(stats)
