@@ -26,25 +26,24 @@ import (
 )
 
 type Params struct {
-	logMapHeight       uint // log2(mapHeight)
-	logMapsPerEpoch    uint // log2(mapsPerEpoch)
-	logValuesPerMap    uint // log2(logValuesPerMap)
-	logBaseRowGroup    uint // log2(baseRowGroupLength)
-	baseRowLengthRatio uint // baseRowLength / average row length
-	logLayerDiff       uint // maxRowLength log2 growth per layer
+	logMapHeight       uint   // log2(mapHeight)
+	logMapsPerEpoch    uint   // log2(mapsPerEpoch)
+	logValuesPerMap    uint   // log2(logValuesPerMap)
+	baseRowGroupLength uint32 // number of adjacent base layer map rows grouped together in the local database
+	baseRowLengthRatio uint   // baseRowLength / average row length
+	logLayerDiff       uint   // maxRowLength log2 growth per layer
 	// derived fields
-	mapHeight          uint32 // filter map height (number of rows)
-	mapsPerEpoch       uint32 // number of maps in an epoch
-	baseRowLength      uint32 // maximum number of log values per row on layer 0
-	baseRowGroupLength uint32
-	valuesPerMap       uint64 // number of log values marked on each filter map
+	mapHeight     uint32 // filter map height (number of rows)
+	mapsPerEpoch  uint32 // number of maps in an epoch
+	baseRowLength uint32 // maximum number of log values per row on layer 0
+	valuesPerMap  uint64 // number of log values marked on each filter map
 }
 
 var DefaultParams = Params{
 	logMapHeight:       16,
 	logMapsPerEpoch:    10,
-	logBaseRowGroup:    5,
 	logValuesPerMap:    16,
+	baseRowGroupLength: 32,
 	baseRowLengthRatio: 8,
 	logLayerDiff:       2,
 }

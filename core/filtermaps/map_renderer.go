@@ -235,7 +235,7 @@ func (r *mapRenderer) renderMaps(stopFn func() bool) (bool, error) {
 		// map finished
 		r.finishedMaps[r.currentMap.mapIndex] = r.currentMap
 		r.afterLastFinished++
-		if len(r.finishedMaps) >= maxMapsPerBatch {
+		if len(r.finishedMaps) >= maxMapsPerBatch || r.afterLastFinished & (r.f.baseRowGroupLength-1) == 0 {
 			if err := r.writeFinishedMaps(stopFn); err != nil {
 				return false, err
 			}
@@ -351,23 +351,31 @@ func (r *mapRenderer) writeFinishedMaps(stopFn func() bool) error {
 	r.f.setRange(batch, tempRange, false)
 	// add or update filter rows
 	for rowIndex := uint32(0); rowIndex < r.f.mapHeight; rowIndex++ {
+		var (
+			mapIndices []uint32
+			rows []FilterRow
+		)
 		for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 			row := r.finishedMaps[mapIndex].filterMap[rowIndex]
 			if fm, _ := r.f.filterMapCache.Get(mapIndex); fm != nil && row.Equal(fm[rowIndex]) {
 				continue
 			}
-			r.f.storeFilterMapRow(batch, mapIndex, rowIndex, row)
-			checkWriteCnt()
+			mapIndices = append(mapIndices, mapIndex)
+			rows = append(rows, row)
 		}
 		if newRange.afterLastRenderedMap == r.afterLastFinished { // head updated; remove future entries
 			for mapIndex := r.afterLastFinished; mapIndex < oldRange.afterLastRenderedMap; mapIndex++ {
 				if fm, _ := r.f.filterMapCache.Get(mapIndex); fm != nil && len(fm[rowIndex]) == 0 {
 					continue
 				}
-				r.f.storeFilterMapRow(batch, mapIndex, rowIndex, nil)
-				checkWriteCnt()
+				mapIndices = append(mapIndices, mapIndex)
+				rows = append(rows, nil)
 			}
 		}
+		if err := r.f.storeFilterMapRows(batch, mapIndices, rowIndex, rows); err != nil {
+			return err
+		}
+		checkWriteCnt()
 	}
 	// update filter map cache
 	if newRange.afterLastRenderedMap == r.afterLastFinished {

@@ -487,8 +487,23 @@ func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32, baseLayerOnly bo
 	return FilterRow(append(baseRow, extRow...)), nil
 }
 
-// mapIndices should be in the same base row group
 func (f *FilterMaps) storeFilterMapRows(batch ethdb.Batch, mapIndices []uint32, rowIndex uint32, rows []FilterRow) error {
+	for len(mapIndices) > 0 {
+		baseMapIndex := mapIndices[0] & -f.baseRowGroupLength
+		groupLength := 1
+		for groupLength < len(mapIndices) && mapIndices[groupLength] & -f.baseRowGroupLength == baseMapIndex {
+			groupLength++
+		}
+		if err := f.storeFilterMapRowsOfGroup(batch, mapIndices[:groupLength], rowIndex, rows[:groupLength]); err != nil {
+			return err
+		}
+		mapIndices, rows = mapIndices[groupLength:], rows[groupLength:]
+	}
+	return nil
+}
+
+// mapIndices should be in the same base row group
+func (f *FilterMaps) storeFilterMapRowsOfGroup(batch ethdb.Batch, mapIndices []uint32, rowIndex uint32, rows []FilterRow) error {
 	baseMapIndex := mapIndices[0] & -f.baseRowGroupLength
 	baseMapRowIndex := f.mapRowIndex(baseMapIndex, rowIndex)
 	baseRows, ok := f.baseRowsCache.Get(baseMapRowIndex)
