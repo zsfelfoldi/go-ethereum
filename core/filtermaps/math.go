@@ -29,19 +29,24 @@ type Params struct {
 	logMapHeight       uint // log2(mapHeight)
 	logMapsPerEpoch    uint // log2(mapsPerEpoch)
 	logValuesPerMap    uint // log2(logValuesPerMap)
+	logBaseRowGroup    uint // log2(baseRowGroupLength)
 	baseRowLengthRatio uint // baseRowLength / average row length
+	logLayerDiff       uint // maxRowLength log2 growth per layer
 	// derived fields
-	mapHeight     uint32 // filter map height (number of rows)
-	mapsPerEpoch  uint32 // number of maps in an epoch
-	baseRowLength uint32 // maximum number of log values per row on layer 0
-	valuesPerMap  uint64 // number of log values marked on each filter map
+	mapHeight          uint32 // filter map height (number of rows)
+	mapsPerEpoch       uint32 // number of maps in an epoch
+	baseRowLength      uint32 // maximum number of log values per row on layer 0
+	baseRowGroupLength uint32
+	valuesPerMap       uint64 // number of log values marked on each filter map
 }
 
 var DefaultParams = Params{
 	logMapHeight:       16,
-	logMapsPerEpoch:    8,
-	logValuesPerMap:    18,
+	logMapsPerEpoch:    10,
+	logBaseRowGroup:    5,
+	logValuesPerMap:    16,
 	baseRowLengthRatio: 8,
+	logLayerDiff:       2,
 }
 
 func (p *Params) deriveFields() {
@@ -79,10 +84,11 @@ func topicValue(topic common.Hash) common.Hash {
 // When searching for a log value one should consider all layers up until the
 // first one where the row mapped to the given layer is not full.
 func (p *Params) maxRowLength(layerIndex uint32) uint32 {
-	if uint(layerIndex) < p.logMapsPerEpoch {
-		return p.baseRowLength << layerIndex
+	logLayerDiff := uint(layerIndex) * p.logLayerDiff
+	if logLayerDiff > p.logMapsPerEpoch {
+		logLayerDiff = p.logMapsPerEpoch
 	}
-	return p.baseRowLength << p.logMapsPerEpoch
+	return p.baseRowLength << logLayerDiff
 }
 
 // maskedMapIndex returns the index used for row mapping calculation on the
@@ -91,11 +97,11 @@ func (p *Params) maxRowLength(layerIndex uint32) uint32 {
 // logMapsPerEpoch and on subsequent layers the mapping is different for every
 // mapIndex.
 func (p *Params) maskedMapIndex(mapIndex, layerIndex uint32) uint32 {
-	var maskBits uint
-	if uint(layerIndex) < p.logMapsPerEpoch {
-		maskBits = p.logMapsPerEpoch - uint(layerIndex)
+	logLayerDiff := uint(layerIndex) * p.logLayerDiff
+	if logLayerDiff > p.logMapsPerEpoch {
+		logLayerDiff = p.logMapsPerEpoch
 	}
-	return mapIndex & (uint32(math.MaxUint32) << maskBits)
+	return mapIndex & (uint32(math.MaxUint32) << (p.logMapsPerEpoch - logLayerDiff))
 }
 
 // rowIndex returns the row index in which the given log value should be marked

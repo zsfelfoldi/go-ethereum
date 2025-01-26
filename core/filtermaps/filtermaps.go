@@ -68,6 +68,7 @@ type FilterMaps struct {
 	filterMapCache *lru.Cache[uint32, filterMap]
 	lastBlockCache *lru.Cache[uint32, lastBlockOfMap]
 	lvPointerCache *lru.Cache[uint64, uint64]
+	baseRowsCache  *lru.Cache[uint64, [][]uint32]
 
 	// the matchers set and the fields of FilterMapsMatcherBackend instances are
 	// read and written both by exported functions and the indexer.
@@ -201,6 +202,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 		filterMapCache:  lru.NewCache[uint32, filterMap](3), //TODO named consts
 		lastBlockCache:  lru.NewCache[uint32, lastBlockOfMap](1000),
 		lvPointerCache:  lru.NewCache[uint64, uint64](1000),
+		baseRowsCache:   lru.NewCache[uint64, [][]uint32](100),
 		renderSnapshots: lru.NewCache[uint64, *renderedMap](cachedRevertPoints),
 	}
 	f.targetView = initView
@@ -454,7 +456,7 @@ func (f *FilterMaps) getFilterMap(mapIndex uint32) (filterMap, error) {
 	fm := make(filterMap, f.mapHeight)
 	for rowIndex := range fm {
 		var err error
-		fm[rowIndex], err = f.getFilterMapRow(mapIndex, uint32(rowIndex))
+		fm[rowIndex], err = f.getFilterMapRow(mapIndex, uint32(rowIndex), false)
 		if err != nil {
 			return nil, err
 		}
@@ -463,14 +465,57 @@ func (f *FilterMaps) getFilterMap(mapIndex uint32) (filterMap, error) {
 	return fm, nil
 }
 
-func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, error) {
-	row, err := rawdb.ReadFilterMapRow(f.db, f.mapRowIndex(mapIndex, rowIndex))
-	return FilterRow(row), err
+func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32, baseLayerOnly bool) (FilterRow, error) {
+	baseMapRowIndex := f.mapRowIndex(mapIndex & -f.baseRowGroupLength, rowIndex)
+	baseRows, ok := f.baseRowsCache.Get(baseMapRowIndex)
+	if !ok {
+		var err error
+		baseRows, err = rawdb.ReadFilterMapBaseRows(f.db, baseMapRowIndex, f.baseRowGroupLength)
+		if err != nil {
+			return nil, err
+		}
+		f.baseRowsCache.Add(baseMapRowIndex, baseRows)
+	}
+	baseRow := baseRows[mapIndex & (f.baseRowGroupLength-1)]
+	if baseLayerOnly {
+		return baseRow, nil
+	}
+	extRow, err := rawdb.ReadFilterMapExtRow(f.db, f.mapRowIndex(mapIndex, rowIndex))
+	if err != nil {
+		return nil, err
+	}
+	return FilterRow(append(baseRow, extRow...)), nil
 }
 
-func (f *FilterMaps) storeFilterMapRow(batch ethdb.Batch, mapIndex, rowIndex uint32, row FilterRow) {
-	rawdb.WriteFilterMapRow(batch, f.mapRowIndex(mapIndex, rowIndex), []uint32(row))
-}
+// mapIndices should be in the same base row group
+func (f *FilterMaps) storeFilterMapRows(batch ethdb.Batch, mapIndices []uint32, rowIndex uint32, rows []FilterRow) error {
+	baseMapIndex := mapIndices[0] & -f.baseRowGroupLength
+	baseMapRowIndex := f.mapRowIndex(baseMapIndex, rowIndex)
+	baseRows, ok := f.baseRowsCache.Get(baseMapRowIndex)
+	if !ok {
+		var err error
+		baseRows, err = rawdb.ReadFilterMapBaseRows(f.db, baseMapRowIndex, f.baseRowGroupLength)
+		if err != nil {
+			return err
+		}
+	}
+	for i, mapIndex :=	range mapIndices {
+	    if mapIndex & -f.baseRowGroupLength != baseMapIndex {
+			panic("mapIndices are not in the same base row group")
+		}
+		baseRow := []uint32(rows[i])
+		var extRow FilterRow
+		if uint32(len(rows[i])) > f.baseRowLength {
+			extRow = baseRow[f.baseRowLength:]
+			baseRow = baseRow[:f.baseRowLength]
+		}
+		baseRows[mapIndex & (f.baseRowGroupLength-1)] = baseRow
+		rawdb.WriteFilterMapExtRow(batch, f.mapRowIndex(mapIndex, rowIndex), extRow)
+	}
+	f.baseRowsCache.Add(baseMapRowIndex, baseRows)
+	rawdb.WriteFilterMapBaseRows(batch, baseMapRowIndex, baseRows)
+	return nil
+}	
 
 // mapRowIndex calculates the unified storage index where the given row of the
 // given map is stored. Note that this indexing scheme is the same as the one

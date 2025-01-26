@@ -36,8 +36,10 @@ import (
 var testParams = Params{
 	logMapHeight:       2,
 	logMapsPerEpoch:    4,
+	logBaseRowGroup:    2,
 	logValuesPerMap:    4,
 	baseRowLengthRatio: 8,
+	logLayerDiff:       2,
 }
 
 func TestIndexerRandomRange(t *testing.T) {

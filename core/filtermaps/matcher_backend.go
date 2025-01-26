@@ -74,8 +74,8 @@ func (fm *FilterMapsMatcherBackend) Close() {
 // Note that the returned slices should not be modified, they should be copied
 // on write.
 // GetFilterMapRow implements MatcherBackend.
-func (fm *FilterMapsMatcherBackend) GetFilterMapRow(ctx context.Context, mapIndex, rowIndex uint32) (FilterRow, error) {
-	return fm.f.getFilterMapRow(mapIndex, rowIndex)
+func (fm *FilterMapsMatcherBackend) GetFilterMapRow(ctx context.Context, mapIndex, rowIndex uint32, baseLayerOnly bool) (FilterRow, error) {
+	return fm.f.getFilterMapRow(mapIndex, rowIndex, baseLayerOnly)
 }
 
 // GetBlockLvPointer returns the starting log value index where the log values

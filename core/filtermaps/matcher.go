@@ -44,7 +44,7 @@ var ErrMatchAll = errors.New("match all patterns not supported")
 type MatcherBackend interface {
 	GetParams() *Params
 	GetBlockLvPointer(ctx context.Context, blockNumber uint64) (uint64, error)
-	GetFilterMapRow(ctx context.Context, mapIndex, rowIndex uint32) (FilterRow, error)
+	GetFilterMapRow(ctx context.Context, mapIndex, rowIndex uint32, baseLayerOnly bool) (FilterRow, error)
 	GetLogByLvIndex(ctx context.Context, lvIndex uint64) (*types.Log, error)
 	SyncLogIndex(ctx context.Context) (SyncRange, error)
 	Close()
@@ -369,7 +369,7 @@ func (m *singleMatcherInstance) getMoreMatches(ctx context.Context, layerIndex u
 		} else {
 			m.stats.set(&st, stFetchMore)
 		}
-		filterRow, err := m.backend.GetFilterMapRow(ctx, mapIndex, rowIndex)
+		filterRow, err := m.backend.GetFilterMapRow(ctx, mapIndex, rowIndex, layerIndex == 0)
 		m.stats.set(&st, stOther)
 		if err != nil {
 			m.stats.set(&st, stNone)

@@ -182,8 +182,6 @@ func DeleteBloombits(db ethdb.Database, bit uint, from uint64, to uint64) {
 	}
 }
 
-var emptyRow = []uint32{}
-
 // ReadFilterMapRow retrieves a filter map row at the given mapRowIndex
 // (see filtermaps.mapRowIndex for the storage index encoding).
 // Note that zero length rows are not stored in the database and therefore all
@@ -193,21 +191,21 @@ var emptyRow = []uint32{}
 // same data proximity reasons it is also suitable for database representation.
 // See also:
 // https://eips.ethereum.org/EIPS/eip-7745#hash-tree-structure
-func ReadFilterMapRow(db ethdb.KeyValueReader, mapRowIndex uint64) ([]uint32, error) {
-	key := filterMapRowKey(mapRowIndex)
+func ReadFilterMapExtRow(db ethdb.KeyValueReader, mapRowIndex uint64) ([]uint32, error) {
+	key := filterMapRowKey(mapRowIndex, false)
 	has, err := db.Has(key)
 	if err != nil {
 		return nil, err
 	}
 	if !has {
-		return emptyRow, nil
+		return nil, nil
 	}
 	encRow, err := db.Get(key)
 	if err != nil {
 		return nil, err
 	}
 	if len(encRow)&3 != 0 {
-		return nil, errors.New("Invalid encoded filter row length")
+		return nil, errors.New("Invalid encoded extended filter row length")
 	}
 	row := make([]uint32, len(encRow)/4)
 	for i := range row {
@@ -216,26 +214,125 @@ func ReadFilterMapRow(db ethdb.KeyValueReader, mapRowIndex uint64) ([]uint32, er
 	return row, nil
 }
 
+func ReadFilterMapBaseRows(db ethdb.KeyValueReader, mapRowIndex uint64, rowCount uint32) ([][]uint32, error) {
+	key := filterMapRowKey(mapRowIndex, true)
+	has, err := db.Has(key)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([][]uint32, rowCount)
+	if !has {
+		return rows, nil
+	}
+	encRows, err := db.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	encLen := len(encRows)
+	var (
+		entryCount, entriesInRow, rowIndex, headerLen, headerBits int
+		headerByte                                                byte
+	)
+	for headerLen+4*entryCount < encLen {
+		if headerBits == 0 {
+			headerByte = encRows[headerLen]
+			headerLen++
+			headerBits = 8
+		}
+		if headerByte&1 > 0 {
+			entriesInRow++
+			entryCount++
+		} else {
+			if entriesInRow > 0 {
+				rows[rowIndex] = make([]uint32, entriesInRow)
+				entriesInRow = 0
+			}
+			rowIndex++
+		}
+		headerByte >>= 1
+	}
+	if headerLen+4*entryCount > encLen {
+		return nil, errors.New("Invalid encoded base filter rows length")
+	}
+	if entriesInRow > 0 {
+		rows[rowIndex] = make([]uint32, entriesInRow)
+	}
+	nextEntry := headerLen
+	for _, row := range rows {
+		for i := range row {
+			row[i] = binary.LittleEndian.Uint32(encRows[nextEntry : nextEntry+4])
+			nextEntry += 4
+		}
+	}
+	return rows, nil
+}
+
 // WriteFilterMapRow stores a filter map row at the given mapRowIndex or deletes
 // any existing entry if the row is empty.
-func WriteFilterMapRow(db ethdb.KeyValueWriter, mapRowIndex uint64, row []uint32) {
+func WriteFilterMapExtRow(db ethdb.KeyValueWriter, mapRowIndex uint64, row []uint32) {
 	var err error
 	if len(row) > 0 {
 		encRow := make([]byte, len(row)*4)
 		for i, c := range row {
 			binary.LittleEndian.PutUint32(encRow[i*4:(i+1)*4], c)
 		}
-		err = db.Put(filterMapRowKey(mapRowIndex), encRow)
+		err = db.Put(filterMapRowKey(mapRowIndex, false), encRow)
 	} else {
-		err = db.Delete(filterMapRowKey(mapRowIndex))
+		err = db.Delete(filterMapRowKey(mapRowIndex, false))
 	}
 	if err != nil {
-		log.Crit("Failed to store filter map row", "err", err)
+		log.Crit("Failed to store extended filter map row", "err", err)
+	}
+}
+
+func WriteFilterMapBaseRows(db ethdb.KeyValueWriter, mapRowIndex uint64, rows [][]uint32) {
+	var entryCount, zeroBits int
+	for i, row := range rows {
+		if len(row) > 0 {
+			entryCount += len(row)
+			zeroBits = i
+		}
+	}
+	var err error
+	if entryCount > 0 {
+		headerLen := (zeroBits + entryCount + 7) / 8
+		encRows := make([]byte, headerLen+entryCount*4)
+		nextEntry := headerLen
+
+		headerPtr, headerByte := 0, byte(1)
+		addHeaderBit := func(bit bool) {
+			if bit {
+				encRows[headerPtr] += headerByte
+				if headerByte += headerByte; headerByte == 0 {
+					headerPtr++
+					headerByte = 1
+				}
+			}
+		}
+
+		for _, row := range rows {
+			for _, entry := range row {
+				binary.LittleEndian.PutUint32(encRows[nextEntry:nextEntry+4], entry)
+				nextEntry += 4
+				addHeaderBit(true)
+			}
+			if zeroBits == 0 {
+				break
+			}
+			addHeaderBit(false)
+			zeroBits--
+		}
+		err = db.Put(filterMapRowKey(mapRowIndex, true), encRows)
+	} else {
+		err = db.Delete(filterMapRowKey(mapRowIndex, true))
+	}
+	if err != nil {
+		log.Crit("Failed to store base filter map rows", "err", err)
 	}
 }
 
 func DeleteFilterMapRows(db ethdb.KeyValueRangeDeleter, firstMapRowIndex, afterLastMapRowIndex uint64) {
-	if err := db.DeleteRange(filterMapRowKey(firstMapRowIndex), filterMapRowKey(afterLastMapRowIndex)); err != nil {
+	if err := db.DeleteRange(filterMapRowKey(firstMapRowIndex, false), filterMapRowKey(afterLastMapRowIndex, false)); err != nil {
 		log.Crit("Failed to delete range of filter map rows", "err", err)
 	}
 }
