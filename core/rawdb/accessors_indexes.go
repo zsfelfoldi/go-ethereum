@@ -250,6 +250,7 @@ func ReadFilterMapBaseRows(db ethdb.KeyValueReader, mapRowIndex uint64, rowCount
 			rowIndex++
 		}
 		headerByte >>= 1
+		headerBits--
 	}
 	if headerLen+4*entryCount > encLen {
 		return nil, errors.New("Invalid encoded base filter rows length")
