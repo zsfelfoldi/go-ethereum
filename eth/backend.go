@@ -425,7 +425,7 @@ func (s *Ethereum) updateFilterMapsHeads() {
 			case ev := <-headEventCh:
 				setHead(ev.Header)
 			case blockProc = <-blockProcCh:
-				fmt.Println("block proc feed", blockProc)
+				//fmt.Println("block proc feed", blockProc)
 			case <-time.After(time.Second * 10):
 				setHead(s.blockchain.CurrentBlock())
 			case ch := <-s.closeFilterMaps:
@@ -439,7 +439,7 @@ func (s *Ethereum) updateFilterMapsHeads() {
 			case ev := <-headEventCh:
 				setHead(ev.Header)
 			case blockProc = <-blockProcCh:
-				fmt.Println("block proc feed", blockProc)
+				//fmt.Println("block proc feed", blockProc)
 			case <-time.After(time.Second * 10):
 				setHead(s.blockchain.CurrentBlock())
 			case ch := <-s.closeFilterMaps:
@@ -453,7 +453,7 @@ func (s *Ethereum) updateFilterMapsHeads() {
 			case <-time.After(time.Second * 10):
 				setHead(s.blockchain.CurrentBlock())
 			case blockProc = <-blockProcCh:
-				fmt.Println("block proc feed", blockProc)
+				//fmt.Println("block proc feed", blockProc)
 			case ch := <-s.closeFilterMaps:
 				close(ch)
 				return

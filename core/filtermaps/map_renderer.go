@@ -18,7 +18,6 @@ package filtermaps
 
 import (
 	"errors"
-	"fmt"
 	"math"
 	"sort"
 
@@ -310,7 +309,6 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 		r.currentMap.headDelimiter = r.iterator.lvIndex
 	}
 	r.currentMap.lastBlockId = r.f.targetView.getBlockId(r.currentMap.lastBlock)
-	log.Info("Map rendered", "mapIndex", r.currentMap.mapIndex)
 	return true, nil
 }
 
@@ -484,7 +482,6 @@ func (r *mapRenderer) getUpdatedRange() (filterMapsRange, error) {
 		if lm.finished {
 			newRange.afterLastIndexedBlock = newRange.targetBlockNumber + 1
 			if lm.lastBlock != newRange.targetBlockNumber {
-				fmt.Println("***", newRange.targetBlockNumber, lm.lastBlock, lm.headDelimiter)
 				panic("map rendering finished but last block != head block")
 			}
 			newRange.headBlockDelimiter = lm.headDelimiter
@@ -629,7 +626,6 @@ func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, 
 	// iterate to map boundary
 	for l.lvIndex < targetIndex {
 		if l.finished {
-			fmt.Println("***", l.lvIndex, targetIndex)
 			panic("iterator already finished")
 		}
 		if err := l.next(); err != nil {

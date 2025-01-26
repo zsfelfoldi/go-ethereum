@@ -79,10 +79,12 @@ type FilterMaps struct {
 
 	// fields only accessed by the indexer (no mutex required).
 	renderSnapshots                                                        *lru.Cache[uint64, *renderedMap]
-	startHeadUpdate, loggedHeadUpdate, loggedTailExtend, loggedTailUnindex bool
-	startedHeadUpdate, startedTailExtend, startedTailUnindex               time.Time
-	lastLogHeadUpdate, lastLogTailExtend, lastLogTailUnindex               time.Time
-	ptrHeadUpdate, ptrTailExtend, ptrTailUnindex                           uint64
+	startedHeadIndex, startedTailIndex, startedTailUnindex					 bool
+	startedHeadIndexAt, startedTailIndexAt, startedTailUnindexAt               time.Time
+	loggedHeadIndex, loggedTailIndex										 bool
+	lastLogHeadIndex, lastLogTailIndex					   	            time.Time
+	ptrHeadIndex, ptrTailIndex, ptrTailUnindexBlock                        uint64
+	ptrTailUnindexMap														uint32
 
 	targetView         chainView
 	matcherSyncRequest *FilterMapsMatcherBackend
@@ -377,10 +379,6 @@ func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRan
 		rawdb.WriteFilterMapsRange(batch, rs)
 	} else {
 		rawdb.DeleteFilterMapsRange(batch)
-	}
-	if f.hasIndexedBlocks() {
-		log.Info("Updated log index range", "firstBlock", newRange.firstIndexedBlock, "lastBlock", newRange.afterLastIndexedBlock-1,
-			"firstMap", newRange.firstRenderedMap, "lastMap", newRange.afterLastRenderedMap-1)
 	}
 }
 
