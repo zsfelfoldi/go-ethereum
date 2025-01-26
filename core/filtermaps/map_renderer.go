@@ -31,7 +31,7 @@ import (
 const (
 	valuesPerCallback = 1000
 	writesPerBatch    = 100
-	maxMapsPerBatch   = 16
+	maxMapsPerBatch   = 64
 )
 
 var (
