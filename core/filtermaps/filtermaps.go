@@ -484,10 +484,24 @@ func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32, baseLayerOnly bo
 	if err != nil {
 		return nil, err
 	}
+	
+	/*res := FilterRow(append(baseRow, extRow...))
+	stored := testMap[f.mapRowIndex(mapIndex, rowIndex)]
+	if !reflect.DeepEqual(res, stored) {
+		fmt.Println("diff", mapIndex, rowIndex, baseRow, extRow, stored)
+	}*/	
 	return FilterRow(append(baseRow, extRow...)), nil
 }
 
+//var testMap map[uint64]FilterRow
+
 func (f *FilterMaps) storeFilterMapRows(batch ethdb.Batch, mapIndices []uint32, rowIndex uint32, rows []FilterRow) error {
+	/*if testMap == nil {
+		testMap = make(map[uint64]FilterRow)
+	}	
+	for i, m := range mapIndices {
+		testMap[f.mapRowIndex(m, rowIndex)] = rows[i]
+	}*/	
 	for len(mapIndices) > 0 {
 		baseMapIndex := mapIndices[0] & -f.baseRowGroupLength
 		groupLength := 1

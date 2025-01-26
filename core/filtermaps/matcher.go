@@ -166,20 +166,17 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 
 	worker := func() {
 		for task := range taskCh {
-			//fmt.Println("taskCh")
 			if task == nil {
 				break
 			}
-			//fmt.Println("processEpoch start")
 			task.logs, task.err = processEpoch(task.epochIndex)
-			//fmt.Println("processEpoch stop")
 			close(task.done)
 		}
 		wg.Done()
 	}
 
 	start := time.Now()
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 4; i++ { //TODO
 		wg.Add(1)
 		go worker()
 	}
@@ -292,22 +289,11 @@ type matcherInstance interface {
 }
 
 func getAllMatches(ctx context.Context, matcher matcher, mapIndices []uint32) ([]potentialMatches, error) {
-	//fmt.Println("getAllMatches", mapIndices[0]>>16)
+	//fmt.Println("getAllMatches", mapIndices[0])
 	instance := matcher.newInstance(mapIndices)
 	resultsMap := make(map[uint32]potentialMatches)
 	for layerIndex := uint32(0); len(resultsMap) < len(mapIndices); layerIndex++ {
-		//fmt.Println(" alt", layerIndex, len(resultsMap), len(mapIndices))
 		results, err := instance.getMoreMatches(ctx, layerIndex)
-
-		/*var sum, nilc uint64 //***
-		for _, r := range results {
-			sum += uint64(len(r.matches))
-			if r.matches == nil {
-				nilc++
-			}
-		}
-		fmt.Println(" res", len(results), "sum", sum, "nil", nilc, "err", err)*/
-
 		if err != nil {
 			return nil, err
 		}
@@ -336,22 +322,31 @@ type singleMatcherInstance struct {
 }
 
 func (m *singleMatcher) newInstance(mapIndices []uint32) matcherInstance {
+	//fmt.Println("sm new", m.value[:4], "mapIndices", mapIndices)
 	filterRows := make(map[uint32][]FilterRow)
 	for _, idx := range mapIndices {
 		filterRows[idx] = []FilterRow{}
 	}
+	copiedIndices := make([]uint32, len(mapIndices))
+	copy(copiedIndices, mapIndices)
 	return &singleMatcherInstance{
 		singleMatcher: m,
-		mapIndices:    mapIndices,
+		mapIndices:    copiedIndices,
 		filterRows:    filterRows,
 	}
 }
 
 func (m *singleMatcherInstance) getMoreMatches(ctx context.Context, layerIndex uint32) (results []matcherResult, err error) {
+	if layerIndex > 100 {
+		panic(nil)
+	}
 	var st int
 	m.stats.set(&st, stOther)
 	params := m.backend.GetParams()
-	//fmt.Println(" sm alt", layerIndex, "mapIndices", len(m.mapIndices))
+	/*fmt.Println("sm get", m.value[:4], "pending", len(m.mapIndices), "filterRows", len(m.filterRows), "layer", layerIndex)
+	if len(m.mapIndices) != len(m.filterRows) {
+		fmt.Println("!!!")
+	}*/
 	maskedMapIndex, rowIndex := uint32(math.MaxUint32), uint32(0)
 	for _, mapIndex := range m.mapIndices {
 		filterRows, ok := m.filterRows[mapIndex]
@@ -388,24 +383,14 @@ func (m *singleMatcherInstance) getMoreMatches(ctx context.Context, layerIndex u
 			m.filterRows[mapIndex] = filterRows
 		}
 	}
-	//fmt.Println(" getMoreMatches 2", m.value)
-	//fmt.Println("getMoreMatches", m.value, "mapIndices", len(m.mapIndices), "results", len(results))
 	m.cleanMapIndices()
 	m.stats.set(&st, stNone)
-
-	/*var sum, nilc uint64 //***
-	for _, r := range results {
-		sum += uint64(len(r.matches))
-		if r.matches == nil {
-			nilc++
-		}
-	}
-	fmt.Println(" getMoreMatches 3", m.value, "sum", sum, "nil", nilc)*/
+	//fmt.Println("sm res", len(results))
 	return results, nil
 }
 
 func (m *singleMatcherInstance) dropIndices(dropIndices []uint32) {
-	//fmt.Println("dropIndices", m.value, "dropIndices", len(dropIndices))
+	//fmt.Println("sm drop", m.value[:4], "count", len(dropIndices), "filterRows before", len(m.filterRows))
 	for _, mapIndex := range dropIndices {
 		delete(m.filterRows, mapIndex)
 	}
@@ -413,6 +398,11 @@ func (m *singleMatcherInstance) dropIndices(dropIndices []uint32) {
 }
 
 func (m *singleMatcherInstance) cleanMapIndices() {
+	/*fmt.Print("sm clean before ", m.value[:4], " mapIndices ", m.mapIndices, " filterRows:")
+	for m := range m.filterRows {
+		fmt.Print(" ", m)
+	}
+	fmt.Println()*/
 	var j int
 	for i, mapIndex := range m.mapIndices {
 		if _, ok := m.filterRows[mapIndex]; ok {
@@ -422,8 +412,12 @@ func (m *singleMatcherInstance) cleanMapIndices() {
 			j++
 		}
 	}
-	//fmt.Println("cleanMapIndices", m.value, "old", len(m.mapIndices), "new", j)
+	/*if j != len(m.filterRows) {
+		fmt.Println("***")
+	}
+	old := len(m.mapIndices)*/
 	m.mapIndices = m.mapIndices[:j]
+	//fmt.Println("sm clean after", m.value[:4], "old", old, "new", j, "filterRows", len(m.filterRows), " mapIndices ", m.mapIndices)
 }
 
 // matchAny combinines a set of matchers and returns a match for every position
@@ -467,6 +461,7 @@ func (m matchAny) newInstance(mapIndices []uint32) matcherInstance {
 }
 
 func (m *matchAnyInstance) getMoreMatches(ctx context.Context, layerIndex uint32) (mergedResults []matcherResult, err error) {
+	//fmt.Println("ma get", len(m.matchAny), "pending", len(m.childResults), "layer", layerIndex)
 	if len(m.matchAny) == 0 {
 		// return "wild card" results (potentialMatches(nil) is interpreted as a
 		// potential match at every log value index of the map).
@@ -479,6 +474,13 @@ func (m *matchAnyInstance) getMoreMatches(ctx context.Context, layerIndex uint32
 		return mergedResults, nil
 	}
 	for i, childInstance := range m.childInstances {
+		/*var exp int
+		for _, mr := range m.childResults {
+			if !mr.done[i] {
+				exp++
+			}
+		}
+		fmt.Println("ma call", i, "expecting", exp)*/
 		results, err := childInstance.getMoreMatches(ctx, layerIndex)
 		if err != nil {
 			return nil, err
@@ -502,10 +504,12 @@ func (m *matchAnyInstance) getMoreMatches(ctx context.Context, layerIndex uint32
 			}
 		}
 	}
+	//fmt.Println("ma res", len(mergedResults))
 	return mergedResults, nil
 }
 
 func (m *matchAnyInstance) dropIndices(dropIndices []uint32) {
+	//fmt.Println("ma drop count", len(dropIndices))
 	for _, childInstance := range m.childInstances {
 		childInstance.dropIndices(dropIndices)
 	}
@@ -645,9 +649,9 @@ func (m *matchSequence) newInstance(mapIndices []uint32) matcherInstance {
 }
 
 func (m *matchSequenceInstance) getMoreMatches(ctx context.Context, layerIndex uint32) (matchedResults []matcherResult, err error) {
+	//fmt.Println("ms get", m.offset, "pending", len(m.needMatched), "layer", layerIndex)
 	// decide whether to evaluate base or next matcher first
 	baseFirst := m.baseFirst()
-	//fmt.Println("*** matchSeq ofs", m.offset, "baseFirst", baseFirst, "alt", layerIndex, "bt be nt ne", baseTotal, baseEmpty, nextTotal, nextEmpty)
 	if baseFirst {
 		if err := m.evalBase(ctx, layerIndex); err != nil {
 			return nil, err
@@ -678,10 +682,12 @@ func (m *matchSequenceInstance) getMoreMatches(ctx context.Context, layerIndex u
 		})
 		delete(m.needMatched, mapIndex)
 	}
+	//fmt.Println("ms res", len(matchedResults))
 	return matchedResults, nil
 }
 
 func (m *matchSequenceInstance) evalBase(ctx context.Context, layerIndex uint32) error {
+	//fmt.Println("ms call base expecting", len(m.baseRequested))
 	results, err := m.baseInstance.getMoreMatches(ctx, layerIndex)
 	if err != nil {
 		return err
@@ -713,6 +719,7 @@ func (m *matchSequenceInstance) evalBase(ctx context.Context, layerIndex uint32)
 }
 
 func (m *matchSequenceInstance) evalNext(ctx context.Context, layerIndex uint32) error {
+	//fmt.Println("ms call next expecting", len(m.nextRequested))
 	results, err := m.nextInstance.getMoreMatches(ctx, layerIndex)
 	if err != nil {
 		return err
@@ -783,7 +790,7 @@ func (m *matchSequenceInstance) dropNext(mapIndex uint32) bool {
 }
 
 func (m *matchSequenceInstance) dropIndices(dropIndices []uint32) {
-	//fmt.Println("ms", m.offset, "drop", len(dropIndices))
+	//fmt.Println("ms drop", m.offset, "count", len(dropIndices))
 	for _, mapIndex := range dropIndices {
 		delete(m.needMatched, mapIndex)
 	}
@@ -811,7 +818,6 @@ func (m *matchSequenceInstance) dropIndices(dropIndices []uint32) {
 // skipped and it can be substituted with an empty list if baseRes has no potential
 // matches that could be sequence matched with anything that could be in nextNextRes.
 func (params *Params) matchResults(mapIndex uint32, offset uint64, baseRes, nextRes, nextNextRes potentialMatches) potentialMatches {
-	//fmt.Println("matchResults", mapIndex, baseRes != nil, len(baseRes), nextRes != nil, len(nextRes), nextNextRes != nil, len(nextNextRes))
 	if nextRes == nil || (baseRes != nil && len(baseRes) == 0) {
 		// if nextRes is a wild card or baseRes is empty then the sequence matcher
 		// result equals baseRes.

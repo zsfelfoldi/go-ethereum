@@ -38,7 +38,7 @@ var testParams = Params{
 	logMapsPerEpoch:    4,
 	logValuesPerMap:    4,
 	baseRowGroupLength: 4,
-	baseRowLengthRatio: 8,
+	baseRowLengthRatio: 2,
 	logLayerDiff:       2,
 }
 

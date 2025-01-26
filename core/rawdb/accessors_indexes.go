@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	//"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -265,6 +266,12 @@ func ReadFilterMapBaseRows(db ethdb.KeyValueReader, mapRowIndex uint64, rowCount
 			nextEntry += 4
 		}
 	}
+	/*fmt.Print("read ", mapRowIndex)
+	for _, row := range rows {
+		fmt.Print(" ", len(row))
+	}
+	fmt.Println()
+	fmt.Println(" header", encRows[:headerLen])*/
 	return rows, nil
 }
 
@@ -288,12 +295,15 @@ func WriteFilterMapExtRow(db ethdb.KeyValueWriter, mapRowIndex uint64, row []uin
 
 func WriteFilterMapBaseRows(db ethdb.KeyValueWriter, mapRowIndex uint64, rows [][]uint32) {
 	var entryCount, zeroBits int
+	//fmt.Print("write ", mapRowIndex)
 	for i, row := range rows {
+		//fmt.Print(" ", len(row))
 		if len(row) > 0 {
 			entryCount += len(row)
 			zeroBits = i
 		}
 	}
+	//fmt.Println()
 	var err error
 	if entryCount > 0 {
 		headerLen := (zeroBits + entryCount + 7) / 8
@@ -304,10 +314,10 @@ func WriteFilterMapBaseRows(db ethdb.KeyValueWriter, mapRowIndex uint64, rows []
 		addHeaderBit := func(bit bool) {
 			if bit {
 				encRows[headerPtr] += headerByte
-				if headerByte += headerByte; headerByte == 0 {
-					headerPtr++
-					headerByte = 1
-				}
+			}
+			if headerByte += headerByte; headerByte == 0 {
+				headerPtr++
+				headerByte = 1
 			}
 		}
 
@@ -324,6 +334,7 @@ func WriteFilterMapBaseRows(db ethdb.KeyValueWriter, mapRowIndex uint64, rows []
 			zeroBits--
 		}
 		err = db.Put(filterMapRowKey(mapRowIndex, true), encRows)
+		//fmt.Println(" header", encRows[:headerLen])
 	} else {
 		err = db.Delete(filterMapRowKey(mapRowIndex, true))
 	}
