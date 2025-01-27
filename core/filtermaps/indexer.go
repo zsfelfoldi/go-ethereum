@@ -122,8 +122,8 @@ func (f *FilterMaps) tryIndexHead() bool {
 			"first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1,
 			"processed", f.afterLastIndexedBlock-f.ptrHeadIndex,
 			"elapsed", common.PrettyDuration(time.Since(f.startedHeadIndexAt)))
-		f.loggedHeadIndex, f.startedHeadIndex = false, false
 	}
+	f.loggedHeadIndex, f.startedHeadIndex = false, false
 	return true
 }
 
