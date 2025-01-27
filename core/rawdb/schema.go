@@ -145,6 +145,12 @@ var (
 	FixedCommitteeRootKey = []byte("fixedRoot-") // bigEndian64(syncPeriod) -> committee root hash
 	SyncCommitteeKey      = []byte("committee-") // bigEndian64(syncPeriod) -> serialized committee
 
+	FilterMapsPrefix         = []byte("fm-")
+	filterMapsRangeKey       = append(FilterMapsPrefix, byte('R'))
+	filterMapRowPrefix       = append(FilterMapsPrefix, byte('r')) // filterMapRowPrefix + mapRowIndex (uint64 big endian) -> filter row
+	filterMapLastBlockPrefix = append(FilterMapsPrefix, byte('b')) // filterMapLastBlockPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
+	filterMapBlockLVPrefix   = append(FilterMapsPrefix, byte('p')) // filterMapBlockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
+
 	preimageCounter    = metrics.NewRegisteredCounter("db/preimage/total", nil)
 	preimageHitCounter = metrics.NewRegisteredCounter("db/preimage/hits", nil)
 )
@@ -345,4 +351,28 @@ func ResolveStorageTrieNode(key []byte) (bool, common.Hash, []byte) {
 func IsStorageTrieNode(key []byte) bool {
 	ok, _, _ := ResolveStorageTrieNode(key)
 	return ok
+}
+
+// filterMapRowKey = filterMapRowPrefix + mapRowIndex (uint64 big endian)
+func filterMapRowKey(mapRowIndex uint64, base bool) []byte {
+	extLen := 8
+	if base {
+		extLen = 9
+	}
+	key := append(filterMapRowPrefix, make([]byte, extLen)...)
+	l := len(filterMapRowPrefix)
+	binary.BigEndian.PutUint64(key[l:l+8], mapRowIndex)
+	return key
+}
+
+// filterMapLastBlockKey = filterMapLastBlockPrefix + mapIndex (uint32 big endian)
+func filterMapLastBlockKey(mapIndex uint32) []byte {
+	key := append(filterMapLastBlockPrefix, make([]byte, 4)...)
+	binary.BigEndian.PutUint32(key[len(filterMapLastBlockPrefix):], mapIndex)
+	return key
+}
+
+// filterMapBlockLVKey = filterMapBlockLVPrefix + num (uint64 big endian)
+func filterMapBlockLVKey(number uint64) []byte {
+	return append(filterMapBlockLVPrefix, encodeBlockNumber(number)...)
 }
