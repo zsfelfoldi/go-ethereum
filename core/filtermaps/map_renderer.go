@@ -226,7 +226,7 @@ func (f *FilterMaps) loadHeadSnapshot() error {
 	return nil
 }
 
-func (r *mapRenderer) renderMaps(stopFn func() bool) (bool, error) {
+func (r *mapRenderer) renderMaps(stopFn func() bool, writeCb func()) (bool, error) {
 	for {
 		if done, err := r.renderCurrentMap(stopFn); !done {
 			return done, err // stopped or failed
@@ -238,11 +238,13 @@ func (r *mapRenderer) renderMaps(stopFn func() bool) (bool, error) {
 			if err := r.writeFinishedMaps(stopFn); err != nil {
 				return false, err
 			}
+			writeCb()
 		}
 		if r.afterLastFinished == r.afterLastMap || r.iterator.finished {
 			if err := r.writeFinishedMaps(stopFn); err != nil {
 				return false, err
 			}
+			writeCb()
 			return true, nil
 		}
 		r.currentMap = &renderedMap{

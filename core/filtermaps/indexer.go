@@ -99,8 +99,12 @@ func (f *FilterMaps) tryIndexHead() bool {
 	}
 	if _, err := headRenderer.renderMaps(func() bool {
 		f.processEvents()
-		if f.hasIndexedBlocks() && (time.Since(f.lastLogHeadIndex) > logFrequency ||
-			(!f.loggedHeadIndex && time.Since(f.startedHeadIndexAt) > headLogDelay)) {
+		return f.stop
+	}, func() {
+		f.tryUnindexTail()
+		if f.hasIndexedBlocks() && f.afterLastIndexedBlock >= f.ptrHeadIndex &&
+			((!f.loggedHeadIndex && time.Since(f.startedHeadIndexAt) > headLogDelay) ||
+				time.Since(f.lastLogHeadIndex) > logFrequency) {
 			log.Info("Log index head rendering in progress",
 				"first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1,
 				"processed", f.afterLastIndexedBlock-f.ptrHeadIndex,
@@ -109,8 +113,6 @@ func (f *FilterMaps) tryIndexHead() bool {
 			f.loggedHeadIndex = true
 			f.lastLogHeadIndex = time.Now()
 		}
-		f.tryUnindexTail()
-		return f.stop
 	}); err != nil {
 		log.Error("Log index head rendering failed", "error", err)
 		return false
@@ -152,21 +154,28 @@ func (f *FilterMaps) tryIndexTail() bool {
 			f.lastLogTailIndex = time.Now()
 			f.startedTailIndexAt = f.lastLogTailIndex
 			f.startedTailIndex = true
-			f.ptrTailIndex = f.firstIndexedBlock
+			f.ptrTailIndex = f.firstIndexedBlock - f.tailPartialBlocks()
 		}
 		done, err := tailRenderer.renderMaps(func() bool {
 			f.processEvents()
-			if f.hasIndexedBlocks() && (time.Since(f.lastLogTailIndex) > logFrequency || !f.loggedTailIndex) {
+			return f.stop || !f.targetHeadIndexed()
+		}, func() {
+			tpb, ttb := f.tailPartialBlocks(), f.tailTargetBlock()
+			remaining := uint64(1)
+			if f.firstIndexedBlock > ttb+tpb {
+				remaining = f.firstIndexedBlock - ttb - tpb
+			}
+			if f.hasIndexedBlocks() && f.ptrTailIndex >= f.firstIndexedBlock &&
+				(!f.loggedTailIndex || time.Since(f.lastLogTailIndex) > logFrequency) {
 				log.Info("Log index tail rendering in progress",
 					"first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1,
-					"processed", f.ptrTailIndex-f.firstIndexedBlock+f.tailPartialBlocks(),
-					"remaining", f.firstIndexedBlock-f.tailTargetBlock(),
+					"processed", f.ptrTailIndex-f.firstIndexedBlock+tpb,
+					"remaining", remaining,
 					"next tail epoch percentage", f.tailPartialEpoch*100/f.mapsPerEpoch,
 					"elapsed", common.PrettyDuration(time.Since(f.startedTailIndexAt)))
 				f.loggedTailIndex = true
 				f.lastLogTailIndex = time.Now()
 			}
-			return f.stop || !f.targetHeadIndexed()
 		})
 		if err != nil {
 			log.Error("Log index tail rendering failed", "error", err)
