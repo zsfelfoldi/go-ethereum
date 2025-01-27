@@ -27,8 +27,9 @@ import (
 )
 
 const (
-	cachedRevertPoints = 8               // revert points for most recent blocks in memory
-	logFrequency       = time.Second * 8 // log info frequency during long indexing/unindexing process
+	cachedRevertPoints = 8                // revert points for most recent blocks in memory
+	logFrequency       = time.Second * 20 // log info frequency during long indexing/unindexing process
+	headLogDelay       = time.Second      // head indexing log info delay (do not log if finished faster)
 )
 
 // updateLoop initializes and updates the log index structure according to the
@@ -100,7 +101,6 @@ func (f *FilterMaps) tryIndexHead() bool {
 		f.processEvents()
 		if f.hasIndexedBlocks() && (!f.loggedHeadIndex || time.Since(f.lastLogHeadIndex) > logFrequency) {
 			log.Info("Log index head rendering in progress",
-				"first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1,
 				"first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1,
 				"processed", f.afterLastIndexedBlock-f.ptrHeadIndex,
 				"remaining", f.targetBlockNumber+1-f.afterLastIndexedBlock,
@@ -116,7 +116,6 @@ func (f *FilterMaps) tryIndexHead() bool {
 	}
 	if f.loggedHeadIndex {
 		log.Info("Log index head rendering finished",
-			"first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1,
 			"first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1,
 			"processed", f.afterLastIndexedBlock-f.ptrHeadIndex,
 			"elapsed", common.PrettyDuration(time.Since(f.startedHeadIndexAt)))
@@ -156,9 +155,9 @@ func (f *FilterMaps) tryIndexTail() bool {
 		}
 		done, err := tailRenderer.renderMaps(func() bool {
 			f.processEvents()
-			if f.hasIndexedBlocks() && (time.Since(f.lastLogTailIndex) > logFrequency || !f.loggedTailIndex) {
+			if f.hasIndexedBlocks() && (time.Since(f.lastLogTailIndex) > logFrequency ||
+				(!f.loggedTailIndex && time.Since(f.startedTailIndexAt) > headLogDelay)) {
 				log.Info("Log index tail rendering in progress",
-					"first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1,
 					"first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1,
 					"processed", f.ptrTailIndex-f.firstIndexedBlock,
 					"remaining", f.firstIndexedBlock-f.tailTargetBlock(),
@@ -179,7 +178,6 @@ func (f *FilterMaps) tryIndexTail() bool {
 	}
 	if f.loggedTailIndex {
 		log.Info("Log index tail rendering finished",
-			"first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1,
 			"first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1,
 			"processed", f.ptrTailIndex-f.firstIndexedBlock,
 			"elapsed", common.PrettyDuration(time.Since(f.startedTailIndexAt)))
@@ -211,7 +209,6 @@ func (f *FilterMaps) tryUnindexTail() bool {
 	}
 	if f.startedTailUnindex {
 		log.Info("Log index tail unindexing finished",
-			"first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1,
 			"first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1,
 			"removed maps", f.ptrTailUnindexMap-f.firstRenderedMap,
 			"removed blocks", f.ptrTailUnindexBlock-f.firstIndexedBlock,

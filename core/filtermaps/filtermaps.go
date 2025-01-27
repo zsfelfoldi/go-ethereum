@@ -204,8 +204,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 		f.targetBlockId = f.indexedView.getBlockId(f.targetBlockNumber)
 	}
 	if f.hasIndexedBlocks() {
-		log.Trace("Log index head", "number", f.targetBlockNumber, "id", f.targetBlockId.String(), "log value pointer", f.headBlockDelimiter)
-		log.Trace("Log index range", "first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1, "first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1)
+		log.Info("Log index range", "first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1, "first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1)
 	}
 	f.exportCheckpoints()
 	return f
