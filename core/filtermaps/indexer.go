@@ -99,7 +99,8 @@ func (f *FilterMaps) tryIndexHead() bool {
 	}
 	if _, err := headRenderer.renderMaps(func() bool {
 		f.processEvents()
-		if f.hasIndexedBlocks() && (!f.loggedHeadIndex || time.Since(f.lastLogHeadIndex) > logFrequency) {
+		if f.hasIndexedBlocks() && (time.Since(f.lastLogHeadIndex) > logFrequency ||
+			(!f.loggedHeadIndex && time.Since(f.startedHeadIndexAt) > headLogDelay)) {
 			log.Info("Log index head rendering in progress",
 				"first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1,
 				"processed", f.afterLastIndexedBlock-f.ptrHeadIndex,
@@ -155,11 +156,10 @@ func (f *FilterMaps) tryIndexTail() bool {
 		}
 		done, err := tailRenderer.renderMaps(func() bool {
 			f.processEvents()
-			if f.hasIndexedBlocks() && (time.Since(f.lastLogTailIndex) > logFrequency ||
-				(!f.loggedTailIndex && time.Since(f.startedTailIndexAt) > headLogDelay)) {
+			if f.hasIndexedBlocks() && (time.Since(f.lastLogTailIndex) > logFrequency || !f.loggedTailIndex) {
 				log.Info("Log index tail rendering in progress",
 					"first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1,
-					"processed", f.ptrTailIndex-f.firstIndexedBlock,
+					"processed", f.ptrTailIndex-f.firstIndexedBlock+f.tailPartialBlocks(),
 					"remaining", f.firstIndexedBlock-f.tailTargetBlock(),
 					"next tail epoch percentage", f.tailPartialEpoch*100/f.mapsPerEpoch,
 					"elapsed", common.PrettyDuration(time.Since(f.startedTailIndexAt)))
@@ -184,6 +184,24 @@ func (f *FilterMaps) tryIndexTail() bool {
 		f.loggedTailIndex = false
 	}
 	return true
+}
+
+func (f *FilterMaps) tailPartialBlocks() uint64 {
+	if f.tailPartialEpoch == 0 {
+		return 0
+	}
+	end, _, err := f.getLastBlockOfMap(f.firstRenderedMap - f.mapsPerEpoch + f.tailPartialEpoch - 1)
+	if err != nil {
+		log.Error("Error fetching last block of map", "mapIndex", f.firstRenderedMap-f.mapsPerEpoch+f.tailPartialEpoch-1, "error", err)
+	}
+	var start uint64
+	if f.firstRenderedMap-f.mapsPerEpoch > 0 {
+		start, _, err = f.getLastBlockOfMap(f.firstRenderedMap - f.mapsPerEpoch - 1)
+		if err != nil {
+			log.Error("Error fetching last block of map", "mapIndex", f.firstRenderedMap-f.mapsPerEpoch-1, "error", err)
+		}
+	}
+	return end - start
 }
 
 func (f *FilterMaps) tryUnindexTail() bool {
