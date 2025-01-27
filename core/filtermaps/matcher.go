@@ -30,6 +30,8 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
+const useTimeStats = true //TODO set to false before merging
+
 // ErrMatchAll is returned when the specified filter matches everything.
 // Handling this case in filtermaps would require an extra special case and
 // would actually be slower than reverting to legacy filter.
@@ -209,11 +211,13 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 			}
 		}
 	}
-	log.Info("Log search finished", "elapsed", time.Since(start))
-	for i, ma := range matchers {
-		for j, m := range ma.(matchAny) {
-			log.Info("Single matcher stats", "matchSequence", i, "matchAny", j)
-			m.(*singleMatcher).stats.log()
+	if useTimeStats {
+		log.Info("Log search finished", "elapsed", time.Since(start))
+		for i, ma := range matchers {
+			for j, m := range ma.(matchAny) {
+				log.Info("Single matcher stats", "matchSequence", i, "matchAny", j)
+				m.(*singleMatcher).stats.print()
+			}
 		}
 	}
 	return logs, nil
@@ -239,58 +243,41 @@ func getLogsFromMatches(ctx context.Context, backend MatcherBackend, firstIndex,
 	return logs, nil
 }
 
-const (
-	stNone = iota
-	stRowCalc
-	stFetchFirst
-	stFetchMore
-	stProcess
-	stOther
-	stCount
-)
-
-var stNames = []string{"", "rowCalc", "fetchFirst", "fetchMore", "process", "other"}
-
-type timeStats struct {
-	dt, cnt [stCount]int64
-}
-
-func (ts *timeStats) set(state *int, newState int) {
-	if ts == nil || newState == *state {
-		return
-	}
-	now := int64(mclock.Now())
-	atomic.AddInt64(&ts.dt[*state], now)
-	atomic.AddInt64(&ts.dt[newState], -now)
-	atomic.AddInt64(&ts.cnt[newState], 1)
-	*state = newState
-}
-
-func (ts *timeStats) log() {
-	for i := 1; i < stCount; i++ {
-		log.Info("Matcher stats", "name", stNames[i], "dt", time.Duration(ts.dt[i]), "count", ts.cnt[i])
-	}
-}
-
+// matcher defines a general abstraction for any matcher configuration that
+// can instantiate a matcherInstance.
 type matcher interface {
 	newInstance(mapIndices []uint32) matcherInstance
 }
 
+// matcherInstance defines a general abstraction for a matcher configuration
+// working on a specific set of map indices and eventually returning a list of
+// potentially matching log value indices.
+// Note that processing happens per mapping layer, each call returning a set
+// of results for the maps where the processing has been finished at the given
+// layer. Map indices can also be dropped before a result is returned for them
+// in case the result is no longer interesting. Dropping indices twice or after
+// a result has been returned has no effect. Exactly one matcherResult is
+// returned per requested map index unless dropped.
+type matcherInstance interface {
+	getMatchesForLayer(ctx context.Context, layerIndex uint32) ([]matcherResult, error)
+	dropIndices(mapIndices []uint32)
+}
+
+// matcherResult contains the list of potentially matching log value indices
+// for a given map index.
 type matcherResult struct {
 	mapIndex uint32
 	matches  potentialMatches
 }
 
-type matcherInstance interface {
-	getMoreMatches(ctx context.Context, layerIndex uint32) ([]matcherResult, error)
-	dropIndices(mapIndices []uint32)
-}
-
+// getAllMatches creates an instance for a given matcher and set of map indices,
+// iterates through mapping layers and collects all results, then returns all
+// results in the same order as the map indices were specified.
 func getAllMatches(ctx context.Context, matcher matcher, mapIndices []uint32) ([]potentialMatches, error) {
 	instance := matcher.newInstance(mapIndices)
 	resultsMap := make(map[uint32]potentialMatches)
 	for layerIndex := uint32(0); len(resultsMap) < len(mapIndices); layerIndex++ {
-		results, err := instance.getMoreMatches(ctx, layerIndex)
+		results, err := instance.getMatchesForLayer(ctx, layerIndex)
 		if err != nil {
 			return nil, err
 		}
@@ -312,12 +299,14 @@ type singleMatcher struct {
 	stats   timeStats
 }
 
+// singleMatcherInstance is an instance of singleMatcher.
 type singleMatcherInstance struct {
 	*singleMatcher
 	mapIndices []uint32
 	filterRows map[uint32][]FilterRow
 }
 
+// newInstance creates a new instance of singleMatcher.
 func (m *singleMatcher) newInstance(mapIndices []uint32) matcherInstance {
 	filterRows := make(map[uint32][]FilterRow)
 	for _, idx := range mapIndices {
@@ -332,7 +321,8 @@ func (m *singleMatcher) newInstance(mapIndices []uint32) matcherInstance {
 	}
 }
 
-func (m *singleMatcherInstance) getMoreMatches(ctx context.Context, layerIndex uint32) (results []matcherResult, err error) {
+// getMatchesForLayer implements matcherInstance.
+func (m *singleMatcherInstance) getMatchesForLayer(ctx context.Context, layerIndex uint32) (results []matcherResult, err error) {
 	if layerIndex > 100 {
 		panic(nil)
 	}
@@ -380,6 +370,7 @@ func (m *singleMatcherInstance) getMoreMatches(ctx context.Context, layerIndex u
 	return results, nil
 }
 
+// dropIndices implements matcherInstance.
 func (m *singleMatcherInstance) dropIndices(dropIndices []uint32) {
 	for _, mapIndex := range dropIndices {
 		delete(m.filterRows, mapIndex)
@@ -387,6 +378,9 @@ func (m *singleMatcherInstance) dropIndices(dropIndices []uint32) {
 	m.cleanMapIndices()
 }
 
+// cleanMapIndices removes map indices from the list if there is no matching
+// filterRows entry because a result has been returned or the index has been
+// dropped.
 func (m *singleMatcherInstance) cleanMapIndices() {
 	var j int
 	for i, mapIndex := range m.mapIndices {
@@ -405,18 +399,23 @@ func (m *singleMatcherInstance) cleanMapIndices() {
 // acts as a "wild card" that signals a potential match at every position.
 type matchAny []matcher
 
+// matchAnyInstance is an instance of matchAny.
 type matchAnyInstance struct {
 	matchAny
 	childInstances []matcherInstance
 	childResults   map[uint32]matchAnyResults
 }
 
+// matchAnyResults is used by matchAnyInstance to collect results from all
+// child matchers for a specific map index. Once all results has been received
+// a merged result is returned for the given map and this structure is discarded.
 type matchAnyResults struct {
 	matches  []potentialMatches
 	done     []bool
 	needMore int
 }
 
+// newInstance creates a new instance of matchAny.
 func (m matchAny) newInstance(mapIndices []uint32) matcherInstance {
 	if len(m) == 1 {
 		return m[0].newInstance(mapIndices)
@@ -440,7 +439,8 @@ func (m matchAny) newInstance(mapIndices []uint32) matcherInstance {
 	}
 }
 
-func (m *matchAnyInstance) getMoreMatches(ctx context.Context, layerIndex uint32) (mergedResults []matcherResult, err error) {
+// getMatchesForLayer implements matcherInstance.
+func (m *matchAnyInstance) getMatchesForLayer(ctx context.Context, layerIndex uint32) (mergedResults []matcherResult, err error) {
 	if len(m.matchAny) == 0 {
 		// return "wild card" results (potentialMatches(nil) is interpreted as a
 		// potential match at every log value index of the map).
@@ -453,7 +453,7 @@ func (m *matchAnyInstance) getMoreMatches(ctx context.Context, layerIndex uint32
 		return mergedResults, nil
 	}
 	for i, childInstance := range m.childInstances {
-		results, err := childInstance.getMoreMatches(ctx, layerIndex)
+		results, err := childInstance.getMatchesForLayer(ctx, layerIndex)
 		if err != nil {
 			return nil, err
 		}
@@ -479,6 +479,7 @@ func (m *matchAnyInstance) getMoreMatches(ctx context.Context, layerIndex uint32
 	return mergedResults, nil
 }
 
+// dropIndices implements matcherInstance.
 func (m *matchAnyInstance) dropIndices(dropIndices []uint32) {
 	for _, childInstance := range m.childInstances {
 		childInstance.dropIndices(dropIndices)
@@ -529,67 +530,14 @@ func mergeResults(results []potentialMatches) potentialMatches {
 // gives a match at X+offset. Note that matchSequence can be used recursively to
 // detect any log value sequence.
 type matchSequence struct {
-	params     *Params
-	base, next matcher
-	offset     uint64
-
+	params               *Params
+	base, next           matcher
+	offset               uint64
 	statsLock            sync.Mutex
 	baseStats, nextStats matchOrderStats
 }
 
-type matchOrderStats struct {
-	totalCount, nonEmptyCount, totalCost uint64
-}
-
-func (ms *matchOrderStats) add(nonEmpty bool, layerIndex uint32) {
-	ms.totalCount++
-	if nonEmpty {
-		ms.nonEmptyCount++
-	}
-	ms.totalCost += uint64(layerIndex + 1)
-}
-
-func (ms *matchOrderStats) addStats(add matchOrderStats) {
-	ms.totalCount += add.totalCount
-	ms.nonEmptyCount += add.nonEmptyCount
-	ms.totalCost += add.totalCost
-}
-
-func (m *matchSequence) baseFirst() bool {
-	m.statsLock.Lock()
-	bf := float64(m.baseStats.totalCost)*float64(m.nextStats.totalCount)+
-		float64(m.baseStats.nonEmptyCount)*float64(m.nextStats.totalCost) <
-		float64(m.baseStats.totalCost)*float64(m.nextStats.nonEmptyCount)+
-			float64(m.nextStats.totalCost)*float64(m.baseStats.totalCount)
-	m.statsLock.Unlock()
-	return bf
-}
-
-// newMatchSequence creates a recursive sequence matcher from a list of underlying
-// matchers. The resulting matcher signals a match at log value index X when each
-// underlying matcher matchers[i] returns a match at X+i.
-func newMatchSequence(params *Params, matchers []matcher) matcher {
-	if len(matchers) == 0 {
-		panic("zero length sequence matchers are not allowed")
-	}
-	if len(matchers) == 1 {
-		return matchers[0]
-	}
-	return &matchSequence{
-		params: params,
-		base:   newMatchSequence(params, matchers[:len(matchers)-1]),
-		next:   matchers[len(matchers)-1],
-		offset: uint64(len(matchers) - 1),
-	}
-}
-
-type matchSequenceInstance struct {
-	*matchSequence
-	baseInstance, nextInstance                matcherInstance
-	baseRequested, nextRequested, needMatched map[uint32]struct{}
-	baseResults, nextResults                  map[uint32]potentialMatches
-}
-
+// newInstance creates a new instance of matchSequence.
 func (m *matchSequence) newInstance(mapIndices []uint32) matcherInstance {
 	// determine set of indices to request from next matcher
 	nextIndices := make([]uint32, 0, len(mapIndices)*3/2)
@@ -618,7 +566,94 @@ func (m *matchSequence) newInstance(mapIndices []uint32) matcherInstance {
 	}
 }
 
-func (m *matchSequenceInstance) getMoreMatches(ctx context.Context, layerIndex uint32) (matchedResults []matcherResult, err error) {
+// matchOrderStats collects statistics about the evaluating cost and the
+// occurence of empty result sets from both base and next child matchers.
+// This allows the optimization of the evaluation order by evaluating the
+// child first that is cheaper and/or gives empty results more often and not
+// evaluating the other child in most cases.
+// Note that matchOrderStats is specific to matchSequence and the results are
+// carried over to future instances as the results are mostly useful when
+// evaluating layer zero of each instance. For this reason it should be used
+// in a thread safe way as is may be accessed from multiple worker goroutines.
+type matchOrderStats struct {
+	totalCount, nonEmptyCount, totalCost uint64
+}
+
+// add collects statistics after a child has been evaluated for a certain layer.
+func (ms *matchOrderStats) add(empty bool, layerIndex uint32) {
+	if empty && layerIndex != 0 {
+		// matchers may be evaluated for higher layers after all results have
+		// been returned. Also, empty results are not relevant when previous
+		// layers yielded matches already, so these cases can be ignored.
+		return
+	}
+	ms.totalCount++
+	if !empty {
+		ms.nonEmptyCount++
+	}
+	ms.totalCost += uint64(layerIndex + 1)
+}
+
+// mergeStats merges two sets of matchOrderStats.
+func (ms *matchOrderStats) mergeStats(add matchOrderStats) {
+	ms.totalCount += add.totalCount
+	ms.nonEmptyCount += add.nonEmptyCount
+	ms.totalCost += add.totalCost
+}
+
+// baseFirst returns true if the base child matcher should be evaluated first.
+func (m *matchSequence) baseFirst() bool {
+	m.statsLock.Lock()
+	bf := float64(m.baseStats.totalCost)*float64(m.nextStats.totalCount)+
+		float64(m.baseStats.nonEmptyCount)*float64(m.nextStats.totalCost) <
+		float64(m.baseStats.totalCost)*float64(m.nextStats.nonEmptyCount)+
+			float64(m.nextStats.totalCost)*float64(m.baseStats.totalCount)
+	m.statsLock.Unlock()
+	return bf
+}
+
+// mergeBaseStats merges a set of matchOrderStats into the base matcher stats.
+func (m *matchSequence) mergeBaseStats(stats matchOrderStats) {
+	m.statsLock.Lock()
+	m.baseStats.mergeStats(stats)
+	m.statsLock.Unlock()
+}
+
+// mergeNextStats merges a set of matchOrderStats into the next matcher stats.
+func (m *matchSequence) mergeNextStats(stats matchOrderStats) {
+	m.statsLock.Lock()
+	m.nextStats.mergeStats(stats)
+	m.statsLock.Unlock()
+}
+
+// newMatchSequence creates a recursive sequence matcher from a list of underlying
+// matchers. The resulting matcher signals a match at log value index X when each
+// underlying matcher matchers[i] returns a match at X+i.
+func newMatchSequence(params *Params, matchers []matcher) matcher {
+	if len(matchers) == 0 {
+		panic("zero length sequence matchers are not allowed")
+	}
+	if len(matchers) == 1 {
+		return matchers[0]
+	}
+	return &matchSequence{
+		params: params,
+		base:   newMatchSequence(params, matchers[:len(matchers)-1]),
+		next:   matchers[len(matchers)-1],
+		offset: uint64(len(matchers) - 1),
+	}
+}
+
+// matchSequenceInstance is an instance of matchSequence.
+type matchSequenceInstance struct {
+	*matchSequence
+	baseInstance, nextInstance                matcherInstance
+	baseRequested, nextRequested, needMatched map[uint32]struct{}
+	baseResults, nextResults                  map[uint32]potentialMatches
+}
+
+// getMatchesForLayer implements matcherInstance.
+func (m *matchSequenceInstance) getMatchesForLayer(ctx context.Context, layerIndex uint32) (matchedResults []matcherResult, err error) {
 	// decide whether to evaluate base or next matcher first
 	baseFirst := m.baseFirst()
 	if baseFirst {
@@ -654,107 +689,7 @@ func (m *matchSequenceInstance) getMoreMatches(ctx context.Context, layerIndex u
 	return matchedResults, nil
 }
 
-func (m *matchSequenceInstance) evalBase(ctx context.Context, layerIndex uint32) error {
-	results, err := m.baseInstance.getMoreMatches(ctx, layerIndex)
-	if err != nil {
-		return err
-	}
-	var (
-		dropIndices []uint32
-		stats       matchOrderStats
-	)
-	for _, r := range results {
-		m.baseResults[r.mapIndex] = r.matches
-		delete(m.baseRequested, r.mapIndex)
-		stats.add(r.matches == nil || len(r.matches) != 0, layerIndex)
-	}
-	m.statsLock.Lock()
-	m.baseStats.addStats(stats)
-	m.statsLock.Unlock()
-	for _, r := range results {
-		if m.dropNext(r.mapIndex) {
-			dropIndices = append(dropIndices, r.mapIndex)
-		}
-		if m.dropNext(r.mapIndex + 1) {
-			dropIndices = append(dropIndices, r.mapIndex+1)
-		}
-	}
-	if len(dropIndices) > 0 {
-		m.nextInstance.dropIndices(dropIndices)
-	}
-	return nil
-}
-
-func (m *matchSequenceInstance) evalNext(ctx context.Context, layerIndex uint32) error {
-	results, err := m.nextInstance.getMoreMatches(ctx, layerIndex)
-	if err != nil {
-		return err
-	}
-	var (
-		dropIndices []uint32
-		stats       matchOrderStats
-	)
-	for _, r := range results {
-		m.nextResults[r.mapIndex] = r.matches
-		delete(m.nextRequested, r.mapIndex)
-		stats.add(r.matches == nil || len(r.matches) != 0, layerIndex)
-	}
-	m.statsLock.Lock()
-	m.nextStats.addStats(stats)
-	m.statsLock.Unlock()
-	for _, r := range results {
-		if r.mapIndex > 0 && m.dropBase(r.mapIndex-1) {
-			dropIndices = append(dropIndices, r.mapIndex-1)
-		}
-		if m.dropBase(r.mapIndex) {
-			dropIndices = append(dropIndices, r.mapIndex)
-		}
-	}
-	if len(dropIndices) > 0 {
-		m.baseInstance.dropIndices(dropIndices)
-	}
-	return nil
-}
-
-func (m *matchSequenceInstance) dropBase(mapIndex uint32) bool {
-	if _, ok := m.baseRequested[mapIndex]; !ok {
-		return false
-	}
-	if _, ok := m.needMatched[mapIndex]; ok {
-		if next := m.nextResults[mapIndex]; next == nil ||
-			(len(next) > 0 && next[len(next)-1] >= (uint64(mapIndex)<<m.params.logValuesPerMap)+m.offset) {
-			return false
-		}
-		if nextNext := m.nextResults[mapIndex+1]; nextNext == nil ||
-			(len(nextNext) > 0 && nextNext[0] < (uint64(mapIndex+1)<<m.params.logValuesPerMap)+m.offset) {
-			return false
-		}
-	}
-	delete(m.baseRequested, mapIndex)
-	return true
-}
-
-func (m *matchSequenceInstance) dropNext(mapIndex uint32) bool {
-	if _, ok := m.nextRequested[mapIndex]; !ok {
-		return false
-	}
-	if _, ok := m.needMatched[mapIndex-1]; ok {
-		if prevBase := m.baseResults[mapIndex-1]; prevBase == nil ||
-			(len(prevBase) > 0 && prevBase[len(prevBase)-1]+m.offset >= (uint64(mapIndex)<<m.params.logValuesPerMap)) {
-			return false
-		}
-	}
-	if _, ok := m.needMatched[mapIndex]; ok {
-		if base := m.baseResults[mapIndex]; base == nil ||
-			(len(base) > 0 && base[0]+m.offset < (uint64(mapIndex+1)<<m.params.logValuesPerMap)) {
-
-			return false
-		}
-	}
-	delete(m.nextRequested, mapIndex)
-	return true
-}
-
+// dropIndices implements matcherInstance.
 func (m *matchSequenceInstance) dropIndices(dropIndices []uint32) {
 	for _, mapIndex := range dropIndices {
 		delete(m.needMatched, mapIndex)
@@ -775,6 +710,113 @@ func (m *matchSequenceInstance) dropIndices(dropIndices []uint32) {
 		}
 	}
 	m.nextInstance.dropIndices(dropNext)
+}
+
+// evalBase evaluates the base child matcher and drops map indices from the
+// next matcher if possible.
+func (m *matchSequenceInstance) evalBase(ctx context.Context, layerIndex uint32) error {
+	results, err := m.baseInstance.getMatchesForLayer(ctx, layerIndex)
+	if err != nil {
+		return err
+	}
+	var (
+		dropIndices []uint32
+		stats       matchOrderStats
+	)
+	for _, r := range results {
+		m.baseResults[r.mapIndex] = r.matches
+		delete(m.baseRequested, r.mapIndex)
+		stats.add(r.matches != nil && len(r.matches) == 0, layerIndex)
+	}
+	m.mergeBaseStats(stats)
+	for _, r := range results {
+		if m.dropNext(r.mapIndex) {
+			dropIndices = append(dropIndices, r.mapIndex)
+		}
+		if m.dropNext(r.mapIndex + 1) {
+			dropIndices = append(dropIndices, r.mapIndex+1)
+		}
+	}
+	if len(dropIndices) > 0 {
+		m.nextInstance.dropIndices(dropIndices)
+	}
+	return nil
+}
+
+// evalNext evaluates the next child matcher and drops map indices from the
+// base matcher if possible.
+func (m *matchSequenceInstance) evalNext(ctx context.Context, layerIndex uint32) error {
+	results, err := m.nextInstance.getMatchesForLayer(ctx, layerIndex)
+	if err != nil {
+		return err
+	}
+	var (
+		dropIndices []uint32
+		stats       matchOrderStats
+	)
+	for _, r := range results {
+		m.nextResults[r.mapIndex] = r.matches
+		delete(m.nextRequested, r.mapIndex)
+		stats.add(r.matches != nil && len(r.matches) == 0, layerIndex)
+	}
+	m.mergeNextStats(stats)
+	for _, r := range results {
+		if r.mapIndex > 0 && m.dropBase(r.mapIndex-1) {
+			dropIndices = append(dropIndices, r.mapIndex-1)
+		}
+		if m.dropBase(r.mapIndex) {
+			dropIndices = append(dropIndices, r.mapIndex)
+		}
+	}
+	if len(dropIndices) > 0 {
+		m.baseInstance.dropIndices(dropIndices)
+	}
+	return nil
+}
+
+// dropBase checks whether the given map index can be dropped from the base
+// matcher based on the known results from the next matcher and removes it
+// from the internal requested set and returns true if possible.
+func (m *matchSequenceInstance) dropBase(mapIndex uint32) bool {
+	if _, ok := m.baseRequested[mapIndex]; !ok {
+		return false
+	}
+	if _, ok := m.needMatched[mapIndex]; ok {
+		if next := m.nextResults[mapIndex]; next == nil ||
+			(len(next) > 0 && next[len(next)-1] >= (uint64(mapIndex)<<m.params.logValuesPerMap)+m.offset) {
+			return false
+		}
+		if nextNext := m.nextResults[mapIndex+1]; nextNext == nil ||
+			(len(nextNext) > 0 && nextNext[0] < (uint64(mapIndex+1)<<m.params.logValuesPerMap)+m.offset) {
+			return false
+		}
+	}
+	delete(m.baseRequested, mapIndex)
+	return true
+}
+
+// dropNext checks whether the given map index can be dropped from the next
+// matcher based on the known results from the base matcher and removes it
+// from the internal requested set and returns true if possible.
+func (m *matchSequenceInstance) dropNext(mapIndex uint32) bool {
+	if _, ok := m.nextRequested[mapIndex]; !ok {
+		return false
+	}
+	if _, ok := m.needMatched[mapIndex-1]; ok {
+		if prevBase := m.baseResults[mapIndex-1]; prevBase == nil ||
+			(len(prevBase) > 0 && prevBase[len(prevBase)-1]+m.offset >= (uint64(mapIndex)<<m.params.logValuesPerMap)) {
+			return false
+		}
+	}
+	if _, ok := m.needMatched[mapIndex]; ok {
+		if base := m.baseResults[mapIndex]; base == nil ||
+			(len(base) > 0 && base[0]+m.offset < (uint64(mapIndex+1)<<m.params.logValuesPerMap)) {
+
+			return false
+		}
+	}
+	delete(m.nextRequested, mapIndex)
+	return true
 }
 
 // matchResults returns a list of sequence matches for the given mapIndex and
@@ -838,4 +880,42 @@ func (params *Params) matchResults(mapIndex uint32, offset uint64, baseRes, next
 		}
 	}
 	return matchedRes
+}
+
+// timeStats collects processing time statistics while searching in the log
+// index. Used only when the useTimeStats global flag is true.
+type timeStats struct {
+	dt, cnt [stCount]int64
+}
+
+const (
+	stNone = iota
+	stRowCalc
+	stFetchFirst
+	stFetchMore
+	stProcess
+	stOther
+	stCount
+)
+
+var stNames = []string{"", "rowCalc", "fetchFirst", "fetchMore", "process", "other"}
+
+// set sets the processing state to one of the pre-defined constants.
+// Processing time spent in each state is measured separately.
+func (ts *timeStats) set(state *int, newState int) {
+	if !useTimeStats || newState == *state {
+		return
+	}
+	now := int64(mclock.Now())
+	atomic.AddInt64(&ts.dt[*state], now)
+	atomic.AddInt64(&ts.dt[newState], -now)
+	atomic.AddInt64(&ts.cnt[newState], 1)
+	*state = newState
+}
+
+// print prints the collected statistics.
+func (ts *timeStats) print() {
+	for i := 1; i < stCount; i++ {
+		log.Info("Matcher stats", "name", stNames[i], "dt", time.Duration(ts.dt[i]), "count", ts.cnt[i])
+	}
 }

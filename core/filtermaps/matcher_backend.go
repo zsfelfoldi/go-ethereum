@@ -70,7 +70,9 @@ func (fm *FilterMapsMatcherBackend) Close() {
 }
 
 // GetFilterMapRow returns the given row of the given map. If the row is empty
-// then a non-nil zero length row is returned.
+// then a non-nil zero length row is returned. If baseLayerOnly is true then
+// only the first baseRowLength entries of the row are guaranteed to be
+// returned.
 // Note that the returned slices should not be modified, they should be copied
 // on write.
 // GetFilterMapRow implements MatcherBackend.

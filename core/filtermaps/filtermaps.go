@@ -31,16 +31,6 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
-// checkpoint allows the log indexer to start indexing from the given block
-// instead of genesis at the correct absolute log value index.
-type checkpointList []epochCheckpoint
-
-type epochCheckpoint struct {
-	blockNumber  uint64 // block that generated the last log value of the given epoch
-	blockId      common.Hash
-	firstLvIndex uint64 // first log value index of the given block
-}
-
 // FilterMaps is the in-memory representation of the log index structure that is
 // responsible for building and updating the index according to the canonical
 // chain.

@@ -18,6 +18,23 @@ package filtermaps
 
 import "github.com/ethereum/go-ethereum/common"
 
+// checkpointList lists checkpoints for finalized epochs of a given chain.
+// This allows the indexer to start indexing from the latest available
+// checkpoint and then index tail epochs in reverse order.
+type checkpointList []epochCheckpoint
+
+// epochCheckpoint specified the last block of the epoch and the first log
+// value index where that block starts. This allows a log value iterator to
+// be initialized at the epoch boundary.
+type epochCheckpoint struct {
+	blockNumber  uint64 // block that generated the last log value of the given epoch
+	blockId      common.Hash
+	firstLvIndex uint64 // first log value index of the given block
+}
+
+// checkpoints lists sets of checkpoints for multiple chains. The matching
+// checkpoint set is autodetected by the indexer once the canonical chain is
+// known.
 var checkpoints = []checkpointList{
 	// Mainnet
 	{
