@@ -189,7 +189,11 @@ func (f *FilterMaps) tryIndexTail() bool {
 }
 
 func (f *FilterMaps) tryUnindexTail() bool {
-	for firstEpoch := (f.firstRenderedMap - f.tailPartialEpoch) >> f.logMapsPerEpoch; !f.needTailEpoch(firstEpoch); {
+	for {
+		firstEpoch := (f.firstRenderedMap - f.tailPartialEpoch) >> f.logMapsPerEpoch
+		if f.needTailEpoch(firstEpoch) {
+			break
+		}
 		f.processEvents()
 		if f.stop {
 			return false
