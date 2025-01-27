@@ -165,12 +165,17 @@ func (cv *StoredChainView) blockHash(number uint64) common.Hash {
 	return cv.hashes[cv.head-number]
 }
 
+// limitedChainView wraps a chainView and truncates it at a given head number.
 type limitedChainView struct {
 	parent chainView
 	head   uint64
 }
 
-func newLimitedChainView(parent chainView, headNumber uint64) *limitedChainView {
+// newLimitedChainView returns a truncated view of the given parent.
+func newLimitedChainView(parent chainView, headNumber uint64) chainView {
+	if headNumber >= parent.headNumber() {
+		return parent
+	}
 	return &limitedChainView{
 		parent: parent,
 		head:   headNumber,

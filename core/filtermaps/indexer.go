@@ -17,9 +17,7 @@
 package filtermaps
 
 import (
-	"fmt"
 	"math"
-	"os"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -33,7 +31,7 @@ const (
 )
 
 // updateLoop initializes and updates the log index structure according to the
-// canonical chain.
+// current targetView.
 func (f *FilterMaps) indexerLoop() {
 	defer f.closeWg.Done()
 
@@ -64,7 +62,7 @@ func (f *FilterMaps) indexerLoop() {
 }
 
 // WaitIdle blocks until the indexer is in an idle state while synced up to the
-// latest chain head.
+// latest targetView.
 func (f *FilterMaps) WaitIdle() {
 	if f.noHistory {
 		f.closeWg.Wait()
@@ -79,6 +77,63 @@ func (f *FilterMaps) WaitIdle() {
 	}
 }
 
+// waitForEvent blocks until an event happens that the indexer might react to.
+func (f *FilterMaps) waitForEvent() {
+	for !f.stop && (f.blockProcessing || f.targetHeadIndexed()) {
+		f.processSingleEvent(true)
+	}
+}
+
+// processEvents processes all events, blocking only if a block processing is
+// happening and indexing should be suspended.
+func (f *FilterMaps) processEvents() {
+	for !f.stop && f.processSingleEvent(f.blockProcessing) {
+	}
+}
+
+// processSingleEvent processes a single event either in a blocking or
+// non-blocking manner.
+func (f *FilterMaps) processSingleEvent(blocking bool) bool {
+	if f.matcherSyncRequest != nil {
+		f.matcherSyncRequest.synced(f.targetBlockNumber)
+		f.matcherSyncRequest = nil
+	}
+	if blocking {
+		select {
+		case targetView := <-f.TargetViewCh:
+			f.setTargetView(targetView)
+		case f.matcherSyncRequest = <-f.matcherSyncCh:
+		case f.blockProcessing = <-f.BlockProcessingCh:
+		case <-f.closeCh:
+			f.stop = true
+		case ch := <-f.waitIdleCh:
+			ch <- !f.blockProcessing && f.targetHeadIndexed()
+		}
+	} else {
+		select {
+		case targetView := <-f.TargetViewCh:
+			f.setTargetView(targetView)
+		case f.matcherSyncRequest = <-f.matcherSyncCh:
+		case f.blockProcessing = <-f.BlockProcessingCh:
+		case <-f.closeCh:
+			f.stop = true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// setTargetView updates the target chain view of the iterator.
+func (f *FilterMaps) setTargetView(targetView chainView) {
+	if equalViews(f.targetView, targetView) {
+		return
+	}
+	f.targetView = targetView
+}
+
+// tryIndexHead tries to render head maps according to the current targetView
+// and returns true if successful.
 func (f *FilterMaps) tryIndexHead() bool {
 	if f.targetView == nil {
 		return false
@@ -97,7 +152,7 @@ func (f *FilterMaps) tryIndexHead() bool {
 		f.startedHeadIndex = true
 		f.ptrHeadIndex = f.afterLastIndexedBlock
 	}
-	if _, err := headRenderer.renderMaps(func() bool {
+	if _, err := headRenderer.run(func() bool {
 		f.processEvents()
 		return f.stop
 	}, func() {
@@ -127,6 +182,11 @@ func (f *FilterMaps) tryIndexHead() bool {
 	return true
 }
 
+// tryIndexTail tries to render tail epochs until the tail target block is
+// indexed and returns true if successful.
+// Note that tail indexing is only started if the log index head is fully
+// rendered according to targetView and is suspended as soon as the targetView
+// is changed.
 func (f *FilterMaps) tryIndexTail() bool {
 	for firstEpoch := f.firstRenderedMap >> f.logMapsPerEpoch; firstEpoch > 0 && f.needTailEpoch(firstEpoch-1); {
 		f.processEvents()
@@ -156,7 +216,7 @@ func (f *FilterMaps) tryIndexTail() bool {
 			f.startedTailIndex = true
 			f.ptrTailIndex = f.firstIndexedBlock - f.tailPartialBlocks()
 		}
-		done, err := tailRenderer.renderMaps(func() bool {
+		done, err := tailRenderer.run(func() bool {
 			f.processEvents()
 			return f.stop || !f.targetHeadIndexed()
 		}, func() {
@@ -181,7 +241,7 @@ func (f *FilterMaps) tryIndexTail() bool {
 			log.Error("Log index tail rendering failed", "error", err)
 		}
 		if !done {
-			f.tailRenderer = tailRenderer // only keep tail renderer if interrupted by stopFn
+			f.tailRenderer = tailRenderer // only keep tail renderer if interrupted by stopCb
 			return false
 		}
 	}
@@ -195,24 +255,10 @@ func (f *FilterMaps) tryIndexTail() bool {
 	return true
 }
 
-func (f *FilterMaps) tailPartialBlocks() uint64 {
-	if f.tailPartialEpoch == 0 {
-		return 0
-	}
-	end, _, err := f.getLastBlockOfMap(f.firstRenderedMap - f.mapsPerEpoch + f.tailPartialEpoch - 1)
-	if err != nil {
-		log.Error("Error fetching last block of map", "mapIndex", f.firstRenderedMap-f.mapsPerEpoch+f.tailPartialEpoch-1, "error", err)
-	}
-	var start uint64
-	if f.firstRenderedMap-f.mapsPerEpoch > 0 {
-		start, _, err = f.getLastBlockOfMap(f.firstRenderedMap - f.mapsPerEpoch - 1)
-		if err != nil {
-			log.Error("Error fetching last block of map", "mapIndex", f.firstRenderedMap-f.mapsPerEpoch-1, "error", err)
-		}
-	}
-	return end - start
-}
-
+// tryUnindexTail removes entire epochs of log index data as long as the first
+// fully indexed block is at least as old as the tail target.
+// Note that unindexing is very quick as it only removes continuous ranges of
+// data from the database and is also called while running head indexing.
 func (f *FilterMaps) tryUnindexTail() bool {
 	for {
 		firstEpoch := (f.firstRenderedMap - f.tailPartialEpoch) >> f.logMapsPerEpoch
@@ -245,7 +291,16 @@ func (f *FilterMaps) tryUnindexTail() bool {
 	return true
 }
 
+// needTailEpoch returns true if the given tail epoch needs to be kept
+// according to the current tail target, false if it can be removed.
 func (f *FilterMaps) needTailEpoch(epoch uint32) bool {
+	firstEpoch := f.firstRenderedMap >> f.logMapsPerEpoch
+	if epoch > firstEpoch {
+		return true
+	}
+	if epoch+1 < firstEpoch {
+		return false
+	}
 	tailTarget := f.tailTargetBlock()
 	if tailTarget < f.firstIndexedBlock {
 		return true
@@ -258,8 +313,8 @@ func (f *FilterMaps) needTailEpoch(epoch uint32) bool {
 	return uint64(epoch+1)<<(f.logValuesPerMap+f.logMapsPerEpoch) >= tailLvIndex
 }
 
-// tailTargetBlock returns the target value for the tail block number according to the
-// log history parameter and the current index head.
+// tailTargetBlock returns the target value for the tail block number according
+// to the log history parameter and the current index head.
 func (f *FilterMaps) tailTargetBlock() uint64 {
 	if f.history == 0 || f.targetBlockNumber < f.history {
 		return 0
@@ -267,85 +322,28 @@ func (f *FilterMaps) tailTargetBlock() uint64 {
 	return f.targetBlockNumber + 1 - f.history
 }
 
-func (f *FilterMaps) processSingleEvent(blocking bool) bool {
-	if f.matcherSyncRequest != nil {
-		f.matcherSyncRequest.synced(f.targetBlockNumber)
-		f.matcherSyncRequest = nil
+// tailPartialBlocks returns the number of rendered blocks in the partially
+// rendered next tail epoch.
+func (f *FilterMaps) tailPartialBlocks() uint64 {
+	if f.tailPartialEpoch == 0 {
+		return 0
 	}
-	if blocking {
-		select {
-		case targetView := <-f.TargetViewCh:
-			f.setTargetView(targetView)
-		case f.matcherSyncRequest = <-f.matcherSyncCh:
-		case f.blockProcessing = <-f.BlockProcessingCh:
-		case <-f.closeCh:
-			f.stop = true
-		case ch := <-f.waitIdleCh:
-			ch <- !f.blockProcessing && f.targetHeadIndexed()
-		}
-	} else {
-		select {
-		case targetView := <-f.TargetViewCh:
-			f.setTargetView(targetView)
-		case f.matcherSyncRequest = <-f.matcherSyncCh:
-		case f.blockProcessing = <-f.BlockProcessingCh:
-		case <-f.closeCh:
-			f.stop = true
-		default:
-			return false
+	end, _, err := f.getLastBlockOfMap(f.firstRenderedMap - f.mapsPerEpoch + f.tailPartialEpoch - 1)
+	if err != nil {
+		log.Error("Error fetching last block of map", "mapIndex", f.firstRenderedMap-f.mapsPerEpoch+f.tailPartialEpoch-1, "error", err)
+	}
+	var start uint64
+	if f.firstRenderedMap-f.mapsPerEpoch > 0 {
+		start, _, err = f.getLastBlockOfMap(f.firstRenderedMap - f.mapsPerEpoch - 1)
+		if err != nil {
+			log.Error("Error fetching last block of map", "mapIndex", f.firstRenderedMap-f.mapsPerEpoch-1, "error", err)
 		}
 	}
-	return true
+	return end - start
 }
 
-func (f *FilterMaps) waitForEvent() {
-	for !f.stop && (f.blockProcessing || f.targetHeadIndexed()) {
-		f.processSingleEvent(true)
-	}
-}
-
-func (f *FilterMaps) processEvents() {
-	for !f.stop && f.processSingleEvent(f.blockProcessing) {
-	}
-}
-
-func (f *FilterMaps) setTargetView(targetView chainView) {
-	if equalViews(f.targetView, targetView) {
-		return
-	}
-	f.targetView = targetView
-}
-
+// targetHeadIndexed returns true if the current log index is consistent with
+// targetView with its head block fully rendered.
 func (f *FilterMaps) targetHeadIndexed() bool {
 	return equalViews(f.targetView, f.indexedView) && f.afterLastIndexedBlock == f.targetBlockNumber+1
-}
-
-func (f *FilterMaps) exportCheckpoints() {
-	if f.exportFileName == "" {
-		return
-	}
-	w, err := os.Create(f.exportFileName)
-	if err != nil {
-		log.Error("Error creating checkpoint export file", "name", f.exportFileName, "error", err)
-		return
-	}
-	defer w.Close()
-
-	epochCount := f.afterLastRenderedMap >> f.logMapsPerEpoch
-	log.Info("Exporting log index checkpoints", "epochs", epochCount, "file", f.exportFileName)
-	w.WriteString("\t{\n")
-	for epoch := uint32(0); epoch < epochCount; epoch++ {
-		lastBlock, lastBlockId, err := f.getLastBlockOfMap((epoch+1)<<f.logMapsPerEpoch - 1)
-		if err != nil {
-			log.Error("Error fetching last block of epoch", "epoch", epoch, "error", err)
-			return
-		}
-		lvPtr, err := f.getBlockLvPointer(lastBlock)
-		if err != nil {
-			log.Error("Error fetching log value pointer of last block", "block", lastBlock, "error", err)
-			return
-		}
-		w.WriteString(fmt.Sprintf("\t\t{%d, common.HexToHash(\"0x%064x\"), %d},\n", lastBlock, lastBlockId, lvPtr))
-	}
-	w.WriteString("\t},\n")
 }

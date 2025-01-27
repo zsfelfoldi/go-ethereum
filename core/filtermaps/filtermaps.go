@@ -17,6 +17,8 @@
 package filtermaps
 
 import (
+	"fmt"
+	"os"
 	"bytes"
 	"errors"
 	"sync"
@@ -99,6 +101,10 @@ type FilterMaps struct {
 // as transparent (uncached/unchanged).
 type filterMap []FilterRow
 
+// copy returns a copy of the given filter map. Note that the row slices are
+// copied but their contents are not. This permits extending the rows further
+// (which happens during map rendering) without affecting the validity of
+// copies made for snapshots during rendering.
 func (fm filterMap) copy() filterMap {
 	c := make(filterMap, len(fm))
 	copy(c, fm)
@@ -113,6 +119,7 @@ func (fm filterMap) copy() filterMap {
 // simpler.
 type FilterRow []uint32
 
+// Equal returns true if the given filter rows are equivalent.
 func (a FilterRow) Equal(b FilterRow) bool {
 	if len(a) != len(b) {
 		return false
@@ -125,14 +132,8 @@ func (a FilterRow) Equal(b FilterRow) bool {
 	return true
 }
 
-// filterMapsRange describes the block range that has been indexed and the log
-// value index range it has been mapped to.
-// Note that tailBlockLvPointer points to the earliest log value index belonging
-// to the tail block while tailLvPointer points to the earliest log value index
-// added to the corresponding filter map. The latter might point to an earlier
-// index after tail blocks have been unindexed because we do not remove tail
-// values one by one, rather delete entire maps when all blocks that had log
-// values in those maps are unindexed.
+// filterMapsRange describes the rendered range of filter maps and the range
+// of fully rendered blocks.
 type filterMapsRange struct {
 	initialized        bool
 	targetBlockNumber  uint64
@@ -150,17 +151,19 @@ type filterMapsRange struct {
 	firstIndexedBlock, afterLastIndexedBlock uint64
 }
 
+// hasIndexedBlocks returns true if the range has at least one fully indexed block.
 func (fmr *filterMapsRange) hasIndexedBlocks() bool {
 	return fmr.initialized && fmr.afterLastIndexedBlock > fmr.firstIndexedBlock
 }
 
+// lastBlockOfMap is used for caching the (number, id) pairs belonging to the
+// last block of each map.
 type lastBlockOfMap struct {
 	number uint64
 	id     common.Hash
 }
 
-// NewFilterMaps creates a new FilterMaps and starts the indexer in order to keep
-// the structure in sync with the given blockchain.
+// NewFilterMaps creates a new FilterMaps and starts the indexer.
 func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, history, unindexLimit uint64, noHistory bool, exportFileName string) *FilterMaps {
 	rs, initialized, err := rawdb.ReadFilterMapsRange(db)
 	if err != nil {
@@ -224,6 +227,17 @@ func (f *FilterMaps) Start() {
 	go f.indexerLoop()
 }
 
+// Stop ensures that the indexer is fully stopped before returning.
+func (f *FilterMaps) Stop() {
+	close(f.closeCh)
+	f.closeWg.Wait()
+}
+
+// initChainView returns a chain view consistent with both the current target
+// view and the current state of the log index as found in the database, based
+// on the last block of stored maps.
+// Note that the returned view might be shorter than the existing index if
+// the latest maps are not consistent with targetView.
 func (f *FilterMaps) initChainView(chainView chainView) chainView {
 	mapIndex := f.afterLastRenderedMap
 	for {
@@ -244,12 +258,6 @@ func (f *FilterMaps) initChainView(chainView chainView) chainView {
 	return newLimitedChainView(chainView, 0)
 }
 
-// Stop ensures that the indexer is fully stopped before returning.
-func (f *FilterMaps) Stop() {
-	close(f.closeCh)
-	f.closeWg.Wait()
-}
-
 // reset un-initializes the FilterMaps structure and removes all related data from
 // the database. The function returns true if everything was successfully removed.
 func (f *FilterMaps) reset() bool {
@@ -260,6 +268,7 @@ func (f *FilterMaps) reset() bool {
 	f.renderSnapshots.Purge()
 	f.lastBlockCache.Purge()
 	f.lvPointerCache.Purge()
+	f.baseRowsCache.Purge()
 	f.indexLock.Unlock()
 	// deleting the range first ensures that resetDb will be called again at next
 	// startup and any leftover data will be removed even if it cannot finish now.
@@ -267,7 +276,7 @@ func (f *FilterMaps) reset() bool {
 	return f.removeDbWithPrefix(rawdb.FilterMapsPrefix, "Resetting log index database")
 }
 
-// expects targetView to be non-nil
+// init initializes an empty log index according to the current targetView.
 func (f *FilterMaps) init() error {
 	var bestIdx, bestLen int
 	for idx, checkpointList := range checkpoints {
@@ -353,7 +362,7 @@ func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRan
 	}
 	f.filterMapsRange = newRange
 	if updateMatchers {
-		f.updateMatchersValidRange() //TODO update with common ancestor
+		f.updateMatchersValidRange()
 	}
 	if newRange.initialized {
 		rs := rawdb.FilterMapsRange{
@@ -437,6 +446,7 @@ func (f *FilterMaps) getLogByLvIndex(lvIndex uint64) (*types.Log, error) {
 	return nil, nil
 }
 
+// getFilterMap fetches an entire filter map from the database.
 func (f *FilterMaps) getFilterMap(mapIndex uint32) (filterMap, error) {
 	if fm, ok := f.filterMapCache.Get(mapIndex); ok {
 		return fm, nil
@@ -453,6 +463,8 @@ func (f *FilterMaps) getFilterMap(mapIndex uint32) (filterMap, error) {
 	return fm, nil
 }
 
+// getFilterMapRow fetches the given filter map row. If baseLayerOnly is true
+// then only the first baseRowLength entries are returned.
 func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32, baseLayerOnly bool) (FilterRow, error) {
 	baseMapRowIndex := f.mapRowIndex(mapIndex & -f.baseRowGroupLength, rowIndex)
 	baseRows, ok := f.baseRowsCache.Get(baseMapRowIndex)
@@ -475,6 +487,8 @@ func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32, baseLayerOnly bo
 	return FilterRow(append(baseRow, extRow...)), nil
 }
 
+// storeFilterMapRows stores a set of filter map rows at the corresponding map
+// indices and a shared row index.
 func (f *FilterMaps) storeFilterMapRows(batch ethdb.Batch, mapIndices []uint32, rowIndex uint32, rows []FilterRow) error {
 	for len(mapIndices) > 0 {
 		baseMapIndex := mapIndices[0] & -f.baseRowGroupLength
@@ -490,7 +504,8 @@ func (f *FilterMaps) storeFilterMapRows(batch ethdb.Batch, mapIndices []uint32, 
 	return nil
 }
 
-// mapIndices should be in the same base row group
+// storeFilterMapRowsOfGroup stores a set of filter map rows at map indices
+// belonging to the same base row group.
 func (f *FilterMaps) storeFilterMapRowsOfGroup(batch ethdb.Batch, mapIndices []uint32, rowIndex uint32, rows []FilterRow) error {
 	baseMapIndex := mapIndices[0] & -f.baseRowGroupLength
 	baseMapRowIndex := f.mapRowIndex(baseMapIndex, rowIndex)
@@ -540,9 +555,6 @@ func (f *FilterMaps) getBlockLvPointer(blockNumber uint64) (uint64, error) {
 	if blockNumber > f.targetBlockNumber && f.targetBlockNumber+1 == f.afterLastIndexedBlock {
 		return f.headBlockDelimiter, nil
 	}
-	/*if blockNumber < f.firstIndexedBlock || blockNumber >= f.afterLastIndexedBlock {
-		return 0, errUnindexedRange
-	}*/ //TODO
 	if lvPointer, ok := f.lvPointerCache.Get(blockNumber); ok {
 		return lvPointer, nil
 	}
@@ -633,4 +645,35 @@ func (f *FilterMaps) deleteTailEpoch(epoch uint32) error {
 		f.lvPointerCache.Remove(blockNumber)
 	}
 	return nil
+}
+
+// exportCheckpoints exports epoch checkpoints in the format used by checkpoints.go.
+func (f *FilterMaps) exportCheckpoints() {
+	if f.exportFileName == "" {
+		return
+	}
+	w, err := os.Create(f.exportFileName)
+	if err != nil {
+		log.Error("Error creating checkpoint export file", "name", f.exportFileName, "error", err)
+		return
+	}
+	defer w.Close()
+
+	epochCount := f.afterLastRenderedMap >> f.logMapsPerEpoch
+	log.Info("Exporting log index checkpoints", "epochs", epochCount, "file", f.exportFileName)
+	w.WriteString("\t{\n")
+	for epoch := uint32(0); epoch < epochCount; epoch++ {
+		lastBlock, lastBlockId, err := f.getLastBlockOfMap((epoch+1)<<f.logMapsPerEpoch - 1)
+		if err != nil {
+			log.Error("Error fetching last block of epoch", "epoch", epoch, "error", err)
+			return
+		}
+		lvPtr, err := f.getBlockLvPointer(lastBlock)
+		if err != nil {
+			log.Error("Error fetching log value pointer of last block", "block", lastBlock, "error", err)
+			return
+		}
+		w.WriteString(fmt.Sprintf("\t\t{%d, common.HexToHash(\"0x%064x\"), %d},\n", lastBlock, lastBlockId, lvPtr))
+	}
+	w.WriteString("\t},\n")
 }

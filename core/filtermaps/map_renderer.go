@@ -28,15 +28,17 @@ import (
 )
 
 const (
-	valuesPerCallback = 1000
-	writesPerBatch    = 100
-	maxMapsPerBatch   = 64
+	valuesPerCallback = 1000 // log values processed per event process callback
+	maxMapsPerBatch   = 64   // maximum number of maps rendered in memory
+	rowsPerBatch      = 100  // number of rows written to db in a single batch
 )
 
 var (
 	errChainUpdate = errors.New("rendered section of chain updated")
 )
 
+// mapRenderer represents a process that renders filter maps in a specified
+// range according to the actual targetView.
 type mapRenderer struct {
 	f                                *FilterMaps
 	afterLastMap                     uint32
@@ -46,6 +48,7 @@ type mapRenderer struct {
 	iterator                         *logIterator
 }
 
+// renderedMap represents a single filter map that is being rendered in memory.
 type renderedMap struct {
 	filterMap     filterMap
 	mapIndex      uint32
@@ -56,16 +59,25 @@ type renderedMap struct {
 	headDelimiter uint64   // if finished then points to the future block delimiter of the head block
 }
 
+// firstBlock returns the first block number that starts in the given map.
 func (r *renderedMap) firstBlock() uint64 {
 	return r.lastBlock + 1 - uint64(len(r.blockLvPtrs))
 }
 
+// renderMapsBefore creates a mapRenderer that renders the log index until the
+// specified map index boundary, starting from the latest available starting
+// point that is consistent with the current targetView.
+// The renderer ensures that filterMapsRange, indexedView and the actual map
+// data are always consistent with each other. If afterLastMap is greater than
+// the latest existing rendered map then indexedView is updated to targetView,
+// otherwise it is checked that the rendered range is consistent with both
+// views.
 func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error) {
-	nextMap, startBlock, startLvPtr, err := f.findLastMapBoundaryBefore(afterLastMap)
+	nextMap, startBlock, startLvPtr, err := f.lastCanonicalMapBoundaryBefore(afterLastMap)
 	if err != nil {
 		return nil, err
 	}
-	if snapshot := f.findLastSnapshotBefore(afterLastMap); snapshot != nil && snapshot.mapIndex >= nextMap {
+	if snapshot := f.lastCanonicalSnapshotBefore(afterLastMap); snapshot != nil && snapshot.mapIndex >= nextMap {
 		return f.renderMapsFromSnapshot(snapshot)
 	}
 	if nextMap >= afterLastMap {
@@ -74,7 +86,55 @@ func (f *FilterMaps) renderMapsBefore(afterLastMap uint32) (*mapRenderer, error)
 	return f.renderMapsFromMapBoundary(nextMap, afterLastMap, startBlock, startLvPtr)
 }
 
-func (f *FilterMaps) findLastSnapshotBefore(afterLastMap uint32) *renderedMap {
+// renderMapsFromSnapshot creates a mapRenderer that starts rendering from a
+// snapshot made at a block boundary.
+func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, error) {
+	f.testSnapshotUsed = true
+	iter, err := f.newLogIteratorFromBlockDelimiter(cp.lastBlock)
+	if err != nil {
+		return nil, err
+	}
+	return &mapRenderer{
+		f: f,
+		currentMap: &renderedMap{
+			filterMap:   cp.filterMap.copy(),
+			mapIndex:    cp.mapIndex,
+			lastBlock:   cp.lastBlock,
+			blockLvPtrs: cp.blockLvPtrs,
+		},
+		finishedMaps:      make(map[uint32]*renderedMap),
+		firstFinished:     cp.mapIndex,
+		afterLastFinished: cp.mapIndex,
+		afterLastMap:      math.MaxUint32,
+		iterator:          iter,
+	}, nil
+}
+
+// renderMapsFromMapBoundary creates a mapRenderer that starts rendering at a
+// map boundary.
+func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, afterLastMap uint32, startBlock, startLvPtr uint64) (*mapRenderer, error) {
+	iter, err := f.newLogIteratorFromMapBoundary(firstMap, startBlock, startLvPtr)
+	if err != nil {
+		return nil, err
+	}
+	return &mapRenderer{
+		f: f,
+		currentMap: &renderedMap{
+			filterMap: f.emptyFilterMap(),
+			mapIndex:  firstMap,
+			lastBlock: iter.blockNumber,
+		},
+		finishedMaps:      make(map[uint32]*renderedMap),
+		firstFinished:     firstMap,
+		afterLastFinished: firstMap,
+		afterLastMap:      afterLastMap,
+		iterator:          iter,
+	}, nil
+}
+
+// lastCanonicalSnapshotBefore returns the latest cached snapshot that matches
+// the current targetView.
+func (f *FilterMaps) lastCanonicalSnapshotBefore(afterLastMap uint32) *renderedMap {
 	var best *renderedMap
 	for _, blockNumber := range f.renderSnapshots.Keys() {
 		if cp, _ := f.renderSnapshots.Get(blockNumber); cp != nil && blockNumber < f.afterLastIndexedBlock &&
@@ -86,7 +146,13 @@ func (f *FilterMaps) findLastSnapshotBefore(afterLastMap uint32) *renderedMap {
 	return best
 }
 
-func (f *FilterMaps) findLastMapBoundaryBefore(afterLastMap uint32) (nextMap uint32, startBlock, startLvPtr uint64, err error) {
+// lastCanonicalMapBoundaryBefore returns the latest map boundary before the
+// specified map index that matches the current targetView. This can either
+// be a checkpoint (hardcoded or left from a previously unindexed tail epoch)
+// or the boundary of a currently rendered map.
+// Along with the next map index where the rendering can be started, the number
+// and starting log value pointer of the last block is also returned.
+func (f *FilterMaps) lastCanonicalMapBoundaryBefore(afterLastMap uint32) (nextMap uint32, startBlock, startLvPtr uint64, err error) {
 	if !f.initialized {
 		return 0, 0, 0, nil
 	}
@@ -113,6 +179,8 @@ func (f *FilterMaps) findLastMapBoundaryBefore(afterLastMap uint32) (nextMap uin
 	}
 }
 
+// lastMapBoundaryBefore returns the latest map boundary before the specified
+// map index.
 func (f *FilterMaps) lastMapBoundaryBefore(mapIndex uint32) (uint32, bool) {
 	if !f.initialized || f.afterLastRenderedMap == 0 {
 		return 0, false
@@ -136,60 +204,13 @@ func (f *FilterMaps) lastMapBoundaryBefore(mapIndex uint32) (uint32, bool) {
 	return mapIndex - 1, true
 }
 
-func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, error) {
-	f.testSnapshotUsed = true
-	iter, err := f.newLogIteratorFromBlockDelimiter(cp.lastBlock)
-	if err != nil {
-		return nil, err
-	}
-	return &mapRenderer{
-		f: f,
-		currentMap: &renderedMap{
-			filterMap:   cp.filterMap.copy(),
-			mapIndex:    cp.mapIndex,
-			lastBlock:   cp.lastBlock,
-			blockLvPtrs: cp.blockLvPtrs,
-		},
-		finishedMaps:      make(map[uint32]*renderedMap),
-		firstFinished:     cp.mapIndex,
-		afterLastFinished: cp.mapIndex,
-		afterLastMap:      math.MaxUint32,
-		iterator:          iter,
-	}, nil
+// emptyFilterMap returns an empty filter map.
+func (f *FilterMaps) emptyFilterMap() filterMap {
+	return make(filterMap, f.mapHeight)
 }
 
-func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, afterLastMap uint32, startBlock, startLvPtr uint64) (*mapRenderer, error) {
-	iter, err := f.newLogIteratorFromMapBoundary(firstMap, startBlock, startLvPtr)
-	if err != nil {
-		return nil, err
-	}
-	return &mapRenderer{
-		f: f,
-		currentMap: &renderedMap{
-			filterMap: f.emptyFilterMap(),
-			mapIndex:  firstMap,
-			lastBlock: iter.blockNumber,
-		},
-		finishedMaps:      make(map[uint32]*renderedMap),
-		firstFinished:     firstMap,
-		afterLastFinished: firstMap,
-		afterLastMap:      afterLastMap,
-		iterator:          iter,
-	}, nil
-}
-
-func (r *mapRenderer) makeSnapshot() {
-	r.f.renderSnapshots.Add(r.iterator.blockNumber, &renderedMap{
-		filterMap:     r.currentMap.filterMap.copy(),
-		mapIndex:      r.currentMap.mapIndex,
-		lastBlock:     r.iterator.blockNumber,
-		lastBlockId:   r.f.targetView.getBlockId(r.currentMap.lastBlock),
-		blockLvPtrs:   r.currentMap.blockLvPtrs,
-		finished:      true,
-		headDelimiter: r.iterator.lvIndex,
-	})
-}
-
+// loadHeadSnapshot loads the last rendered map from the database and creates
+// a snapshot.
 func (f *FilterMaps) loadHeadSnapshot() error {
 	fm, err := f.getFilterMap(f.afterLastRenderedMap - 1)
 	if err != nil {
@@ -226,22 +247,39 @@ func (f *FilterMaps) loadHeadSnapshot() error {
 	return nil
 }
 
-func (r *mapRenderer) renderMaps(stopFn func() bool, writeCb func()) (bool, error) {
+// makeSnapshot creates a snapshot of the current state of the rendered map.
+func (r *mapRenderer) makeSnapshot() {
+	r.f.renderSnapshots.Add(r.iterator.blockNumber, &renderedMap{
+		filterMap:     r.currentMap.filterMap.copy(),
+		mapIndex:      r.currentMap.mapIndex,
+		lastBlock:     r.iterator.blockNumber,
+		lastBlockId:   r.f.targetView.getBlockId(r.currentMap.lastBlock),
+		blockLvPtrs:   r.currentMap.blockLvPtrs,
+		finished:      true,
+		headDelimiter: r.iterator.lvIndex,
+	})
+}
+
+// run does the actual map rendering. It periodically calls the stopCb callback
+// and if it returns true the process is interrupted an can be resumed later
+// by calling run again. The writeCb callback is called after new maps have
+// been written to disk and the index range has been updated accordingly.
+func (r *mapRenderer) run(stopCb func() bool, writeCb func()) (bool, error) {
 	for {
-		if done, err := r.renderCurrentMap(stopFn); !done {
+		if done, err := r.renderCurrentMap(stopCb); !done {
 			return done, err // stopped or failed
 		}
 		// map finished
 		r.finishedMaps[r.currentMap.mapIndex] = r.currentMap
 		r.afterLastFinished++
 		if len(r.finishedMaps) >= maxMapsPerBatch || r.afterLastFinished & (r.f.baseRowGroupLength-1) == 0 {
-			if err := r.writeFinishedMaps(stopFn); err != nil {
+			if err := r.writeFinishedMaps(stopCb); err != nil {
 				return false, err
 			}
 			writeCb()
 		}
 		if r.afterLastFinished == r.afterLastMap || r.iterator.finished {
-			if err := r.writeFinishedMaps(stopFn); err != nil {
+			if err := r.writeFinishedMaps(stopCb); err != nil {
 				return false, err
 			}
 			writeCb()
@@ -254,7 +292,8 @@ func (r *mapRenderer) renderMaps(stopFn func() bool, writeCb func()) (bool, erro
 	}
 }
 
-func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
+// renderCurrentMap renders a single map.
+func (r *mapRenderer) renderCurrentMap(stopCb func() bool) (bool, error) {
 	if !r.iterator.updateChainView(r.f.targetView) {
 		return false, errChainUpdate
 	}
@@ -270,7 +309,7 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 	for r.iterator.lvIndex < uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap && !r.iterator.finished {
 		waitCnt++
 		if waitCnt >= valuesPerCallback {
-			if stopFn() {
+			if stopCb() {
 				return false, nil
 			}
 			if !r.iterator.updateChainView(r.f.targetView) {
@@ -314,7 +353,9 @@ func (r *mapRenderer) renderCurrentMap(stopFn func() bool) (bool, error) {
 	return true, nil
 }
 
-func (r *mapRenderer) writeFinishedMaps(stopFn func() bool) error {
+// writeFinishedMaps writes rendered maps to the database and updates
+// filterMapsRange and indexedView accordingly.
+func (r *mapRenderer) writeFinishedMaps(pauseCb func() bool) error {
 	if len(r.finishedMaps) == 0 {
 		return nil
 	}
@@ -330,20 +371,20 @@ func (r *mapRenderer) writeFinishedMaps(stopFn func() bool) error {
 	if err != nil {
 		return err
 	}
-	renderedView := r.f.targetView // stopFn callback might still change targetView while writing finished maps
+	renderedView := r.f.targetView // stopCb callback might still change targetView while writing finished maps
 
 	batch := r.f.db.NewBatch()
 	var writeCnt int
 	checkWriteCnt := func() {
 		writeCnt++
-		if writeCnt == writesPerBatch {
+		if writeCnt == rowsPerBatch {
 			writeCnt = 0
 			if err := batch.Write(); err != nil {
 				log.Crit("Error writing log index update batch", "error", err)
 			}
 			// do not exit while in partially written state but do allow processing
 			// events and pausing while block processing is in progress
-			stopFn()
+			pauseCb()
 			batch = r.f.db.NewBatch()
 		}
 	}
@@ -425,6 +466,11 @@ func (r *mapRenderer) writeFinishedMaps(stopFn func() bool) error {
 	return nil
 }
 
+// getTempRange returns a temporary filterMapsRange that is committed to the
+// database while the newly rendered maps are partially written. Writing all
+// processed maps in a single database batch would be a serious hit on db
+// performance so instead safety is ensured by first reverting the valid map
+// range to the unchanged region until all new map data is committed.
 func (r *mapRenderer) getTempRange() (filterMapsRange, error) {
 	tempRange := r.f.filterMapsRange
 	if err := tempRange.addRenderedRange(r.firstFinished, r.firstFinished, r.afterLastMap, r.f.mapsPerEpoch); err != nil {
@@ -458,6 +504,8 @@ func (r *mapRenderer) getTempRange() (filterMapsRange, error) {
 	return tempRange, nil
 }
 
+// getUpdatedRange returns the updated filterMapsRange after writing the newly
+// rendered maps.
 func (r *mapRenderer) getUpdatedRange() (filterMapsRange, error) {
 	// update filterMapsRange
 	newRange := r.f.filterMapsRange
@@ -502,6 +550,8 @@ func (r *mapRenderer) getUpdatedRange() (filterMapsRange, error) {
 	return newRange, nil
 }
 
+// addRenderedRange adds the range [firstRendered, afterLastRendered) and
+// removes [afterLastRendered, afterLastRemoved) from the set of rendered maps.
 func (fmr *filterMapsRange) addRenderedRange(firstRendered, afterLastRendered, afterLastRemoved, mapsPerEpoch uint32) error {
 	if !fmr.initialized {
 		return errors.New("log index not initialized")
@@ -554,10 +604,7 @@ func (fmr *filterMapsRange) addRenderedRange(firstRendered, afterLastRendered, a
 	return errors.New("invalid number of rendered sections")
 }
 
-func (f *FilterMaps) emptyFilterMap() filterMap {
-	return make(filterMap, f.mapHeight)
-}
-
+// logIterator iterates on the linear log value index range.
 type logIterator struct {
 	chainView                       chainView
 	blockNumber                     uint64
@@ -569,6 +616,9 @@ type logIterator struct {
 
 var errUnindexedRange = errors.New("unindexed range")
 
+// newLogIteratorFromBlockDelimiter creates a logIterator starting at the
+// given block's first log value entry (the block delimiter), according to the
+// current targetView.
 func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logIterator, error) {
 	if blockNumber > f.targetView.headNumber() {
 		return nil, errors.New("iterator entry point after target chain head")
@@ -600,6 +650,8 @@ func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logI
 	}, nil
 }
 
+// newLogIteratorFromMapBoundary creates a logIterator starting at the given
+// map boundary, according to the current targetView.
 func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, startLvPtr uint64) (*logIterator, error) {
 	if startBlock > f.targetView.headNumber() {
 		return nil, errors.New("iterator entry point after target chain head")
@@ -637,6 +689,8 @@ func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, 
 	return l, nil
 }
 
+// updateChainView updates the iterator's chain view if it still matches the
+// previous view at the current position. Returns true if successful.
 func (l *logIterator) updateChainView(cv chainView) bool {
 	if !matchViews(cv, l.chainView, l.blockNumber) {
 		return false
@@ -645,6 +699,19 @@ func (l *logIterator) updateChainView(cv chainView) bool {
 	return true
 }
 
+// getValueHash returns the log value hash at the current position.
+func (l *logIterator) getValueHash() common.Hash {
+	if l.delimiter || l.finished {
+		return common.Hash{}
+	}
+	log := l.receipts[l.txIndex].Logs[l.logIndex]
+	if l.topicIndex == 0 {
+		return addressValue(log.Address)
+	}
+	return topicValue(log.Topics[l.topicIndex-1])
+}
+
+// next moves the iterator to the next log value index.
 func (l *logIterator) next() error {
 	if l.finished {
 		return nil
@@ -666,6 +733,9 @@ func (l *logIterator) next() error {
 	return nil
 }
 
+// nextValid updates the internal transaction, log and topic index pointers
+// to the next existing log value of the given block if necessary.
+// Note that nextValid does not advance the log value index pointer.
 func (l *logIterator) nextValid() {
 	for ; l.txIndex < len(l.receipts); l.txIndex++ {
 		receipt := l.receipts[l.txIndex]
@@ -683,15 +753,4 @@ func (l *logIterator) nextValid() {
 	} else {
 		l.delimiter = true
 	}
-}
-
-func (l *logIterator) getValueHash() common.Hash {
-	if l.delimiter || l.finished {
-		return common.Hash{}
-	}
-	log := l.receipts[l.txIndex].Logs[l.logIndex]
-	if l.topicIndex == 0 {
-		return addressValue(log.Address)
-	}
-	return topicValue(log.Topics[l.topicIndex-1])
 }

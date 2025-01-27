@@ -176,7 +176,7 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 	}
 
 	start := time.Now()
-	for i := 0; i < 4; i++ { //TODO
+	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go worker()
 	}
@@ -323,9 +323,6 @@ func (m *singleMatcher) newInstance(mapIndices []uint32) matcherInstance {
 
 // getMatchesForLayer implements matcherInstance.
 func (m *singleMatcherInstance) getMatchesForLayer(ctx context.Context, layerIndex uint32) (results []matcherResult, err error) {
-	if layerIndex > 100 {
-		panic(nil)
-	}
 	var st int
 	m.stats.set(&st, stOther)
 	params := m.backend.GetParams()
