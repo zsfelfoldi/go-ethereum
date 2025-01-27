@@ -200,6 +200,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 	f.targetView = initView
 	if f.initialized {
 		f.indexedView = f.initChainView(f.targetView)
+		f.targetBlockNumber = f.indexedView.headNumber()
 		f.targetBlockId = f.indexedView.getBlockId(f.targetBlockNumber)
 	}
 	if f.hasIndexedBlocks() {
@@ -238,10 +239,10 @@ func (f *FilterMaps) initChainView(chainView chainView) chainView {
 			break
 		}
 		if lastBlockNumber <= chainView.headNumber() && chainView.getBlockId(lastBlockNumber) == lastBlockId {
-			return newLimitedChainView(chainView, lastBlockNumber, f.targetBlockNumber)
+			return newLimitedChainView(chainView, lastBlockNumber)
 		}
 	}
-	return newLimitedChainView(chainView, 0, f.targetBlockNumber)
+	return newLimitedChainView(chainView, 0)
 }
 
 // Stop ensures that the indexer is fully stopped before returning.

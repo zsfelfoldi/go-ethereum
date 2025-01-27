@@ -166,15 +166,14 @@ func (cv *StoredChainView) blockHash(number uint64) common.Hash {
 }
 
 type limitedChainView struct {
-	parent           chainView
-	knownLimit, head uint64
+	parent chainView
+	head   uint64
 }
 
-func newLimitedChainView(parent chainView, knownLimit, headNumber uint64) *limitedChainView {
+func newLimitedChainView(parent chainView, headNumber uint64) *limitedChainView {
 	return &limitedChainView{
-		parent:     parent,
-		knownLimit: knownLimit,
-		head:       headNumber,
+		parent: parent,
+		head:   headNumber,
 	}
 }
 
@@ -188,9 +187,6 @@ func (cv *limitedChainView) getBlockHash(number uint64) common.Hash {
 	if number >= cv.head {
 		panic("invalid block number")
 	}
-	if number > cv.knownLimit {
-		return common.Hash{}
-	}
 	return cv.parent.getBlockHash(number)
 }
 
@@ -199,9 +195,6 @@ func (cv *limitedChainView) getBlockId(number uint64) common.Hash {
 	if number > cv.head {
 		panic("invalid block number")
 	}
-	if number > cv.knownLimit {
-		return common.Hash{}
-	}
 	return cv.parent.getBlockId(number)
 }
 
@@ -209,9 +202,6 @@ func (cv *limitedChainView) getBlockId(number uint64) common.Hash {
 func (cv *limitedChainView) getReceipts(number uint64) types.Receipts {
 	if number > cv.head {
 		panic("invalid block number")
-	}
-	if number > cv.knownLimit {
-		return nil
 	}
 	return cv.parent.getReceipts(number)
 }
