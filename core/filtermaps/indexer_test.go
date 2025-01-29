@@ -35,6 +35,7 @@ import (
 
 var testParams = Params{
 	logMapHeight:       2,
+	logMapWidth:        24,
 	logMapsPerEpoch:    4,
 	logValuesPerMap:    4,
 	baseRowGroupLength: 4,

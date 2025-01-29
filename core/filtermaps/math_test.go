@@ -142,7 +142,7 @@ func TestPotentialMatches(t *testing.T) {
 	// foreign entries. This means that after performing all these filtering runs,
 	// we have processed 2*testPmLen^2 foreign entries, which given us an estimate
 	// of how many false positives to expect.
-	expFalse := int(uint64(testPmCount*testPmLen*testPmLen*2) * params.valuesPerMap >> 32)
+	expFalse := int(uint64(testPmCount*testPmLen*testPmLen*2) * params.valuesPerMap >> params.logMapWidth)
 	if falsePositives < expFalse/2 || falsePositives > expFalse*3/2 {
 		t.Fatalf("False positive rate out of expected range (got %d, expected %d +-50%%)", falsePositives, expFalse)
 	}
