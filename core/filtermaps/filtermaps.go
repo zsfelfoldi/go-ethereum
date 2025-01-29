@@ -468,7 +468,7 @@ func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32, baseLayerOnly bo
 	baseRows, ok := f.baseRowsCache.Get(baseMapRowIndex)
 	if !ok {
 		var err error
-		baseRows, err = rawdb.ReadFilterMapBaseRows(f.db, baseMapRowIndex, f.baseRowGroupLength)
+		baseRows, err = rawdb.ReadFilterMapBaseRows(f.db, baseMapRowIndex, f.baseRowGroupLength, f.logMapWidth)
 		if err != nil {
 			return nil, err
 		}
@@ -478,7 +478,7 @@ func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32, baseLayerOnly bo
 	if baseLayerOnly {
 		return baseRow, nil
 	}
-	extRow, err := rawdb.ReadFilterMapExtRow(f.db, f.mapRowIndex(mapIndex, rowIndex))
+	extRow, err := rawdb.ReadFilterMapExtRow(f.db, f.mapRowIndex(mapIndex, rowIndex), f.logMapWidth)
 	if err != nil {
 		return nil, err
 	}
@@ -507,13 +507,19 @@ func (f *FilterMaps) storeFilterMapRows(batch ethdb.Batch, mapIndices []uint32, 
 func (f *FilterMaps) storeFilterMapRowsOfGroup(batch ethdb.Batch, mapIndices []uint32, rowIndex uint32, rows []FilterRow) error {
 	baseMapIndex := mapIndices[0] & -f.baseRowGroupLength
 	baseMapRowIndex := f.mapRowIndex(baseMapIndex, rowIndex)
-	baseRows, ok := f.baseRowsCache.Get(baseMapRowIndex)
-	if !ok {
-		var err error
-		baseRows, err = rawdb.ReadFilterMapBaseRows(f.db, baseMapRowIndex, f.baseRowGroupLength)
-		if err != nil {
-			return err
+	var baseRows [][]uint32
+	if uint32(len(mapIndices)) != f.baseRowGroupLength { // skip base rows read if all rows are replaced
+		var ok bool
+		baseRows, ok = f.baseRowsCache.Get(baseMapRowIndex)
+		if !ok {
+			var err error
+			baseRows, err = rawdb.ReadFilterMapBaseRows(f.db, baseMapRowIndex, f.baseRowGroupLength, f.logMapWidth)
+			if err != nil {
+				return err
+			}
 		}
+	} else {
+		baseRows = make([][]uint32, f.baseRowGroupLength)
 	}
 	for i, mapIndex := range mapIndices {
 		if mapIndex&-f.baseRowGroupLength != baseMapIndex {
@@ -526,10 +532,10 @@ func (f *FilterMaps) storeFilterMapRowsOfGroup(batch ethdb.Batch, mapIndices []u
 			baseRow = baseRow[:f.baseRowLength]
 		}
 		baseRows[mapIndex&(f.baseRowGroupLength-1)] = baseRow
-		rawdb.WriteFilterMapExtRow(batch, f.mapRowIndex(mapIndex, rowIndex), extRow)
+		rawdb.WriteFilterMapExtRow(batch, f.mapRowIndex(mapIndex, rowIndex), extRow, f.logMapWidth)
 	}
 	f.baseRowsCache.Add(baseMapRowIndex, baseRows)
-	rawdb.WriteFilterMapBaseRows(batch, baseMapRowIndex, baseRows)
+	rawdb.WriteFilterMapBaseRows(batch, baseMapRowIndex, baseRows, f.logMapWidth)
 	return nil
 }
 

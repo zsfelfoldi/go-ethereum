@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+
 	//"fmt"
 	"math/big"
 
@@ -192,7 +193,11 @@ func DeleteBloombits(db ethdb.Database, bit uint, from uint64, to uint64) {
 // same data proximity reasons it is also suitable for database representation.
 // See also:
 // https://eips.ethereum.org/EIPS/eip-7745#hash-tree-structure
-func ReadFilterMapExtRow(db ethdb.KeyValueReader, mapRowIndex uint64) ([]uint32, error) {
+func ReadFilterMapExtRow(db ethdb.KeyValueReader, mapRowIndex uint64, bitLength uint) ([]uint32, error) {
+	byteLength := int(bitLength) / 8
+	if int(bitLength) != byteLength*8 {
+		panic("invalid bit length")
+	}
 	key := filterMapRowKey(mapRowIndex, false)
 	has, err := db.Has(key)
 	if err != nil {
@@ -205,17 +210,23 @@ func ReadFilterMapExtRow(db ethdb.KeyValueReader, mapRowIndex uint64) ([]uint32,
 	if err != nil {
 		return nil, err
 	}
-	if len(encRow)&3 != 0 {
+	if len(encRow)%byteLength != 0 {
 		return nil, errors.New("Invalid encoded extended filter row length")
 	}
-	row := make([]uint32, len(encRow)/4)
+	row := make([]uint32, len(encRow)/byteLength)
+	var b [4]byte
 	for i := range row {
-		row[i] = binary.LittleEndian.Uint32(encRow[i*4 : (i+1)*4])
+		copy(b[:byteLength], encRow[i*byteLength:(i+1)*byteLength])
+		row[i] = binary.LittleEndian.Uint32(b[:])
 	}
 	return row, nil
 }
 
-func ReadFilterMapBaseRows(db ethdb.KeyValueReader, mapRowIndex uint64, rowCount uint32) ([][]uint32, error) {
+func ReadFilterMapBaseRows(db ethdb.KeyValueReader, mapRowIndex uint64, rowCount uint32, bitLength uint) ([][]uint32, error) {
+	byteLength := int(bitLength) / 8
+	if int(bitLength) != byteLength*8 {
+		panic("invalid bit length")
+	}
 	key := filterMapRowKey(mapRowIndex, true)
 	has, err := db.Has(key)
 	if err != nil {
@@ -234,7 +245,7 @@ func ReadFilterMapBaseRows(db ethdb.KeyValueReader, mapRowIndex uint64, rowCount
 		entryCount, entriesInRow, rowIndex, headerLen, headerBits int
 		headerByte                                                byte
 	)
-	for headerLen+4*entryCount < encLen {
+	for headerLen+byteLength*entryCount < encLen {
 		if headerBits == 0 {
 			headerByte = encRows[headerLen]
 			headerLen++
@@ -253,7 +264,7 @@ func ReadFilterMapBaseRows(db ethdb.KeyValueReader, mapRowIndex uint64, rowCount
 		headerByte >>= 1
 		headerBits--
 	}
-	if headerLen+4*entryCount > encLen {
+	if headerLen+byteLength*entryCount > encLen {
 		return nil, errors.New("Invalid encoded base filter rows length")
 	}
 	if entriesInRow > 0 {
@@ -262,27 +273,29 @@ func ReadFilterMapBaseRows(db ethdb.KeyValueReader, mapRowIndex uint64, rowCount
 	nextEntry := headerLen
 	for _, row := range rows {
 		for i := range row {
-			row[i] = binary.LittleEndian.Uint32(encRows[nextEntry : nextEntry+4])
-			nextEntry += 4
+			var b [4]byte
+			copy(b[:byteLength], encRows[nextEntry:nextEntry+byteLength])
+			row[i] = binary.LittleEndian.Uint32(b[:])
+			nextEntry += byteLength
 		}
 	}
-	/*fmt.Print("read ", mapRowIndex)
-	for _, row := range rows {
-		fmt.Print(" ", len(row))
-	}
-	fmt.Println()
-	fmt.Println(" header", encRows[:headerLen])*/
 	return rows, nil
 }
 
 // WriteFilterMapRow stores a filter map row at the given mapRowIndex or deletes
 // any existing entry if the row is empty.
-func WriteFilterMapExtRow(db ethdb.KeyValueWriter, mapRowIndex uint64, row []uint32) {
+func WriteFilterMapExtRow(db ethdb.KeyValueWriter, mapRowIndex uint64, row []uint32, bitLength uint) {
+	byteLength := int(bitLength) / 8
+	if int(bitLength) != byteLength*8 {
+		panic("invalid bit length")
+	}
 	var err error
 	if len(row) > 0 {
-		encRow := make([]byte, len(row)*4)
+		encRow := make([]byte, len(row)*byteLength)
 		for i, c := range row {
-			binary.LittleEndian.PutUint32(encRow[i*4:(i+1)*4], c)
+			var b [4]byte
+			binary.LittleEndian.PutUint32(b[:], c)
+			copy(encRow[i*byteLength:(i+1)*byteLength], b[:byteLength])
 		}
 		err = db.Put(filterMapRowKey(mapRowIndex, false), encRow)
 	} else {
@@ -293,21 +306,22 @@ func WriteFilterMapExtRow(db ethdb.KeyValueWriter, mapRowIndex uint64, row []uin
 	}
 }
 
-func WriteFilterMapBaseRows(db ethdb.KeyValueWriter, mapRowIndex uint64, rows [][]uint32) {
+func WriteFilterMapBaseRows(db ethdb.KeyValueWriter, mapRowIndex uint64, rows [][]uint32, bitLength uint) {
+	byteLength := int(bitLength) / 8
+	if int(bitLength) != byteLength*8 {
+		panic("invalid bit length")
+	}
 	var entryCount, zeroBits int
-	//fmt.Print("write ", mapRowIndex)
 	for i, row := range rows {
-		//fmt.Print(" ", len(row))
 		if len(row) > 0 {
 			entryCount += len(row)
 			zeroBits = i
 		}
 	}
-	//fmt.Println()
 	var err error
 	if entryCount > 0 {
 		headerLen := (zeroBits + entryCount + 7) / 8
-		encRows := make([]byte, headerLen+entryCount*4)
+		encRows := make([]byte, headerLen+entryCount*byteLength)
 		nextEntry := headerLen
 
 		headerPtr, headerByte := 0, byte(1)
@@ -323,8 +337,10 @@ func WriteFilterMapBaseRows(db ethdb.KeyValueWriter, mapRowIndex uint64, rows []
 
 		for _, row := range rows {
 			for _, entry := range row {
-				binary.LittleEndian.PutUint32(encRows[nextEntry:nextEntry+4], entry)
-				nextEntry += 4
+				var b [4]byte
+				binary.LittleEndian.PutUint32(b[:], entry)
+				copy(encRows[nextEntry:nextEntry+byteLength], b[:byteLength])
+				nextEntry += byteLength
 				addHeaderBit(true)
 			}
 			if zeroBits == 0 {
@@ -334,7 +350,6 @@ func WriteFilterMapBaseRows(db ethdb.KeyValueWriter, mapRowIndex uint64, rows []
 			zeroBits--
 		}
 		err = db.Put(filterMapRowKey(mapRowIndex, true), encRows)
-		//fmt.Println(" header", encRows[:headerLen])
 	} else {
 		err = db.Delete(filterMapRowKey(mapRowIndex, true))
 	}

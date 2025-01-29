@@ -47,11 +47,11 @@ type Params struct {
 var DefaultParams = Params{
 	logMapHeight:       16,
 	logMapWidth:        24,
-	logMapsPerEpoch:    10,
-	logValuesPerMap:    16,
-	baseRowGroupLength: 32,
+	logMapsPerEpoch:    12,
+	logValuesPerMap:    14,
+	baseRowGroupLength: 128,
 	baseRowLengthRatio: 8,
-	logLayerDiff:       2,
+	logLayerDiff:       4,
 }
 
 // deriveFields calculates the derived fields of the parameter set.
