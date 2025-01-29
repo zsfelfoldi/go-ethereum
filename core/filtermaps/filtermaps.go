@@ -314,7 +314,7 @@ func (f *FilterMaps) init() error {
 		fmr.afterLastRenderedMap = uint32(bestLen) << f.logMapsPerEpoch
 	}
 	f.indexedView = f.targetView
-	f.setRange(batch, fmr, true)
+	f.setRange(batch, fmr)
 	return batch.Write()
 }
 
@@ -356,14 +356,12 @@ func (f *FilterMaps) removeDbWithPrefix(prefix []byte, action string) bool {
 
 // setRange updates the covered range and also adds the changes to the given batch.
 // Note that this function assumes that the index write lock is being held.
-func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRange, updateMatchers bool) {
+func (f *FilterMaps) setRange(batch ethdb.KeyValueWriter, newRange filterMapsRange) {
 	if f.indexedView != nil && f.indexedView.getBlockId(newRange.targetBlockNumber) != newRange.targetBlockId {
 		panic("indexed range inconsistent with canonical chain")
 	}
 	f.filterMapsRange = newRange
-	if updateMatchers {
-		f.updateMatchersValidRange()
-	}
+	f.updateMatchersValidRange()
 	if newRange.initialized {
 		rs := rawdb.FilterMapsRange{
 			TargetBlockId:         newRange.targetBlockId,
@@ -631,7 +629,7 @@ func (f *FilterMaps) deleteTailEpoch(epoch uint32) error {
 	} else {
 		return errors.New("invalid tail epoch number")
 	}
-	f.setRange(f.db, fmr, true)
+	f.setRange(f.db, fmr)
 	rawdb.DeleteFilterMapRows(f.db, f.mapRowIndex(firstMap, 0), f.mapRowIndex(firstMap+f.mapsPerEpoch, 0))
 	for mapIndex := firstMap; mapIndex < firstMap+f.mapsPerEpoch; mapIndex++ {
 		f.filterMapCache.Remove(mapIndex)

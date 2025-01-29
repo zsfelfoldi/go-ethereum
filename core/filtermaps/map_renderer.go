@@ -389,7 +389,7 @@ func (r *mapRenderer) writeFinishedMaps(pauseCb func() bool) error {
 		}
 	}
 
-	r.f.setRange(batch, tempRange, false)
+	r.f.setRange(batch, tempRange)
 	// add or update filter rows
 	for rowIndex := uint32(0); rowIndex < r.f.mapHeight; rowIndex++ {
 		var (
@@ -459,7 +459,7 @@ func (r *mapRenderer) writeFinishedMaps(pauseCb func() bool) error {
 	r.finishedMaps = make(map[uint32]*renderedMap)
 	r.firstFinished = r.afterLastFinished
 	r.f.indexedView = renderedView
-	r.f.setRange(batch, newRange, true)
+	r.f.setRange(batch, newRange)
 	if err := batch.Write(); err != nil {
 		log.Crit("Error writing log index update batch", "error", err)
 	}
@@ -495,7 +495,7 @@ func (r *mapRenderer) getTempRange() (filterMapsRange, error) {
 			if err != nil {
 				return filterMapsRange{}, err
 			}
-			tempRange.afterLastIndexedBlock = lastBlock + 1
+			tempRange.afterLastIndexedBlock = lastBlock
 		} else {
 			tempRange.afterLastIndexedBlock = 0
 		}

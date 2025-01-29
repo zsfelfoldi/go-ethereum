@@ -30,7 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
-const useTimeStats = true //TODO set to false before merging
+const doRuntimeStats = true //TODO set to false before merging
 
 // ErrMatchAll is returned when the specified filter matches everything.
 // Handling this case in filtermaps would require an extra special case and
@@ -74,6 +74,7 @@ type SyncRange struct {
 // Also note that the returned list may contain false positives.
 func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock, lastBlock uint64, addresses []common.Address, topics [][]common.Hash) ([]*types.Log, error) {
 	params := backend.GetParams()
+	var getLogStats runtimeStats
 	// find the log value index range to search
 	firstIndex, err := backend.GetBlockLvPointer(ctx, firstBlock)
 	if err != nil {
@@ -137,6 +138,9 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 			return logs, err
 		}
 		// get the actual logs located at the matching log value indices
+		var st int
+		getLogStats.setState(&st, stGetLog)
+		defer getLogStats.setState(&st, stNone)
 		for _, m := range matches {
 			if m == nil {
 				return nil, ErrMatchAll
@@ -147,6 +151,7 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 			}
 			logs = append(logs, mlogs...)
 		}
+		getLogStats.addAmount(st, int64(len(logs)))
 		return logs, nil
 	}
 
@@ -211,7 +216,7 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 			}
 		}
 	}
-	if useTimeStats {
+	if doRuntimeStats {
 		log.Info("Log search finished", "elapsed", time.Since(start))
 		for i, ma := range matchers {
 			for j, m := range ma.(matchAny) {
@@ -219,6 +224,8 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 				m.(*singleMatcher).stats.print()
 			}
 		}
+		log.Info("Get log stats")
+		getLogStats.print()
 	}
 	return logs, nil
 }
@@ -882,7 +889,7 @@ func (params *Params) matchResults(mapIndex uint32, offset uint64, baseRes, next
 }
 
 // runtimeStats collects processing time statistics while searching in the log
-// index. Used only when the useTimeStats global flag is true.
+// index. Used only when the doRuntimeStats global flag is true.
 type runtimeStats struct {
 	dt, cnt, amount [stCount]int64
 }
@@ -892,16 +899,17 @@ const (
 	stFetchFirst
 	stFetchMore
 	stProcess
+	stGetLog
 	stOther
 	stCount
 )
 
-var stNames = []string{"", "fetchFirst", "fetchMore", "process", "other"}
+var stNames = []string{"", "fetchFirst", "fetchMore", "process", "getLog", "other"}
 
 // set sets the processing state to one of the pre-defined constants.
 // Processing time spent in each state is measured separately.
 func (ts *runtimeStats) setState(state *int, newState int) {
-	if !useTimeStats || newState == *state {
+	if !doRuntimeStats || newState == *state {
 		return
 	}
 	now := int64(mclock.Now())

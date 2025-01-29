@@ -122,18 +122,28 @@ func (fm *FilterMapsMatcherBackend) synced(headNumber uint64) {
 		fm.f.indexLock.RUnlock()
 	}()
 
+	var (
+		indexed                     bool
+		lastIndexed, subLastIndexed uint64
+	)
+	if fm.f.afterLastIndexedBlock != fm.f.targetBlockNumber+1 {
+		subLastIndexed = 1
+	}
+	if fm.f.afterLastIndexedBlock-subLastIndexed > fm.f.firstIndexedBlock {
+		indexed, lastIndexed = true, fm.f.afterLastIndexedBlock-subLastIndexed-1
+	}
 	fm.syncCh <- SyncRange{
 		HeadNumber:   headNumber,
 		Valid:        fm.valid,
 		FirstValid:   fm.firstValid,
 		LastValid:    fm.lastValid,
-		Indexed:      fm.f.hasIndexedBlocks(),
+		Indexed:      indexed,
 		FirstIndexed: fm.f.firstIndexedBlock,
-		LastIndexed:  fm.f.afterLastIndexedBlock - 1,
+		LastIndexed:  lastIndexed,
 	}
-	fm.valid = fm.f.hasIndexedBlocks()
+	fm.valid = indexed
 	fm.firstValid = fm.f.firstIndexedBlock
-	fm.lastValid = fm.f.afterLastIndexedBlock - 1
+	fm.lastValid = lastIndexed
 	fm.syncCh = nil
 }
 
