@@ -296,7 +296,7 @@ func getAllMatches(ctx context.Context, matcher matcher, mapIndices []uint32) ([
 type singleMatcher struct {
 	backend MatcherBackend
 	value   common.Hash
-	stats   timeStats
+	stats   runtimeStats
 }
 
 // singleMatcherInstance is an instance of singleMatcher.
@@ -324,7 +324,7 @@ func (m *singleMatcher) newInstance(mapIndices []uint32) matcherInstance {
 // getMatchesForLayer implements matcherInstance.
 func (m *singleMatcherInstance) getMatchesForLayer(ctx context.Context, layerIndex uint32) (results []matcherResult, err error) {
 	var st int
-	m.stats.set(&st, stOther)
+	m.stats.setState(&st, stOther)
 	params := m.backend.GetParams()
 	maskedMapIndex, rowIndex := uint32(math.MaxUint32), uint32(0)
 	for _, mapIndex := range m.mapIndices {
@@ -334,36 +334,38 @@ func (m *singleMatcherInstance) getMatchesForLayer(ctx context.Context, layerInd
 		}
 		if mm := params.maskedMapIndex(mapIndex, layerIndex); mm != maskedMapIndex {
 			// only recalculate rowIndex when necessary
-			m.stats.set(&st, stRowCalc)
 			maskedMapIndex = mm
 			rowIndex = params.rowIndex(mapIndex, layerIndex, m.value)
 		}
 		if layerIndex == 0 {
-			m.stats.set(&st, stFetchFirst)
+			m.stats.setState(&st, stFetchFirst)
 		} else {
-			m.stats.set(&st, stFetchMore)
+			m.stats.setState(&st, stFetchMore)
 		}
 		filterRow, err := m.backend.GetFilterMapRow(ctx, mapIndex, rowIndex, layerIndex == 0)
-		m.stats.set(&st, stOther)
 		if err != nil {
-			m.stats.set(&st, stNone)
+			m.stats.setState(&st, stNone)
 			return nil, err
 		}
+		m.stats.addAmount(st, int64(len(filterRow)))
+		m.stats.setState(&st, stOther)
 		filterRows = append(filterRows, filterRow)
 		if uint32(len(filterRow)) < params.maxRowLength(layerIndex) {
-			m.stats.set(&st, stProcess)
+			m.stats.setState(&st, stProcess)
+			matches := params.potentialMatches(filterRows, mapIndex, m.value)
+			m.stats.addAmount(st, int64(len(matches)))
 			results = append(results, matcherResult{
 				mapIndex: mapIndex,
-				matches:  params.potentialMatches(filterRows, mapIndex, m.value),
+				matches:  matches,
 			})
-			m.stats.set(&st, stOther)
+			m.stats.setState(&st, stOther)
 			delete(m.filterRows, mapIndex)
 		} else {
 			m.filterRows[mapIndex] = filterRows
 		}
 	}
 	m.cleanMapIndices()
-	m.stats.set(&st, stNone)
+	m.stats.setState(&st, stNone)
 	return results, nil
 }
 
@@ -879,15 +881,14 @@ func (params *Params) matchResults(mapIndex uint32, offset uint64, baseRes, next
 	return matchedRes
 }
 
-// timeStats collects processing time statistics while searching in the log
+// runtimeStats collects processing time statistics while searching in the log
 // index. Used only when the useTimeStats global flag is true.
-type timeStats struct {
-	dt, cnt [stCount]int64
+type runtimeStats struct {
+	dt, cnt, amount [stCount]int64
 }
 
 const (
 	stNone = iota
-	stRowCalc
 	stFetchFirst
 	stFetchMore
 	stProcess
@@ -895,11 +896,11 @@ const (
 	stCount
 )
 
-var stNames = []string{"", "rowCalc", "fetchFirst", "fetchMore", "process", "other"}
+var stNames = []string{"", "fetchFirst", "fetchMore", "process", "other"}
 
 // set sets the processing state to one of the pre-defined constants.
 // Processing time spent in each state is measured separately.
-func (ts *timeStats) set(state *int, newState int) {
+func (ts *runtimeStats) setState(state *int, newState int) {
 	if !useTimeStats || newState == *state {
 		return
 	}
@@ -910,9 +911,13 @@ func (ts *timeStats) set(state *int, newState int) {
 	*state = newState
 }
 
+func (ts *runtimeStats) addAmount(state int, amount int64) {
+	atomic.AddInt64(&ts.amount[state], amount)
+}
+
 // print prints the collected statistics.
-func (ts *timeStats) print() {
+func (ts *runtimeStats) print() {
 	for i := 1; i < stCount; i++ {
-		log.Info("Matcher stats", "name", stNames[i], "dt", time.Duration(ts.dt[i]), "count", ts.cnt[i])
+		log.Info("Matcher stats", "name", stNames[i], "dt", time.Duration(ts.dt[i]), "count", ts.cnt[i], "amount", ts.amount[i])
 	}
 }
