@@ -272,7 +272,7 @@ func (r *mapRenderer) run(stopCb func() bool, writeCb func()) (bool, error) {
 		// map finished
 		r.finishedMaps[r.currentMap.mapIndex] = r.currentMap
 		r.afterLastFinished++
-		if len(r.finishedMaps) >= maxMapsPerBatch || r.afterLastFinished & (r.f.baseRowGroupLength-1) == 0 {
+		if len(r.finishedMaps) >= maxMapsPerBatch || r.afterLastFinished&(r.f.baseRowGroupLength-1) == 0 {
 			if err := r.writeFinishedMaps(stopCb); err != nil {
 				return false, err
 			}
@@ -394,7 +394,7 @@ func (r *mapRenderer) writeFinishedMaps(pauseCb func() bool) error {
 	for rowIndex := uint32(0); rowIndex < r.f.mapHeight; rowIndex++ {
 		var (
 			mapIndices []uint32
-			rows []FilterRow
+			rows       []FilterRow
 		)
 		for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 			row := r.finishedMaps[mapIndex].filterMap[rowIndex]

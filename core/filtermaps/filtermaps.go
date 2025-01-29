@@ -17,10 +17,10 @@
 package filtermaps
 
 import (
-	"fmt"
-	"os"
 	"bytes"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -70,13 +70,13 @@ type FilterMaps struct {
 	matchers     map[*FilterMapsMatcherBackend]struct{}
 
 	// fields only accessed by the indexer (no mutex required).
-	renderSnapshots                                                        *lru.Cache[uint64, *renderedMap]
-	startedHeadIndex, startedTailIndex, startedTailUnindex					 bool
-	startedHeadIndexAt, startedTailIndexAt, startedTailUnindexAt               time.Time
-	loggedHeadIndex, loggedTailIndex										 bool
-	lastLogHeadIndex, lastLogTailIndex					   	            time.Time
-	ptrHeadIndex, ptrTailIndex, ptrTailUnindexBlock                        uint64
-	ptrTailUnindexMap														uint32
+	renderSnapshots                                              *lru.Cache[uint64, *renderedMap]
+	startedHeadIndex, startedTailIndex, startedTailUnindex       bool
+	startedHeadIndexAt, startedTailIndexAt, startedTailUnindexAt time.Time
+	loggedHeadIndex, loggedTailIndex                             bool
+	lastLogHeadIndex, lastLogTailIndex                           time.Time
+	ptrHeadIndex, ptrTailIndex, ptrTailUnindexBlock              uint64
+	ptrTailUnindexMap                                            uint32
 
 	targetView         chainView
 	matcherSyncRequest *FilterMapsMatcherBackend
@@ -466,7 +466,7 @@ func (f *FilterMaps) getFilterMap(mapIndex uint32) (filterMap, error) {
 // getFilterMapRow fetches the given filter map row. If baseLayerOnly is true
 // then only the first baseRowLength entries are returned.
 func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32, baseLayerOnly bool) (FilterRow, error) {
-	baseMapRowIndex := f.mapRowIndex(mapIndex & -f.baseRowGroupLength, rowIndex)
+	baseMapRowIndex := f.mapRowIndex(mapIndex&-f.baseRowGroupLength, rowIndex)
 	baseRows, ok := f.baseRowsCache.Get(baseMapRowIndex)
 	if !ok {
 		var err error
@@ -476,7 +476,7 @@ func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32, baseLayerOnly bo
 		}
 		f.baseRowsCache.Add(baseMapRowIndex, baseRows)
 	}
-	baseRow := baseRows[mapIndex & (f.baseRowGroupLength-1)]
+	baseRow := baseRows[mapIndex&(f.baseRowGroupLength-1)]
 	if baseLayerOnly {
 		return baseRow, nil
 	}
@@ -493,7 +493,7 @@ func (f *FilterMaps) storeFilterMapRows(batch ethdb.Batch, mapIndices []uint32, 
 	for len(mapIndices) > 0 {
 		baseMapIndex := mapIndices[0] & -f.baseRowGroupLength
 		groupLength := 1
-		for groupLength < len(mapIndices) && mapIndices[groupLength] & -f.baseRowGroupLength == baseMapIndex {
+		for groupLength < len(mapIndices) && mapIndices[groupLength]&-f.baseRowGroupLength == baseMapIndex {
 			groupLength++
 		}
 		if err := f.storeFilterMapRowsOfGroup(batch, mapIndices[:groupLength], rowIndex, rows[:groupLength]); err != nil {
@@ -517,8 +517,8 @@ func (f *FilterMaps) storeFilterMapRowsOfGroup(batch ethdb.Batch, mapIndices []u
 			return err
 		}
 	}
-	for i, mapIndex :=	range mapIndices {
-	    if mapIndex & -f.baseRowGroupLength != baseMapIndex {
+	for i, mapIndex := range mapIndices {
+		if mapIndex&-f.baseRowGroupLength != baseMapIndex {
 			panic("mapIndices are not in the same base row group")
 		}
 		baseRow := []uint32(rows[i])
@@ -527,13 +527,13 @@ func (f *FilterMaps) storeFilterMapRowsOfGroup(batch ethdb.Batch, mapIndices []u
 			extRow = baseRow[f.baseRowLength:]
 			baseRow = baseRow[:f.baseRowLength]
 		}
-		baseRows[mapIndex & (f.baseRowGroupLength-1)] = baseRow
+		baseRows[mapIndex&(f.baseRowGroupLength-1)] = baseRow
 		rawdb.WriteFilterMapExtRow(batch, f.mapRowIndex(mapIndex, rowIndex), extRow)
 	}
 	f.baseRowsCache.Add(baseMapRowIndex, baseRows)
 	rawdb.WriteFilterMapBaseRows(batch, baseMapRowIndex, baseRows)
 	return nil
-}	
+}
 
 // mapRowIndex calculates the unified storage index where the given row of the
 // given map is stored. Note that this indexing scheme is the same as the one

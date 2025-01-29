@@ -222,15 +222,15 @@ type BlockChain struct {
 	statedb       *state.CachingDB                 // State database to reuse between imports (contains state cache)
 	txIndexer     *txIndexer                       // Transaction indexer, might be nil if not enabled
 
-	hc            *HeaderChain
-	rmLogsFeed    event.Feed
-	chainFeed     event.Feed
-	chainHeadFeed event.Feed
-	logsFeed      event.Feed
-	blockProcFeed event.Feed
+	hc                 *HeaderChain
+	rmLogsFeed         event.Feed
+	chainFeed          event.Feed
+	chainHeadFeed      event.Feed
+	logsFeed           event.Feed
+	blockProcFeed      event.Feed
 	blockProcFeedCount int
-	scope         event.SubscriptionScope
-	genesisBlock  *types.Block
+	scope              event.SubscriptionScope
+	genesisBlock       *types.Block
 
 	// This mutex synchronizes chain write operations.
 	// Readers don't need to take it, they can just read the database.
@@ -1618,7 +1618,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, setHead bool, makeWitness 
 		return nil, 0, nil
 	}
 	if bc.blockProcFeedCount == 0 {
-	bc.blockProcFeed.Send(true)
+		bc.blockProcFeed.Send(true)
 	}
 	bc.blockProcFeedCount++
 	defer func() {
