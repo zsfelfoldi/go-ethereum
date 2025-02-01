@@ -29,7 +29,7 @@ import (
 
 const (
 	valuesPerCallback = 1000 // log values processed per event process callback
-	maxMapsPerBatch   = 128  // maximum number of maps rendered in memory
+	maxMapsPerBatch   = 64   // maximum number of maps rendered in memory
 	rowsPerBatch      = 100  // number of rows written to db in a single batch
 )
 

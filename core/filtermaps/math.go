@@ -47,9 +47,9 @@ type Params struct {
 var DefaultParams = Params{
 	logMapHeight:       16,
 	logMapWidth:        24,
-	logMapsPerEpoch:    12,
-	logValuesPerMap:    14,
-	baseRowGroupLength: 128,
+	logMapsPerEpoch:    10,
+	logValuesPerMap:    16,
+	baseRowGroupLength: 32,
 	baseRowLengthRatio: 8,
 	logLayerDiff:       4,
 }
