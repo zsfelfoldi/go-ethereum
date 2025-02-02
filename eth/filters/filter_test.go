@@ -502,11 +502,11 @@ func TestRangeLogs(t *testing.T) {
 	}
 	updateHead()
 	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 501, 700})
-	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 601, 700})
+	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 601, 698})
 	expEvent(rangeLogsTestEvent{rangeLogsTestUnindexed, 400, 600})
-	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 400, 700})
-	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 400, 700})
-	expEvent(rangeLogsTestEvent{rangeLogsTestIndexed, 701, 800})
+	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 400, 698})
+	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 400, 698})
+	expEvent(rangeLogsTestEvent{rangeLogsTestIndexed, 699, 800})
 	if err := bc.SetHead(750); err != nil {
 		t.Fatal(err)
 	}
@@ -533,8 +533,7 @@ func TestRangeLogs(t *testing.T) {
 	}
 	updateHead()
 	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 740, 740})
-	// trimmed at the beginning of the next iteration
-	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 740, 740})
+	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 0, 0})
 	expEvent(rangeLogsTestEvent{rangeLogsTestIndexed, 750, 750})
 	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 750, 750})
 	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 750, 750})

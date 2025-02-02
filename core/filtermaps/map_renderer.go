@@ -167,7 +167,8 @@ func (f *FilterMaps) lastCanonicalMapBoundaryBefore(afterLastMap uint32) (nextMa
 		if err != nil {
 			return 0, 0, 0, fmt.Errorf("failed to retrieve last block of reverse iterated map %d: %v", mapIndex, err)
 		}
-		if lastBlock >= f.targetView.headNumber() || lastBlockId != f.targetView.getBlockId(lastBlock) {
+		if lastBlock >= f.indexedView.headNumber() || lastBlock >= f.targetView.headNumber() ||
+			lastBlockId != f.targetView.getBlockId(lastBlock) {
 			// map is not full or inconsistent with targetView; roll back
 			continue
 		}
