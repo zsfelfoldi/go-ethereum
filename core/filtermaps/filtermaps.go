@@ -207,7 +207,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 		f.targetBlockId = f.indexedView.getBlockId(f.targetBlockNumber)
 	}
 	if f.hasIndexedBlocks() {
-		log.Info("Log index range", "first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1, "first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1)
+		log.Info("Initialized log indexer", "first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1, "first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1)
 	}
 	f.exportCheckpoints()
 	return f
@@ -273,7 +273,7 @@ func (f *FilterMaps) reset() bool {
 	// deleting the range first ensures that resetDb will be called again at next
 	// startup and any leftover data will be removed even if it cannot finish now.
 	rawdb.DeleteFilterMapsRange(f.db)
-	return f.removeDbWithPrefix(rawdb.FilterMapsPrefix, "Resetting log index database")
+	return f.removeDbWithPrefix([]byte(rawdb.FilterMapsPrefix), "Resetting log index database")
 }
 
 // init initializes an empty log index according to the current targetView.

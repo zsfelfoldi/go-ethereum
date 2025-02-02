@@ -441,7 +441,7 @@ func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 			bloomBits.Add(size)
 		case bytes.HasPrefix(key, BloomBitsIndexPrefix):
 			bloomBits.Add(size)
-		case bytes.HasPrefix(key, FilterMapsPrefix):
+		case bytes.HasPrefix(key, []byte(FilterMapsPrefix)):
 			filterMaps.Add(size)
 		case bytes.HasPrefix(key, skeletonHeaderPrefix) && len(key) == (len(skeletonHeaderPrefix)+8):
 			beaconHeaders.Add(size)
