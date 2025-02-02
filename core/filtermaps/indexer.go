@@ -54,6 +54,12 @@ func (f *FilterMaps) indexerLoop() {
 				f.waitForEvent()
 			}
 		} else {
+			if f.finalBlock != f.lastFinal {
+				if f.exportFileName != "" {
+					f.exportCheckpoints()
+				}
+				f.lastFinal = f.finalBlock
+			}
 			if f.tryIndexTail() && f.tryUnindexTail() {
 				f.waitForEvent()
 			}
@@ -102,6 +108,7 @@ func (f *FilterMaps) processSingleEvent(blocking bool) bool {
 		select {
 		case targetView := <-f.TargetViewCh:
 			f.setTargetView(targetView)
+		case f.finalBlock = <-f.FinalBlockCh:
 		case f.matcherSyncRequest = <-f.matcherSyncCh:
 		case f.blockProcessing = <-f.BlockProcessingCh:
 		case <-f.closeCh:
@@ -113,6 +120,7 @@ func (f *FilterMaps) processSingleEvent(blocking bool) bool {
 		select {
 		case targetView := <-f.TargetViewCh:
 			f.setTargetView(targetView)
+		case f.finalBlock = <-f.FinalBlockCh:
 		case f.matcherSyncRequest = <-f.matcherSyncCh:
 		case f.blockProcessing = <-f.BlockProcessingCh:
 		case <-f.closeCh:

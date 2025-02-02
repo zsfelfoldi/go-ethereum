@@ -405,7 +405,10 @@ func (s *Ethereum) updateFilterMapsHeads() {
 
 	head := s.blockchain.CurrentBlock()
 	targetView := s.newChainView(head) // nil if already sent to channel
-	var blockProc, lastBlockProc bool
+	var (
+		blockProc, lastBlockProc bool
+		finalBlock, lastFinal    uint64
+	)
 
 	setHead := func(newHead *types.Header) {
 		if newHead == nil {
@@ -414,6 +417,9 @@ func (s *Ethereum) updateFilterMapsHeads() {
 		if head == nil || newHead.Hash() != head.Hash() {
 			head = newHead
 			targetView = s.newChainView(head)
+		}
+		if fb := s.blockchain.CurrentFinalBlock(); fb != nil {
+			finalBlock = fb.Number.Uint64()
 		}
 	}
 
@@ -425,7 +431,6 @@ func (s *Ethereum) updateFilterMapsHeads() {
 			case ev := <-headEventCh:
 				setHead(ev.Header)
 			case blockProc = <-blockProcCh:
-				//fmt.Println("block proc feed", blockProc)
 			case <-time.After(time.Second * 10):
 				setHead(s.blockchain.CurrentBlock())
 			case ch := <-s.closeFilterMaps:
@@ -439,7 +444,19 @@ func (s *Ethereum) updateFilterMapsHeads() {
 			case ev := <-headEventCh:
 				setHead(ev.Header)
 			case blockProc = <-blockProcCh:
-				//fmt.Println("block proc feed", blockProc)
+			case <-time.After(time.Second * 10):
+				setHead(s.blockchain.CurrentBlock())
+			case ch := <-s.closeFilterMaps:
+				close(ch)
+				return
+			}
+		} else if finalBlock != lastFinal {
+			select {
+			case s.filterMaps.FinalBlockCh <- finalBlock:
+				lastFinal = finalBlock
+			case ev := <-headEventCh:
+				setHead(ev.Header)
+			case blockProc = <-blockProcCh:
 			case <-time.After(time.Second * 10):
 				setHead(s.blockchain.CurrentBlock())
 			case ch := <-s.closeFilterMaps:
@@ -453,7 +470,6 @@ func (s *Ethereum) updateFilterMapsHeads() {
 			case <-time.After(time.Second * 10):
 				setHead(s.blockchain.CurrentBlock())
 			case blockProc = <-blockProcCh:
-				//fmt.Println("block proc feed", blockProc)
 			case ch := <-s.closeFilterMaps:
 				close(ch)
 				return

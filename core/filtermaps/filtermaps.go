@@ -78,15 +78,18 @@ type FilterMaps struct {
 	ptrHeadIndex, ptrTailIndex, ptrTailUnindexBlock              uint64
 	ptrTailUnindexMap                                            uint32
 
-	targetView         chainView
-	matcherSyncRequest *FilterMapsMatcherBackend
-	stop               bool
-	TargetViewCh       chan chainView
-	BlockProcessingCh  chan bool
-	blockProcessing    bool
-	matcherSyncCh      chan *FilterMapsMatcherBackend
-	waitIdleCh         chan chan bool
-	tailRenderer       *mapRenderer
+	targetView            chainView
+	matcherSyncRequest    *FilterMapsMatcherBackend
+	finalBlock, lastFinal uint64
+	lastFinalEpoch        uint32
+	stop                  bool
+	TargetViewCh          chan chainView
+	FinalBlockCh          chan uint64
+	BlockProcessingCh     chan bool
+	blockProcessing       bool
+	matcherSyncCh         chan *FilterMapsMatcherBackend
+	waitIdleCh            chan chan bool
+	tailRenderer          *mapRenderer
 
 	// test hooks
 	testDisableSnapshots, testSnapshotUsed bool
@@ -175,6 +178,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 		closeCh:           make(chan struct{}),
 		waitIdleCh:        make(chan chan bool),
 		TargetViewCh:      make(chan chainView),
+		FinalBlockCh:      make(chan uint64),
 		BlockProcessingCh: make(chan bool),
 		history:           history,
 		noHistory:         noHistory,
@@ -209,7 +213,6 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 	if f.hasIndexedBlocks() {
 		log.Info("Initialized log indexer", "first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1, "first map", f.firstRenderedMap, "last map", f.afterLastRenderedMap-1)
 	}
-	f.exportCheckpoints()
 	return f
 }
 
@@ -656,7 +659,13 @@ func (f *FilterMaps) deleteTailEpoch(epoch uint32) error {
 
 // exportCheckpoints exports epoch checkpoints in the format used by checkpoints.go.
 func (f *FilterMaps) exportCheckpoints() {
-	if f.exportFileName == "" {
+	finalLvPtr, err := f.getBlockLvPointer(f.finalBlock + 1)
+	if err != nil {
+		log.Error("Error fetching log value pointer of finalized block", "block", f.finalBlock, "error", err)
+		return
+	}
+	epochCount := uint32(finalLvPtr >> (f.logValuesPerMap + f.logMapsPerEpoch))
+	if epochCount == f.lastFinalEpoch {
 		return
 	}
 	w, err := os.Create(f.exportFileName)
@@ -666,7 +675,6 @@ func (f *FilterMaps) exportCheckpoints() {
 	}
 	defer w.Close()
 
-	epochCount := f.afterLastRenderedMap >> f.logMapsPerEpoch
 	log.Info("Exporting log index checkpoints", "epochs", epochCount, "file", f.exportFileName)
 	w.WriteString("\t{\n")
 	for epoch := uint32(0); epoch < epochCount; epoch++ {
@@ -683,4 +691,5 @@ func (f *FilterMaps) exportCheckpoints() {
 		w.WriteString(fmt.Sprintf("\t\t{%d, common.HexToHash(\"0x%064x\"), %d},\n", lastBlock, lastBlockId, lvPtr))
 	}
 	w.WriteString("\t},\n")
+	f.lastFinalEpoch = epochCount
 }
