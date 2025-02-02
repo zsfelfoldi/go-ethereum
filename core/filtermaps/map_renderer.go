@@ -163,12 +163,11 @@ func (f *FilterMaps) lastCanonicalMapBoundaryBefore(afterLastMap uint32) (nextMa
 		if mapIndex, ok = f.lastMapBoundaryBefore(mapIndex); !ok {
 			return 0, 0, 0, nil
 		}
-		lastBlock, _, err := f.getLastBlockOfMap(mapIndex)
+		lastBlock, lastBlockId, err := f.getLastBlockOfMap(mapIndex)
 		if err != nil {
 			return 0, 0, 0, fmt.Errorf("failed to retrieve last block of reverse iterated map %d: %v", mapIndex, err)
 		}
-		if lastBlock >= f.indexedView.headNumber() || lastBlock >= f.targetView.headNumber() ||
-			!matchViews(f.indexedView, f.targetView, lastBlock) {
+		if lastBlock >= f.targetView.headNumber() || lastBlockId != f.targetView.getBlockId(lastBlock) {
 			// map is not full or inconsistent with targetView; roll back
 			continue
 		}
@@ -627,9 +626,6 @@ func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logI
 	if blockNumber < f.firstIndexedBlock || blockNumber >= f.afterLastIndexedBlock {
 		return nil, errUnindexedRange
 	}
-	if !matchViews(f.indexedView, f.targetView, blockNumber) {
-		return nil, fmt.Errorf("target and indexed views diverged at iterator entry point %d", blockNumber)
-	}
 	var lvIndex uint64
 	if blockNumber == f.targetBlockNumber {
 		lvIndex = f.headBlockDelimiter
@@ -656,9 +652,6 @@ func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logI
 func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, startLvPtr uint64) (*logIterator, error) {
 	if startBlock > f.targetView.headNumber() {
 		return nil, fmt.Errorf("iterator entry point %d after target chain head block %d", startBlock, f.targetView.headNumber())
-	}
-	if !matchViews(f.indexedView, f.targetView, startBlock) {
-		return nil, fmt.Errorf("target and indexed views diverged at iterator entry point %d", startBlock)
 	}
 	// get block receipts
 	receipts := f.targetView.getReceipts(startBlock)

@@ -512,6 +512,9 @@ func TestRangeLogs(t *testing.T) {
 	}
 	updateHead()
 	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 400, 800})
+	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 400, 748})
+	expEvent(rangeLogsTestEvent{rangeLogsTestIndexed, 749, 750})
+	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 400, 750})
 	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 400, 750})
 	expEvent(rangeLogsTestEvent{rangeLogsTestDone, 0, 0})
 
