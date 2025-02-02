@@ -18,6 +18,7 @@ package filtermaps
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 
@@ -92,7 +93,7 @@ func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, erro
 	f.testSnapshotUsed = true
 	iter, err := f.newLogIteratorFromBlockDelimiter(cp.lastBlock)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create log iterator from block delimiter %d: %v", cp.lastBlock, err)
 	}
 	return &mapRenderer{
 		f: f,
@@ -115,7 +116,7 @@ func (f *FilterMaps) renderMapsFromSnapshot(cp *renderedMap) (*mapRenderer, erro
 func (f *FilterMaps) renderMapsFromMapBoundary(firstMap, afterLastMap uint32, startBlock, startLvPtr uint64) (*mapRenderer, error) {
 	iter, err := f.newLogIteratorFromMapBoundary(firstMap, startBlock, startLvPtr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create log iterator from map boundary %d: %v", firstMap, err)
 	}
 	return &mapRenderer{
 		f: f,
@@ -164,7 +165,7 @@ func (f *FilterMaps) lastCanonicalMapBoundaryBefore(afterLastMap uint32) (nextMa
 		}
 		lastBlock, _, err := f.getLastBlockOfMap(mapIndex)
 		if err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, fmt.Errorf("failed to retrieve last block of reverse iterated map %d: %v", mapIndex, err)
 		}
 		if lastBlock >= f.indexedView.headNumber() || lastBlock >= f.targetView.headNumber() ||
 			!matchViews(f.indexedView, f.targetView, lastBlock) {
@@ -173,7 +174,7 @@ func (f *FilterMaps) lastCanonicalMapBoundaryBefore(afterLastMap uint32) (nextMa
 		}
 		lvPtr, err := f.getBlockLvPointer(lastBlock)
 		if err != nil {
-			return 0, 0, 0, err
+			return 0, 0, 0, fmt.Errorf("failed to retrieve log value pointer of last canonical boundary block %d: %v", lastBlock, err)
 		}
 		return mapIndex + 1, lastBlock, lvPtr, nil
 	}
@@ -214,17 +215,17 @@ func (f *FilterMaps) emptyFilterMap() filterMap {
 func (f *FilterMaps) loadHeadSnapshot() error {
 	fm, err := f.getFilterMap(f.afterLastRenderedMap - 1)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to load head snapshot map %d: %v", f.afterLastRenderedMap-1, err)
 	}
 	lastBlock, _, err := f.getLastBlockOfMap(f.afterLastRenderedMap - 1)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to retrieve last block of head snapshot map %d: %v", f.afterLastRenderedMap-1, err)
 	}
 	var firstBlock uint64
 	if f.afterLastRenderedMap > 1 {
 		prevLastBlock, _, err := f.getLastBlockOfMap(f.afterLastRenderedMap - 2)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to retrieve last block of map %d before head snapshot: %v", f.afterLastRenderedMap-2, err)
 		}
 		firstBlock = prevLastBlock + 1
 	}
@@ -232,7 +233,7 @@ func (f *FilterMaps) loadHeadSnapshot() error {
 	for i := range lvPtrs {
 		lvPtrs[i], err = f.getBlockLvPointer(firstBlock + uint64(i))
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to retrieve log value pointer of head snapshot block %d: %v", firstBlock+uint64(i), err)
 		}
 	}
 	f.renderSnapshots.Add(f.targetBlockNumber, &renderedMap{
@@ -338,7 +339,7 @@ func (r *mapRenderer) renderCurrentMap(stopCb func() bool) (bool, error) {
 			}
 		}
 		if err := r.iterator.next(); err != nil {
-			return false, err
+			return false, fmt.Errorf("failed to advance log iterator at %d while rendering map %d: %v", r.iterator.lvIndex, r.currentMap.mapIndex, err)
 		}
 		if !r.f.testDisableSnapshots && r.afterLastMap >= r.f.afterLastRenderedMap &&
 			(r.iterator.delimiter || r.iterator.finished) {
@@ -365,11 +366,11 @@ func (r *mapRenderer) writeFinishedMaps(pauseCb func() bool) error {
 	oldRange := r.f.filterMapsRange
 	tempRange, err := r.getTempRange()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get temporary rendered range: %v", err)
 	}
 	newRange, err := r.getUpdatedRange()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get updated rendered range: %v", err)
 	}
 	renderedView := r.f.targetView // stopCb callback might still change targetView while writing finished maps
 
@@ -414,7 +415,7 @@ func (r *mapRenderer) writeFinishedMaps(pauseCb func() bool) error {
 			}
 		}
 		if err := r.f.storeFilterMapRows(batch, mapIndices, rowIndex, rows); err != nil {
-			return err
+			return fmt.Errorf("failed to store filter maps %v row %d: %v", mapIndices, rowIndex, err)
 		}
 		checkWriteCnt()
 	}
@@ -474,14 +475,14 @@ func (r *mapRenderer) writeFinishedMaps(pauseCb func() bool) error {
 func (r *mapRenderer) getTempRange() (filterMapsRange, error) {
 	tempRange := r.f.filterMapsRange
 	if err := tempRange.addRenderedRange(r.firstFinished, r.firstFinished, r.afterLastMap, r.f.mapsPerEpoch); err != nil {
-		return filterMapsRange{}, err
+		return filterMapsRange{}, fmt.Errorf("failed to update temporary rendered range: %v", err)
 	}
 	if tempRange.firstRenderedMap != r.f.firstRenderedMap {
 		// first rendered map changed; update first indexed block
 		if tempRange.firstRenderedMap > 0 {
 			lastBlock, _, err := r.f.getLastBlockOfMap(tempRange.firstRenderedMap - 1)
 			if err != nil {
-				return filterMapsRange{}, err
+				return filterMapsRange{}, fmt.Errorf("failed to retrieve last block of map %d before temporary range: %v", tempRange.firstRenderedMap-1, err)
 			}
 			tempRange.firstIndexedBlock = lastBlock + 1
 		} else {
@@ -493,7 +494,7 @@ func (r *mapRenderer) getTempRange() (filterMapsRange, error) {
 		if tempRange.afterLastRenderedMap > 0 {
 			lastBlock, _, err := r.f.getLastBlockOfMap(tempRange.afterLastRenderedMap - 1)
 			if err != nil {
-				return filterMapsRange{}, err
+				return filterMapsRange{}, fmt.Errorf("failed to retrieve last block of map %d at the end of temporary range: %v", tempRange.afterLastRenderedMap-1, err)
 			}
 			tempRange.afterLastIndexedBlock = lastBlock
 		} else {
@@ -510,14 +511,14 @@ func (r *mapRenderer) getUpdatedRange() (filterMapsRange, error) {
 	// update filterMapsRange
 	newRange := r.f.filterMapsRange
 	if err := newRange.addRenderedRange(r.firstFinished, r.afterLastFinished, r.afterLastMap, r.f.mapsPerEpoch); err != nil {
-		return filterMapsRange{}, err
+		return filterMapsRange{}, fmt.Errorf("failed to update rendered range: %v", err)
 	}
 	if newRange.firstRenderedMap != r.f.firstRenderedMap {
 		// first rendered map changed; update first indexed block
 		if newRange.firstRenderedMap > 0 {
 			lastBlock, _, err := r.f.getLastBlockOfMap(newRange.firstRenderedMap - 1)
 			if err != nil {
-				return filterMapsRange{}, err
+				return filterMapsRange{}, fmt.Errorf("failed to retrieve last block of map %d before rendered range: %v", newRange.firstRenderedMap-1, err)
 			}
 			newRange.firstIndexedBlock = lastBlock + 1
 		} else {
@@ -594,14 +595,14 @@ func (fmr *filterMapsRange) addRenderedRange(firstRendered, afterLastRendered, a
 	}
 	if len(merged) == 4 {
 		if merged[2] != merged[0]+mapsPerEpoch {
-			return errors.New("invalid tail partial epoch")
+			return fmt.Errorf("invalid tail partial epoch: %v", merged)
 		}
 		fmr.tailPartialEpoch = merged[1] - merged[0]
 		fmr.firstRenderedMap = merged[2]
 		fmr.afterLastRenderedMap = merged[3]
 		return nil
 	}
-	return errors.New("invalid number of rendered sections")
+	return fmt.Errorf("invalid number of rendered sections: %v", merged)
 }
 
 // logIterator iterates on the linear log value index range.
@@ -621,13 +622,13 @@ var errUnindexedRange = errors.New("unindexed range")
 // current targetView.
 func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logIterator, error) {
 	if blockNumber > f.targetView.headNumber() {
-		return nil, errors.New("iterator entry point after target chain head")
+		return nil, fmt.Errorf("iterator entry point %d after target chain head block %d", blockNumber, f.targetView.headNumber())
 	}
 	if blockNumber < f.firstIndexedBlock || blockNumber >= f.afterLastIndexedBlock {
 		return nil, errUnindexedRange
 	}
 	if !matchViews(f.indexedView, f.targetView, blockNumber) {
-		return nil, errors.New("target and indexed views diverged at iterator entry point")
+		return nil, fmt.Errorf("target and indexed views diverged at iterator entry point %d", blockNumber)
 	}
 	var lvIndex uint64
 	if blockNumber == f.targetBlockNumber {
@@ -636,7 +637,7 @@ func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logI
 		var err error
 		lvIndex, err = f.getBlockLvPointer(blockNumber + 1)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to retrieve log value pointer of block %d after delimiter: %v", blockNumber+1, err)
 		}
 		lvIndex--
 	}
@@ -654,15 +655,15 @@ func (f *FilterMaps) newLogIteratorFromBlockDelimiter(blockNumber uint64) (*logI
 // map boundary, according to the current targetView.
 func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, startLvPtr uint64) (*logIterator, error) {
 	if startBlock > f.targetView.headNumber() {
-		return nil, errors.New("iterator entry point after target chain head")
+		return nil, fmt.Errorf("iterator entry point %d after target chain head block %d", startBlock, f.targetView.headNumber())
 	}
 	if !matchViews(f.indexedView, f.targetView, startBlock) {
-		return nil, errors.New("target and indexed views diverged at iterator entry point")
+		return nil, fmt.Errorf("target and indexed views diverged at iterator entry point %d", startBlock)
 	}
 	// get block receipts
 	receipts := f.targetView.getReceipts(startBlock)
 	if receipts == nil {
-		return nil, errors.New("receipts not found")
+		return nil, fmt.Errorf("receipts not found for start block %d", startBlock)
 	}
 	// initialize iterator at block start
 	l := &logIterator{
@@ -675,15 +676,15 @@ func (f *FilterMaps) newLogIteratorFromMapBoundary(mapIndex uint32, startBlock, 
 	l.nextValid()
 	targetIndex := uint64(mapIndex) << f.logValuesPerMap
 	if l.lvIndex > targetIndex {
-		panic("last map block's lvPointer > map boundary")
+		return nil, fmt.Errorf("log value pointer %d of last block of map is after map boundary %d", l.lvIndex, targetIndex)
 	}
 	// iterate to map boundary
 	for l.lvIndex < targetIndex {
 		if l.finished {
-			panic("iterator already finished")
+			return nil, fmt.Errorf("iterator already finished at %d before map boundary target %d", l.lvIndex, targetIndex)
 		}
 		if err := l.next(); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to advance log iterator at %d before map boundary target %d: %v", l.lvIndex, targetIndex, err)
 		}
 	}
 	return l, nil
@@ -721,7 +722,7 @@ func (l *logIterator) next() error {
 		l.blockNumber++
 		l.receipts = l.chainView.getReceipts(l.blockNumber)
 		if l.receipts == nil {
-			return errors.New("receipts not found")
+			return fmt.Errorf("receipts not found for block %d", l.blockNumber)
 		}
 		l.txIndex, l.logIndex, l.topicIndex, l.blockStart = 0, 0, 0, true
 	} else {

@@ -394,11 +394,14 @@ func (f *FilterMaps) getLogByLvIndex(lvIndex uint64) (*types.Log, error) {
 	}
 	// find possible block range based on map to block pointers
 	lastBlockNumber, _, err := f.getLastBlockOfMap(mapIndex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve last block of map %d containing searched log value index %d: %v", mapIndex, lvIndex, err)
+	}
 	var firstBlockNumber uint64
 	if mapIndex > 0 {
 		firstBlockNumber, _, err = f.getLastBlockOfMap(mapIndex - 1)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to retrieve last block of map %d before searched log value index %d: %v", mapIndex, lvIndex, err)
 		}
 	}
 	if firstBlockNumber < f.firstIndexedBlock {
@@ -409,7 +412,7 @@ func (f *FilterMaps) getLogByLvIndex(lvIndex uint64) (*types.Log, error) {
 		midBlockNumber := (firstBlockNumber + lastBlockNumber + 1) / 2
 		midLvPointer, err := f.getBlockLvPointer(midBlockNumber)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to retrieve log value pointer of block %d while binary searching log value index %d: %v", midBlockNumber, lvIndex, err)
 		}
 		if lvIndex < midLvPointer {
 			lastBlockNumber = midBlockNumber - 1
@@ -420,11 +423,11 @@ func (f *FilterMaps) getLogByLvIndex(lvIndex uint64) (*types.Log, error) {
 	// get block receipts
 	receipts := f.indexedView.getReceipts(firstBlockNumber)
 	if receipts == nil {
-		return nil, errors.New("receipts not found")
+		return nil, fmt.Errorf("failed to retrieve receipts for block %d containing searched log value index %d: %v", firstBlockNumber, lvIndex, err)
 	}
 	lvPointer, err := f.getBlockLvPointer(firstBlockNumber)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to retrieve log value pointer of block %d containing searched log value index %d: %v", firstBlockNumber, lvIndex, err)
 	}
 	// iterate through receipts to find the exact log starting at lvIndex
 	for _, receipt := range receipts {
@@ -454,7 +457,7 @@ func (f *FilterMaps) getFilterMap(mapIndex uint32) (filterMap, error) {
 		var err error
 		fm[rowIndex], err = f.getFilterMapRow(mapIndex, uint32(rowIndex), false)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to load filter map %d from database: %v", mapIndex, err)
 		}
 	}
 	f.filterMapCache.Add(mapIndex, fm)
@@ -470,7 +473,7 @@ func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32, baseLayerOnly bo
 		var err error
 		baseRows, err = rawdb.ReadFilterMapBaseRows(f.db, baseMapRowIndex, f.baseRowGroupLength, f.logMapWidth)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to retrieve filter map %d base rows %d: %v", mapIndex, rowIndex, err)
 		}
 		f.baseRowsCache.Add(baseMapRowIndex, baseRows)
 	}
@@ -480,7 +483,7 @@ func (f *FilterMaps) getFilterMapRow(mapIndex, rowIndex uint32, baseLayerOnly bo
 	}
 	extRow, err := rawdb.ReadFilterMapExtRow(f.db, f.mapRowIndex(mapIndex, rowIndex), f.logMapWidth)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to retrieve filter map %d extended row %d: %v", mapIndex, rowIndex, err)
 	}
 	return FilterRow(append(baseRow, extRow...)), nil
 }
@@ -515,7 +518,7 @@ func (f *FilterMaps) storeFilterMapRowsOfGroup(batch ethdb.Batch, mapIndices []u
 			var err error
 			baseRows, err = rawdb.ReadFilterMapBaseRows(f.db, baseMapRowIndex, f.baseRowGroupLength, f.logMapWidth)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to retrieve filter map %d base rows %d for modification: %v", mapIndices[0]&-f.baseRowGroupLength, rowIndex, err)
 			}
 		}
 	} else {
@@ -564,7 +567,7 @@ func (f *FilterMaps) getBlockLvPointer(blockNumber uint64) (uint64, error) {
 	}
 	lvPointer, err := rawdb.ReadBlockLvPointer(f.db, blockNumber)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to retrieve log value pointer of block %d: %v", blockNumber, err)
 	}
 	f.lvPointerCache.Add(blockNumber, lvPointer)
 	return lvPointer, nil
@@ -592,7 +595,7 @@ func (f *FilterMaps) getLastBlockOfMap(mapIndex uint32) (uint64, common.Hash, er
 	}
 	number, id, err := rawdb.ReadFilterMapLastBlock(f.db, mapIndex)
 	if err != nil {
-		return 0, common.Hash{}, err
+		return 0, common.Hash{}, fmt.Errorf("failed to retrieve last block of map %d: %v", mapIndex, err)
 	}
 	f.lastBlockCache.Add(mapIndex, lastBlockOfMap{number: number, id: id})
 	return number, id, nil
@@ -616,13 +619,13 @@ func (f *FilterMaps) deleteTailEpoch(epoch uint32) error {
 	firstMap := epoch << f.logMapsPerEpoch
 	lastBlock, _, err := f.getLastBlockOfMap(firstMap + f.mapsPerEpoch - 1)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to retrieve last block of deleted epoch %d: %v", epoch, err)
 	}
 	var firstBlock uint64
 	if epoch > 0 {
 		firstBlock, _, err = f.getLastBlockOfMap(firstMap - 1)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to retrieve last block before deleted epoch %d: %v", epoch, err)
 		}
 		firstBlock++
 	}
