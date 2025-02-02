@@ -61,7 +61,7 @@ var RangeTestParams = Params{
 	logMapsPerEpoch:    0,
 	logValuesPerMap:    0,
 	baseRowGroupLength: 32,
-	baseRowLengthRatio: 8,
+	baseRowLengthRatio: 16, // baseRowLength >= 1
 	logLayerDiff:       4,
 }
 
