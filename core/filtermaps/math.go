@@ -54,6 +54,17 @@ var DefaultParams = Params{
 	logLayerDiff:       4,
 }
 
+// RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing purpose
+var RangeTestParams = Params{
+	logMapHeight:       4,
+	logMapWidth:        24,
+	logMapsPerEpoch:    0,
+	logValuesPerMap:    0,
+	baseRowGroupLength: 32,
+	baseRowLengthRatio: 8,
+	logLayerDiff:       4,
+}
+
 // deriveFields calculates the derived fields of the parameter set.
 func (p *Params) deriveFields() {
 	p.mapHeight = uint32(1) << p.logMapHeight

@@ -206,6 +206,9 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 		case <-tasks[waitEpoch].done:
 			logs = append(logs, tasks[waitEpoch].logs...)
 			if err := tasks[waitEpoch].err; err != nil {
+				if err == ErrMatchAll {
+					return logs, err
+				}
 				return logs, fmt.Errorf("failed to process log index epoch %d: %v", waitEpoch, err)
 			}
 			delete(tasks, waitEpoch)

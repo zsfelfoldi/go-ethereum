@@ -156,10 +156,10 @@ func (fm *FilterMapsMatcherBackend) synced(headNumber uint64) {
 // chain since the previous SyncLogIndex or the creation of the matcher backend.
 func (fm *FilterMapsMatcherBackend) SyncLogIndex(ctx context.Context) (SyncRange, error) {
 	if fm.f.noHistory {
-		if !fm.f.initialized {
+		if fm.f.targetView == nil {
 			return SyncRange{}, errors.New("canonical chain head not available")
 		}
-		return SyncRange{HeadNumber: fm.f.targetBlockNumber}, nil
+		return SyncRange{HeadNumber: fm.f.targetView.headNumber()}, nil
 	}
 	// add SyncRange return channel, ensuring that
 	syncCh := make(chan SyncRange, 1)

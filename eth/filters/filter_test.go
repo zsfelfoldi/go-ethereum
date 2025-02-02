@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus/ethash"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -106,7 +107,7 @@ func benchmarkFilters(b *testing.B, history uint64, noHistory bool) {
 		rawdb.WriteHeadBlockHash(db, block.Hash())
 		rawdb.WriteReceipts(db, block.Hash(), block.NumberU64(), receipts[i])
 	}
-	backend.startFilterMaps(history, noHistory)
+	backend.startFilterMaps(history, noHistory, filtermaps.DefaultParams)
 	defer backend.stopFilterMaps()
 
 	b.ResetTimer()
@@ -306,7 +307,7 @@ func testFilters(t *testing.T, history uint64, noHistory bool) {
 	})
 	backend.setPending(pchain[0], preceipts[0])
 
-	backend.startFilterMaps(history, noHistory)
+	backend.startFilterMaps(history, noHistory, filtermaps.DefaultParams)
 	defer backend.stopFilterMaps()
 
 	for i, tc := range []struct {
@@ -443,7 +444,7 @@ func TestRangeLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backend.startFilterMaps(200, false)
+	backend.startFilterMaps(200, false, filtermaps.RangeTestParams)
 	defer backend.stopFilterMaps()
 
 	var (
@@ -473,6 +474,12 @@ func TestRangeLogs(t *testing.T) {
 		}
 	}
 
+	updateHead := func() {
+		head := bc.CurrentBlock()
+		backend.fm.TargetViewCh <- filtermaps.NewStoredChainView(backend, head.Number.Uint64(), head.Hash())
+		backend.fm.WaitIdle()
+	}
+
 	// test case #1
 	newFilter(300, 500)
 	expEvent(rangeLogsTestEvent{rangeLogsTestIndexed, 401, 500})
@@ -482,7 +489,7 @@ func TestRangeLogs(t *testing.T) {
 	if _, err := bc.InsertChain(chain[600:700]); err != nil {
 		t.Fatal(err)
 	}
-	backend.fm.WaitIdle()
+	updateHead()
 	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 300, 500})
 	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 300, 500}) // unindexed search is not affected by trimmed tail
 	expEvent(rangeLogsTestEvent{rangeLogsTestDone, 0, 0})
@@ -493,7 +500,7 @@ func TestRangeLogs(t *testing.T) {
 	if _, err := bc.InsertChain(chain[700:800]); err != nil {
 		t.Fatal(err)
 	}
-	backend.fm.WaitIdle()
+	updateHead()
 	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 501, 700})
 	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 601, 700})
 	expEvent(rangeLogsTestEvent{rangeLogsTestUnindexed, 400, 600})
@@ -503,7 +510,7 @@ func TestRangeLogs(t *testing.T) {
 	if err := bc.SetHead(750); err != nil {
 		t.Fatal(err)
 	}
-	backend.fm.WaitIdle()
+	updateHead()
 	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 400, 800})
 	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 400, 750})
 	expEvent(rangeLogsTestEvent{rangeLogsTestDone, 0, 0})
@@ -514,14 +521,14 @@ func TestRangeLogs(t *testing.T) {
 	if err := bc.SetHead(740); err != nil {
 		t.Fatal(err)
 	}
-	backend.fm.WaitIdle()
+	updateHead()
 	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 750, 750})
 	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 0, 0})
 	expEvent(rangeLogsTestEvent{rangeLogsTestIndexed, 740, 740})
 	if _, err := bc.InsertChain(chain[740:750]); err != nil {
 		t.Fatal(err)
 	}
-	backend.fm.WaitIdle()
+	updateHead()
 	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 740, 740})
 	// trimmed at the beginning of the next iteration
 	expEvent(rangeLogsTestEvent{rangeLogsTestTrimmed, 740, 740})
@@ -539,7 +546,7 @@ func TestRangeLogs(t *testing.T) {
 	if _, err := bc.InsertChain(chain[750:1000]); err != nil {
 		t.Fatal(err)
 	}
-	backend.fm.WaitIdle()
+	updateHead()
 	expEvent(rangeLogsTestEvent{rangeLogsTestSync, 400, 750})
 	// indexed range affected by tail pruning so we have to discard the entire
 	// match set
