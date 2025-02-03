@@ -115,7 +115,7 @@ func TestIndexerRandomRange(t *testing.T) {
 		}
 		var tailEpoch uint32
 		if tailBlock > 0 {
-			tailLvPtr := uint64(tailBlock-1) * lvPerBlock // no logs in genesis block, only delimiter
+			tailLvPtr := (tailBlock - 1) * lvPerBlock // no logs in genesis block, only delimiter
 			tailEpoch = uint32(tailLvPtr >> (testParams.logValuesPerMap + testParams.logMapsPerEpoch))
 		}
 		var expTailBlock uint64

@@ -280,7 +280,7 @@ func (f *FilterMaps) tryUnindexTail() bool {
 			f.startedTailUnindexAt = time.Now()
 			f.startedTailUnindex = true
 			f.ptrTailUnindexMap = f.firstRenderedMap - f.tailPartialEpoch
-			f.ptrTailUnindexBlock = f.firstIndexedBlock
+			f.ptrTailUnindexBlock = f.firstIndexedBlock - f.tailPartialBlocks()
 		}
 		if err := f.deleteTailEpoch(firstEpoch); err != nil {
 			log.Error("Log index tail epoch unindexing failed", "error", err)
@@ -290,8 +290,8 @@ func (f *FilterMaps) tryUnindexTail() bool {
 	if f.startedTailUnindex {
 		log.Info("Log index tail unindexing finished",
 			"first block", f.firstIndexedBlock, "last block", f.afterLastIndexedBlock-1,
-			"removed maps", f.ptrTailUnindexMap-f.firstRenderedMap,
-			"removed blocks", f.ptrTailUnindexBlock-f.firstIndexedBlock,
+			"removed maps", f.firstRenderedMap-f.ptrTailUnindexMap,
+			"removed blocks", f.firstIndexedBlock-f.tailPartialBlocks()-f.ptrTailUnindexBlock,
 			"elapsed", common.PrettyDuration(time.Since(f.startedTailUnindexAt)))
 		f.startedTailUnindex = false
 	}

@@ -540,7 +540,6 @@ func (r *mapRenderer) getUpdatedRange() (filterMapsRange, error) {
 			newRange.afterLastIndexedBlock = lm.lastBlock
 			newRange.headBlockDelimiter = 0
 		}
-
 	} else {
 		// last rendered map not replaced; ensure that target chain view matches
 		// indexed chain view on the rendered section

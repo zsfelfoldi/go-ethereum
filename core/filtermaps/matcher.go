@@ -357,7 +357,6 @@ func (m *singleMatcherInstance) getMatchesForLayer(ctx context.Context, layerInd
 		if err != nil {
 			m.stats.setState(&st, stNone)
 			return nil, fmt.Errorf("failed to retrieve filter map %d row %d: %v", mapIndex, rowIndex, err)
-
 		}
 		m.stats.addAmount(st, int64(len(filterRow)))
 		m.stats.setState(&st, stOther)
@@ -578,7 +577,7 @@ func (m *matchSequence) newInstance(mapIndices []uint32) matcherInstance {
 }
 
 // matchOrderStats collects statistics about the evaluating cost and the
-// occurence of empty result sets from both base and next child matchers.
+// occurrence of empty result sets from both base and next child matchers.
 // This allows the optimization of the evaluation order by evaluating the
 // child first that is cheaper and/or gives empty results more often and not
 // evaluating the other child in most cases.
@@ -822,7 +821,6 @@ func (m *matchSequenceInstance) dropNext(mapIndex uint32) bool {
 	if _, ok := m.needMatched[mapIndex]; ok {
 		if base := m.baseResults[mapIndex]; base == nil ||
 			(len(base) > 0 && base[0]+m.offset < (uint64(mapIndex+1)<<m.params.logValuesPerMap)) {
-
 			return false
 		}
 	}

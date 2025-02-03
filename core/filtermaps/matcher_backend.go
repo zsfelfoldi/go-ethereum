@@ -161,7 +161,6 @@ func (fm *FilterMapsMatcherBackend) SyncLogIndex(ctx context.Context) (SyncRange
 		}
 		return SyncRange{HeadNumber: fm.f.targetView.headNumber()}, nil
 	}
-	// add SyncRange return channel, ensuring that
 	syncCh := make(chan SyncRange, 1)
 	fm.f.matchersLock.Lock()
 	fm.syncCh = syncCh

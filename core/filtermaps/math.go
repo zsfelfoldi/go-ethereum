@@ -238,9 +238,6 @@ func (p *Params) potentialMatches(rows []FilterRow, mapIndex uint32, logValue co
 // potential matches in the given map's range then an empty slice should be used.
 type potentialMatches []uint64
 
-// noMatches means there are no potential matches in a given filter map's range.
-var noMatches = potentialMatches{}
-
 func (p potentialMatches) Len() int           { return len(p) }
 func (p potentialMatches) Less(i, j int) bool { return p[i] < p[j] }
 func (p potentialMatches) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
