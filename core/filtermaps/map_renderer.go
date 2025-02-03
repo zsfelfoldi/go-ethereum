@@ -422,6 +422,7 @@ func (r *mapRenderer) writeFinishedMaps(pauseCb func() bool) error {
 	}
 	// update filter map cache
 	if newRange.afterLastRenderedMap == r.afterLastFinished {
+		// head updated; cache new head maps and remove future entries
 		for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 			r.f.filterMapCache.Add(mapIndex, r.finishedMaps[mapIndex].filterMap)
 		}
@@ -429,6 +430,8 @@ func (r *mapRenderer) writeFinishedMaps(pauseCb func() bool) error {
 			r.f.filterMapCache.Remove(mapIndex)
 		}
 	} else {
+		// head not updated; do not cache maps during tail rendering because we
+		// need head maps to be available in the cache
 		for mapIndex := r.firstFinished; mapIndex < r.afterLastFinished; mapIndex++ {
 			r.f.filterMapCache.Remove(mapIndex)
 		}
