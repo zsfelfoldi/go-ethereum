@@ -33,6 +33,14 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
+const (
+	cachedLastBlocks      = 1000 // last block of map pointers
+	cachedLvPointers      = 1000 // first log value pointer of block pointers
+	cachedBaseRows        = 100  // groups of base layer filter row data
+	cachedFilterMaps      = 3    // complete filter maps (cached by map renderer)
+	cachedRenderSnapshots = 8    // saved map renderer data at block boundaries
+)
+
 // FilterMaps is the in-memory representation of the log index structure that is
 // responsible for building and updating the index according to the canonical
 // chain.
@@ -198,11 +206,11 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView chainView, params Params, hi
 		},
 		matcherSyncCh:   make(chan *FilterMapsMatcherBackend),
 		matchers:        make(map[*FilterMapsMatcherBackend]struct{}),
-		filterMapCache:  lru.NewCache[uint32, filterMap](3), //TODO named consts
-		lastBlockCache:  lru.NewCache[uint32, lastBlockOfMap](1000),
-		lvPointerCache:  lru.NewCache[uint64, uint64](1000),
-		baseRowsCache:   lru.NewCache[uint64, [][]uint32](100),
-		renderSnapshots: lru.NewCache[uint64, *renderedMap](cachedRevertPoints),
+		filterMapCache:  lru.NewCache[uint32, filterMap](cachedFilterMaps),
+		lastBlockCache:  lru.NewCache[uint32, lastBlockOfMap](cachedLastBlocks),
+		lvPointerCache:  lru.NewCache[uint64, uint64](cachedLvPointers),
+		baseRowsCache:   lru.NewCache[uint64, [][]uint32](cachedBaseRows),
+		renderSnapshots: lru.NewCache[uint64, *renderedMap](cachedRenderSnapshots),
 	}
 	f.targetView = initView
 	if f.initialized {

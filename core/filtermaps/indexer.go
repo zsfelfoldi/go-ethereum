@@ -25,9 +25,8 @@ import (
 )
 
 const (
-	cachedRevertPoints = 8                // revert points for most recent blocks in memory
-	logFrequency       = time.Second * 20 // log info frequency during long indexing/unindexing process
-	headLogDelay       = time.Second      // head indexing log info delay (do not log if finished faster)
+	logFrequency = time.Second * 20 // log info frequency during long indexing/unindexing process
+	headLogDelay = time.Second      // head indexing log info delay (do not log if finished faster)
 )
 
 // updateLoop initializes and updates the log index structure according to the

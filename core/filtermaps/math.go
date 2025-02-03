@@ -54,7 +54,7 @@ var DefaultParams = Params{
 	logLayerDiff:       4,
 }
 
-// RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing purpose
+// RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing
 var RangeTestParams = Params{
 	logMapHeight:       4,
 	logMapWidth:        24,
@@ -187,13 +187,13 @@ func (p *Params) potentialMatches(rows []FilterRow, mapIndex uint32, logValue co
 	results := make(potentialMatches, 0, 8)
 	transformHash := transformHash(mapIndex, logValue)
 	sub1 := binary.LittleEndian.Uint32(transformHash[0:4])
-	mul1 := uint32ModInverse(binary.LittleEndian.Uint32(transformHash[4:8])*2 + 1)
+	mul1 := modInverse(binary.LittleEndian.Uint32(transformHash[4:8])*2+1, p.logMapWidth)
 	xor1 := binary.LittleEndian.Uint32(transformHash[8:12])
-	mul2 := uint32ModInverse(binary.LittleEndian.Uint32(transformHash[12:16])*2 + 1)
+	mul2 := modInverse(binary.LittleEndian.Uint32(transformHash[12:16])*2+1, p.logMapWidth)
 	sub2 := binary.LittleEndian.Uint32(transformHash[16:20])
-	mul3 := uint32ModInverse(binary.LittleEndian.Uint32(transformHash[20:24])*2 + 1)
+	mul3 := modInverse(binary.LittleEndian.Uint32(transformHash[20:24])*2+1, p.logMapWidth)
 	xor2 := binary.LittleEndian.Uint32(transformHash[24:28])
-	mul4 := uint32ModInverse(binary.LittleEndian.Uint32(transformHash[28:32])*2 + 1)
+	mul4 := modInverse(binary.LittleEndian.Uint32(transformHash[28:32])*2+1, p.logMapWidth)
 	// perform reverse column index transformation on all column indices of the row.
 	// if a column index was added by the searched log value then the reverse
 	// transform will yield a valid log value sub-index of the given map.
@@ -245,16 +245,16 @@ func (p potentialMatches) Len() int           { return len(p) }
 func (p potentialMatches) Less(i, j int) bool { return p[i] < p[j] }
 func (p potentialMatches) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 
-// uint32ModInverse takes an odd 32 bit number and returns its modular
-// multiplicative inverse (mod 2**32), meaning that for any odd uint32 value v
-// uint32(v *  uint32ModInverse(v)) == 1.
-func uint32ModInverse(v uint32) uint32 {
+// modInverse takes an odd number and returns its modular multiplicative inverse
+// (mod 2**logM), meaning that for any odd value v it is true that
+// (v *  modInverse(v)) mod 2**logM == 1.
+func modInverse(v uint32, logM uint) uint32 {
 	if v&1 == 0 {
-		panic("uint32ModInverse called with even argument")
+		panic("modInverse called with even argument")
 	}
-	m := int64(1) << 32
+	m := int64(1) << logM
 	m0 := m
-	a := int64(v)
+	a := int64(v) & (m - 1)
 	x, y := int64(1), int64(0)
 	for a > 1 {
 		q := a / m

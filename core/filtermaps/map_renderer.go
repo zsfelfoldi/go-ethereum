@@ -29,9 +29,10 @@ import (
 )
 
 const (
-	valuesPerCallback = 1000 // log values processed per event process callback
-	maxMapsPerBatch   = 64   // maximum number of maps rendered in memory
-	rowsPerBatch      = 100  // number of rows written to db in a single batch
+	maxMapsPerBatch   = 32    // maximum number of maps rendered in memory
+	valuesPerCallback = 1024  // log values processed per event process callback
+	rowsPerBatch      = 1024  // number of rows written to db in a single batch
+	cachedRowMappings = 10000 // log value to row mappings cached during rendering
 )
 
 var (
@@ -304,8 +305,8 @@ func (r *mapRenderer) renderCurrentMap(stopCb func() bool) (bool, error) {
 		r.currentMap.blockLvPtrs = []uint64{0}
 	}
 	type lvPos struct{ rowIndex, layerIndex uint32 }
-	rowIndexCache := lru.NewCache[common.Hash, lvPos](10000)
-	defer rowIndexCache.Purge()
+	rowMappingCache := lru.NewCache[common.Hash, lvPos](cachedRowMappings)
+	defer rowMappingCache.Purge()
 
 	for r.iterator.lvIndex < uint64(r.currentMap.mapIndex+1)<<r.f.logValuesPerMap && !r.iterator.finished {
 		waitCnt++
@@ -324,7 +325,7 @@ func (r *mapRenderer) renderCurrentMap(stopCb func() bool) (bool, error) {
 			r.currentMap.blockLvPtrs = append(r.currentMap.blockLvPtrs, r.iterator.lvIndex+1)
 		}
 		if logValue := r.iterator.getValueHash(); logValue != (common.Hash{}) {
-			lvp, cached := rowIndexCache.Get(logValue)
+			lvp, cached := rowMappingCache.Get(logValue)
 			if !cached {
 				lvp = lvPos{rowIndex: r.f.rowIndex(r.currentMap.mapIndex, 0, logValue)}
 			}
@@ -335,7 +336,7 @@ func (r *mapRenderer) renderCurrentMap(stopCb func() bool) (bool, error) {
 			}
 			r.currentMap.filterMap[lvp.rowIndex] = append(r.currentMap.filterMap[lvp.rowIndex], r.f.columnIndex(r.iterator.lvIndex, logValue))
 			if !cached {
-				rowIndexCache.Add(logValue, lvp)
+				rowMappingCache.Add(logValue, lvp)
 			}
 		}
 		if err := r.iterator.next(); err != nil {

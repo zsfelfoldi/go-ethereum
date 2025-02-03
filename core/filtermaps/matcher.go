@@ -31,7 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
-const doRuntimeStats = true //TODO set to false before merging
+const doRuntimeStats = false
 
 // ErrMatchAll is returned when the specified filter matches everything.
 // Handling this case in filtermaps would require an extra special case and
