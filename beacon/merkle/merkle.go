@@ -20,6 +20,7 @@ package merkle
 import (
 	"crypto/sha256"
 	"errors"
+	"math/bits"
 	"reflect"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -64,4 +65,13 @@ func VerifyProof(root common.Hash, index uint64, branch Values, value Value) err
 		return errors.New("root mismatch")
 	}
 	return nil
+}
+
+func SplitIndex(index uint64, subtreeLevel uint) (isSubtree bool, subtreeIndex, subIndex uint64) {
+	level := 63 - bits.LeadingZeros64(index)
+	if level < subtreeLevel {
+		return false, 0, index
+	}
+	l := uint64(1) << (level - subtreeLevel)
+	return true, index >> (level - subtreeLevel), l + index&(l-1)
 }

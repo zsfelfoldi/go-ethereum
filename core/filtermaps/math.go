@@ -34,11 +34,13 @@ type Params struct {
 	logValuesPerMap    uint // log2(logValuesPerMap)
 	baseRowLengthRatio uint // baseRowLength / average row length
 	logLayerDiff       uint // maxRowLength log2 growth per layer
+	logRowLevelSize    []uint
 	// derived fields
 	mapHeight     uint32 // filter map height (number of rows)
 	mapsPerEpoch  uint32 // number of maps in an epoch
 	baseRowLength uint32 // maximum number of log values per row on layer 0
 	valuesPerMap  uint64 // number of log values marked on each filter map
+	rowLevelStart []uint
 	// not affecting consensus
 	baseRowGroupLength uint32 // length of base row groups in local database
 }
@@ -48,10 +50,12 @@ var DefaultParams = Params{
 	logMapHeight:       16,
 	logMapWidth:        24,
 	logMapsPerEpoch:    10,
+	logEpochHistory:    24,
 	logValuesPerMap:    16,
 	baseRowGroupLength: 32,
 	baseRowLengthRatio: 8,
 	logLayerDiff:       4,
+	logRowLevelSize:    []uint{0, 4, 8, 9},
 }
 
 // RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing
@@ -71,6 +75,10 @@ func (p *Params) deriveFields() {
 	p.mapsPerEpoch = uint32(1) << p.logMapsPerEpoch
 	p.valuesPerMap = uint64(1) << p.logValuesPerMap
 	p.baseRowLength = uint32(p.valuesPerMap * uint64(p.baseRowLengthRatio) / uint64(p.mapHeight))
+	p.rowLevelStart = make([]uint, len(p.logRowLevelSize)+1)
+	for i, l := range p.logRowLevelSize {
+		p.rowLevelStart[i+1] = p.rowLevelStart[i] + uint(1)<<l
+	}
 }
 
 // addressValue returns the log value hash of a log emitting address.
