@@ -84,6 +84,7 @@ type targetUpdate struct {
 // SetTargetView sets a new target chain view for the indexer to render.
 // Note that SetTargetView never blocks.
 func (f *FilterMaps) SetTarget(targetView *ChainView, historyCutoff, finalBlock uint64) {
+	log.Info("SetTarget", "head", targetView.headNumber, "cutoff", historyCutoff, "final", finalBlock)
 	if targetView == nil {
 		panic("nil targetView")
 	}

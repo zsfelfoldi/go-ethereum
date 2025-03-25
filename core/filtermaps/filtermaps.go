@@ -184,6 +184,7 @@ type Config struct {
 
 // NewFilterMaps creates a new FilterMaps and starts the indexer.
 func NewFilterMaps(db ethdb.KeyValueStore, initView *ChainView, historyCutoff, finalBlock uint64, params Params, config Config) *FilterMaps {
+	log.Info("InitTarget", "head", initView.headNumber, "cutoff", historyCutoff, "final", finalBlock)
 	rs, initialized, err := rawdb.ReadFilterMapsRange(db)
 	if err != nil {
 		log.Error("Error reading log index range", "error", err)
@@ -208,6 +209,8 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView *ChainView, historyCutoff, f
 			maps:             common.NewRange(rs.MapsFirst, rs.MapsAfterLast-rs.MapsFirst),
 			tailPartialEpoch: rs.TailPartialEpoch,
 		},
+		historyCutoff:   historyCutoff,
+		finalBlock:      finalBlock,
 		matcherSyncCh:   make(chan *FilterMapsMatcherBackend),
 		matchers:        make(map[*FilterMapsMatcherBackend]struct{}),
 		filterMapCache:  lru.NewCache[uint32, filterMap](cachedFilterMaps),
@@ -312,6 +315,7 @@ func (f *FilterMaps) init() error {
 	f.indexLock.Lock()
 	defer f.indexLock.Unlock()
 
+	fmt.Println("init head", f.targetView.headNumber)
 	var bestIdx, bestLen int
 	for idx, checkpointList := range checkpoints {
 		// binary search for the last matching epoch head
@@ -330,9 +334,11 @@ func (f *FilterMaps) init() error {
 		}
 	}
 	var initBlockNumber uint64
+	fmt.Println("bestLen", bestLen)
 	if bestLen > 0 {
 		initBlockNumber = checkpoints[bestIdx][bestLen-1].BlockNumber
 	}
+	fmt.Println("initBlockNumber", initBlockNumber)
 	if initBlockNumber < f.historyCutoff {
 		return errors.New("cannot start indexing before history cutoff point")
 	}
