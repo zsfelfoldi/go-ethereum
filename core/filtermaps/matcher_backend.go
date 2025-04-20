@@ -18,8 +18,12 @@ package filtermaps
 
 import (
 	"context"
+	"fmt"
+	"slices"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -67,6 +71,43 @@ func (fm *FilterMapsMatcherBackend) Close() {
 	delete(fm.f.matchers, fm)
 }
 
+type gfmrKey struct {
+	mapIndex, rowIndex uint32
+	baseLayerOnly      bool
+}
+
+type gfmrVal struct {
+	data   FilterRow
+	stored time.Time
+}
+
+type gblpVal struct {
+	ptr    uint64
+	stored time.Time
+}
+
+type glbiPos struct {
+	blockNumber uint64
+	txi, index  uint
+}
+
+type glbiVal struct {
+	pos    glbiPos
+	stored time.Time
+}
+
+type mbTestCaches struct {
+	gfmrCache *lru.Cache[gfmrKey, gfmrVal]
+	gblpCache *lru.Cache[uint64, gblpVal]
+	glbiCache *lru.Cache[uint64, glbiVal]
+}
+
+func (m *mbTestCaches) init() {
+	m.gfmrCache = lru.NewCache[gfmrKey, gfmrVal](10000000)
+	m.gblpCache = lru.NewCache[uint64, gblpVal](10000000)
+	m.glbiCache = lru.NewCache[uint64, glbiVal](10000000)
+}
+
 // GetFilterMapRow returns the given row of the given map. If the row is empty
 // then a non-nil zero length row is returned. If baseLayerOnly is true then
 // only the first baseRowLength entries of the row are guaranteed to be
@@ -78,7 +119,18 @@ func (fm *FilterMapsMatcherBackend) GetFilterMapRow(ctx context.Context, mapInde
 	fm.f.indexLock.RLock()
 	defer fm.f.indexLock.RUnlock()
 
-	return fm.f.getFilterMapRow(mapIndex, rowIndex, baseLayerOnly)
+	res, err := fm.f.getFilterMapRow(mapIndex, rowIndex, baseLayerOnly)
+	if err != nil {
+		return nil, err
+	}
+	key := gfmrKey{mapIndex, rowIndex, baseLayerOnly}
+	if v, ok := fm.f.mbTestCaches.gfmrCache.Get(key); ok && (len(res) < len(v.data) || !slices.Equal(res[:len(v.data)], v.data)) {
+		fmt.Println("*** gfmr diff", key, time.Since(v.stored))
+		fmt.Println("  stored:", v.data)
+		fmt.Println(" current:", res)
+	}
+	fm.f.mbTestCaches.gfmrCache.Add(key, gfmrVal{slices.Clone(res), time.Now()})
+	return res, nil
 }
 
 // GetBlockLvPointer returns the starting log value index where the log values
@@ -89,7 +141,17 @@ func (fm *FilterMapsMatcherBackend) GetBlockLvPointer(ctx context.Context, block
 	fm.f.indexLock.RLock()
 	defer fm.f.indexLock.RUnlock()
 
-	return fm.f.getBlockLvPointer(blockNumber)
+	res, err := fm.f.getBlockLvPointer(blockNumber)
+	if err != nil {
+		return 0, err
+	}
+	if v, ok := fm.f.mbTestCaches.gblpCache.Get(blockNumber); ok && res != v.ptr {
+		fmt.Println("*** gblp diff", blockNumber, time.Since(v.stored))
+		fmt.Println("  stored:", v.ptr)
+		fmt.Println(" current:", res)
+	}
+	fm.f.mbTestCaches.gblpCache.Add(blockNumber, gblpVal{res, time.Now()})
+	return res, nil
 }
 
 // GetLogByLvIndex returns the log at the given log value index.
@@ -105,7 +167,23 @@ func (fm *FilterMapsMatcherBackend) GetLogByLvIndex(ctx context.Context, lvIndex
 	fm.f.indexLock.RLock()
 	defer fm.f.indexLock.RUnlock()
 
-	return fm.f.getLogByLvIndex(lvIndex)
+	res, err := fm.f.getLogByLvIndex(lvIndex)
+	if err != nil {
+		return nil, err
+	}
+	var pos glbiPos
+	if res != nil {
+		pos.blockNumber = res.BlockNumber
+		pos.txi = res.TxIndex
+		pos.index = res.Index
+	}
+	if v, ok := fm.f.mbTestCaches.glbiCache.Get(lvIndex); ok && pos != v.pos {
+		fmt.Println("*** glbi diff", lvIndex, time.Since(v.stored))
+		fmt.Println("  stored:", v.pos)
+		fmt.Println(" current:", pos)
+	}
+	fm.f.mbTestCaches.glbiCache.Add(lvIndex, glbiVal{pos, time.Now()})
+	return res, nil
 }
 
 // synced signals to the matcher that has triggered a synchronisation that it

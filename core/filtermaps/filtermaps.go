@@ -103,6 +103,7 @@ type FilterMaps struct {
 	// indexLock should be locked first.
 	matchersLock sync.Mutex
 	matchers     map[*FilterMapsMatcherBackend]struct{}
+	mbTestCaches mbTestCaches
 
 	// fields only accessed by the indexer (no mutex required).
 	renderSnapshots                                              *lru.Cache[uint64, *renderedMap]
@@ -273,6 +274,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView *ChainView, historyCutoff, f
 			"first map", f.indexedRange.maps.First(), "last map", f.indexedRange.maps.Last(),
 			"head indexed", f.indexedRange.headIndexed)
 	}
+	f.mbTestCaches.init()
 	return f
 }
 

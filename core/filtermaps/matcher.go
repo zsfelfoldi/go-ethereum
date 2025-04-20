@@ -844,6 +844,7 @@ func (params *Params) matchResults(mapIndex uint32, offset uint64, baseRes, next
 		// result equals baseRes.
 		return baseRes
 	}
+	}
 	if baseRes == nil || len(nextRes) == 0 {
 		// if baseRes is a wild card or nextRes is empty then the sequence matcher
 		// result is the items of nextRes with a negative offset applied.
