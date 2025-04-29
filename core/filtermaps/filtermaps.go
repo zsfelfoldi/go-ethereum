@@ -17,6 +17,8 @@
 package filtermaps
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -281,6 +283,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView *ChainView, historyCutoff, f
 			"first map", f.indexedRange.maps.First(), "last map", f.indexedRange.maps.Last(),
 			"head indexed", f.indexedRange.headIndexed)
 	}
+	f.dumpIndex()
 	return f
 }
 
@@ -862,4 +865,41 @@ func (f *FilterMaps) exportCheckpoints() {
 	}
 	w.WriteString("]\n")
 	f.lastFinalEpoch = epochCount
+}
+
+func (f *FilterMaps) dumpIndex() {
+	w, err := os.Create("log_index_dump")
+	if err != nil {
+		log.Error("Error creating index dump file", "name", "log_index_dump", "error", err)
+		return
+	}
+	defer w.Close()
+	log.Info("Exporting log index dump...")
+	w.WriteString(fmt.Sprintf("range: %v\n", f.indexedRange))
+	for mapIndex := uint32(267 * 1024); mapIndex < f.indexedRange.maps.AfterLast(); mapIndex++ {
+		lb, _, err := f.getLastBlockOfMap(mapIndex)
+		hasher := sha256.New()
+		var hash common.Hash
+		if err == nil {
+			for rowIndex := uint32(0); rowIndex < f.mapHeight; rowIndex++ {
+				var row FilterRow
+				row, err = f.getFilterMapRow(mapIndex, rowIndex, false)
+				if err != nil {
+					break
+				}
+				enc := make([]byte, len(row)*4+1)
+				for i, v := range row {
+					binary.LittleEndian.PutUint32(enc[i*4:i*4+4], v)
+				}
+				hasher.Write(enc)
+			}
+		}
+		hasher.Sum(hash[:0])
+		w.WriteString(fmt.Sprintf("map %d: lb %d  err %v  hash %064x\n", mapIndex, lb, err, hash[:]))
+	}
+	for b := uint64(22200000); b < f.indexedRange.blocks.AfterLast(); b++ {
+		lvp, err := f.getBlockLvPointer(b)
+		w.WriteString(fmt.Sprintf("block %d: lvp %d  err %v\n", b, lvp, err))
+	}
+	log.Info("Exporting log index dump finished")
 }
