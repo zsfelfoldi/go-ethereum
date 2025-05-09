@@ -266,18 +266,20 @@ func (m *matcherEnv) processEpoch(epochIndex uint32) ([]*types.Log, error) {
 // lastIndex range are not returned.
 func (m *matcherEnv) getLogsFromMatches(matches potentialMatches) ([]*types.Log, error) {
 	var logs []*types.Log
-	for _, match := range matches {
-		if match < m.firstIndex || match > m.lastIndex {
-			continue
+	for _, matchRange := range matches {
+		for match := range matchRange.Iter() {
+			if match < m.firstIndex || match > m.lastIndex {
+				continue
+			}
+			log, err := m.backend.GetLogByLvIndex(m.ctx, match)
+			if err != nil {
+				return logs, fmt.Errorf("failed to retrieve log at index %d: %v", match, err)
+			}
+			if log != nil {
+				logs = append(logs, log)
+			}
+			matchLogLookup.Mark(1)
 		}
-		log, err := m.backend.GetLogByLvIndex(m.ctx, match)
-		if err != nil {
-			return logs, fmt.Errorf("failed to retrieve log at index %d: %v", match, err)
-		}
-		if log != nil {
-			logs = append(logs, log)
-		}
-		matchLogLookup.Mark(1)
 	}
 	return logs, nil
 }
@@ -513,7 +515,7 @@ func (m *matchAnyInstance) getMatchesForLayer(ctx context.Context, layerIndex ui
 			if mr.needMore == 0 || result.matches == nil {
 				mergedResults = append(mergedResults, matcherResult{
 					mapIndex: result.mapIndex,
-					matches:  mergeResults(mr.matches),
+					matches:  potentialMatches(rangeSetUnion[uint64](mr.matches)), //TODO
 				})
 				delete(m.childResults, result.mapIndex)
 			} else {
@@ -531,41 +533,6 @@ func (m *matchAnyInstance) dropIndices(dropIndices []uint32) {
 	}
 	for _, mapIndex := range dropIndices {
 		delete(m.childResults, mapIndex)
-	}
-}
-
-// mergeResults merges multiple lists of matches into a single one, preserving
-// ascending order and filtering out any duplicates.
-func mergeResults(results []potentialMatches) potentialMatches {
-	if len(results) == 0 {
-		return nil
-	}
-	var sumLen int
-	for _, res := range results {
-		if res == nil {
-			// nil is a wild card; all indices in map range are potential matches
-			return nil
-		}
-		sumLen += len(res)
-	}
-	merged := make(potentialMatches, 0, sumLen)
-	for {
-		best := -1
-		for i, res := range results {
-			if len(res) == 0 {
-				continue
-			}
-			if best < 0 || res[0] < results[best][0] {
-				best = i
-			}
-		}
-		if best < 0 {
-			return merged
-		}
-		if len(merged) == 0 || results[best][0] > merged[len(merged)-1] {
-			merged = append(merged, results[best][0])
-		}
-		results[best] = results[best][1:]
 	}
 }
 

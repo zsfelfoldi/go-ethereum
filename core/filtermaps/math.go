@@ -176,7 +176,7 @@ func (p *Params) potentialMatches(rows []FilterRow, mapIndex uint32, logValue co
 		}
 		for i := 0; i < rowLen; i++ {
 			if potentialMatch := mapFirst + uint64(row[i]>>(p.logMapWidth-p.logValuesPerMap)); row[i] == p.columnIndex(potentialMatch, &logValue) {
-				results = append(results, potentialMatch)
+				results = append(results, common.NewRange(potentialMatch, 1))
 			}
 		}
 		if rowLen < maxLen {
@@ -186,27 +186,79 @@ func (p *Params) potentialMatches(rows []FilterRow, mapIndex uint32, logValue co
 			panic("potentialMatches: insufficient list of row alternatives")
 		}
 	}
-	sort.Sort(results)
-	// remove duplicates
-	j := 0
-	for i, match := range results {
-		if i == 0 || match != results[i-1] {
-			results[j] = results[i]
-			j++
-		}
-	}
-	return results[:j]
+	results.normalize()
+	return results
 }
 
-// potentialMatches is a strictly monotonically increasing list of log value
-// indices in the range of a filter map that are potential matches for certain
-// filter criteria.
-// potentialMatches implements sort.Interface.
-// Note that nil is used as a wildcard and therefore means that all log value
-// indices in the filter map range are potential matches. If there are no
-// potential matches in the given map's range then an empty slice should be used.
-type potentialMatches []uint64
+type potentialMatches rangeSet[uint64]
 
-func (p potentialMatches) Len() int           { return len(p) }
-func (p potentialMatches) Less(i, j int) bool { return p[i] < p[j] }
-func (p potentialMatches) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
+func (pm *potentialMatches) normalize() { //TODO
+	(*pm).normalize()
+}
+
+type rangeSet[T int | int32 | int64 | uint | uint32 | uint64] []common.Range[T]
+
+func (a rangeSet[T]) intersection(b rangeSet[T]) rangeSet[T] {
+	c := make(rangeSet[T], 0, min(len(a), len(b)))
+	for len(a) > 0 && len(b) > 0 {
+		if i := a[0].Intersection(b[0]); !i.IsEmpty() {
+			c = append(c, i)
+		}
+		if a[0].AfterLast() < b[0].AfterLast() {
+			a = a[1:]
+		} else {
+			b = b[1:]
+		}
+	}
+	return c
+}
+
+func (a *rangeSet[T]) normalize() {
+	sort.Slice(a, func(i, j int) bool { return (*a)[i].First() < (*a)[j].First() })
+	// merge connecting/overlapping ranges
+	var j int
+	for i, next := range *a {
+		if j == 0 || (*a)[j-1].AfterLast() < next.First() {
+			// disjoint ranges, keep next range separate
+			if j != i {
+				(*a)[j] = next
+			}
+			j++
+		} else {
+			// connecting/overlapping ranges, merge with previous one
+			(*a)[j] = (*a)[j].Union(next)
+		}
+	}
+	*a = (*a)[:j]
+}
+
+func rangeSetUnion[T int | int32 | int64 | uint | uint32 | uint64](a []rangeSet[T]) rangeSet[T] { //TODO
+	var l int
+	for _, r := range a {
+		l += len(r)
+	}
+	u := make(rangeSet[T], 0, l)
+	for _, r := range a {
+		u = append(u, r)
+	}
+	u.normalize()
+	return u
+}
+
+type rowSubset rangeSet[int]
+
+func (p *Params) expandProvenSet(r *rowSubset) {
+	for i, rr := range r {
+		firstNode := rr.First() / p.indicesPerNode
+		afterLastNode := (rr.AfterLast() + p.indicesPerNode - 1) / p.indicesPerNode
+		//TODO check ProgressiveList constants (first = 1)
+		if firstNode > 0 && firstNode&1 == 0 {
+			firstNode-- // left sibling is also proven
+		}
+		if afterLastNode > 0 && afterLastNode&1 == 0 {
+			afterLastNode++ // right sibling is also proven
+		}
+		r[i] = common.NewRange(firstNode*p.indicesPerNode, (afterLast-first)*p.indicesPerNode)
+	}
+	r.normalize()
+}

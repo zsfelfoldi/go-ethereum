@@ -21,7 +21,7 @@ import (
 )
 
 // Range represents a range of integers.
-type Range[T uint32 | uint64] struct {
+type Range[T int | int32 | int64 | uint | uint32 | uint64] struct {
 	first, afterLast T
 }
 
