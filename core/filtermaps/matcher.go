@@ -37,40 +37,12 @@ const doRuntimeStats = false
 // would actually be slower than reverting to legacy filter.
 var ErrMatchAll = errors.New("match all patterns not supported")
 
-// MatcherBackend defines the functions required for searching in the log index
-// data structure. It is currently implemented by FilterMapsMatcherBackend but
-// once EIP-7745 is implemented and active, these functions can also be trustlessly
-// served by a remote prover.
-type MatcherBackend interface {
-	GetParams() *Params
-	GetBlockLvPointer(ctx context.Context, blockNumber uint64) (uint64, error)
-	GetFilterMapRows(ctx context.Context, mapIndices []uint32, rowIndex uint32, baseLayerOnly bool) ([]FilterRow, error)
-	GetLogByLvIndex(ctx context.Context, lvIndex uint64) (*types.Log, error)
-	SyncLogIndex(ctx context.Context) (SyncRange, error)
-	Close()
-}
-
-// SyncRange is returned by MatcherBackend.SyncLogIndex. It contains the latest
-// chain head, the indexed range that is currently consistent with the chain
-// and the valid range that has not been changed and has been consistent with
-// all states of the chain since the previous SyncLogIndex or the creation of
-// the matcher backend.
-type SyncRange struct {
-	IndexedView *ChainView
-	// block range where the index has not changed since the last matcher sync
-	// and therefore the set of matches found in this region is guaranteed to
-	// be valid and complete.
-	ValidBlocks common.Range[uint64]
-	// block range indexed according to the given chain head.
-	IndexedBlocks common.Range[uint64]
-}
-
 // GetPotentialMatches returns a list of logs that are potential matches for the
 // given filter criteria. If parts of the log index in the searched range are
 // missing or changed during the search process then the resulting logs belonging
 // to that block range might be missing or incorrect.
 // Also note that the returned list may contain false positives.
-func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock, lastBlock uint64, addresses []common.Address, topics [][]common.Hash) ([]*types.Log, error) {
+func GetPotentialMatches(ctx context.Context, backend *IndexView, firstBlock, lastBlock uint64, addresses []common.Address, topics [][]common.Hash) ([]*types.Log, error) {
 	params := backend.GetParams()
 	// find the log value index range to search
 	firstIndex, err := backend.GetBlockLvPointer(ctx, firstBlock)
@@ -143,7 +115,7 @@ func GetPotentialMatches(ctx context.Context, backend MatcherBackend, firstBlock
 type matcherEnv struct {
 	getLogStats           runtimeStats // 64 bit aligned
 	ctx                   context.Context
-	backend               MatcherBackend
+	backend               *IndexView
 	params                *Params
 	matcher               matcher
 	firstIndex, lastIndex uint64
@@ -332,7 +304,7 @@ type matcherResult struct {
 
 // singleMatcher implements matcher by returning matches for a single log value hash.
 type singleMatcher struct {
-	backend MatcherBackend
+	backend *IndexView
 	value   common.Hash
 	stats   runtimeStats
 }

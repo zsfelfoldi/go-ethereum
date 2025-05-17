@@ -161,13 +161,13 @@ func (b *testBackend) SubscribeChainEvent(ch chan<- core.ChainEvent) event.Subsc
 	return b.chainFeed.Subscribe(ch)
 }
 
-func (b *testBackend) CurrentView() *filtermaps.ChainView {
+func (b *testBackend) ChainView() *filtermaps.ChainView {
 	head := b.CurrentBlock()
 	return filtermaps.NewChainView(b, head.Number.Uint64(), head.Hash())
 }
 
-func (b *testBackend) NewMatcherBackend() filtermaps.MatcherBackend {
-	return b.fm.NewMatcherBackend()
+func (b *testBackend) IndexView() *filtermaps.IndexView {
+	return b.fm.LatestView()
 }
 
 func (b *testBackend) startFilterMaps(history uint64, disabled bool, params filtermaps.Params) {

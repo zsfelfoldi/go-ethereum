@@ -405,7 +405,7 @@ func (ts *testSetup) fmDbHash() common.Hash {
 }
 
 func (ts *testSetup) matcherViewHash() common.Hash {
-	mb := ts.fm.NewMatcherBackend()
+	mb := ts.fm.LatestView()
 	defer mb.Close()
 
 	ctx := context.Background()
