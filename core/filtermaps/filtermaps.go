@@ -50,11 +50,10 @@ var (
 )
 
 const (
-	databaseVersion       = 2    // reindexed if database version does not match
-	cachedLastBlocks      = 1000 // last block of map pointers
-	cachedLvPointers      = 1000 // first log value pointer of block pointers
-	cachedFilterMaps      = 3    // complete filter maps (cached by map renderer)
-	cachedRenderSnapshots = 8    // saved map renderer data at block boundaries
+	databaseVersion  = 3    // reindexed if database version does not match
+	cachedLastBlocks = 1000 // last block of map pointers
+	cachedLvPointers = 1000 // first log value pointer of block pointers
+	cachedFilterMaps = 3    // complete filter maps (cached by map renderer)
 )
 
 // FilterMaps is the in-memory representation of the log index structure that is
@@ -79,21 +78,11 @@ type FilterMaps struct {
 	exportFileName string
 	Params
 
-	db ethdb.KeyValueStore
-
-	// fields written by the indexer and read by matcher backend. Indexer can
-	// read them without a lock and write them under indexLock write lock.
-	// Matcher backend can read them under indexLock read lock.
-	indexLock    sync.RWMutex
-	indexedRange filterMapsRange
-	indexedView  *ChainView // always consistent with the log index
-	hasTempRange bool
-
+	db               ethdb.KeyValueStore
+	initialized      bool
+	dbMaps, tailMaps common.Range[uint32]
 	// cleanedEpochsBefore indicates that all unindexed data before this point
 	// has been cleaned.
-	//
-	// This field is only accessed and modified within tryUnindexTail, so no
-	// explicit locking is required.
 	cleanedEpochsBefore uint32
 
 	// also accessed by indexer and matcher backend but no locking needed.
@@ -101,15 +90,9 @@ type FilterMaps struct {
 	lastBlockCache *lru.Cache[uint32, lastBlockOfMap]
 	lvPointerCache *lru.Cache[uint64, uint64]
 
-	// the matchers set and the fields of FilterMapsMatcherBackend instances are
-	// read and written both by exported functions and the indexer.
-	// Note that if both indexLock and matchersLock needs to be locked then
-	// indexLock should be locked first.
-	matchersLock sync.Mutex
-	matchers     map[*FilterMapsMatcherBackend]struct{}
+	matcherViews []*IndexView
 
 	// fields only accessed by the indexer (no mutex required).
-	renderSnapshots                                              *lru.Cache[uint64, *renderedMap]
 	startedHeadIndex, startedTailIndex, startedTailUnindex       bool
 	startedHeadIndexAt, startedTailIndexAt, startedTailUnindexAt time.Time
 	loggedHeadIndex, loggedTailIndex                             bool
@@ -118,7 +101,8 @@ type FilterMaps struct {
 	ptrTailUnindexMap                                            uint32
 
 	targetView            *ChainView
-	matcherSyncRequests   []*FilterMapsMatcherBackend
+	tailView              *renderedView
+	recentViews           []*renderedView
 	historyCutoff         uint64
 	finalBlock, lastFinal uint64
 	lastFinalEpoch        uint32
@@ -128,7 +112,6 @@ type FilterMaps struct {
 	blockProcessing       bool
 	matcherSyncCh         chan *FilterMapsMatcherBackend
 	waitIdleCh            chan chan bool
-	tailRenderer          *mapRenderer
 
 	// test hooks
 	testDisableSnapshots, testSnapshotUsed bool
@@ -177,23 +160,6 @@ type FilterRow []uint32
 // Equal returns true if the given filter rows are equivalent.
 func (a FilterRow) Equal(b FilterRow) bool {
 	return slices.Equal(a, b)
-}
-
-// filterMapsRange describes the rendered range of filter maps and the range
-// of fully rendered blocks.
-type filterMapsRange struct {
-	initialized   bool
-	headIndexed   bool
-	headDelimiter uint64 // zero if headIndexed is false
-	// if initialized then all maps are rendered in the maps range
-	maps common.Range[uint32]
-	// if tailPartialEpoch > 0 then maps between firstRenderedMap-mapsPerEpoch and
-	// firstRenderedMap-mapsPerEpoch+tailPartialEpoch-1 are rendered
-	tailPartialEpoch uint32
-	// if initialized then all log values in the blocks range are fully
-	// rendered
-	// blockLvPointers are available in the blocks range
-	blocks common.Range[uint64]
 }
 
 // hasIndexedBlocks returns true if the range has at least one fully indexed block.
@@ -255,14 +221,13 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView *ChainView, historyCutoff, f
 		// deleting last unindexed epoch might have been interrupted by shutdown
 		cleanedEpochsBefore: max(rs.MapsFirst>>params.logMapsPerEpoch, 1) - 1,
 
-		historyCutoff:   historyCutoff,
-		finalBlock:      finalBlock,
-		matcherSyncCh:   make(chan *FilterMapsMatcherBackend),
-		matchers:        make(map[*FilterMapsMatcherBackend]struct{}),
-		filterMapCache:  lru.NewCache[uint32, filterMap](cachedFilterMaps),
-		lastBlockCache:  lru.NewCache[uint32, lastBlockOfMap](cachedLastBlocks),
-		lvPointerCache:  lru.NewCache[uint64, uint64](cachedLvPointers),
-		renderSnapshots: lru.NewCache[uint64, *renderedMap](cachedRenderSnapshots),
+		historyCutoff:  historyCutoff,
+		finalBlock:     finalBlock,
+		matcherSyncCh:  make(chan *FilterMapsMatcherBackend),
+		matchers:       make(map[*FilterMapsMatcherBackend]struct{}),
+		filterMapCache: lru.NewCache[uint32, filterMap](cachedFilterMaps),
+		lastBlockCache: lru.NewCache[uint32, lastBlockOfMap](cachedLastBlocks),
+		lvPointerCache: lru.NewCache[uint64, uint64](cachedLvPointers),
 	}
 	f.checkRevertRange() // revert maps that are inconsistent with the current chain view
 

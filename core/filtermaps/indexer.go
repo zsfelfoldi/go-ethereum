@@ -232,6 +232,28 @@ func (f *FilterMaps) setTarget(target targetUpdate) {
 // Should be called when targetHeadIndexed returns false. If this function
 // returns no error then either stop is true or head indexing is finished.
 func (f *FilterMaps) tryIndexHead() error {
+	if f.headView == nil {
+		xxx()
+	}
+	for !f.stop {
+		wmaps, nwm := f.headView.needWriteMaps()
+		switch {
+		case nwm:
+			xxx() // remove existing maps if necessary
+			if err := f.headView.writeMapRows(); err != nil {
+				return err
+			}
+		case !f.headView.headRendered():
+			if err := f.headView.renderNextBlock(math.MaxUint64); err != nil {
+				return err
+			}
+		default:
+			return nil
+		}
+		f.processEvents()
+	}
+	return nil
+
 	headRenderer, err := f.renderMapsBefore(math.MaxUint32)
 	if err != nil {
 		return err
