@@ -233,66 +233,41 @@ func (f *FilterMaps) setTarget(target targetUpdate) {
 // returns no error then either stop is true or head indexing is finished.
 func (f *FilterMaps) tryIndexHead() error {
 	if f.headView == nil {
-		xxx()
+		xxx() //init, set target view
 	}
 	for !f.stop {
-		wmaps, nwm := f.headView.needWriteMaps()
+		nwm, wmaps := f.headView.needWriteMaps()
 		switch {
 		case nwm:
 			xxx() // remove existing maps if necessary
-			if err := f.headView.writeMapRows(); err != nil {
+			done, err := f.headView.writeMapRows()
+			if err != nil {
 				return err
+			}
+			if done {
+				yyy(wmaps) // extend db map range
 			}
 		case !f.headView.headRendered():
 			if err := f.headView.renderNextBlock(math.MaxUint64); err != nil {
 				return err
 			}
+			if f.headView.blocks.AfterLast()+storeHeadViews > f.targetView.HeadNumber() {
+				iv := f.headView.makeImmutableView()
+				if len(f.recentViews) < maxRecentViews {
+					f.recentViews = append(f.recentViews, iv)
+				} else {
+					copy(f.recentViews[:maxRecentViews-1], f.recentViews[1:maxRecentViews])
+					f.recentViews[maxRecentViews-1] = iv
+				}
+			}
 		default:
 			return nil
 		}
-		f.processEvents()
-	}
-	return nil
-
-	headRenderer, err := f.renderMapsBefore(math.MaxUint32)
-	if err != nil {
-		return err
-	}
-	if headRenderer == nil {
-		return errors.New("head indexer has nothing to do") // tryIndexHead should be called when head is not indexed
-	}
-	if !f.startedHeadIndex {
-		f.lastLogHeadIndex = time.Now()
-		f.startedHeadIndexAt = f.lastLogHeadIndex
-		f.startedHeadIndex = true
-		f.ptrHeadIndex = f.indexedRange.blocks.AfterLast()
-	}
-	if _, err := headRenderer.run(func() bool {
-		f.processEvents()
-		return f.stop
-	}, func() {
 		f.tryUnindexTail()
-		if f.indexedRange.hasIndexedBlocks() && f.indexedRange.blocks.AfterLast() >= f.ptrHeadIndex &&
-			((!f.loggedHeadIndex && time.Since(f.startedHeadIndexAt) > headLogDelay) ||
-				time.Since(f.lastLogHeadIndex) > logFrequency) {
-			log.Info("Log index head rendering in progress",
-				"firstblock", f.indexedRange.blocks.First(), "lastblock", f.indexedRange.blocks.Last(),
-				"processed", f.indexedRange.blocks.AfterLast()-f.ptrHeadIndex,
-				"remaining", f.indexedView.HeadNumber()-f.indexedRange.blocks.Last(),
-				"elapsed", common.PrettyDuration(time.Since(f.startedHeadIndexAt)))
-			f.loggedHeadIndex = true
-			f.lastLogHeadIndex = time.Now()
-		}
-	}); err != nil {
-		return err
+		f.processEvents()
+		xxx() //target view update
+		yyy() //logs
 	}
-	if f.loggedHeadIndex && f.indexedRange.hasIndexedBlocks() {
-		log.Info("Log index head rendering finished",
-			"firstblock", f.indexedRange.blocks.First(), "lastblock", f.indexedRange.blocks.Last(),
-			"processed", f.indexedRange.blocks.AfterLast()-f.ptrHeadIndex,
-			"elapsed", common.PrettyDuration(time.Since(f.startedHeadIndexAt)))
-	}
-	f.loggedHeadIndex, f.startedHeadIndex = false, false
 	return nil
 }
 

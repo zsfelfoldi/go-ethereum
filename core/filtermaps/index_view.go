@@ -78,7 +78,7 @@ func (m *memoryMap) fullCopy() *memoryMap {
 }
 
 func (f *FilterMaps) newRenderedView(databaseMaps common.Range[uint32], chainView *ChainView) (*renderedView, error) {
-	iv := &renderedView{
+	rv := &renderedView{
 		IndexView: IndexView{
 			f:         f,
 			chainView: chainView,
@@ -89,27 +89,48 @@ func (f *FilterMaps) newRenderedView(databaseMaps common.Range[uint32], chainVie
 	if err != nil {
 		return nil, err
 	}
-	iv.maps = sharedMaps
-	if err := iv.setBlockRange(); err != nil {
+	rv.maps = sharedMaps
+	if err := rv.setBlockRange(); err != nil {
 		return nil, err
 	}
-	iv.dbMapsBefore = iv.maps.AfterLast()
-	iv.dbBlocksBefore = iv.blocks.AfterLast()
-	return iv
+	rv.dbMapsBefore = iv.maps.AfterLast()
+	rv.dbBlocksBefore = iv.blocks.AfterLast()
+	rv.nextLogValue = uint64(rv.dbMapsBefore) << f.logValuesPerMap
+	return rv, nil
 }
 
-func (iv *IndexView) clone() *IndexView {
+func (rv *renderedView) needWriteMaps() (bool, common.Range[uint32]) {}
+
+func (rv *renderedView) writeMapRows() (bool, error) {}
+
+func (rv *renderedView) makeImmutableView() *IndexView {
+	return rv.IndexView.copy(false)
+}
+
+func (iv *IndexView) makeRenderedView() *renderedView {
+	return &renderedView{
+		IndexView: *iv.copy(true),
+		nextLogValue: iv.headDelimiter,
+	}
+}
+
+func (iv *IndexView) copy(fullMapCopy bool) *IndexView {
 	c := &IndexView{
 		f:              iv.f,
 		chainView:      iv.chainView,
 		maps:           iv.maps,
 		blocks:         iv.blocks,
+		lastDelimiter:  iv.lastDelimiter,
 		dbMapsBefore:   iv.dbMapsBefore,
 		dbBlocksBefore: iv.dbBlocksBefore,
 		overlay:        slices.Clone(iv.overlay),
 	}
 	if len(c.overlay) > 0 {
-		c.overlay[len(c.overlay)-1] = c.overlay[len(c.overlay)-1].clone()
+		if fullMapCopy {
+			c.overlay[len(c.overlay)-1] = c.overlay[len(c.overlay)-1].fullCopy()
+		} else {
+			c.overlay[len(c.overlay)-1] = c.overlay[len(c.overlay)-1].fastCopy()
+		}
 	}
 	return c
 }
@@ -252,7 +273,7 @@ func (iv *IndexView) GetParams() *Params {
 	return &iv.f.Params
 }
 
-func (iv *IndexView) setBlockRange() error {
+func (rv *renderedView) setBlockRange() error {
 	var first, afterLast uint64
 	if iv.maps.First() > 0 {
 		lastBlock, _, _, err := iv.getLastBlockOfMap(sharedMaps.First() - 1)
