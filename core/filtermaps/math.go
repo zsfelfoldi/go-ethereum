@@ -28,12 +28,15 @@ import (
 
 // Params defines the basic parameters of the log index structure.
 type Params struct {
-	logMapHeight       uint // log2(mapHeight)
-	logMapWidth        uint // log2(mapWidth)
-	logMapsPerEpoch    uint // log2(mapsPerEpoch)
-	logValuesPerMap    uint // log2(logValuesPerMap)
-	baseRowLengthRatio uint // baseRowLength / average row length
-	logLayerDiff       uint // maxRowLength log2 growth per layer
+	logMapHeight        uint // log2(mapHeight)
+	logMapWidth         uint // log2(mapWidth)
+	logMapsPerEpoch     uint // log2(mapsPerEpoch)
+	logValuesPerMap     uint // log2(logValuesPerMap)
+	baseRowLengthRatio  uint // baseRowLength / average row length
+	logLayerDiff        uint // maxRowLength log2 growth per layer
+	logEpochHistory     uint
+	progListHeightFirst uint
+	progListHeightStep  uint
 	// derived fields
 	mapHeight     uint32 // filter map height (number of rows)
 	mapsPerEpoch  uint32 // number of maps in an epoch
@@ -45,13 +48,16 @@ type Params struct {
 
 // DefaultParams is the set of parameters used on mainnet.
 var DefaultParams = Params{
-	logMapHeight:       16,
-	logMapWidth:        24,
-	logMapsPerEpoch:    10,
-	logValuesPerMap:    16,
-	baseRowGroupLength: 32,
-	baseRowLengthRatio: 8,
-	logLayerDiff:       4,
+	logMapHeight:        16,
+	logMapWidth:         24,
+	logMapsPerEpoch:     10,
+	logValuesPerMap:     16,
+	baseRowGroupLength:  32,
+	baseRowLengthRatio:  8,
+	logLayerDiff:        4,
+	logEpochHistory:     24,
+	progListHeightFirst: 0,
+	progListHeightStep:  2,
 }
 
 // RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing

@@ -31,9 +31,9 @@ import (
 )
 
 const (
-	maxMapsPerBatch   = 32    // maximum number of maps rendered in memory
-	valuesPerCallback = 1024  // log values processed per event process callback
-	cachedRowMappings = 10000 // log value to row mappings cached during rendering
+	maxMapsPerBatch   = 32   // maximum number of maps rendered in memory
+	valuesPerCallback = 1024 // log values processed per event process callback
+	//cachedRowMappings = 10000 // log value to row mappings cached during rendering
 
 	// Number of rows written to db in a single batch.
 	// The map renderer splits up writes like this to ensure that regular
