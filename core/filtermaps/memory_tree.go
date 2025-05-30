@@ -20,12 +20,15 @@ import (
 	//"crypto/sha256"
 	"math/bits"
 	"sync"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 type memTree struct {
 	lock      sync.RWMutex
 	nodes     []memTreeNode
 	nodeCount uint32
+	blocks    common.Range[uint64]
 	roots     map[uint64]uint32
 }
 
@@ -38,7 +41,7 @@ func (mn *memTreeNode) leftChild() uint32  { return mn.left & (uint32(1)<<31 - 1
 func (mn *memTreeNode) rightChild() uint32 { return mn.right & (uint32(1)<<31 - 1) }
 func (mn *memTreeNode) isEdge() bool       { return mn.leftChild() == uint32(1)<<31-1 }
 func (mn *memTreeNode) isKnown() bool      { return mn.left&(uint32(1)<<31) != 0 }
-func (mn *memTreeNode) isCollapsed() bool  { return mn.right&(uint32(1)<<31) != 0 }
+func (mn *memTreeNode) isFinalized() bool  { return mn.right&(uint32(1)<<31) != 0 }
 func (mn *memTreeNode) setChildren(left, right uint32) {
 	mn.left, mn.right = mn.left&(uint32(1)<<31)+left, mn.right&(uint32(1)<<31)+right
 }
@@ -49,7 +52,7 @@ func (mn *memTreeNode) setKnown(b bool) {
 		mn.left += uint32(1) << 31
 	}
 }
-func (mn *memTreeNode) setCollapsed(b bool) {
+func (mn *memTreeNode) setFinalized(b bool) {
 	mn.right &= uint32(1)<<31 - 1
 	if b {
 		mn.right += uint32(1) << 31
@@ -57,8 +60,8 @@ func (mn *memTreeNode) setCollapsed(b bool) {
 }
 
 func (mt *memTree) newReader(blockNumber uint64) *memTreeView {
-	mt.lock.Lock()
-	defer mt.lock.Unlock()
+	mt.lock.RLock()
+	defer mt.lock.RUnlock()
 
 	root, ok := mt.roots[blockNumber]
 	if !ok {
@@ -103,6 +106,64 @@ func (mt *memTree) addNode() uint32 {
 	newNode := mt.nodeCount
 	mt.nodeCount++
 	return newNode
+}
+
+func (mt *memTree) prune(beforeBlock uint64) {
+	mt.lock.Lock()
+	defer mt.lock.Unlock()
+
+	if !mt.blocks.Includes(beforeBlock) {
+		panic("invalid prune limit block number")
+	}
+	nodeBoundary := mt.roots[beforeBlock]
+	posMap := make([]uint32, nodeBoundary)
+	// mark nodes referenced by first remaining block
+	var mark func(nodePos uint32)
+	mark = func(nodePos uint32) {
+		posMap[nodePos] = 1
+		if node := &mt.nodes[nodePos]; !node.isFinalized() && !node.isEdge() {
+			mark(node.leftChild())
+			mark(node.rightChild())
+		}
+	}
+	mark(nodeBoundary)
+	var newPos uint32
+	for pos, v := range posMap {
+		if v == 0 {
+			continue
+		}
+		posMap[pos] = newPos
+		if newPos != uint32(pos) {
+			mt.nodes[newPos] = mt.nodes[pos]
+		}
+		newPos++
+	}
+	copy(mt.nodes[newPos:mt.nodeCount+newPos-nodeBoundary], mt.nodes[nodeBoundary:mt.nodeCount])
+	for pos := mt.nodeCount + newPos - nodeBoundary; pos < mt.nodeCount; pos++ {
+		mt.nodes[pos] = memTreeNode{}
+	}
+
+	posMapping := func(oldPos uint32) uint32 {
+		if oldPos < nodeBoundary {
+			return posMap[oldPos]
+		}
+		return oldPos + newPos - nodeBoundary
+	}
+	for pos := range mt.nodeCount {
+		node := &mt.nodes[pos]
+		if !node.isEdge() {
+			node.setChildren(posMapping(node.leftChild()), posMapping(node.rightChild()))
+		}
+	}
+	for block, root := range mt.roots {
+		if block < beforeBlock {
+			delete(mt.roots, block)
+		} else {
+			mt.roots[block] = posMapping(root)
+		}
+	}
+	mt.blocks.SetFirst(beforeBlock)
+	mt.nodeCount = posMapping(mt.nodeCount)
 }
 
 type memTreeView struct {
@@ -205,7 +266,7 @@ func (mv *memTreeView) set(index uint64, value TreeNode) {
 	node.setKnown(true)
 }
 
-func (mv *memTreeView) collapse(index uint64) {
+func (mv *memTreeView) finalize(index uint64) {
 	mv.tree.lock.RLock()
 	defer func() {
 		expand := mv.tree.needExpand()
@@ -219,9 +280,9 @@ func (mv *memTreeView) collapse(index uint64) {
 
 	oldPos, oldHeight, ok := mv.findPosition(index)
 	if !ok {
-		panic("trying to collapse non-existent node")
+		panic("trying to finalize non-existent node")
 	}
 	node := mv.addNewPath(index, oldHeight)
 	*node = mv.tree.nodes[oldPos]
-	node.setCollapsed(true)
+	node.setFinalized(true)
 }

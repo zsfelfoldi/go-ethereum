@@ -170,14 +170,14 @@ func (h *Hasher) addToRow(mapIndex, rowIndex, entry, maxLen uint32) bool {
 	return true
 }
 
-func (h *Hasher) expandVector(vectorRoot, nextIndex uint64, height uint, collapse bool) uint64 {
+func (h *Hasher) expandVector(vectorRoot, nextIndex uint64, height uint, finalize bool) uint64 {
 	tz := uint(bits.TrailingZeros64(nextIndex))
 	if tz > height {
 		tz = height
 	}
 	subtreeRoot := vectorRoot<<(height-tz) + nextIndex>>tz
-	if collapse && tz > 0 && nextIndex > 0 {
-		h.tree.set(subtreeRoot-1, h.tree.get(subtreeRoot-1)) // collapse finished subtree
+	if finalize && tz > 0 && nextIndex > 0 {
+		h.tree.set(subtreeRoot-1, h.tree.get(subtreeRoot-1)) // finalize finished subtree
 	}
 	for tz > 0 {
 		tz--
