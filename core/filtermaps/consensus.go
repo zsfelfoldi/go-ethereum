@@ -43,6 +43,42 @@ const (
 	cachedRowMappings = 10000 // log value to row mappings cached during rendering
 )
 
+func (params *Params) gtiEpochRoot(epoch uint32) uint64 {
+	return appendIndex(gtiEpochs, uint64(epoch), params.logEpochHistory)
+}
+
+type progListIndex struct {
+	params                         *Params
+	listRoot, countIndex, treeRoot uint32
+	subtreeHeight                  uint
+	subtreeFirst                   uint64
+}
+
+func (pl *progListIndex) init(params *Params, root uint64) {
+	pl.params = params
+	pl.listRoot = root
+	pl.countIndex = childIndex(root, gtiProgListCount)
+	pl.treeRoot = childIndex(root, gtiProgListTree)
+	pl.subtreeHeight = params.progListHeightFirst
+	pl.subtreeFirst = 0
+}
+
+func (pl *progListIndex) getLeaf(listIndex uint64) (leafIndex, treeRoot, subtreeIndex uint64, subtreeHeight uint) {
+	if listIndex < pl.subtreeFirst {
+		pl.init(pl.params, pl.listRoot)
+	}
+	subtreeSize := uint64(1) << pl.subtreeHeight
+	for pl.subtreeFirst+subtreeSize <= listIndex {
+		// move up to next proglist subtree
+		pl.subtreeFirst += subtreeSize
+		pl.subtreeHeight += pl.params.progListHeightStep
+		pl.treeRoot = childIndex(pl.treeRoot, gtiProgListNextTree)
+	}
+	subtreeIndex := listIndex - pl.subtreeFirst
+	return appendIndex(childIndex(pl.treeRoot, gtiProgListSubtree), subtreeIndex, pl.subtreeHeight),
+		pl.treeRoot, subtreeIndex, pl.subtreeHeight
+}
+
 type TreeNode [32]byte
 
 type lvPosition struct{ rowIndex, layerIndex uint32 }
@@ -54,7 +90,7 @@ type logIndexData interface {
 
 type Hasher struct {
 	tree            logIndexData
-	params          Params
+	params          *Params
 	rowMappingCache *lru.Cache[common.Hash, lvPosition]
 }
 
@@ -86,10 +122,6 @@ func (h *Hasher) InitWithProof([]byte) {
 
 func (h *Hasher) MakeInitProof() []byte {
 	panic(nil)
-}
-
-func (h *Hasher) gtiEpochRoot(epoch uint32) uint64 {
-	return appendIndex(gtiEpochs, uint64(epoch), h.params.logEpochHistory)
 }
 
 func (h *Hasher) addNewEpoch(nextEpoch uint32) {
@@ -138,31 +170,25 @@ func (h *Hasher) addToMap(lvIndex uint64, logValue common.Hash) {
 func (h *Hasher) addToRow(mapIndex, rowIndex, entry, maxLen uint32) bool {
 	epoch := mapIndex >> h.params.logMapsPerEpoch
 	mapSubIndex := mapIndex % h.params.mapsPerEpoch
-	filterMapsRootIndex := childIndex(h.gtiEpochRoot(epoch), gtiFilterMaps)
+	filterMapsRootIndex := childIndex(h.params.gtiEpochRoot(epoch), gtiFilterMaps)
 	epochRowRootIndex := appendIndex(filterMapsRootIndex, uint64(rowIndex), h.params.logMapHeight)
 	mapRowRootIndex := h.expandVector(epochRowRootIndex, uint64(mapSubIndex), h.params.logMapsPerEpoch, true)
-	countIndex := childIndex(mapRowRootIndex, gtiProgListCount)
-	nextEntry := nodeToUint64(h.tree.get(countIndex))
+	var pl progListIndex
+	pl.init(h.params, mapRowRootIndex)
+	nextEntry := nodeToUint64(h.tree.get(pl.countIndex))
 	if nextEntry >= uint64(maxLen) {
 		return false
 	}
-	h.tree.set(countIndex, uint64ToNode(nextEntry+1))
-	nodeIndex, entrySubIndex := nextEntry/8, nextEntry%8
-	progListSubtreeHeight := h.params.progListHeightFirst
-	treeRoot := childIndex(mapRowRootIndex, gtiProgListTree)
-	for uint64(1)<<progListSubtreeHeight <= nodeIndex {
-		// move up to next proglist subtree
-		nodeIndex -= uint64(1) << progListSubtreeHeight
-		progListSubtreeHeight += h.params.progListHeightStep
-		treeRoot = childIndex(treeRoot, gtiProgListNextTree)
-	}
-	if nodeIndex == 0 && entrySubIndex == 0 { // expand next proglist subtree
+	h.tree.set(pl.countIndex, uint64ToNode(nextEntry+1))
+	listIndex, listSubIndex := nextEntry/8, nextEntry%8
+	_, treeRoot, subtreeIndex, subtreeHeight := pl.getLeaf(listIndex)
+	if subtreeIndex == 0 && listSubIndex == 0 { // expand next proglist subtree
 		h.tree.set(childIndex(treeRoot, gtiProgListNextTree), TreeNode{})
 	}
 	subtreeRoot := childIndex(treeRoot, gtiProgListSubtree)
-	leafIndex := h.expandVector(subtreeRoot, nodeIndex, progListSubtreeHeight, false)
+	leafIndex := h.expandVector(subtreeRoot, subtreeIndex, subtreeHeight, false)
 	var leaf TreeNode
-	if entrySubIndex != 0 {
+	if listSubIndex != 0 {
 		leaf = h.tree.get(leafIndex)
 	}
 	binary.LittleEndian.PutUint32(leaf[entrySubIndex*4:entrySubIndex*4+4], entry)
