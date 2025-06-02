@@ -193,16 +193,19 @@ func (mv *memTreeView) findPosition(index uint64) (uint32, int, bool) {
 	return nodePos, nodeHeight, nodeHeight == height
 }
 
-func (mv *memTreeView) get(index uint64) (TreeNode, bool) {
+func (mv *memTreeView) get(index uint64) TreeNode {
 	mv.tree.lock.RLock()
 	defer mv.tree.lock.RUnlock()
 
 	nodePos, _, ok := mv.findPosition(index)
 	if !ok {
-		return TreeNode{}, false
+		panic("cannot read non-existent node")
 	}
 	n := &mv.tree.nodes[nodePos]
-	return n.node, n.isKnown()
+	if !n.isKnown() {
+		panic("cannot read unknown node contents")
+	}
+	return n.node
 }
 
 func (mv *memTreeView) addNewPath(index uint64, oldHeight int) *memTreeNode {
@@ -267,6 +270,7 @@ func (mv *memTreeView) set(index uint64, value TreeNode) {
 }
 
 func (mv *memTreeView) finalize(index uint64) {
+	panic(nil) //TODO copy known hashes
 	mv.tree.lock.RLock()
 	defer func() {
 		expand := mv.tree.needExpand()
@@ -280,7 +284,7 @@ func (mv *memTreeView) finalize(index uint64) {
 
 	oldPos, oldHeight, ok := mv.findPosition(index)
 	if !ok {
-		panic("trying to finalize non-existent node")
+		panic("cannot finalize non-existent node")
 	}
 	node := mv.addNewPath(index, oldHeight)
 	*node = mv.tree.nodes[oldPos]

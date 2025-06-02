@@ -49,7 +49,7 @@ func (params *Params) gtiEpochRoot(epoch uint32) uint64 {
 
 type progListIndex struct {
 	params                         *Params
-	listRoot, countIndex, treeRoot uint32
+	listRoot, countIndex, treeRoot uint64
 	subtreeHeight                  uint
 	subtreeFirst                   uint64
 }
@@ -74,7 +74,7 @@ func (pl *progListIndex) getLeaf(listIndex uint64) (leafIndex, treeRoot, subtree
 		pl.subtreeHeight += pl.params.progListHeightStep
 		pl.treeRoot = childIndex(pl.treeRoot, gtiProgListNextTree)
 	}
-	subtreeIndex := listIndex - pl.subtreeFirst
+	subtreeIndex = listIndex - pl.subtreeFirst
 	return appendIndex(childIndex(pl.treeRoot, gtiProgListSubtree), subtreeIndex, pl.subtreeHeight),
 		pl.treeRoot, subtreeIndex, pl.subtreeHeight
 }
@@ -83,8 +83,12 @@ type TreeNode [32]byte
 
 type lvPosition struct{ rowIndex, layerIndex uint32 }
 
-type logIndexData interface {
+type logIndexReader interface {
 	get(treeIndex uint64) TreeNode
+}
+
+type logIndexData interface {
+	logIndexReader
 	set(treeIndex uint64, node TreeNode)
 }
 
@@ -136,7 +140,7 @@ func (h *Hasher) addNewMap(nextMap uint32) {
 	if mapSubIndex == 0 {
 		h.addNewEpoch(epoch)
 	}
-	filterMapsRootIndex := childIndex(h.gtiEpochRoot(epoch), gtiFilterMaps)
+	filterMapsRootIndex := childIndex(h.params.gtiEpochRoot(epoch), gtiFilterMaps)
 	for rowIndex := range h.params.mapHeight {
 		epochRowRootIndex := appendIndex(filterMapsRootIndex, uint64(rowIndex), h.params.logMapHeight)
 		mapRowRootIndex := h.expandVector(epochRowRootIndex, uint64(mapSubIndex), h.params.logMapsPerEpoch, true)
@@ -191,7 +195,7 @@ func (h *Hasher) addToRow(mapIndex, rowIndex, entry, maxLen uint32) bool {
 	if listSubIndex != 0 {
 		leaf = h.tree.get(leafIndex)
 	}
-	binary.LittleEndian.PutUint32(leaf[entrySubIndex*4:entrySubIndex*4+4], entry)
+	binary.LittleEndian.PutUint32(leaf[listSubIndex*4:listSubIndex*4+4], entry)
 	h.tree.set(leafIndex, leaf)
 	return true
 }
@@ -203,7 +207,7 @@ func (h *Hasher) expandVector(vectorRoot, nextIndex uint64, height uint, finaliz
 	}
 	subtreeRoot := vectorRoot<<(height-tz) + nextIndex>>tz
 	if finalize && tz > 0 && nextIndex > 0 {
-		h.tree.set(subtreeRoot-1, h.tree.get(subtreeRoot-1)) // finalize finished subtree
+		h.tree.finalize(subtreeRoot-1)
 	}
 	for tz > 0 {
 		tz--
