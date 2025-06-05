@@ -500,3 +500,61 @@ func DeleteBloomBitsDb(db ethdb.KeyValueStore, hashScheme bool, stopCallback fun
 	}
 	return deletePrefixRange(db, bloomBitsMetaPrefix, hashScheme, stopCallback)
 }
+
+func ReadLogIndexTreeNodes(db ethdb.KeyValueReader, indexHi, indexLo uint64, count int) ([]*[32]byte, error) {
+	key := logIndexTreeNodesKey(indexHi, indexLo)
+	has, err := db.Has(key)
+	if err != nil {
+		return nil, err
+	}
+	res := make([]*[32]byte, count)
+	if !has {
+		return res, nil
+	}
+	enc, err := db.Get(key)
+	bitMaskStart := len(enc) - (count+7)/8
+	if bitMaskStart%32 != 0 {
+		return nil, errors.New("invalid tree nodes entry length")
+	}
+	expNonZero := bitMaskStart / 32
+	resData := make([][32]byte, count)
+	var ptr int
+	for i := range count {
+		if enc[bitMaskStart+i/8]&(byte(1)<<(i%8)) != 0 {
+			if ptr == expNonZero {
+				return nil, errors.New("invalid tree nodes entry length")
+			}
+			copy(resData[ptr][:], enc[ptr*32:(ptr+1)*32])
+			res[i] = &resData[ptr]
+			ptr++
+		}
+	}
+	if ptr != expNonZero {
+		return nil, errors.New("invalid tree nodes entry length")
+	}
+	return res, nil
+}
+
+func WriteLogIndexTreeNodes(db ethdb.KeyValueWriter, indexHi, indexLo uint64, nodes []*[32]byte) error {
+	key := logIndexTreeNodesKey(indexHi, indexLo)
+	var nonZeroCount int
+	for _, node := range nodes {
+		if node != nil {
+			nonZeroCount++
+		}
+	}
+	if nonZeroCount == 0 {
+		return db.Delete(key)
+	}
+	bitMaskStart := nonZeroCount * 32
+	enc := make([]byte, bitMaskStart+(len(nodes)+7)/8)
+	var ptr int
+	for i, node := range nodes {
+		if node != nil {
+			copy(enc[ptr*32:(ptr+1)*32], (*node)[:])
+			enc[bitMaskStart+i/8] |= byte(1) << (i % 8)
+			ptr++
+		}
+	}
+	return db.Put(key, enc)
+}

@@ -26,44 +26,44 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-const (
+var (
 	// relative to root
-	gtiEpochs    = 2
-	gtiNextIndex = 3
+	gtiEpochs    = treeIndex{lo: 2}
+	gtiNextIndex = treeIndex{lo: 3}
 	// relative to epoch root
-	gtiFilterMaps = 2
-	gtiLogEntries = 3
+	gtiFilterMaps = treeIndex{lo: 2}
+	gtiLogEntries = treeIndex{lo: 3}
 	// relative to progressive list root
-	gtiProgListTree  = 2
-	gtiProgListCount = 3
+	gtiProgListTree  = treeIndex{lo: 2}
+	gtiProgListCount = treeIndex{lo: 3}
 	// relative to progressive list tree root
-	gtiProgListSubtree  = 2
-	gtiProgListNextTree = 3
-
-	cachedRowMappings = 10000 // log value to row mappings cached during rendering
+	gtiProgListSubtree  = treeIndex{lo: 2}
+	gtiProgListNextTree = treeIndex{lo: 3}
 )
 
-func (params *Params) gtiEpochRoot(epoch uint32) uint64 {
-	return appendIndex(gtiEpochs, uint64(epoch), params.logEpochHistory)
+const cachedRowMappings = 10000 // log value to row mappings cached during rendering
+
+func (params *Params) gtiEpochRoot(epoch uint32) treeIndex {
+	return gtiEpochs.append(uint64(epoch), params.logEpochHistory)
 }
 
 type progListIndex struct {
 	params                         *Params
-	listRoot, countIndex, treeRoot uint64
+	listRoot, countIndex, treeRoot treeIndex
 	subtreeHeight                  uint
 	subtreeFirst                   uint64
 }
 
-func (pl *progListIndex) init(params *Params, root uint64) {
+func (pl *progListIndex) init(params *Params, root treeIndex) {
 	pl.params = params
 	pl.listRoot = root
-	pl.countIndex = childIndex(root, gtiProgListCount)
-	pl.treeRoot = childIndex(root, gtiProgListTree)
+	pl.countIndex = root.child(gtiProgListCount)
+	pl.treeRoot = root.child(gtiProgListTree)
 	pl.subtreeHeight = params.progListHeightFirst
 	pl.subtreeFirst = 0
 }
 
-func (pl *progListIndex) getLeaf(listIndex uint64) (leafIndex, treeRoot, subtreeIndex uint64, subtreeHeight uint) {
+func (pl *progListIndex) getLeaf(listIndex uint64) (leafIndex, treeRoot treeIndex, subtreeIndex uint64, subtreeHeight uint) {
 	if listIndex < pl.subtreeFirst {
 		pl.init(pl.params, pl.listRoot)
 	}
@@ -72,24 +72,23 @@ func (pl *progListIndex) getLeaf(listIndex uint64) (leafIndex, treeRoot, subtree
 		// move up to next proglist subtree
 		pl.subtreeFirst += subtreeSize
 		pl.subtreeHeight += pl.params.progListHeightStep
-		pl.treeRoot = childIndex(pl.treeRoot, gtiProgListNextTree)
+		pl.treeRoot = pl.treeRoot.child(gtiProgListNextTree)
 	}
 	subtreeIndex = listIndex - pl.subtreeFirst
-	return appendIndex(childIndex(pl.treeRoot, gtiProgListSubtree), subtreeIndex, pl.subtreeHeight),
+	return pl.treeRoot.child(gtiProgListSubtree).append(subtreeIndex, pl.subtreeHeight),
 		pl.treeRoot, subtreeIndex, pl.subtreeHeight
 }
-
-type TreeNode [32]byte
 
 type lvPosition struct{ rowIndex, layerIndex uint32 }
 
 type logIndexReader interface {
-	get(treeIndex uint64) TreeNode
+	get(treeIndex) TreeNode
 }
 
 type logIndexData interface {
 	logIndexReader
-	set(treeIndex uint64, node TreeNode)
+	set(treeIndex, TreeNode)
+	finalize(treeIndex)
 }
 
 type Hasher struct {
@@ -129,9 +128,9 @@ func (h *Hasher) MakeInitProof() []byte {
 }
 
 func (h *Hasher) addNewEpoch(nextEpoch uint32) {
-	epochRootIndex := h.expandVector(2, uint64(nextEpoch), h.params.logEpochHistory, true)
-	h.tree.set(childIndex(epochRootIndex, gtiFilterMaps), zeroHashes[h.params.logMapHeight+h.params.logMapsPerEpoch])
-	h.tree.set(childIndex(epochRootIndex, gtiLogEntries), zeroHashes[h.params.logMapsPerEpoch+h.params.logValuesPerMap])
+	epochRootIndex := h.expandVector(gtiEpochs, uint64(nextEpoch), h.params.logEpochHistory, true)
+	h.tree.set(epochRootIndex.child(gtiFilterMaps), zeroHashes[h.params.logMapHeight+h.params.logMapsPerEpoch])
+	h.tree.set(epochRootIndex.child(gtiLogEntries), zeroHashes[h.params.logMapsPerEpoch+h.params.logValuesPerMap])
 }
 
 func (h *Hasher) addNewMap(nextMap uint32) {
@@ -140,12 +139,12 @@ func (h *Hasher) addNewMap(nextMap uint32) {
 	if mapSubIndex == 0 {
 		h.addNewEpoch(epoch)
 	}
-	filterMapsRootIndex := childIndex(h.params.gtiEpochRoot(epoch), gtiFilterMaps)
+	filterMapsRootIndex := h.params.gtiEpochRoot(epoch).child(gtiFilterMaps)
 	for rowIndex := range h.params.mapHeight {
-		epochRowRootIndex := appendIndex(filterMapsRootIndex, uint64(rowIndex), h.params.logMapHeight)
+		epochRowRootIndex := filterMapsRootIndex.append(uint64(rowIndex), h.params.logMapHeight)
 		mapRowRootIndex := h.expandVector(epochRowRootIndex, uint64(mapSubIndex), h.params.logMapsPerEpoch, true)
-		h.tree.set(childIndex(mapRowRootIndex, gtiProgListTree), TreeNode{})
-		h.tree.set(childIndex(mapRowRootIndex, gtiProgListCount), TreeNode{})
+		h.tree.set(mapRowRootIndex.child(gtiProgListTree), TreeNode{})
+		h.tree.set(mapRowRootIndex.child(gtiProgListCount), TreeNode{})
 	}
 	if h.rowMappingCache == nil {
 		h.rowMappingCache = lru.NewCache[common.Hash, lvPosition](cachedRowMappings)
@@ -174,8 +173,8 @@ func (h *Hasher) addToMap(lvIndex uint64, logValue common.Hash) {
 func (h *Hasher) addToRow(mapIndex, rowIndex, entry, maxLen uint32) bool {
 	epoch := mapIndex >> h.params.logMapsPerEpoch
 	mapSubIndex := mapIndex % h.params.mapsPerEpoch
-	filterMapsRootIndex := childIndex(h.params.gtiEpochRoot(epoch), gtiFilterMaps)
-	epochRowRootIndex := appendIndex(filterMapsRootIndex, uint64(rowIndex), h.params.logMapHeight)
+	filterMapsRootIndex := h.params.gtiEpochRoot(epoch).child(gtiFilterMaps)
+	epochRowRootIndex := filterMapsRootIndex.append(uint64(rowIndex), h.params.logMapHeight)
 	mapRowRootIndex := h.expandVector(epochRowRootIndex, uint64(mapSubIndex), h.params.logMapsPerEpoch, true)
 	var pl progListIndex
 	pl.init(h.params, mapRowRootIndex)
@@ -187,9 +186,9 @@ func (h *Hasher) addToRow(mapIndex, rowIndex, entry, maxLen uint32) bool {
 	listIndex, listSubIndex := nextEntry/8, nextEntry%8
 	_, treeRoot, subtreeIndex, subtreeHeight := pl.getLeaf(listIndex)
 	if subtreeIndex == 0 && listSubIndex == 0 { // expand next proglist subtree
-		h.tree.set(childIndex(treeRoot, gtiProgListNextTree), TreeNode{})
+		h.tree.set(treeRoot.child(gtiProgListNextTree), TreeNode{})
 	}
-	subtreeRoot := childIndex(treeRoot, gtiProgListSubtree)
+	subtreeRoot := treeRoot.child(gtiProgListSubtree)
 	leafIndex := h.expandVector(subtreeRoot, subtreeIndex, subtreeHeight, false)
 	var leaf TreeNode
 	if listSubIndex != 0 {
@@ -200,20 +199,24 @@ func (h *Hasher) addToRow(mapIndex, rowIndex, entry, maxLen uint32) bool {
 	return true
 }
 
-func (h *Hasher) expandVector(vectorRoot, nextIndex uint64, height uint, finalize bool) uint64 {
+func (h *Hasher) expandVector(vectorRoot treeIndex, nextIndex uint64, height uint, finalize bool) treeIndex {
 	tz := uint(bits.TrailingZeros64(nextIndex))
 	if tz > height {
 		tz = height
 	}
-	subtreeRoot := vectorRoot<<(height-tz) + nextIndex>>tz
+	subtreeRoot := vectorRoot.append(nextIndex>>tz, height-tz)
 	if finalize && tz > 0 && nextIndex > 0 {
-		h.tree.finalize(subtreeRoot-1)
+		prevSubtree := subtreeRoot
+		prevSubtree.lo--
+		h.tree.finalize(prevSubtree)
 	}
 	for tz > 0 {
 		tz--
-		subtreeRoot *= 2
+		subtreeRoot = subtreeRoot.shiftLeft(1)
+		rightSibling := subtreeRoot
+		rightSibling.lo++
 		// expanding left branch, add empty sibling node to the right
-		h.tree.set(subtreeRoot+1, zeroHashes[tz])
+		h.tree.set(rightSibling, zeroHashes[tz])
 	}
 	return subtreeRoot
 }
@@ -225,15 +228,6 @@ func nodeToUint64(node TreeNode) uint64 {
 func uint64ToNode(value uint64) (node TreeNode) {
 	binary.LittleEndian.PutUint64(node[:8], value)
 	return
-}
-
-func appendIndex(baseIndex, appendBits uint64, appendLen uint) uint64 {
-	return baseIndex<<appendLen + appendBits
-}
-
-func childIndex(baseIndex, subIndex uint64) uint64 {
-	appendLen := uint(63 - bits.LeadingZeros64(subIndex))
-	return appendIndex(baseIndex, subIndex-uint64(1)<<appendLen, appendLen)
 }
 
 var zeroHashes [256]TreeNode

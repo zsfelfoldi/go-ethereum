@@ -43,21 +43,37 @@ type Params struct {
 	baseRowLength uint32 // maximum number of log values per row on layer 0
 	valuesPerMap  uint64 // number of log values marked on each filter map
 	// not affecting consensus
-	baseRowGroupLength uint32 // length of base row groups in local database
+	baseRowGroupLength        uint32 // length of base row groups in local database
+	treeNodeGroupLength       uint32
+	maxRowListLevels          uint
+	storeProgListSubtreeFirst uint
+	storeProgListSubtreeNext  uint
+	storeProgListTreesFrom    uint
+	storeMapSubtrees          []uint
+	storeMapSubtreeMinLength  []uint32
+	storeLogSubtrees          []uint
 }
 
 // DefaultParams is the set of parameters used on mainnet.
 var DefaultParams = Params{
-	logMapHeight:        16,
-	logMapWidth:         24,
-	logMapsPerEpoch:     10,
-	logValuesPerMap:     16,
-	baseRowGroupLength:  32,
-	baseRowLengthRatio:  8,
-	logLayerDiff:        4,
-	logEpochHistory:     24,
-	progListHeightFirst: 0,
-	progListHeightStep:  2,
+	logMapHeight:              16,
+	logMapWidth:               24,
+	logMapsPerEpoch:           10,
+	logValuesPerMap:           16,
+	baseRowGroupLength:        32,
+	baseRowLengthRatio:        8,
+	logLayerDiff:              4,
+	logEpochHistory:           24,
+	progListHeightFirst:       0,
+	progListHeightStep:        2,
+	treeNodeGroupLength:       8,
+	maxRowListLevels:          6,
+	storeProgListSubtreeFirst: 4,
+	storeProgListSubtreeNext:  3,
+	storeProgListTreesFrom:    1,
+	storeMapSubtrees:          []uint{2, 4, 7},
+	storeMapSubtreeMinLength:  []uint32{20, 4, 0},
+	storeLogSubtrees:          []uint{7, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26},
 }
 
 // RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing

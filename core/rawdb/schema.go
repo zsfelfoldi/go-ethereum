@@ -140,6 +140,7 @@ var (
 	filterMapRowPrefix       = []byte(filterMapsPrefix + "r") // filterMapRowPrefix + mapRowIndex (uint64 big endian) -> filter row
 	filterMapLastBlockPrefix = []byte(filterMapsPrefix + "b") // filterMapLastBlockPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
 	filterMapBlockLVPrefix   = []byte(filterMapsPrefix + "p") // filterMapBlockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
+	logIndexTreeNodesPrefix  = []byte(filterMapsPrefix + "n") // logIndexTreeNodesPrefix + groupIndex (uint64 big endian)
 
 	// old log index
 	bloomBitsMetaPrefix = []byte("iB")
@@ -360,5 +361,15 @@ func filterMapBlockLVKey(number uint64) []byte {
 	key := make([]byte, l+8)
 	copy(key[:l], filterMapBlockLVPrefix)
 	binary.BigEndian.PutUint64(key[l:], number)
+	return key
+}
+
+// logIndexTreeNodesKey = logIndexTreeNodesPrefix + groupIndex (uint64 big endian)
+func logIndexTreeNodesKey(indexHi, indexLo uint64) []byte {
+	l := len(logIndexTreeNodesPrefix)
+	key := make([]byte, l+16)
+	copy(key[:l], logIndexTreeNodesPrefix)
+	binary.BigEndian.PutUint64(key[l:l+8], indexHi)
+	binary.BigEndian.PutUint64(key[l+8:], indexLo)
 	return key
 }

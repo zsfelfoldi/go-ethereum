@@ -168,12 +168,12 @@ func (mt *memTree) prune(beforeBlock uint64) {
 
 type memTreeView struct {
 	tree           *memTree
-	lastShiftIndex uint64
+	lastShiftIndex treeIndex
 	lastHeight     int
 	lastNodePos    [64]uint32
 }
 
-func (mv *memTreeView) findPosition(index uint64) (uint32, int, bool) {
+func (mv *memTreeView) findPosition(index treeIndex) (uint32, int, bool) {
 	height := 63 - bits.LeadingZeros64(index)
 	shiftIndex := index << (64 - height)
 	nodeHeight := min(bits.LeadingZeros64(shiftIndex^mv.lastShiftIndex), height, mv.lastHeight)
@@ -193,7 +193,7 @@ func (mv *memTreeView) findPosition(index uint64) (uint32, int, bool) {
 	return nodePos, nodeHeight, nodeHeight == height
 }
 
-func (mv *memTreeView) get(index uint64) TreeNode {
+func (mv *memTreeView) get(index treeIndex) TreeNode {
 	mv.tree.lock.RLock()
 	defer mv.tree.lock.RUnlock()
 
@@ -208,7 +208,7 @@ func (mv *memTreeView) get(index uint64) TreeNode {
 	return n.node
 }
 
-func (mv *memTreeView) addNewPath(index uint64, oldHeight int) *memTreeNode {
+func (mv *memTreeView) addNewPath(index treeIndex, oldHeight int) *memTreeNode {
 	nodeHeight := oldHeight
 	for mv.lastNodePos[nodeHeight] < mv.lastNodePos[0] {
 		nodeHeight--
@@ -250,7 +250,7 @@ func (mv *memTreeView) addNewPath(index uint64, oldHeight int) *memTreeNode {
 	return node
 }
 
-func (mv *memTreeView) set(index uint64, value TreeNode) {
+func (mv *memTreeView) set(index treeIndex, value TreeNode) {
 	mv.tree.lock.RLock()
 	defer func() {
 		expand := mv.tree.needExpand()
@@ -269,7 +269,7 @@ func (mv *memTreeView) set(index uint64, value TreeNode) {
 	node.setKnown(true)
 }
 
-func (mv *memTreeView) finalize(index uint64) {
+func (mv *memTreeView) finalize(index treeIndex) {
 	panic(nil) //TODO copy known hashes
 	mv.tree.lock.RLock()
 	defer func() {
