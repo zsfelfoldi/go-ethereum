@@ -20,6 +20,8 @@ import (
 	"encoding/binary"
 	"math/bits"
 	"sort"
+
+	"github.com/ethereum/go-ethereum/core/rawdb"
 )
 
 const (
@@ -57,6 +59,25 @@ func (t treeIndex) shiftRight(b uint) treeIndex {
 	return treeIndex{lo: t.lo>>b + t.hi<<(64-b), hi: t.hi >> b}
 }
 
+func (t treeIndex) addInt(add int64) treeIndex {
+	r := t
+	r.lo += uint64(add)
+	if add > 0 && r.lo < t.lo {
+		r.hi++
+	}
+	if add < 0 && r.lo > t.lo {
+		r.hi--
+	}
+	return r
+}
+
+func (t treeIndex) bit(b uint) uint {
+	if b < 64 {
+		return uint((t.lo >> b) & 1)
+	}
+	return uint((t.hi >> (b - 64)) & 1)
+}
+
 func (t treeIndex) lowerBits(b uint) treeIndex {
 	if b <= 64 {
 		return treeIndex{lo: t.lo & (uint64(1)<<b - 1)}
@@ -75,6 +96,10 @@ func (t treeIndex) split(splitLevel uint) (treeIndex, treeIndex) {
 
 func (t treeIndex) or(s treeIndex) treeIndex {
 	return treeIndex{lo: t.lo | s.lo, hi: t.hi | s.hi}
+}
+
+func (t treeIndex) xor(s treeIndex) treeIndex {
+	return treeIndex{lo: t.lo ^ s.lo, hi: t.hi ^ s.hi}
 }
 
 func (t treeIndex) child(s treeIndex) treeIndex {
@@ -119,10 +144,10 @@ func (params *Params) mapRowRootIndex(mapIndex, rowIndex uint32) treeIndex {
 	return epochRowRootIndex.append(uint64(mapSubIndex), params.logMapsPerEpoch)
 }
 
-func (params *Params) getRowDataFromTree(tree logIndexReader, mapRowRootIndex treeIndex, start, maxLen uint64, target []uint32) uint64 {
+func (params *Params) getRowDataFromTree(tree logIndexReader, mapRowRootIndex treeIndex, start, maxLen uint32, target []uint32) uint32 {
 	var pl progListIndex
 	pl.init(params, mapRowRootIndex)
-	count := nodeToUint64(tree.get(pl.countIndex))
+	count := uint32(nodeToUint64(tree.get(pl.countIndex)))
 	if start >= count {
 		return 0
 	}
@@ -132,7 +157,7 @@ func (params *Params) getRowDataFromTree(tree logIndexReader, mapRowRootIndex tr
 	readCount := min(maxLen, count-start)
 	for i := range readCount {
 		if newLeaf {
-			leafIndex, _, _, _ := pl.getLeaf(listIndex)
+			leafIndex, _, _, _ := pl.getLeaf(uint64(listIndex))
 			leaf = tree.get(leafIndex)
 			newLeaf = false
 		}
@@ -156,7 +181,7 @@ func (params *Params) makeMemoryMap(mv *memTreeView, mapIndex uint32) *memoryMap
 		rowPtrs:  make([]uint16, params.mapHeight),
 		rowData:  make([]uint32, params.valuesPerMap),
 	}
-	var ptr uint64
+	var ptr uint32
 	epoch := mapIndex >> params.logMapsPerEpoch
 	mapSubIndex := mapIndex % params.mapsPerEpoch
 	epochRootIndex := params.gtiEpochRoot(epoch)
@@ -167,27 +192,26 @@ func (params *Params) makeMemoryMap(mv *memTreeView, mapIndex uint32) *memoryMap
 		mm.treeNodes = append(mm.treeNodes, storedNode{storageIndex: params.toStorageIndex(index), node: node})
 	}
 	if mapSubIndex == params.mapsPerEpoch-1 {
-		for i := uint64(1); i < params.mapHeight*2; i++ {
-			storeNode(childIndex(filterMapsRootIndex, i))
+		for i := uint64(1); i < uint64(params.mapHeight)*2; i++ {
+			storeNode(filterMapsRootIndex.child(treeIndex{lo: i}))
 		}
 		for levelBelow := range params.logEpochHistory + 1 {
-			index := epochRootIndex >> levelBelow
-			if index != (epochRootIndex+1)>>levelBelow {
+			index := epochRootIndex.shiftRight(levelBelow)
+			if index != epochRootIndex.addInt(1).shiftRight(levelBelow) {
 				storeNode(index)
 			}
 		}
 	}
-	for levelBelow := range params.storeLogSubtrees {
-		firstIndex := logEntriesRootIndex >> levelBelow
-		nextIndex := (logEntriesRootIndex + 1) >> levelBelow
-		for index := firstIndex; index < nextIndex; index++ {
+	for _, levelBelow := range params.storeLogSubtrees {
+		firstIndex := logEntriesRootIndex.shiftRight(levelBelow)
+		nextIndex := logEntriesRootIndex.addInt(1).shiftRight(levelBelow)
+		for index := firstIndex; index != nextIndex; index = index.addInt(1) {
 			storeNode(index)
 		}
 	}
 	for rowIndex := range params.mapHeight {
-		epochRowRootIndex := filterMapsRootIndex.append(uint64(rowIndex), params.logMapHeight)
 		mapRowRootIndex := params.mapRowRootIndex(mapIndex, rowIndex)
-		rowLength := params.getRowDataFromTree(mv, mapRowRootIndex, 0, params.valuesPerMap-ptr, mm.rowData[ptr:])
+		rowLength := params.getRowDataFromTree(mv, mapRowRootIndex, 0, uint32(params.valuesPerMap)-ptr, mm.rowData[ptr:])
 		ptr += rowLength
 		mm.rowPtrs[rowIndex] = uint16(ptr)
 
@@ -195,8 +219,8 @@ func (params *Params) makeMemoryMap(mv *memTreeView, mapIndex uint32) *memoryMap
 			if rowLength < params.storeMapSubtreeMinLength[i] {
 				continue
 			}
-			index := mapRowRootIndex >> levelBelow
-			if index == (mapRowRootIndex+1)>>levelBelow {
+			index := mapRowRootIndex.shiftRight(levelBelow)
+			if index == mapRowRootIndex.addInt(1).shiftRight(levelBelow) {
 				break
 			}
 			storeNode(index)
@@ -207,21 +231,19 @@ func (params *Params) makeMemoryMap(mv *memTreeView, mapIndex uint32) *memoryMap
 		// store progressive tree nodes
 		var (
 			leafCount    = (rowLength + 7) / 8
-			leaf         uint64
 			plTreeRoot   = mapRowRootIndex.child(gtiProgListTree)
 			subtreeLevel uint
 		)
 		for leafCount > 0 {
 			if subtreeLevel >= params.storeProgListTreesFrom {
-				storedNode(plTreeRoot)
+				storeNode(plTreeRoot)
 			}
-			subtreeHeight = params.progListHeightFirst + subtreeLevel*params.progListHeightStep
+			subtreeHeight := params.progListHeightFirst + subtreeLevel*params.progListHeightStep
 			plSubtreeRoot := plTreeRoot.child(gtiProgListSubtree)
-			subtreeWidth := uint64(1) << subtreeHeight
-			subtreeLeaves = min(leafCount, subtreeWidth)
+			subtreeLeaves := min(leafCount, uint32(1)<<subtreeHeight)
 			for levelBelow := params.storeProgListSubtreeFirst; levelBelow <= subtreeHeight; levelBelow += params.storeProgListSubtreeNext {
 				for subIndex := range ((subtreeLeaves - 1) >> levelBelow) + 1 {
-					storedNode(plSubtreeRoot.append(subIndex, subtreeHeight-levelBelow))
+					storeNode(plSubtreeRoot.append(uint64(subIndex), subtreeHeight-levelBelow))
 				}
 			}
 			leafCount -= subtreeLeaves
@@ -237,40 +259,40 @@ func (params *Params) toStorageIndex(index treeIndex) treeIndex {
 	var mainIndex, epochIndex, epochSubIndex,
 		rowIndex, mapSubIndex, rowSubIndex,
 		tempIndex, storageIndex treeIndex
-	mainIndex, index = split(index, 1)
-	if mainIndex.lo != gtiEpochs {
+	mainIndex, index = index.split(1)
+	if mainIndex != gtiEpochs {
 		panic("unexpected index")
 	}
-	epochIndex, index = split(index, params.logEpochHistory)
+	epochIndex, index = index.split(params.logEpochHistory)
 	if index == rootIndex {
 		return epochIndex
 	}
 	shl := 127 - params.logEpochHistory - 1
 	storageIndex = epochIndex.shiftLeft(shl)
-	epochSubIndex, index = split(index, 1)
+	epochSubIndex, index = index.split(1)
 	shl -= 2
 	storageIndex = storageIndex.or(epochSubIndex.shiftLeft(shl))
-	switch epochSubIndex.lo {
+	switch epochSubIndex {
 	case gtiFilterMaps:
-		rowIndex, index = split(index, params.logMapHeight)
+		rowIndex, index = index.split(params.logMapHeight)
 		if index == rootIndex {
 			return storageIndex.or(rowIndex)
 		}
 		shl -= params.logMapHeight + 1
 		storageIndex = storageIndex.or(rowIndex.shiftLeft(shl))
-		mapSubIndex, index = split(index, params.logMapsPerEpoch)
+		mapSubIndex, index = index.split(params.logMapsPerEpoch)
 		if index == rootIndex {
 			return storageIndex.or(mapSubIndex)
 		}
 		rowSubIndex = index
 		tempIndex, index = index.split(1)
-		if tempIndex.lo == gtiProgListTree && index != rootIndex {
+		if tempIndex == gtiProgListTree && index != rootIndex {
 			tempIndex, index = index.split(1)
-			for tempIndex.lo == gtiProgListNextTree && index != rootIndex {
+			for tempIndex == gtiProgListNextTree && index != rootIndex {
 				tempIndex, index = index.split(1)
 			}
 			subtreeIndexBits := index.level()
-			if subtreeIndexBits > progListHeightFirst+(params.maxRowListLevels-1)*params.progListHeightStep {
+			if subtreeIndexBits > params.progListHeightFirst+(params.maxRowListLevels-1)*params.progListHeightStep {
 				panic("unexpected prog list subtree index")
 			}
 			rowSubIndex = rowSubIndex.shiftRight(subtreeIndexBits)
@@ -282,7 +304,7 @@ func (params *Params) toStorageIndex(index treeIndex) treeIndex {
 		shl -= params.maxRowListLevels + 2
 		return storageIndex.or(rowSubIndex.shiftLeft(shl)).or(mapSubIndex)
 	case gtiLogEntries:
-		return storageIndex.or(b)
+		return storageIndex.or(index)
 	default:
 		panic("unexpected index")
 	}
@@ -290,11 +312,19 @@ func (params *Params) toStorageIndex(index treeIndex) treeIndex {
 
 func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
 	var (
-		batch       = db.NewBatch()
+		batch       = f.db.NewBatch()
 		batchWrites int
 	)
 	// store map rows
+	mapIndices := make([]uint32, len(maps))
+	for i, mm := range maps {
+		mapIndices[i] = mm.mapIndex
+	}
+	rows := make([]FilterRow, len(maps))
 	for rowIndex := range f.mapHeight {
+		for i, mm := range maps {
+			rows[i] = mm.getRow(rowIndex)
+		}
 		if err := f.storeFilterMapRows(batch, mapIndices, rowIndex, rows); err != nil {
 			return err
 		}
@@ -303,7 +333,7 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
 			if err := batch.Write(); err != nil {
 				return err
 			}
-			batch = db.NewBatch()
+			batch = f.db.NewBatch()
 			batchWrites = 0
 		}
 	}
@@ -323,19 +353,20 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
 	mask := uint32(1)<<24 - 1
 	sort.Slice(sortIndex, func(i, j int) bool {
 		si, sj := sortIndex[i], sortIndex[j]
-		return maps[si>>24].treeNodes[si&mask].storageIndex < maps[sj>>24].treeNodes[sj&mask].storageIndex
+		sti, stj := maps[si>>24].treeNodes[si&mask].storageIndex, maps[sj>>24].treeNodes[sj&mask].storageIndex
+		return sti.lo < stj.lo || (sti.lo == stj.lo && sti.hi < stj.hi)
 	})
 	var (
 		lastGroup        = make([]*[32]byte, f.treeNodeGroupLength)
-		lastGroupIndex   uint64
-		lastGroupUpdated int
+		lastGroupIndex   treeIndex
+		lastGroupUpdated uint32
 	)
 	storeLastGroup := func(mustCommit bool) error {
 		if lastGroupUpdated == 0 {
 			return nil
 		}
 		if lastGroupUpdated < f.treeNodeGroupLength {
-			oldGroup, err := rawdb.ReadLogIndexTreeNodes(db, lastGroupIndex, f.treeNodeGroupLength)
+			oldGroup, err := rawdb.ReadLogIndexTreeNodes(f.db, lastGroupIndex.hi, lastGroupIndex.lo, int(f.treeNodeGroupLength))
 			if err != nil {
 				return err
 			}
@@ -345,7 +376,7 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
 				}
 			}
 		}
-		if err := rawdb.WriteLogIndexTreeNodes(batch, lastGroupIndex, lastGroup); err != nil {
+		if err := rawdb.WriteLogIndexTreeNodes(batch, lastGroupIndex.hi, lastGroupIndex.lo, lastGroup); err != nil {
 			return err
 		}
 		batchWrites++
@@ -353,7 +384,7 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
 			if err := batch.Write(); err != nil {
 				return err
 			}
-			batch = db.NewBatch()
+			batch = f.db.NewBatch()
 			batchWrites = 0
 		}
 		for i := range f.treeNodeGroupLength {
@@ -364,8 +395,8 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
 
 	for _, si := range sortIndex {
 		node := &maps[si>>24].treeNodes[si&mask]
-		groupIndex := node.storageIndex / f.treeNodeGroupLength
-		subIndex := node.storageIndex % f.treeNodeGroupLength
+		groupIndex := node.storageIndex.shiftRight(f.logTreeNodeGroupLength)
+		subIndex := node.storageIndex.lowerBits(f.logTreeNodeGroupLength).lo
 		if lastGroupIndex != groupIndex {
 			if err := storeLastGroup(false); err != nil {
 				return err
@@ -375,7 +406,7 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
 			if lastGroup[subIndex] != nil {
 				panic("duplicate storage index in storeTreeNodes batch")
 			}
-			lastGroup[subIndex] = &([32]byte(node.node))
+			lastGroup[subIndex] = (*[32]byte)(&node.node)
 		}
 	}
 	return storeLastGroup(true)

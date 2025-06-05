@@ -44,6 +44,7 @@ type Params struct {
 	valuesPerMap  uint64 // number of log values marked on each filter map
 	// not affecting consensus
 	baseRowGroupLength        uint32 // length of base row groups in local database
+	logTreeNodeGroupLength    uint
 	treeNodeGroupLength       uint32
 	maxRowListLevels          uint
 	storeProgListSubtreeFirst uint
@@ -66,6 +67,7 @@ var DefaultParams = Params{
 	logEpochHistory:           24,
 	progListHeightFirst:       0,
 	progListHeightStep:        2,
+	logTreeNodeGroupLength:    3,
 	treeNodeGroupLength:       8,
 	maxRowListLevels:          6,
 	storeProgListSubtreeFirst: 4,

@@ -18,7 +18,6 @@ package filtermaps
 
 import (
 	//"crypto/sha256"
-	"math/bits"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -169,23 +168,21 @@ func (mt *memTree) prune(beforeBlock uint64) {
 type memTreeView struct {
 	tree           *memTree
 	lastShiftIndex treeIndex
-	lastHeight     int
+	lastHeight     uint
 	lastNodePos    [64]uint32
 }
 
-func (mv *memTreeView) findPosition(index treeIndex) (uint32, int, bool) {
-	height := 63 - bits.LeadingZeros64(index)
-	shiftIndex := index << (64 - height)
-	nodeHeight := min(bits.LeadingZeros64(shiftIndex^mv.lastShiftIndex), height, mv.lastHeight)
+func (mv *memTreeView) findPosition(index treeIndex) (uint32, uint, bool) {
+	height := 127 - index.leadingZeros()
+	shiftIndex := index.shiftLeft(128 - height)
+	nodeHeight := min(shiftIndex.xor(mv.lastShiftIndex).leadingZeros(), height, mv.lastHeight)
 	nodePos := mv.lastNodePos[nodeHeight]
-	subIndex := shiftIndex << nodeHeight
 	for nodeHeight < height && !mv.tree.nodes[nodePos].isEdge() {
-		if subIndex&(uint64(1)<<63) == 0 {
+		if shiftIndex.bit(127-nodeHeight) == 0 {
 			nodePos = mv.tree.nodes[nodePos].leftChild()
 		} else {
 			nodePos = mv.tree.nodes[nodePos].rightChild()
 		}
-		subIndex <<= 1
 		nodeHeight++
 		mv.lastNodePos[nodeHeight] = nodePos
 	}
@@ -208,7 +205,7 @@ func (mv *memTreeView) get(index treeIndex) TreeNode {
 	return n.node
 }
 
-func (mv *memTreeView) addNewPath(index treeIndex, oldHeight int) *memTreeNode {
+func (mv *memTreeView) addNewPath(index treeIndex, oldHeight uint) *memTreeNode {
 	nodeHeight := oldHeight
 	for mv.lastNodePos[nodeHeight] < mv.lastNodePos[0] {
 		nodeHeight--
@@ -216,8 +213,7 @@ func (mv *memTreeView) addNewPath(index treeIndex, oldHeight int) *memTreeNode {
 	nodePos := mv.lastNodePos[nodeHeight]
 	node := &mv.tree.nodes[nodePos]
 	oldNode := node
-	targetHeight := 63 - bits.LeadingZeros64(index)
-	subIndex := index << (64 + nodeHeight - targetHeight)
+	targetHeight := 127 - index.leadingZeros()
 	for nodeHeight < targetHeight {
 		newNodePos := mv.tree.addNode()
 		var newSibling uint32
@@ -225,7 +221,7 @@ func (mv *memTreeView) addNewPath(index treeIndex, oldHeight int) *memTreeNode {
 			newSibling = mv.tree.addNode()
 			mv.tree.nodes[newSibling].setEdge()
 		}
-		if subIndex&(uint64(1)<<63) == 0 {
+		if index.bit(targetHeight-nodeHeight-1) == 0 {
 			if oldNode != nil {
 				newSibling = oldNode.rightChild()
 			}
@@ -236,7 +232,6 @@ func (mv *memTreeView) addNewPath(index treeIndex, oldHeight int) *memTreeNode {
 			}
 			node.setChildren(newSibling, newNodePos)
 		}
-		subIndex <<= 1
 		nodeHeight++
 		nodePos = newNodePos
 		node = &mv.tree.nodes[nodePos]
