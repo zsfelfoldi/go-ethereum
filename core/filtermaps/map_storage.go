@@ -411,3 +411,43 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
 	}
 	return storeLastGroup(true)
 }
+
+/*
+*** index view
+    - db: rendered map range, tail range, dirty range
+        - rendered map-ekhez last block, illetve block ptr-ek, ennek megfelelo a block range is
+    - memory map layer:
+        - egy egyseges nezetet nyujt, transzparensen kezeli a db update-eket
+        - csak komplett immutable memoryMap-ekkel operal, lehet hozzaadni, rollback-elni
+        - egy folytonos szakaszt kezel (tail-re kulon kell)
+        - search backend-et biztosit (finalizalt node-ok is elerhetok, de ezzel proof-ot generalni nem lehet)
+    - memory tree layer:
+        - memory map layer + memoryTree
+        - tobb head block-ra is search + proofgen backend-et biztosit
+    - indexer:
+        - 2x memory tree layer (head, tail) + chain view
+        - set target view, log index history, automatikusan konvergal mindig a cel fele
+        - tobb head block-ra is search + proofgen backend-et biztosit
+            - idovel egyes view-k elavulhatnak, ekkor az olvasas hibat eredmenyez
+            ? indexeles kozben lokalis kereseshez inkabb egesz blokkos (memory map layer) view-t hasznaljunk?
+
+
+
+* memoryMapLayer:
+    - epoch window range, rendered map range, block range
+    - inicializalas epoch hataron (window mindig epoch hatarokon van)
+    - egy folytonos overlay map range-t rak a disk layer fole, lehet atfedes, de a memory range a vege utan mindent kitakar
+    - get map rows, tree nodes, last block, block lvptr
+    - add memoryMap
+    - revert
+    - sajat disk update goroutine
+        - torles az elso; amig van a disken dirty map, vagy olyan, amit a map overlay felulir/kitakar, addig torlunk
+        - majd sorban, nagyobb csoportokban kiirjuk a memory map-eket, ha a disk layer-ben update-eltuk a rendered range-et, a memory map-et eldobjuk
+            - amig irjuk, a disken dirty-nek szamit
+            - iras kozben is revertalhatok a map-ek, ekkor marad dirty a disken, megkezdodik a torles
+        - iras megkezdese elott osszevarunk egy nagyobb memory map csoportot kerek map index hatarig vagy az mml ablak hataraig
+            - head eleresekor indexer kuldhet fel vmi jelet, hogy ne varjunk tovabb, irjuk ki, ami van
+            - tul sok memory map osszegyulese eseten viszont add map blokkol, amig ki nem irodik egy resze
+    - merge tail - egy befejezett masik memoryMapLayer-t (ami lenyegeben mar csak transzparens disk layer ablak) hozzafuz a sajat tail-jehez
+
+*/

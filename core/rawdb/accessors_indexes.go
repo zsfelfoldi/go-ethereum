@@ -435,8 +435,6 @@ func DeleteBlockLvPointers(db ethdb.KeyValueStore, blocks common.Range[uint64], 
 // filter maps structure and the corresponting log value index range.
 type FilterMapsRange struct {
 	Version                      uint32
-	HeadIndexed                  bool
-	HeadDelimiter                uint64
 	BlocksFirst, BlocksAfterLast uint64
 	MapsFirst, MapsAfterLast     uint32
 	TailPartialEpoch             uint32
