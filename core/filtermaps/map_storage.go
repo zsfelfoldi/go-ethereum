@@ -310,7 +310,7 @@ func (params *Params) toStorageIndex(index treeIndex) treeIndex {
 	}
 }
 
-func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
+func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap, stopCh chan struct{}) error {
 	var (
 		batch       = f.db.NewBatch()
 		batchWrites int
@@ -332,6 +332,11 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
 		if batchWrites >= maxBatchSize {
 			if err := batch.Write(); err != nil {
 				return err
+			}
+			select {
+				case <-stopCh:
+				return errors.New("map write cancelled")
+				default:
 			}
 			batch = f.db.NewBatch()
 			batchWrites = 0
@@ -384,6 +389,11 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
 			if err := batch.Write(); err != nil {
 				return err
 			}
+			select {
+				case <-stopCh:
+				return errors.New("map write cancelled")
+				default:
+			}
 			batch = f.db.NewBatch()
 			batchWrites = 0
 		}
@@ -430,7 +440,7 @@ type mapOverlay struct {
 	memoryMaps     []*memoryMap
 	triggerCh      chan struct{}
 	writeMaps      int
-	writeProgress  uint32
+	writeStopCh    chan struct{}
 }
 
 func (f *FilterMaps) newMapOverlay(window common.Range[uint32], dbRange storageRange) {
@@ -452,6 +462,10 @@ func (m *mapOverlay) revert(keepBefore uint32) {
 	if !m.window.Includes(keepBefore) {
 		panic("invalid revert map index")
 	}
+	if m.writeMaps > 0 && keepBefore < m.firstMemoryMap+m.writeMaps {
+		close(m.writeStopCh)
+		m.writeMaps, m.writeStopCh = 0, nil
+	}
 	if keepBefore >= m.firstMemoryMap {
 		if newLen := keepBefore - m.firstMemoryMap; newLen < len(m.memoryMaps) {
 			m.memoryMaps = m.memoryMaps[:newLen]
@@ -468,7 +482,7 @@ func (m *mapOverlay) revert(keepBefore uint32) {
 	m.triggerWrite()
 }
 
-func (m *mapOverlay) addMap(mm *memoryMap) {
+func (m *mapOverlay) addMap(mm *memoryMap, lastMap bool) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -476,7 +490,11 @@ func (m *mapOverlay) addMap(mm *memoryMap) {
 		panic("invalid add map index")
 	}
 	m.memoryMaps = append(m.memoryMaps, mm)
-	m.triggerWrite()
+	if m.writeMaps == 0 && (lastMap || (mm.mapIndex+1)%mapWriteGroup == 0) {
+		m.writeMaps = len(m.memoryMaps)
+		m.writeStopCh = make(chan struct{})
+		m.triggerWrite()
+	}
 }
 
 func (m *mapOverlay) triggerWrite() {
@@ -490,13 +508,19 @@ func (m *mapOverlay) writeLoop() {
 	for {
 		select {
 		case <-m.triggerCh:
-			for m.writeBatch() {
+			m.lock.RLock()
+			maps := slices.Clone(m.memoryMaps[:m.writeMaps])
+			stopCh := m.writeStopCh
+			m.lock.RUnlock()
+			m.f.storeMemoryMaps(maps, stopCh)
+			m.lock.Lock()
+			if m.writeStopCh == stopCh {
+				m.writeMaps, m.writeStopCh = 0, nil
+				xxx // set stored range
 			}
+			m.lock.Unlock()
 		}
 	}
-}
-
-func (m *mapOverlay) writeBatch() bool {
 }
 
 /*
