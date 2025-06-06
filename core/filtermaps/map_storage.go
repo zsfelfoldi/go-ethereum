@@ -412,6 +412,93 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap) error {
 	return storeLastGroup(true)
 }
 
+type mapRange struct {
+	maps   common.Range[uint32]
+	blocks common.Range[uint64]
+}
+
+type storageRange struct {
+	valid, dirty mapRange
+}
+
+type mapOverlay struct {
+	lock           sync.RWMutex
+	f              *FilterMaps
+	window         common.Range[uint32] // window jelenti azt is, hogy az epoch tree-ben elotte/utana boundary proofok megvannak
+	dbRange        storageRange
+	firstMemoryMap uint32
+	memoryMaps     []*memoryMap
+	triggerCh      chan struct{}
+	writeMaps      int
+	writeProgress  uint32
+}
+
+func (f *FilterMaps) newMapOverlay(window common.Range[uint32], dbRange storageRange) {
+	m := &mapOverlay{
+		f:              f,
+		window:         window,
+		dbRange:        dbRange,
+		firstMemoryMap: dbRange.valid.maps.AfterLast(),
+		triggerCh:      make(chan struct{}, 1),
+	}
+	go m.writeLoop()
+	return m
+}
+
+func (m *mapOverlay) revert(keepBefore uint32) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	if !m.window.Includes(keepBefore) {
+		panic("invalid revert map index")
+	}
+	if keepBefore >= m.firstMemoryMap {
+		if newLen := keepBefore - m.firstMemoryMap; newLen < len(m.memoryMaps) {
+			m.memoryMaps = m.memoryMaps[:newLen]
+			return
+		} else {
+			panic("invalid revert map index")
+		}
+	}
+	if !m.dbRange.valid.maps.Includes(keepBefore) {
+		panic("invalid revert map index")
+	}
+	m.firstMemoryMap = keepBefore
+	m.memoryMaps = nil
+	m.triggerWrite()
+}
+
+func (m *mapOverlay) addMap(mm *memoryMap) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	if m.firstMemoryMap+uint32(len(m.memoryMaps)) != mm.mapIndex || !m.window.Includes(mm.mapIndex) {
+		panic("invalid add map index")
+	}
+	m.memoryMaps = append(m.memoryMaps, mm)
+	m.triggerWrite()
+}
+
+func (m *mapOverlay) triggerWrite() {
+	select {
+	case m.triggerCh <- struct{}{}:
+	default:
+	}
+}
+
+func (m *mapOverlay) writeLoop() {
+	for {
+		select {
+		case <-m.triggerCh:
+			for m.writeBatch() {
+			}
+		}
+	}
+}
+
+func (m *mapOverlay) writeBatch() bool {
+}
+
 /*
 *** index view
     - db: rendered map range, tail range, dirty range
