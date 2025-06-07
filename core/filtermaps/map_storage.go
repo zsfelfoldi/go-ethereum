@@ -518,10 +518,9 @@ func (m *mapOverlay) addMap(mm *memoryMap, lastMap bool) {
 		close(m.triggerCh)
 		m.triggerCh = nil
 	}
-	if m.writeMaps == 0 && (lastMap || (mm.mapIndex+1)%mapWriteGroup == 0) {
-		m.writeMaps = uint32(len(m.memoryMaps))
-		m.writeStopCh = make(chan struct{})
-		m.triggerWrite()
+	if m.triggerCh != nil && (lastMap || (mm.mapIndex+1)%mapWriteGroup == 0) {
+		close(m.triggerCh)
+		m.triggerCh = nil
 	}
 }
 
