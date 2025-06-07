@@ -18,14 +18,19 @@ package filtermaps
 
 import (
 	"encoding/binary"
+	"errors"
 	"math/bits"
+	"slices"
 	"sort"
+	"sync"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 )
 
 const (
-	maxBatchSize = 10000
+	maxBatchSize  = 10000
+	mapWriteGroup = 32
 )
 
 type TreeNode [32]byte
@@ -334,9 +339,9 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap, stopCh chan struct{}) er
 				return err
 			}
 			select {
-				case <-stopCh:
+			case <-stopCh:
 				return errors.New("map write cancelled")
-				default:
+			default:
 			}
 			batch = f.db.NewBatch()
 			batchWrites = 0
@@ -390,9 +395,9 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap, stopCh chan struct{}) er
 				return err
 			}
 			select {
-				case <-stopCh:
+			case <-stopCh:
 				return errors.New("map write cancelled")
-				default:
+			default:
 			}
 			batch = f.db.NewBatch()
 			batchWrites = 0
@@ -422,37 +427,52 @@ func (f *FilterMaps) storeMemoryMaps(maps []*memoryMap, stopCh chan struct{}) er
 	return storeLastGroup(true)
 }
 
-type mapRange struct {
-	maps   common.Range[uint32]
-	blocks common.Range[uint64]
-}
-
 type storageRange struct {
-	valid, dirty mapRange
+	maps, dirty common.Range[uint32]
+	blocks      common.Range[uint64]
 }
 
 type mapOverlay struct {
-	lock           sync.RWMutex
-	f              *FilterMaps
-	window         common.Range[uint32] // window jelenti azt is, hogy az epoch tree-ben elotte/utana boundary proofok megvannak
-	dbRange        storageRange
-	firstMemoryMap uint32
-	memoryMaps     []*memoryMap
-	triggerCh      chan struct{}
-	writeMaps      int
-	writeStopCh    chan struct{}
+	lock                   sync.RWMutex
+	f                      *FilterMaps
+	window                 common.Range[uint32] // window jelenti azt is, hogy az epoch tree-ben elotte/utana boundary proofok megvannak
+	windowBlocks           common.Range[uint64]
+	dbRange                storageRange
+	setDbRange             func(storageRange) error
+	firstMemoryMap         uint32
+	memoryMaps             []*memoryMap
+	triggerCh, writeStopCh chan struct{}
+	writeMaps              uint32
 }
 
-func (f *FilterMaps) newMapOverlay(window common.Range[uint32], dbRange storageRange) {
+func (f *FilterMaps) newMapOverlay(window common.Range[uint32], dbRange storageRange, setDbRange func(storageRange) error) (*mapOverlay, error) {
 	m := &mapOverlay{
 		f:              f,
 		window:         window,
 		dbRange:        dbRange,
-		firstMemoryMap: dbRange.valid.maps.AfterLast(),
-		triggerCh:      make(chan struct{}, 1),
+		setDbRange:     setDbRange,
+		firstMemoryMap: dbRange.maps.AfterLast(),
 	}
+	var wbf, wba uint64
+	if window.First() > 0 {
+		block, _, err := f.getLastBlockOfMap(window.First() - 1)
+		if err != nil {
+			return nil, err
+		}
+		wbf = block + 1
+	}
+	if window.AfterLast() < math.MaxUint32 {
+		block, _, err := f.getLastBlockOfMap(window.Last())
+		if err != nil {
+			return nil, err
+		}
+		wba = block + 1
+	} else {
+		wba = math.MaxUint64
+	}
+	m.windowBlocks = common.NewRange[uint64](wbf, wba-wbf)
 	go m.writeLoop()
-	return m
+	return m, nil
 }
 
 func (m *mapOverlay) revert(keepBefore uint32) {
@@ -462,12 +482,12 @@ func (m *mapOverlay) revert(keepBefore uint32) {
 	if !m.window.Includes(keepBefore) {
 		panic("invalid revert map index")
 	}
-	if m.writeMaps > 0 && keepBefore < m.firstMemoryMap+m.writeMaps {
+	if m.writeStopCh != nil && keepBefore < m.firstMemoryMap+m.writeMaps {
 		close(m.writeStopCh)
-		m.writeMaps, m.writeStopCh = 0, nil
+		m.writeStopCh = nil
 	}
 	if keepBefore >= m.firstMemoryMap {
-		if newLen := keepBefore - m.firstMemoryMap; newLen < len(m.memoryMaps) {
+		if newLen := int(keepBefore - m.firstMemoryMap); newLen < len(m.memoryMaps) {
 			m.memoryMaps = m.memoryMaps[:newLen]
 			return
 		} else {
@@ -479,7 +499,10 @@ func (m *mapOverlay) revert(keepBefore uint32) {
 	}
 	m.firstMemoryMap = keepBefore
 	m.memoryMaps = nil
-	m.triggerWrite()
+	if m.triggerCh != nil {
+		close(m.triggerCh)
+		m.triggerCh = nil
+	}
 }
 
 func (m *mapOverlay) addMap(mm *memoryMap, lastMap bool) {
@@ -490,17 +513,15 @@ func (m *mapOverlay) addMap(mm *memoryMap, lastMap bool) {
 		panic("invalid add map index")
 	}
 	m.memoryMaps = append(m.memoryMaps, mm)
+	m.lastMapAdded = lastMap
+	if m.triggerCh != nil {
+		close(m.triggerCh)
+		m.triggerCh = nil
+	}
 	if m.writeMaps == 0 && (lastMap || (mm.mapIndex+1)%mapWriteGroup == 0) {
-		m.writeMaps = len(m.memoryMaps)
+		m.writeMaps = uint32(len(m.memoryMaps))
 		m.writeStopCh = make(chan struct{})
 		m.triggerWrite()
-	}
-}
-
-func (m *mapOverlay) triggerWrite() {
-	select {
-	case m.triggerCh <- struct{}{}:
-	default:
 	}
 }
 
