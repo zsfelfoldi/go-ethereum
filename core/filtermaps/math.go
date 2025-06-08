@@ -28,12 +28,15 @@ import (
 
 // Params defines the basic parameters of the log index structure.
 type Params struct {
-	logMapHeight       uint // log2(mapHeight)
-	logMapWidth        uint // log2(mapWidth)
-	logMapsPerEpoch    uint // log2(mapsPerEpoch)
-	logValuesPerMap    uint // log2(logValuesPerMap)
-	baseRowLengthRatio uint // baseRowLength / average row length
-	logLayerDiff       uint // maxRowLength log2 growth per layer
+	logMapHeight        uint // log2(mapHeight)
+	logMapWidth         uint // log2(mapWidth)
+	logMapsPerEpoch     uint // log2(mapsPerEpoch)
+	logValuesPerMap     uint // log2(logValuesPerMap)
+	baseRowLengthRatio  uint // baseRowLength / average row length
+	logLayerDiff        uint // maxRowLength log2 growth per layer
+	logEpochHistory     uint
+	progListHeightFirst uint
+	progListHeightStep  uint
 	// derived fields
 	mapHeight     uint32 // filter map height (number of rows)
 	mapsPerEpoch  uint32 // number of maps in an epoch
@@ -45,13 +48,16 @@ type Params struct {
 
 // DefaultParams is the set of parameters used on mainnet.
 var DefaultParams = Params{
-	logMapHeight:       16,
-	logMapWidth:        24,
-	logMapsPerEpoch:    10,
-	logValuesPerMap:    16,
-	baseRowGroupLength: 32,
-	baseRowLengthRatio: 8,
-	logLayerDiff:       4,
+	logMapHeight:        16,
+	logMapWidth:         24,
+	logMapsPerEpoch:     10,
+	logValuesPerMap:     16,
+	baseRowGroupLength:  32,
+	baseRowLengthRatio:  8,
+	logLayerDiff:        4,
+	logEpochHistory:     24,
+	progListHeightFirst: 0,
+	progListHeightStep:  2,
 }
 
 // RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing
@@ -210,3 +216,60 @@ type potentialMatches []uint64
 func (p potentialMatches) Len() int           { return len(p) }
 func (p potentialMatches) Less(i, j int) bool { return p[i] < p[j] }
 func (p potentialMatches) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
+
+type rangeSet[T uint32 | uint64] []common.Range[T]
+
+func (a rangeSet[T]) intersection(b rangeSet[T]) rangeSet[T] {
+	c := make(rangeSet[T], 0, min(len(a), len(b)))
+	for len(a) > 0 && len(b) > 0 {
+		if i := a[0].Intersection(b[0]); !i.IsEmpty() {
+			c = append(c, i)
+		}
+		if a[0].AfterLast() < b[0].AfterLast() {
+			a = a[1:]
+		} else {
+			b = b[1:]
+		}
+	}
+	return c
+}
+
+func (a *rangeSet[T]) normalize() {
+	sort.Slice(*a, func(i, j int) bool { return (*a)[i].First() < (*a)[j].First() })
+	// merge connecting/overlapping ranges
+	var j int
+	for i, next := range *a {
+		if j == 0 || (*a)[j-1].AfterLast() < next.First() {
+			// disjoint ranges, keep next range separate
+			if j != i {
+				(*a)[j] = next
+			}
+			j++
+		} else {
+			// connecting/overlapping ranges, merge with previous one
+			(*a)[j-1] = (*a)[j-1].Union(next)
+		}
+	}
+	*a = (*a)[:j]
+}
+
+func rangeSetUnion[T uint32 | uint64](a []rangeSet[T]) rangeSet[T] {
+	var l int
+	for _, r := range a {
+		l += len(r)
+	}
+	u := make(rangeSet[T], 0, l)
+	for _, r := range a {
+		u = append(u, r...)
+	}
+	u.normalize()
+	return u
+}
+
+func (a rangeSet[T]) totalCount() T {
+	var count T
+	for _, r := range a {
+		count += r.Count()
+	}
+	return count
+}

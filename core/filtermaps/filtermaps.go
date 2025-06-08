@@ -672,9 +672,9 @@ func (f *FilterMaps) storeFilterMapRowsOfGroup(batch ethdb.Batch, mapIndices []u
 // same data proximity reasons it is also suitable for database representation.
 // See also:
 // https://eips.ethereum.org/EIPS/eip-7745#hash-tree-structure
-func (f *FilterMaps) mapRowIndex(mapIndex, rowIndex uint32) uint64 {
-	epochIndex, mapSubIndex := mapIndex>>f.logMapsPerEpoch, mapIndex&(f.mapsPerEpoch-1)
-	return (uint64(epochIndex)<<f.logMapHeight+uint64(rowIndex))<<f.logMapsPerEpoch + uint64(mapSubIndex)
+func (p *Params) mapRowIndex(mapIndex, rowIndex uint32) uint64 {
+	epochIndex, mapSubIndex := mapIndex>>p.logMapsPerEpoch, mapIndex&(p.mapsPerEpoch-1)
+	return (uint64(epochIndex)<<p.logMapHeight+uint64(rowIndex))<<p.logMapsPerEpoch + uint64(mapSubIndex)
 }
 
 // getBlockLvPointer returns the starting log value index where the log values
