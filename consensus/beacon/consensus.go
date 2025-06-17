@@ -25,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip1559"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
+	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -353,9 +354,9 @@ func (beacon *Beacon) Finalize(chain consensus.ChainHeaderReader, header *types.
 
 // FinalizeAndAssemble implements consensus.Engine, setting the final state and
 // assembling the block.
-func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, body *types.Body, receipts []*types.Receipt) (*types.Block, error) {
+func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, logIndex *filtermaps.LogIndexHasher, body *types.Body, receipts []*types.Receipt) (*types.Block, error) {
 	if !beacon.IsPoSHeader(header) {
-		return beacon.ethone.FinalizeAndAssemble(chain, header, state, body, receipts)
+		return beacon.ethone.FinalizeAndAssemble(chain, header, state, logIndex, body, receipts)
 	}
 	shanghai := chain.Config().IsShanghai(header.Number, header.Time)
 	if shanghai {
@@ -373,6 +374,11 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 
 	// Assign the final state root to header.
 	header.Root = state.IntermediateRoot(true)
+
+	logRoot := logIndex.AddReceipts(header.ParentHash, receipts)
+	if chain.Config().IsEIP7745(header.Number, header.Time) {
+		copy(header.Bloom[:32], logRoot[:])
+	}
 
 	// Assemble the final block.
 	block := types.NewBlock(header, body, receipts, trie.NewStackTrie(nil))
@@ -409,7 +415,7 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 			}
 		}
 	}
-
+	logIndex.AddHeader(block.Header())
 	return block, nil
 }
 

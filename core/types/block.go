@@ -266,7 +266,9 @@ func NewBlock(header *Header, body *Body, receipts []*Receipt, hasher TrieHasher
 		// Receipts must go through MakeReceipt to calculate the receipt's bloom
 		// already. Merge the receipt's bloom together instead of recalculating
 		// everything.
-		b.header.Bloom = MergeBloom(receipts)
+		if b.header.Bloom == (Bloom{}) {
+			b.header.Bloom = MergeBloom(receipts)
+		}
 	}
 
 	if len(uncles) == 0 {

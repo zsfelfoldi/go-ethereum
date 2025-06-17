@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip1559"
+	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -511,7 +512,7 @@ func (ethash *Ethash) Finalize(chain consensus.ChainHeaderReader, header *types.
 
 // FinalizeAndAssemble implements consensus.Engine, accumulating the block and
 // uncle rewards, setting the final state and assembling the block.
-func (ethash *Ethash) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, body *types.Body, receipts []*types.Receipt) (*types.Block, error) {
+func (ethash *Ethash) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, logIndex *filtermaps.LogIndexHasher, body *types.Body, receipts []*types.Receipt) (*types.Block, error) {
 	if len(body.Withdrawals) > 0 {
 		return nil, errors.New("ethash does not support withdrawals")
 	}
@@ -521,8 +522,15 @@ func (ethash *Ethash) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 	// Assign the final state root to header.
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 
+	logRoot := logIndex.AddReceipts(header.ParentHash, receipts)
+	if chain.Config().IsEIP7745(header.Number, header.Time) {
+		copy(header.Bloom[:32], logRoot[:])
+	}
+
 	// Header seems complete, assemble into a block and return
-	return types.NewBlock(header, &types.Body{Transactions: body.Transactions, Uncles: body.Uncles}, receipts, trie.NewStackTrie(nil)), nil
+	block := types.NewBlock(header, &types.Body{Transactions: body.Transactions, Uncles: body.Uncles}, receipts, trie.NewStackTrie(nil))
+	logIndex.AddHeader(block.Header())
+	return block, nil
 }
 
 // SealHash returns the hash of a block prior to it being sealed.

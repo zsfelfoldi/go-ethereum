@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -38,6 +39,7 @@ import (
 type Backend interface {
 	BlockChain() *core.BlockChain
 	TxPool() *txpool.TxPool
+	LogIndex() *filtermaps.LogIndexHasher
 }
 
 // Config is the configuration parameters of mining.
@@ -72,6 +74,7 @@ type Miner struct {
 	txpool      *txpool.TxPool
 	prio        []common.Address // A list of senders to prioritize
 	chain       *core.BlockChain
+	logIndex    *filtermaps.LogIndexHasher
 	pending     *pending
 	pendingMu   sync.Mutex // Lock protects the pending block
 }
@@ -84,6 +87,7 @@ func New(eth Backend, config Config, engine consensus.Engine) *Miner {
 		engine:      engine,
 		txpool:      eth.TxPool(),
 		chain:       eth.BlockChain(),
+		logIndex:    eth.LogIndex(),
 		pending:     &pending{},
 	}
 }

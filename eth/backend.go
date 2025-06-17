@@ -110,6 +110,8 @@ type Ethereum struct {
 	filterMaps      *filtermaps.FilterMaps
 	closeFilterMaps chan chan struct{}
 
+	logIndex *filtermaps.LogIndexHasher
+
 	APIBackend *EthAPIBackend
 
 	miner    *miner.Miner
@@ -255,7 +257,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	if config.OverrideVerkle != nil {
 		overrides.OverrideVerkle = config.OverrideVerkle
 	}
-	eth.blockchain, err = core.NewBlockChain(chainDb, cacheConfig, config.Genesis, &overrides, eth.engine, vmConfig, &config.TransactionHistory)
+	eth.logIndex = filtermaps.NewLogIndexHasher()
+	eth.blockchain, err = core.NewBlockChain(chainDb, cacheConfig, config.Genesis, &overrides, eth.engine, eth.logIndex, vmConfig, &config.TransactionHistory)
 	if err != nil {
 		return nil, err
 	}
@@ -393,17 +396,18 @@ func (s *Ethereum) ResetWithGenesisBlock(gb *types.Block) {
 
 func (s *Ethereum) Miner() *miner.Miner { return s.miner }
 
-func (s *Ethereum) AccountManager() *accounts.Manager  { return s.accountManager }
-func (s *Ethereum) BlockChain() *core.BlockChain       { return s.blockchain }
-func (s *Ethereum) TxPool() *txpool.TxPool             { return s.txPool }
-func (s *Ethereum) BlobTxPool() *blobpool.BlobPool     { return s.blobTxPool }
-func (s *Ethereum) Engine() consensus.Engine           { return s.engine }
-func (s *Ethereum) ChainDb() ethdb.Database            { return s.chainDb }
-func (s *Ethereum) IsListening() bool                  { return true } // Always listening
-func (s *Ethereum) Downloader() *downloader.Downloader { return s.handler.downloader }
-func (s *Ethereum) Synced() bool                       { return s.handler.synced.Load() }
-func (s *Ethereum) SetSynced()                         { s.handler.enableSyncedFeatures() }
-func (s *Ethereum) ArchiveMode() bool                  { return s.config.NoPruning }
+func (s *Ethereum) AccountManager() *accounts.Manager    { return s.accountManager }
+func (s *Ethereum) BlockChain() *core.BlockChain         { return s.blockchain }
+func (s *Ethereum) LogIndex() *filtermaps.LogIndexHasher { return s.logIndex }
+func (s *Ethereum) TxPool() *txpool.TxPool               { return s.txPool }
+func (s *Ethereum) BlobTxPool() *blobpool.BlobPool       { return s.blobTxPool }
+func (s *Ethereum) Engine() consensus.Engine             { return s.engine }
+func (s *Ethereum) ChainDb() ethdb.Database              { return s.chainDb }
+func (s *Ethereum) IsListening() bool                    { return true } // Always listening
+func (s *Ethereum) Downloader() *downloader.Downloader   { return s.handler.downloader }
+func (s *Ethereum) Synced() bool                         { return s.handler.synced.Load() }
+func (s *Ethereum) SetSynced()                           { s.handler.enableSyncedFeatures() }
+func (s *Ethereum) ArchiveMode() bool                    { return s.config.NoPruning }
 
 // Protocols returns all the currently configured
 // network protocols to start.

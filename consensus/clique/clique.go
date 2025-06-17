@@ -33,6 +33,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip1559"
+	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -579,7 +580,7 @@ func (c *Clique) Finalize(chain consensus.ChainHeaderReader, header *types.Heade
 
 // FinalizeAndAssemble implements consensus.Engine, ensuring no uncles are set,
 // nor block rewards given, and returns the final block.
-func (c *Clique) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, body *types.Body, receipts []*types.Receipt) (*types.Block, error) {
+func (c *Clique) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, logIndex *filtermaps.LogIndexHasher, body *types.Body, receipts []*types.Receipt) (*types.Block, error) {
 	if len(body.Withdrawals) > 0 {
 		return nil, errors.New("clique does not support withdrawals")
 	}
@@ -589,8 +590,15 @@ func (c *Clique) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *
 	// Assign the final state root to header.
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 
+	logRoot := logIndex.AddReceipts(header.ParentHash, receipts)
+	if chain.Config().IsEIP7745(header.Number, header.Time) {
+		copy(header.Bloom[:32], logRoot[:])
+	}
+
 	// Assemble and return the final block for sealing.
-	return types.NewBlock(header, &types.Body{Transactions: body.Transactions}, receipts, trie.NewStackTrie(nil)), nil
+	block := types.NewBlock(header, &types.Body{Transactions: body.Transactions}, receipts, trie.NewStackTrie(nil))
+	logIndex.AddHeader(block.Header())
+	return block, nil
 }
 
 // Authorize injects a private key into the consensus engine to mint new blocks
