@@ -26,7 +26,7 @@ import (
 
 type memTreeRoot struct {
 	nodeIndex uint32
-	logRoot   common.Hash
+	blockId   common.Hash
 }
 
 type memTree struct {
@@ -77,7 +77,7 @@ func (mt *memTree) newReader(blockNumber uint64, logRoot common.Hash) *memTreeVi
 	return mv
 }
 
-func (mt *memTree) newWriter(blockNumber uint64, parentLogRoot common.Hash) *memTreeView {
+func (mt *memTree) newWriter(blockNumber uint64, parentId, blockId common.Hash) *memTreeView {
 	mt.lock.Lock()
 	defer mt.lock.Unlock()
 
@@ -87,7 +87,7 @@ func (mt *memTree) newWriter(blockNumber uint64, parentLogRoot common.Hash) *mem
 	newRoot := mt.addNode()
 	if blockNumber > 0 {
 		parentRoot, ok := mt.roots[blockNumber-1]
-		if !ok || parentRoot.logRoot != parentLogRoot {
+		if !ok || parentRoot.blockId != parentId {
 			panic("parent block missing from memory tree")
 		}
 		mt.nodes[newRoot] = mt.nodes[parentRoot.nodeIndex]
@@ -97,6 +97,7 @@ func (mt *memTree) newWriter(blockNumber uint64, parentLogRoot common.Hash) *mem
 	}
 	mv := &memTreeView{tree: mt, blockNumber: blockNumber}
 	mv.lastNodePos[0] = newRoot
+	mv.tree.roots[mv.blockNumber] = memTreeRoot{nodeIndex: newRoot, blockId: blockId}
 	return mv
 }
 
@@ -186,7 +187,7 @@ func (mt *memTree) prune(beforeBlock uint64) {
 		if block < beforeBlock {
 			delete(mt.roots, block)
 		} else {
-			mt.roots[block] = memTreeRoot{nodeIndex: posMapping(root.nodeIndex), logRoot: root.logRoot}
+			mt.roots[block] = memTreeRoot{nodeIndex: posMapping(root.nodeIndex), blockId: root.blockId}
 		}
 	}
 	mt.blocks.SetFirst(beforeBlock)
@@ -383,9 +384,5 @@ func (mv *memTreeView) finalize(index treeIndex) {
 
 func (mv *memTreeView) rootHash() common.Hash {
 	mv.tree.hashNode(rootIndex, mv.lastNodePos[0])
-	logRoot := common.Hash(mv.tree.nodes[mv.lastNodePos[0]].node)
-	mv.tree.lock.Lock()
-	mv.tree.roots[mv.blockNumber] = memTreeRoot{nodeIndex: mv.lastNodePos[0], logRoot: logRoot}
-	mv.tree.lock.Unlock()
-	return logRoot
+	return common.Hash(mv.tree.nodes[mv.lastNodePos[0]].node)
 }

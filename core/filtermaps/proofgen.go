@@ -51,7 +51,7 @@ type TestQuery struct {
 func MakeTestDataset(desc string, blockCount uint64, logsFn func(block uint64) []*types.Log) *TestDataset {
 	fmt.Println("Generating test dataset:", desc)
 	mt := &memTree{roots: make(map[uint64]memTreeRoot)}
-	tree := mt.newWriter(0, common.Hash{})
+	tree := mt.newWriter(0, common.Hash{}, common.Hash{})
 	dataset := &TestDataset{
 		params:      &DefaultParams,
 		tree:        tree,

@@ -375,7 +375,7 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 	// Assign the final state root to header.
 	header.Root = state.IntermediateRoot(true)
 
-	logRoot := logIndex.AddReceipts(header.ParentHash, receipts)
+	logRoot := logIndex.AddReceipts(header.ParentHash, header.Root, receipts)
 	if chain.Config().IsEIP7745(header.Number, header.Time) {
 		copy(header.Bloom[:32], logRoot[:])
 	}
@@ -415,7 +415,7 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 			}
 		}
 	}
-	logIndex.AddHeader(block.Header())
+	logIndex.AddHeader(block.Header(), block.Root())
 	return block, nil
 }
 

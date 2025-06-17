@@ -132,12 +132,12 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 	}
 	if v.config.IsEIP7745(header.Number, header.Time) {
 		var b types.Bloom
-		logRoot := v.logIndex.AddReceipts(header.ParentHash, res.Receipts)
+		logRoot := v.logIndex.AddReceipts(header.ParentHash, header.Root, res.Receipts)
 		copy(b[:32], logRoot[:])
 		if b != header.Bloom {
 			return fmt.Errorf("invalid log index root (remote: %x  local: %x)", header.Bloom[:32], logRoot)
 		}
-		v.logIndex.AddHeader(header)
+		v.logIndex.AddHeader(header, header.Root)
 	} else {
 		// Validate the received block's bloom with the one derived from the generated receipts.
 		// For valid blocks this should always validate to true.

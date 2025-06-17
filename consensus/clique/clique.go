@@ -590,14 +590,14 @@ func (c *Clique) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *
 	// Assign the final state root to header.
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 
-	logRoot := logIndex.AddReceipts(header.ParentHash, receipts)
+	logRoot := logIndex.AddReceipts(header.ParentHash, header.Root, receipts)
 	if chain.Config().IsEIP7745(header.Number, header.Time) {
 		copy(header.Bloom[:32], logRoot[:])
 	}
 
 	// Assemble and return the final block for sealing.
 	block := types.NewBlock(header, &types.Body{Transactions: body.Transactions}, receipts, trie.NewStackTrie(nil))
-	logIndex.AddHeader(block.Header())
+	logIndex.AddHeader(block.Header(), block.Root())
 	return block, nil
 }
 

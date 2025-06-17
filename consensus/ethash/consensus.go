@@ -522,14 +522,14 @@ func (ethash *Ethash) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 	// Assign the final state root to header.
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 
-	logRoot := logIndex.AddReceipts(header.ParentHash, receipts)
+	logRoot := logIndex.AddReceipts(header.ParentHash, header.Root, receipts)
 	if chain.Config().IsEIP7745(header.Number, header.Time) {
 		copy(header.Bloom[:32], logRoot[:])
 	}
 
 	// Header seems complete, assemble into a block and return
 	block := types.NewBlock(header, &types.Body{Transactions: body.Transactions, Uncles: body.Uncles}, receipts, trie.NewStackTrie(nil))
-	logIndex.AddHeader(block.Header())
+	logIndex.AddHeader(block.Header(), block.Root())
 	return block, nil
 }
 
