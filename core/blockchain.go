@@ -355,8 +355,9 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis
 		return nil, ErrNoGenesis
 	}
 	logRoot := logIndex.AddReceipts(common.Hash{}, nil)
-	copy(genesisHeader.Bloom[:32], logRoot[:]) //TODO
-	logIndex.AddHeader(genesisHeader)
+	gh := types.CopyHeader(genesisHeader)
+	copy(gh.Bloom[:32], logRoot[:]) //TODO
+	logIndex.AddHeader(gh)
 
 	bc.genesisBlock = types.NewBlockWithHeader(genesisHeader)
 
