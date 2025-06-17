@@ -29,13 +29,17 @@ type LogIndexHasher struct {
 }
 
 func NewLogIndexHasher() *LogIndexHasher {
+	mt := &memTree{roots: make(map[uint64]memTreeRoot)}
+	hasher := &Hasher{
+		//tree:            mt.newWriter(0, common.Hash{}),
+		params:          &DefaultParams,
+		rowMappingCache: lru.NewCache[common.Hash, lvPosition](cachedRowMappings),
+	}
+	hasher.params.deriveFields()
 	return &LogIndexHasher{
 		headerCache: lru.NewCache[common.Hash, *types.Header](100),
-		memTree:     &memTree{roots: make(map[uint64]memTreeRoot)},
-		hasher: &Hasher{
-			params:          &DefaultParams,
-			rowMappingCache: lru.NewCache[common.Hash, lvPosition](cachedRowMappings),
-		},
+		memTree:     mt,
+		hasher:      hasher,
 	}
 }
 
@@ -58,6 +62,8 @@ func (h *LogIndexHasher) AddReceipts(parentHash common.Hash, receipts types.Rece
 	h.hasher.tree = tree
 	if parentHeader != nil {
 		h.hasher.AddBlockDelimiter(parentHeader)
+	} else {
+		h.hasher.InitGenesis()
 	}
 	for _, receipt := range receipts {
 		for _, log := range receipt.Logs {
