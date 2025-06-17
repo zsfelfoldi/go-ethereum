@@ -719,8 +719,8 @@ func createMultiProofSubtree(source treeReader, proofTree *memTreeView, multiPro
 }
 
 func createProofTree(mp *multiProof) *memTreeView {
-	mt := &memTree{roots: make(map[uint64]uint32)}
-	proofTree := mt.newWriter(0)
+	mt := &memTree{roots: make(map[uint64]memTreeRoot)}
+	proofTree := mt.newWriter(0, common.Hash{})
 	if len(mp.leafIndices) != len(mp.leaves) {
 		panic("invalid multiproof")
 	}
@@ -749,8 +749,8 @@ func createProofSubtree(mp *multiProof, proofTree *memTreeView, index treeIndex,
 }
 
 func (params *Params) proveQuery(tree treeReader, query *filterQuery, firstIndex, lastIndex uint64) *multiProof {
-	mt := &memTree{roots: make(map[uint64]uint32)}
-	proof := mt.newWriter(0)
+	mt := &memTree{roots: make(map[uint64]memTreeRoot)}
+	proof := mt.newWriter(0, common.Hash{})
 	prover := params.constructProver(query)
 	reader := proofReader{params, tree}
 	firstMap, lastMap := uint32(firstIndex>>params.logValuesPerMap), uint32(lastIndex>>params.logValuesPerMap)

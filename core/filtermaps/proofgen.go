@@ -23,8 +23,6 @@ import (
 	"math/big"
 	"os"
 
-	//"reflect"
-
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -52,8 +50,8 @@ type TestQuery struct {
 
 func MakeTestDataset(desc string, blockCount uint64, logsFn func(block uint64) []*types.Log) *TestDataset {
 	fmt.Println("Generating test dataset:", desc)
-	mt := &memTree{roots: make(map[uint64]uint32)}
-	tree := mt.newWriter(0)
+	mt := &memTree{roots: make(map[uint64]memTreeRoot)}
+	tree := mt.newWriter(0, common.Hash{})
 	dataset := &TestDataset{
 		params:      &DefaultParams,
 		tree:        tree,

@@ -474,6 +474,7 @@ func (g *Genesis) toBlockWithRoot(root common.Hash) *types.Block {
 		Coinbase:   g.Coinbase,
 		Root:       root,
 	}
+	//TODO set empty log index root   if g.Config.IsEIP7745(head.Number, head.Time) {
 	if g.GasLimit == 0 {
 		head.GasLimit = params.GenesisGasLimit
 	}

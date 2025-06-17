@@ -354,6 +354,9 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis
 	if genesisHeader == nil {
 		return nil, ErrNoGenesis
 	}
+	logIndex.AddReceipts(common.Hash{}, nil)
+	logIndex.AddHeader(genesisHeader)
+
 	bc.genesisBlock = types.NewBlockWithHeader(genesisHeader)
 
 	bc.currentBlock.Store(nil)

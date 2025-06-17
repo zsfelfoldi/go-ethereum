@@ -24,12 +24,17 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+type memTreeRoot struct {
+	nodeIndex uint32
+	logRoot   common.Hash
+}
+
 type memTree struct {
 	lock      sync.RWMutex
 	nodes     []memTreeNode
 	nodeCount uint32
 	blocks    common.Range[uint64]
-	roots     map[uint64]uint32
+	roots     map[uint64]memTreeRoot
 }
 
 type memTreeNode struct {
@@ -59,7 +64,7 @@ func (mn *memTreeNode) setFinalized(b bool) {
 	}
 }
 
-func (mt *memTree) newReader(blockNumber uint64) *memTreeView {
+func (mt *memTree) newReader(blockNumber uint64, logRoot common.Hash) *memTreeView {
 	mt.lock.RLock()
 	defer mt.lock.RUnlock()
 
@@ -68,11 +73,11 @@ func (mt *memTree) newReader(blockNumber uint64) *memTreeView {
 		panic("block number missing from memory tree")
 	}
 	mv := &memTreeView{tree: mt}
-	mv.lastNodePos[0] = root
+	mv.lastNodePos[0] = root.nodeIndex
 	return mv
 }
 
-func (mt *memTree) newWriter(blockNumber uint64) *memTreeView {
+func (mt *memTree) newWriter(blockNumber uint64, parentLogRoot common.Hash) *memTreeView {
 	mt.lock.Lock()
 	defer mt.lock.Unlock()
 
@@ -82,15 +87,14 @@ func (mt *memTree) newWriter(blockNumber uint64) *memTreeView {
 	newRoot := mt.addNode()
 	if blockNumber > 0 {
 		parentRoot, ok := mt.roots[blockNumber-1]
-		if !ok {
+		if !ok || parentRoot.logRoot != parentLogRoot {
 			panic("parent block missing from memory tree")
 		}
-		mt.nodes[newRoot] = mt.nodes[parentRoot]
+		mt.nodes[newRoot] = mt.nodes[parentRoot.nodeIndex]
 	} else {
 		mt.nodes[newRoot] = memTreeNode{left: 1<<31 - 1, right: 1<<31 - 1}
 	}
-	mt.roots[blockNumber] = newRoot
-	mv := &memTreeView{tree: mt}
+	mv := &memTreeView{tree: mt, blockNumber: blockNumber}
 	mv.lastNodePos[0] = newRoot
 	return mv
 }
@@ -137,7 +141,7 @@ func (mt *memTree) prune(beforeBlock uint64) {
 	if !mt.blocks.Includes(beforeBlock) {
 		panic("invalid prune limit block number")
 	}
-	nodeBoundary := mt.roots[beforeBlock]
+	nodeBoundary := mt.roots[beforeBlock].nodeIndex
 	posMap := make([]uint32, nodeBoundary)
 	// mark nodes referenced by first remaining block
 	var mark func(nodePos uint32)
@@ -181,7 +185,7 @@ func (mt *memTree) prune(beforeBlock uint64) {
 		if block < beforeBlock {
 			delete(mt.roots, block)
 		} else {
-			mt.roots[block] = posMapping(root)
+			mt.roots[block] = memTreeRoot{nodeIndex: posMapping(root.nodeIndex), logRoot: root.logRoot}
 		}
 	}
 	mt.blocks.SetFirst(beforeBlock)
@@ -199,6 +203,7 @@ func (mt *memTree) knownNodes() (res uint32) {
 
 type memTreeView struct {
 	tree           *memTree
+	blockNumber    uint64
 	lastShiftIndex treeIndex
 	lastHeight     uint
 	lastNodePos    [128]uint32
@@ -377,5 +382,9 @@ func (mv *memTreeView) finalize(index treeIndex) {
 
 func (mv *memTreeView) rootHash() common.Hash {
 	mv.tree.hashNode(rootIndex, mv.lastNodePos[0])
-	return common.Hash(mv.tree.nodes[mv.lastNodePos[0]].node)
+	logRoot := common.Hash(mv.tree.nodes[mv.lastNodePos[0]].node)
+	mv.tree.lock.Lock()
+	mv.tree.roots[mv.blockNumber] = memTreeRoot{nodeIndex: mv.lastNodePos[0], logRoot: logRoot}
+	mv.tree.lock.Unlock()
+	return logRoot
 }

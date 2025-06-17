@@ -24,16 +24,15 @@ import (
 
 type LogIndexHasher struct {
 	headerCache *lru.Cache[common.Hash, *types.Header]
+	memTree     *memTree
 	hasher      *Hasher
 }
 
 func NewLogIndexHasher() *LogIndexHasher {
-	mt := &memTree{roots: make(map[uint64]uint32)}
-	tree := mt.newWriter(0)
 	return &LogIndexHasher{
 		headerCache: lru.NewCache[common.Hash, *types.Header](100),
+		memTree:     &memTree{roots: make(map[uint64]memTreeRoot)},
 		hasher: &Hasher{
-			tree:            tree,
 			params:          &DefaultParams,
 			rowMappingCache: lru.NewCache[common.Hash, lvPosition](cachedRowMappings),
 		},
@@ -44,7 +43,26 @@ func (h *LogIndexHasher) AddHeader(header *types.Header) {
 	h.headerCache.Add(header.Hash(), header)
 }
 
-func (h *LogIndexHasher) AddReceipts(parentHash common.Hash, receipts types.Receipts) (logRoot common.Hash) {
-	//parentHeader := h.headerCache.Get(parentHash)
-	return common.Hash{42}
+func (h *LogIndexHasher) AddReceipts(parentHash common.Hash, receipts types.Receipts) common.Hash {
+	var (
+		blockNumber   uint64
+		parentHeader  *types.Header
+		parentLogRoot common.Hash
+	)
+	if parentHash != (common.Hash{}) {
+		parentHeader, _ = h.headerCache.Get(parentHash)
+		blockNumber = parentHeader.Number.Uint64() + 1
+		copy(parentLogRoot[:], parentHeader.Bloom[:32])
+	}
+	tree := h.memTree.newWriter(blockNumber, parentLogRoot)
+	h.hasher.tree = tree
+	if parentHeader != nil {
+		h.hasher.AddBlockDelimiter(parentHeader)
+	}
+	for _, receipt := range receipts {
+		for _, log := range receipt.Logs {
+			h.hasher.AddLogEvent(log)
+		}
+	}
+	return tree.rootHash()
 }
