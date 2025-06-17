@@ -93,6 +93,7 @@ func (mt *memTree) newWriter(blockNumber uint64, parentLogRoot common.Hash) *mem
 		mt.nodes[newRoot] = mt.nodes[parentRoot.nodeIndex]
 	} else {
 		mt.nodes[newRoot] = memTreeNode{left: 1<<31 - 1, right: 1<<31 - 1}
+		mt.nodes[newRoot].setKnown(true)
 	}
 	mv := &memTreeView{tree: mt, blockNumber: blockNumber}
 	mv.lastNodePos[0] = newRoot
