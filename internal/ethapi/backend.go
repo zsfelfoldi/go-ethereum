@@ -98,6 +98,7 @@ type Backend interface {
 
 	CurrentView() *filtermaps.ChainView
 	NewMatcherBackend() filtermaps.MatcherBackend
+	NewProverBackend(referenceBlock uint64) filtermaps.ProverBackend
 }
 
 func GetAPIs(apiBackend Backend) []rpc.API {

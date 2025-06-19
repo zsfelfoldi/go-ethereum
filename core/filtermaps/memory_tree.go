@@ -64,7 +64,7 @@ func (mn *memTreeNode) setFinalized(b bool) {
 	}
 }
 
-func (mt *memTree) newReader(blockNumber uint64, logRoot common.Hash) *memTreeView {
+func (mt *memTree) newReader(blockNumber uint64) *memTreeView {
 	mt.lock.RLock()
 	defer mt.lock.RUnlock()
 

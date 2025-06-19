@@ -145,6 +145,80 @@ func (f *Filter) Logs(ctx context.Context) ([]*types.Log, error) {
 	return f.rangeLogs(ctx, begin, end)
 }
 
+func (f *Filter) LogsWithProof(ctx context.Context, referenceBlock rpc.BlockNumberOrHash) ([]byte, error) {
+	if f.block != nil {
+		return nil, errors.New("block logs with proof is unsupported")
+	}
+
+	// Disallow pending logs.
+	if f.begin == rpc.PendingBlockNumber.Int64() || f.end == rpc.PendingBlockNumber.Int64() {
+		return nil, errPendingLogsUnsupported
+	}
+
+	resolveSpecial := func(number int64) (uint64, error) {
+		switch number {
+		case rpc.LatestBlockNumber.Int64():
+			// when searching from and/or until the current head, we resolve it
+			// to MaxUint64 which is translated by rangeLogs to the actual head
+			// in each iteration, ensuring that the head block will be searched
+			// even if the chain is updated during search.
+			return math.MaxUint64, nil
+		case rpc.FinalizedBlockNumber.Int64():
+			hdr, _ := f.sys.backend.HeaderByNumber(ctx, rpc.FinalizedBlockNumber)
+			if hdr == nil {
+				return 0, errors.New("finalized header not found")
+			}
+			return hdr.Number.Uint64(), nil
+		case rpc.SafeBlockNumber.Int64():
+			hdr, _ := f.sys.backend.HeaderByNumber(ctx, rpc.SafeBlockNumber)
+			if hdr == nil {
+				return 0, errors.New("safe header not found")
+			}
+			return hdr.Number.Uint64(), nil
+		case rpc.EarliestBlockNumber.Int64():
+			earliest := f.sys.backend.HistoryPruningCutoff()
+			hdr, _ := f.sys.backend.HeaderByNumber(ctx, rpc.BlockNumber(earliest))
+			if hdr == nil {
+				return 0, errors.New("earliest header not found")
+			}
+			return hdr.Number.Uint64(), nil
+		default:
+			if number < 0 {
+				return 0, errors.New("negative block number")
+			}
+			return uint64(number), nil
+		}
+	}
+
+	// range query need to resolve the special begin/end block number
+	refNumber, ok := referenceBlock.Number()
+	if !ok {
+		return nil, errors.New("reference block hash not yet supported") //TODO
+	}
+	refBlock, err := resolveSpecial(refNumber.Int64())
+	if err != nil {
+		return nil, err
+	}
+	if refBlock == math.MaxUint64 {
+		refBlock = f.sys.backend.CurrentHeader().Number.Uint64()
+	}
+	begin, err := resolveSpecial(f.begin)
+	if err != nil {
+		return nil, err
+	}
+	if begin == math.MaxUint64 {
+		begin = refBlock
+	}
+	end, err := resolveSpecial(f.end)
+	if err != nil {
+		return nil, err
+	}
+	if end == math.MaxUint64 {
+		end = refBlock
+	}
+	return f.sys.backend.NewProverBackend(refBlock).Prove(begin, end, f.addresses, f.topics)
+}
+
 const (
 	rangeLogsTestDone      = iota // zero range
 	rangeLogsTestSync             // before sync; zero range
@@ -406,7 +480,6 @@ func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([
 	}
 	return session.matches, nil
 }
-
 func (f *Filter) indexedLogs(ctx context.Context, mb filtermaps.MatcherBackend, begin, end uint64) ([]*types.Log, error) {
 	start := time.Now()
 	potentialMatches, err := filtermaps.GetPotentialMatches(ctx, mb, begin, end, f.addresses, f.topics)

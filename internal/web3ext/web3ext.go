@@ -579,6 +579,12 @@ web3._extend({
 			params: 1,
 		}),
 		new web3._extend.Method({
+			name: 'getLogsWithProof',
+			call: 'eth_getLogsWithProof',
+			params: 2,
+			inputFormatter: [web3._extend.formatters.inputBlockNumberFormatter, null]
+		}),
+		new web3._extend.Method({
 			name: 'call',
 			call: 'eth_call',
 			params: 4,

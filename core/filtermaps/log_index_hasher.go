@@ -17,6 +17,11 @@
 package filtermaps
 
 import (
+	"encoding/binary"
+	"fmt"
+	"slices"
+	"sync"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -26,6 +31,8 @@ type LogIndexHasher struct {
 	headerCache *lru.Cache[common.Hash, *types.Header]
 	idCache     *lru.Cache[common.Hash, common.Hash]
 	memTree     *memTree
+	lock        sync.RWMutex // currently only guarding blockPtrs
+	blockPtrs   []uint64
 	hasher      *Hasher
 }
 
@@ -74,8 +81,71 @@ func (h *LogIndexHasher) AddReceipts(parentHash, blockId common.Hash, receipts t
 	}
 	for _, receipt := range receipts {
 		for _, log := range receipt.Logs {
-			h.hasher.AddLogEvent(log)
+			_, nextPtr := h.hasher.AddLogEvent(log)
+			h.lock.Lock()
+			if uint64(len(h.blockPtrs)) < blockNumber {
+				panic("invalid block number")
+			}
+			h.blockPtrs = append(h.blockPtrs[:blockNumber], nextPtr)
+			h.lock.Unlock()
 		}
 	}
 	return tree.rootHash()
+}
+
+type ProverBackend interface {
+	Prove(firstBlock, lastBlock uint64, addresses []common.Address, topics [][]common.Hash) ([]byte, error)
+}
+
+type logIndexProver struct {
+	tree      *memTreeView
+	blockPtrs []uint64
+	params    *Params
+}
+
+func (h *LogIndexHasher) NewProverBackend(referenceBlock uint64) ProverBackend {
+	h.lock.RLock()
+	defer h.lock.RUnlock()
+
+	return &logIndexProver{
+		tree:      h.memTree.newReader(referenceBlock),
+		blockPtrs: slices.Clone(h.blockPtrs),
+		params:    h.hasher.params,
+	}
+}
+
+func (p *logIndexProver) Prove(firstBlock, lastBlock uint64, addresses []common.Address, topics [][]common.Hash) ([]byte, error) {
+	fmt.Println("Generating log query proof")
+	fq := &filterQuery{
+		firstBlock: firstBlock,
+		lastBlock:  lastBlock,
+		addresses:  addresses,
+		topics:     topics,
+	}
+	var firstIndex uint64
+	if fq.firstBlock > 0 {
+		firstIndex = p.blockPtrs[fq.firstBlock-1]
+	}
+	mp := p.params.proveQuery(p.tree, fq, firstIndex, p.blockPtrs[fq.lastBlock])
+	fmt.Println("  leaf nodes:", len(mp.leaves))
+	fmt.Println("  proof nodes:", len(mp.proof))
+	proofData := make([]byte, 16+48*len(mp.leaves)+32*len(mp.proof))
+	binary.LittleEndian.PutUint64(proofData[0:8], uint64(len(mp.leaves)))
+	binary.LittleEndian.PutUint64(proofData[8:16], uint64(len(mp.proof)))
+	ptr := 16
+	for _, index := range mp.leafIndices {
+		binary.LittleEndian.PutUint64(proofData[ptr:ptr+8], index.lo)
+		binary.LittleEndian.PutUint64(proofData[ptr+8:ptr+16], index.hi)
+		ptr += 16
+	}
+	for _, node := range mp.leaves {
+		copy(proofData[ptr:ptr+32], node[:])
+		ptr += 32
+	}
+	for _, node := range mp.proof {
+		copy(proofData[ptr:ptr+32], node[:])
+		ptr += 32
+	}
+	fmt.Println("  proof size:", len(proofData), "bytes")
+	return proofData, nil //TODO return errors instead of panic
 }

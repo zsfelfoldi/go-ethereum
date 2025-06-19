@@ -373,6 +373,42 @@ func (api *FilterAPI) GetLogs(ctx context.Context, crit FilterCriteria) ([]*type
 	return returnLogs(logs), err
 }
 
+func (api *FilterAPI) GetLogsWithProof(ctx context.Context, referenceBlock rpc.BlockNumberOrHash, crit FilterCriteria) ([]byte, error) {
+	if len(crit.Topics) > maxTopics {
+		return nil, errExceedMaxTopics
+	}
+	var filter *Filter
+	if crit.BlockHash != nil {
+		// Block filter requested, construct a single-shot filter
+		filter = api.sys.NewBlockFilter(*crit.BlockHash, crit.Addresses, crit.Topics)
+	} else {
+		// Convert the RPC block numbers into internal representations
+		begin := rpc.LatestBlockNumber.Int64()
+		if crit.FromBlock != nil {
+			begin = crit.FromBlock.Int64()
+		}
+		end := rpc.LatestBlockNumber.Int64()
+		if crit.ToBlock != nil {
+			end = crit.ToBlock.Int64()
+		}
+		// Block numbers below 0 are special cases.
+		if begin > 0 && end > 0 && begin > end {
+			return nil, errInvalidBlockRange
+		}
+		if begin >= 0 && begin < int64(api.events.backend.HistoryPruningCutoff()) {
+			return nil, &history.PrunedHistoryError{}
+		}
+		// Construct the range filter
+		filter = api.sys.NewRangeFilter(begin, end, crit.Addresses, crit.Topics)
+	}
+	// Run the filter and return all the logs
+	proof, err := filter.LogsWithProof(ctx, referenceBlock)
+	if err != nil {
+		return nil, err
+	}
+	return proof, err
+}
+
 // UninstallFilter removes the filter with the given filter id.
 func (api *FilterAPI) UninstallFilter(id rpc.ID) bool {
 	api.filtersMu.Lock()

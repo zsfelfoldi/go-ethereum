@@ -455,6 +455,10 @@ func (b *EthAPIBackend) NewMatcherBackend() filtermaps.MatcherBackend {
 	return b.eth.filterMaps.NewMatcherBackend()
 }
 
+func (b *EthAPIBackend) NewProverBackend(referenceBlock uint64) filtermaps.ProverBackend {
+	return b.eth.logIndex.NewProverBackend(referenceBlock)
+}
+
 func (b *EthAPIBackend) Engine() consensus.Engine {
 	return b.eth.engine
 }

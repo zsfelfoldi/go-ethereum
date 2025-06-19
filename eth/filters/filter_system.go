@@ -73,6 +73,7 @@ type Backend interface {
 
 	CurrentView() *filtermaps.ChainView
 	NewMatcherBackend() filtermaps.MatcherBackend
+	NewProverBackend(referenceBlock uint64) filtermaps.ProverBackend
 }
 
 // FilterSystem holds resources shared by all filters.
