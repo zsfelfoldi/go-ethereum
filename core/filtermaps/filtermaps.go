@@ -135,37 +135,6 @@ type FilterMaps struct {
 	testProcessEventsHook                  func()
 }
 
-// filterMap is a full or partial in-memory representation of a filter map where
-// rows are allowed to have a nil value meaning the row is not stored in the
-// structure. Note that therefore a known empty row should be represented with
-// a zero-length slice.
-// It can be used as a memory cache or an overlay while preparing a batch of
-// changes to the structure. In either case a nil value should be interpreted
-// as transparent (uncached/unchanged).
-type filterMap []FilterRow
-
-// fastCopy returns a copy of the given filter map. Note that the row slices are
-// copied but their contents are not. This permits appending to the rows further
-// (which happens during map rendering) without affecting the validity of
-// copies made for snapshots during rendering.
-// Appending to the rows of both the original map and the fast copy, or two fast
-// copies of the same map would result in data corruption, therefore a fast copy
-// should always be used in a read only way.
-func (fm filterMap) fastCopy() filterMap {
-	return slices.Clone(fm)
-}
-
-// fullCopy returns a copy of the given filter map, also making a copy of each
-// individual filter row, ensuring that a modification to either one will never
-// affect the other.
-func (fm filterMap) fullCopy() filterMap {
-	c := make(filterMap, len(fm))
-	for i, row := range fm {
-		c[i] = slices.Clone(row)
-	}
-	return c
-}
-
 // FilterRow encodes a single row of a filter map as a list of column indices.
 // Note that the values are always stored in the same order as they were added
 // and if the same column index is added twice, it is also stored twice.
