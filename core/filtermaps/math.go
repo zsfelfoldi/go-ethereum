@@ -29,51 +29,34 @@ import (
 
 // Params defines the basic parameters of the log index structure.
 type Params struct {
-	logMapHeight    uint // The number of bits required to represent the map height
-	logMapWidth     uint // The number of bits required to represent the map width
-	logMapsPerEpoch uint // The number of bits required to represent the number of maps per epoch
-	logValuesPerMap uint // The number of bits required to represent the number of log values per map
-
-	// baseRowLengthRatio represents the ratio of base row length
-	// to the average row length.
-	baseRowLengthRatio uint
-
-	// logLayerDiff defines the logarithmic growth factor (base 2) of
-	// the maximum row length per layer. It indicates how much the maximum
-	// row length increases as the layer depth increases.
-	//
-	// Specifically:
-	// - the row length in base layer (layer == 0) is baseRowLength
-	// - the row length in layer x is baseRowLength << (logLayerDiff * x)
-	logLayerDiff uint
+	logMapHeight        uint // The number of bits required to represent the map height
+	logMapWidth         uint // The number of bits required to represent the map width
+	logMapsPerEpoch     uint // The number of bits required to represent the number of maps per epoch
+	logValuesPerMap     uint // The number of bits required to represent the number of log values per map
+	logMappingFreqiency []uint
+	maxRowLength        []uint32
 
 	// These fields can be derived with the information above
-	mapHeight     uint32 // The number of rows in the filter map
-	mapsPerEpoch  uint32 // The number of maps in an epoch
-	valuesPerMap  uint64 // The number of log values marked on each filter map
-	baseRowLength uint32 // maximum number of log values per row on layer 0
+	mapHeight    uint32 // The number of rows in the filter map
+	mapsPerEpoch uint32 // The number of maps in an epoch
+	valuesPerMap uint64 // The number of log values marked on each filter map
 
-	// baseRowGroupSize defines the number of base row entries grouped together
-	// as a single database entry in the local database to optimize storage
-	// and retrieval efficiency.
-	//
-	// This value can be configured based on the specific implementation.
-	baseRowGroupSize uint32
+	rowGroupSize []uint32
 }
 
 // DefaultParams is the set of parameters used on mainnet.
 var DefaultParams = Params{
-	logMapHeight:       16,
-	logMapWidth:        24,
-	logMapsPerEpoch:    10,
-	logValuesPerMap:    16,
-	baseRowGroupSize:   32,
-	baseRowLengthRatio: 8,
-	logLayerDiff:       4,
+	logMapHeight:        16,
+	logMapWidth:         24,
+	logMapsPerEpoch:     10,
+	logValuesPerMap:     16,
+	logMappingFrequency: []uint{10, 6, 2, 0, 0, 0, 0, 0, 0},
+	maxRowLength:        []uint32{8, 168, 2728, 10920, 10920, 10920, 10920, 10920, 10920},
+	rowGroupSize:        []uint32{256, 16, 1, 1},
 }
 
 // RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing
-var RangeTestParams = Params{
+/*var RangeTestParams = Params{
 	logMapHeight:       4,
 	logMapWidth:        24,
 	logMapsPerEpoch:    0,
@@ -81,14 +64,33 @@ var RangeTestParams = Params{
 	baseRowGroupSize:   32,
 	baseRowLengthRatio: 16, // baseRowLength >= 1
 	logLayerDiff:       4,
-}
+}*/
 
 // deriveFields calculates the derived fields of the parameter set.
 func (p *Params) deriveFields() {
 	p.mapHeight = uint32(1) << p.logMapHeight
 	p.mapsPerEpoch = uint32(1) << p.logMapsPerEpoch
 	p.valuesPerMap = uint64(1) << p.logValuesPerMap
-	p.baseRowLength = uint32(p.valuesPerMap * uint64(p.baseRowLengthRatio) / uint64(p.mapHeight))
+	if p.logMapWidth > 32 { // column index stored as uint32
+		panic("logMapWidth > 32")
+	}
+	if p.logMapHeight > 16 { // row index stored as uint16 in finishedMap
+		panic("logMapHeight > 16")
+	}
+	if p.maxRowLength[len(p.maxRowLength)-1] >= 0x10000 {
+		panic("maxRowLength >= 2**16") // index wrap-around issue in finishedMap
+	}
+}
+
+// mapRowIndex calculates the unified storage index where the given row of the
+// given map is stored. Note that this indexing scheme is the same as the one
+// proposed in EIP-7745 for tree-hashing the filter map structure and for the
+// same data proximity reasons it is also suitable for database representation.
+// See also:
+// https://eips.ethereum.org/EIPS/eip-7745#hash-tree-structure
+func (p *Params) mapRowIndex(mapIndex, rowIndex uint32) uint64 {
+	epochIndex, mapSubIndex := mapIndex>>p.logMapsPerEpoch, mapIndex&(p.mapsPerEpoch-1)
+	return (uint64(epochIndex)<<p.logMapHeight+uint64(rowIndex))<<p.logMapsPerEpoch + uint64(mapSubIndex)
 }
 
 // addressValue returns the log value hash of a log emitting address.
@@ -269,3 +271,60 @@ type potentialMatches []uint64
 func (p potentialMatches) Len() int           { return len(p) }
 func (p potentialMatches) Less(i, j int) bool { return p[i] < p[j] }
 func (p potentialMatches) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
+
+type rangeSet[T uint32 | uint64] []common.Range[T]
+
+func (a rangeSet[T]) intersection(b rangeSet[T]) rangeSet[T] {
+	c := make(rangeSet[T], 0, min(len(a), len(b)))
+	for len(a) > 0 && len(b) > 0 {
+		if i := a[0].Intersection(b[0]); !i.IsEmpty() {
+			c = append(c, i)
+		}
+		if a[0].AfterLast() < b[0].AfterLast() {
+			a = a[1:]
+		} else {
+			b = b[1:]
+		}
+	}
+	return c
+}
+
+func (a *rangeSet[T]) normalize() {
+	sort.Slice(*a, func(i, j int) bool { return (*a)[i].First() < (*a)[j].First() })
+	// merge connecting/overlapping ranges
+	var j int
+	for i, next := range *a {
+		if j == 0 || (*a)[j-1].AfterLast() < next.First() {
+			// disjoint ranges, keep next range separate
+			if j != i {
+				(*a)[j] = next
+			}
+			j++
+		} else {
+			// connecting/overlapping ranges, merge with previous one
+			(*a)[j-1] = (*a)[j-1].Union(next)
+		}
+	}
+	*a = (*a)[:j]
+}
+
+func rangeSetUnion[T uint32 | uint64](a []rangeSet[T]) rangeSet[T] {
+	var l int
+	for _, r := range a {
+		l += len(r)
+	}
+	u := make(rangeSet[T], 0, l)
+	for _, r := range a {
+		u = append(u, r...)
+	}
+	u.normalize()
+	return u
+}
+
+func (a rangeSet[T]) totalCount() T {
+	var count T
+	for _, r := range a {
+		count += r.Count()
+	}
+	return count
+}

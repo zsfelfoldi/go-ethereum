@@ -344,15 +344,12 @@ func IsStorageTrieNode(key []byte) bool {
 }
 
 // filterMapRowKey = filterMapRowPrefix + mapRowIndex (uint64 big endian)
-func filterMapRowKey(mapRowIndex uint64, base bool) []byte {
-	extLen := 8
-	if base {
-		extLen = 9
-	}
+func filterMapRowKey(mapRowIndex uint64, dbLayer uint32) []byte {
 	l := len(filterMapRowPrefix)
-	key := make([]byte, l+extLen)
+	key := make([]byte, l+9)
 	copy(key[:l], filterMapRowPrefix)
 	binary.BigEndian.PutUint64(key[l:l+8], mapRowIndex)
+	key[l+8] = byte(dbLayer)
 	return key
 }
 

@@ -50,7 +50,7 @@ var (
 )
 
 const (
-	databaseVersion       = 2    // reindexed if database version does not match
+	databaseVersion       = 3    // reindexed if database version does not match
 	cachedLastBlocks      = 1000 // last block of map pointers
 	cachedLvPointers      = 1000 // first log value pointer of block pointers
 	cachedFilterMaps      = 3    // complete filter maps (cached by map renderer)
@@ -645,17 +645,6 @@ func (f *FilterMaps) storeFilterMapRowsOfGroup(batch ethdb.Batch, mapIndices []u
 	}
 	rawdb.WriteFilterMapBaseRows(batch, mapRowIndex, baseRows, f.logMapWidth)
 	return nil
-}
-
-// mapRowIndex calculates the unified storage index where the given row of the
-// given map is stored. Note that this indexing scheme is the same as the one
-// proposed in EIP-7745 for tree-hashing the filter map structure and for the
-// same data proximity reasons it is also suitable for database representation.
-// See also:
-// https://eips.ethereum.org/EIPS/eip-7745#hash-tree-structure
-func (f *FilterMaps) mapRowIndex(mapIndex, rowIndex uint32) uint64 {
-	epochIndex, mapSubIndex := mapIndex>>f.logMapsPerEpoch, mapIndex&(f.mapsPerEpoch-1)
-	return (uint64(epochIndex)<<f.logMapHeight+uint64(rowIndex))<<f.logMapsPerEpoch + uint64(mapSubIndex)
 }
 
 // getBlockLvPointer returns the starting log value index where the log values

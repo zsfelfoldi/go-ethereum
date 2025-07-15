@@ -93,7 +93,7 @@ func (m *memoryMap) getRow(rowIndex, maxLen uint32) FilterRow {
 
 // finishedMap is an immutable memory representation of a single filter map.
 // It is more compact and allows more efficient row lookup than memoryMap.
-// Note that it assumes params.mapHeight <= 2**16 which is checked at creation.
+// Note that it assumes params.mapHeight <= 2**16 which is checked in deriveFields.
 type finishedMap struct {
 	rowPtrs []uint16 // points to rowData index after end of row; 2**16 can wrap around to 0
 	rowData []uint32
@@ -101,9 +101,6 @@ type finishedMap struct {
 
 // finished creates a new finishedMap from a memoryMap.
 func (m *memoryMap) finished() *finishedMap {
-	if len(m.rows) > 0x10000 {
-		panic("invalid map height; rowPtrs is []uint16")
-	}
 	fm := &finishedMap{
 		rowPtrs: make([]uint16, len(m.rows)),
 		rowData: make([]uint32, m.nextEntry),
