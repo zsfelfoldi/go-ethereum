@@ -400,7 +400,7 @@ func (m *singleMatcherInstance) getMatchesForLayer(ctx context.Context, layerInd
 			}
 			m.stats.addAmount(st, int64(len(filterRow)))
 			filterRows = append(filterRows, filterRow)
-			if uint32(len(filterRow)) < params.maxRowLength(layerIndex) {
+			if uint32(len(filterRow)) < params.maxRowLength[layerIndex] {
 				m.stats.setState(&st, stProcess)
 				matches := params.potentialMatches(filterRows, mapIndex, m.value)
 				m.stats.addAmount(st, int64(len(matches)))

@@ -23,11 +23,18 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
 )
 
+const maxWritesPerBatch = 100000
+
 type mapStorage struct {
-	params       *Params
-	db           ethdb.KeyValueStore
+	params             *Params
+	db                 ethdb.KeyValueStore
+	triggerCh, closeCh chan struct{}
+	closeWg            sync.WaitGroup
+
 	lock         sync.Mutex
 	valid, dirty rangeSet[uint32] // valid and dirty maps in database
 	overlay      rangeSet[uint32] // memory maps
@@ -41,7 +48,7 @@ type mapStorage struct {
 
 type writePatterItem struct {
 	mapIndex, dbLayer uint32
-	keepRows          []int // keep existing rows of layer group
+	keepRows          []uint32 // keep existing rows of layer group
 }
 
 func newMapStorage(params *Params, db ethdb.KeyValueStore) *mapStorage {
@@ -56,6 +63,14 @@ func newMapStorage(params *Params, db ethdb.KeyValueStore) *mapStorage {
 	m.closeWg.Add(1)
 	go m.eventLoop()
 	return m
+}
+
+func (m *mapStorage) loadMapRange() {
+	panic("TODO")
+}
+
+func (m *mapStorage) storeMapRange(valid, dirty rangeSet[uint32]) {
+	panic("TODO")
 }
 
 func (m *mapStorage) eventLoop() {
@@ -122,7 +137,7 @@ func (m *mapStorage) startWriteCycle() bool {
 		return true
 	}
 	m.writeMaps = make(map[uint32]*finishedMap)
-	for i := range writeMaps.Iter() {
+	for i := range writeMaps.iter() {
 		m.writeMaps[i] = m.maps[i]
 	}
 	m.writePattern = nil
@@ -137,8 +152,8 @@ func (m *mapStorage) startWriteCycle() bool {
 			}
 			updateGroups.normalize()
 		}
-		for i := range updateGroups.Iter() {
-			var keepRows []int
+		for i := range updateGroups.iter() {
+			var keepRows []uint32
 			if groupSize > 1 {
 				for j := range groupSize {
 					if keepMaps.includes(i*groupSize + j) {
@@ -148,7 +163,7 @@ func (m *mapStorage) startWriteCycle() bool {
 			}
 			m.writePattern = append(m.writePattern, writePatterItem{
 				mapIndex: i * groupSize,
-				dbLayer:  dbLayer,
+				dbLayer:  uint32(dbLayer),
 				keepRows: keepRows,
 			})
 		}
@@ -157,7 +172,7 @@ func (m *mapStorage) startWriteCycle() bool {
 		return m.writePattern[i].mapIndex < m.writePattern[j].mapIndex ||
 			(m.writePattern[i].mapIndex == m.writePattern[j].mapIndex && m.writePattern[i].dbLayer < m.writePattern[j].dbLayer)
 	})
-	m.valid = m.valid.intersection(invWriteMaps)
+	m.valid = m.valid.exclude(writeMaps)
 	m.dirty = m.dirty.union(writeMaps)
 	storeRange = true
 	return true
@@ -221,16 +236,20 @@ func (m *mapStorage) resetWriteCycle() {
 	m.lock.Unlock()
 }
 
+func (m *mapStorage) deleteEpoch(epoch uint32, stopCallback func() bool) (bool, error) {
+	panic("TODO")
+}
+
 func (m *mapStorage) writeRowUpdates(batch ethdb.Batch, rowIndex uint32) error {
 	for _, w := range m.writePattern {
 		if groupSize := m.params.rowGroupSize[w.dbLayer]; groupSize == 1 {
 			var row FilterRow
 			if fm := m.writeMaps[w.mapIndex]; fm != nil {
-				row = fm.getRow(rowIndex, m.params.maxRowLength(w.dbLayer))
+				row = fm.getRow(rowIndex, m.params.maxRowLength[w.dbLayer])
 			}
 			var from uint32
 			if w.dbLayer > 0 {
-				from = m.params.maxRowLength(w.dbLayer - 1)
+				from = m.params.maxRowLength[w.dbLayer-1]
 			}
 			if len(row) > from {
 				row = row[from:]
@@ -251,9 +270,9 @@ func (m *mapStorage) writeRowUpdates(batch ethdb.Batch, rowIndex uint32) error {
 			}
 			var from uint32
 			if w.dbLayer > 0 {
-				from = m.params.maxRowLength(w.dbLayer - 1)
+				from = m.params.maxRowLength[w.dbLayer-1]
 			}
-			to := m.params.maxRowLength(w.dbLayer)
+			to := m.params.maxRowLength[w.dbLayer]
 			for i := range groupSize {
 				if fm := m.writeMaps[w.mapIndex+i]; fm != nil {
 					if row := fm.getRow(rowIndex, to); len(row) > from {
