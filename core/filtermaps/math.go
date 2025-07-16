@@ -299,14 +299,6 @@ func (rb rangeBoundaries[T]) makeSet(threshold int) rangeSet[T] {
 	return res
 }
 
-func (a rangeSet[T]) normalize() rangeSet[T] {
-	rb := make(rangeBoundaries[T], 0, len(a)*2)
-	for _, r := range a {
-		rb.add(r, 1)
-	}
-	return rb.makeSet(1)
-}
-
 func (a rangeSet[T]) intersection(b rangeSet[T]) rangeSet[T] {
 	rb := make(rangeBoundaries[T], 0, (len(a)+len(b))*2)
 	for _, r := range a {

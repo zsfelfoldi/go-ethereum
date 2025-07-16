@@ -144,12 +144,12 @@ func (m *mapStorage) startWriteCycle() bool {
 	for dbLayer, groupSize := range m.params.rowGroupSize {
 		updateGroups := updateMaps
 		if groupSize > 1 {
-			updateGroups = make(rangeSet[uint32], len(updateMaps))
-			for i, r := range updateMaps {
+			updateRb := make(rangeBoundaries[uint32], 0, len(updateMaps)*2)
+			for _, r := range updateMaps {
 				first, last := r.First()/groupSize, r.Last()/groupSize
-				updateGroups[i] = common.NewRange[uint32](first, last+1-first)
+				updateRb.add(common.NewRange[uint32](first, last+1-first), 1)
 			}
-			updateGroups = updateGroups.normalize()
+			updateGroups = updateRb.makeSet(1)
 		}
 		for i := range updateGroups.iter() {
 			var keepRows []uint32
@@ -211,17 +211,17 @@ func (m *mapStorage) finishWriteCycle() {
 		m.storeMapRange(valid, dirty)
 	}()
 
-	var valid, dirty rangeSet[uint32]
+	var validRb, dirtyRb rangeBoundaries[uint32]
 	for mapIndex, fm := range m.writeMaps {
 		if m.maps[mapIndex] == fm {
 			delete(m.maps, mapIndex)
-			valid = append(valid, common.NewRange[uint32](mapIndex, 1))
+			validRb.add(common.NewRange[uint32](mapIndex, 1), 1)
 		} else {
-			dirty = append(dirty, common.NewRange[uint32](mapIndex, 1))
+			dirtyRb.add(common.NewRange[uint32](mapIndex, 1), 1)
 		}
 	}
-	valid = valid.normalize()
-	dirty = dirty.normalize()
+	valid := validRb.makeSet(1)
+	dirty := dirtyRb.makeSet(1)
 	epochRange := rangeSet[uint32]{common.NewRange[uint32](m.epoch<<m.params.logMapsPerEpoch, m.params.mapsPerEpoch)}
 	m.valid = m.valid.union(valid)
 	m.overlay = m.overlay.exclude(valid)
