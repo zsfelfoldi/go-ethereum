@@ -72,15 +72,6 @@ func (p *Params) deriveFields() {
 	p.mapHeight = uint32(1) << p.logMapHeight
 	p.mapsPerEpoch = uint32(1) << p.logMapsPerEpoch
 	p.valuesPerMap = uint64(1) << p.logValuesPerMap
-	if p.logMapWidth > 32 { // column index stored as uint32
-		panic("logMapWidth > 32")
-	}
-	if p.logMapHeight > 16 { // row index stored as uint16 in finishedMap
-		panic("logMapHeight > 16")
-	}
-	if p.maxRowLength[len(p.maxRowLength)-1] >= 0x10000 {
-		panic("maxRowLength >= 2**16") // index wrap-around issue in finishedMap
-	}
 }
 
 // mapRowIndex calculates the unified storage index where the given row of the
@@ -118,12 +109,26 @@ func (p *Params) sanitize() error {
 	if p.logMapWidth%8 != 0 {
 		return fmt.Errorf("invalid configuration: logMapWidth (%d) must be a multiple of 8", p.logMapWidth)
 	}
-	if p.baseRowGroupSize == 0 || (p.baseRowGroupSize&(p.baseRowGroupSize-1)) != 0 {
-		return fmt.Errorf("invalid configuration: baseRowGroupSize (%d) must be a power of 2", p.baseRowGroupSize)
+	if p.logMapWidth > 32 { // column index stored as uint32
+		return fmt.Errorf("invalid configuration: logMapWidth (%d) should not exceed 32", p.logMapWidth)
+	}
+	if p.logMapHeight > 16 { // row index stored as uint16 in finishedMap
+		return fmt.Errorf("invalid configuration: logMapHeight (%d) should not exceed 32", p.logMapHeight)
+	}
+	for _, maxRowLength := range p.maxRowLength {
+		if maxRowLength >= 0x10000 { // index wrap-around issue in finishedMap
+			return fmt.Errorf("invalid configuration: maxRowLength entry (%d) should not exceed 2**16", maxRowLength)
+		}
+	}
+	for _, groupSize := range p.rowGroupSize {
+		if groupSize == 0 || (groupSize&(groupSize-1)) != 0 {
+			return fmt.Errorf("invalid configuration: rowGroupSize entry (%d) must be a power of 2", groupSize)
+		}
 	}
 	return nil
 }
 
+/*
 // mapGroupIndex returns the start index of the base row group that contains the
 // given map index. Assumes baseRowGroupSize is a power of 2.
 func (p *Params) mapGroupIndex(index uint32) uint32 {
@@ -133,7 +138,7 @@ func (p *Params) mapGroupIndex(index uint32) uint32 {
 // mapGroupOffset returns the offset of the given map index within its base row group.
 func (p *Params) mapGroupOffset(index uint32) uint32 {
 	return index & (p.baseRowGroupSize - 1)
-}
+}*/
 
 // mapEpoch returns the epoch number that the given map index belongs to.
 func (p *Params) mapEpoch(index uint32) uint32 {

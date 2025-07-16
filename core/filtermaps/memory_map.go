@@ -16,6 +16,10 @@
 
 package filtermaps
 
+import (
+	"slices"
+)
+
 // memoryMap is an in-memory representation of a filter map that represents rows
 // as linked lists and stores entries in a single slice.
 // memoryMap allows adding new elements and is used for rendering maps. Completed

@@ -17,7 +17,6 @@
 package filtermaps
 
 import (
-	"math"
 	"sort"
 	"sync"
 
@@ -183,7 +182,7 @@ func (m *mapStorage) processWriteCycle(stopCallback func() bool) (bool, error) {
 		return m.deleteEpoch(m.epoch, stopCallback)
 	}
 	batch := m.db.NewBatch()
-	rowsPerBatch := max(maxWritesPerBatch/len(m.writePattern), 1)
+	rowsPerBatch := uint32(max(maxWritesPerBatch/len(m.writePattern), 1))
 	for rowIndex := range m.params.mapHeight {
 		if err := m.writeRowUpdates(batch, rowIndex); err != nil {
 			return false, err
@@ -251,14 +250,14 @@ func (m *mapStorage) writeRowUpdates(batch ethdb.Batch, rowIndex uint32) error {
 			if w.dbLayer > 0 {
 				from = m.params.maxRowLength[w.dbLayer-1]
 			}
-			if len(row) > from {
+			if uint32(len(row)) > from {
 				row = row[from:]
 			} else {
 				row = nil
 			}
 			rawdb.WriteFilterMapSingleRow(batch, m.params.mapRowIndex(w.mapIndex, rowIndex), w.dbLayer, row, m.params.logMapWidth)
 		} else {
-			rows := make([]FilterRow, groupSize)
+			rows := make([][]uint32, groupSize)
 			if w.keepRows != nil {
 				oldRows, err := rawdb.ReadFilterMapRowGroup(m.db, m.params.mapRowIndex(w.mapIndex, rowIndex), w.dbLayer, groupSize, m.params.logMapWidth)
 				if err != nil {
@@ -275,7 +274,7 @@ func (m *mapStorage) writeRowUpdates(batch ethdb.Batch, rowIndex uint32) error {
 			to := m.params.maxRowLength[w.dbLayer]
 			for i := range groupSize {
 				if fm := m.writeMaps[w.mapIndex+i]; fm != nil {
-					if row := fm.getRow(rowIndex, to); len(row) > from {
+					if row := fm.getRow(rowIndex, to); uint32(len(row)) > from {
 						rows[i] = row[from:]
 					}
 				}
@@ -309,7 +308,7 @@ func (m *mapStorage) deleteMaps(delRange common.Range[uint32]) {
 	defer m.lock.Unlock()
 
 	dr := rangeSet[uint32]{delRange}
-	for i := range dr.intersection(m.overlay).Iter() {
+	for i := range dr.intersection(m.overlay).iter() {
 		delete(m.maps, i)
 	}
 	m.overlay = m.overlay.exclude(dr)

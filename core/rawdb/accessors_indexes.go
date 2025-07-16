@@ -320,7 +320,7 @@ func ReadCanonicalRawReceipt(db ethdb.Reader, blockHash common.Hash, blockNumber
 // same data proximity reasons it is also suitable for database representation.
 // See also:
 // https://eips.ethereum.org/EIPS/eip-7745#hash-tree-structure
-func ReadFilterMapSingleRow(db ethdb.KeyValueReader, mapRowIndex uint64, dbLayer, bitLength uint32) ([]uint32, error) {
+func ReadFilterMapSingleRow(db ethdb.KeyValueReader, mapRowIndex uint64, dbLayer uint32, bitLength uint) ([]uint32, error) {
 	byteLength := int(bitLength) / 8
 	if int(bitLength) != byteLength*8 {
 		panic("invalid bit length")
@@ -349,7 +349,7 @@ func ReadFilterMapSingleRow(db ethdb.KeyValueReader, mapRowIndex uint64, dbLayer
 	return row, nil
 }
 
-func ReadFilterMapRowGroup(db ethdb.KeyValueReader, mapRowIndex uint64, dbLayer, rowCount, bitLength uint32) ([][]uint32, error) {
+func ReadFilterMapRowGroup(db ethdb.KeyValueReader, mapRowIndex uint64, dbLayer, rowCount uint32, bitLength uint) ([][]uint32, error) {
 	byteLength := int(bitLength) / 8
 	if int(bitLength) != byteLength*8 {
 		panic("invalid bit length")
@@ -411,7 +411,7 @@ func ReadFilterMapRowGroup(db ethdb.KeyValueReader, mapRowIndex uint64, dbLayer,
 
 // WriteFilterMapExtRow stores an extended filter map row at the given mapRowIndex
 // or deletes any existing entry if the row is empty.
-func WriteFilterMapSingleRow(db ethdb.KeyValueWriter, mapRowIndex uint64, dbLayer uint32, row []uint32, bitLength uint32) {
+func WriteFilterMapSingleRow(db ethdb.KeyValueWriter, mapRowIndex uint64, dbLayer uint32, row []uint32, bitLength uint) {
 	byteLength := int(bitLength) / 8
 	if int(bitLength) != byteLength*8 {
 		panic("invalid bit length")
@@ -433,7 +433,7 @@ func WriteFilterMapSingleRow(db ethdb.KeyValueWriter, mapRowIndex uint64, dbLaye
 	}
 }
 
-func WriteFilterMapRowGroup(db ethdb.KeyValueWriter, mapRowIndex uint64, dbLayer uint32, rows [][]uint32, bitLength uint32) {
+func WriteFilterMapRowGroup(db ethdb.KeyValueWriter, mapRowIndex uint64, dbLayer uint32, rows [][]uint32, bitLength uint) {
 	byteLength := int(bitLength) / 8
 	if int(bitLength) != byteLength*8 {
 		panic("invalid bit length")
