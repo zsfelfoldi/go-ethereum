@@ -255,7 +255,12 @@ func (p potentialMatches) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 type rangeSet[T uint32 | uint64] []common.Range[T]
 
 func (a rangeSet[T]) includes(v T) bool {
-	panic("TODO")
+	for _, r := range a {
+		if r.Includes(v) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a rangeSet[T]) intersection(b rangeSet[T]) rangeSet[T] {
@@ -278,7 +283,7 @@ func (a rangeSet[T]) exclude(b rangeSet[T]) rangeSet[T] {
 }
 
 func (a rangeSet[T]) union(b rangeSet[T]) rangeSet[T] {
-	panic("TODO")
+	return rangeSetUnion([]rangeSet[T]{a, b})
 }
 
 // iter iterates all integers in the range set.
