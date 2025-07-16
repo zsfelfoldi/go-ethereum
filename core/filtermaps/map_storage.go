@@ -149,7 +149,7 @@ func (m *mapStorage) startWriteCycle() bool {
 				first, last := r.First()/groupSize, r.Last()/groupSize
 				updateGroups[i] = common.NewRange[uint32](first, last+1-first)
 			}
-			updateGroups.normalize()
+			updateGroups = updateGroups.normalize()
 		}
 		for i := range updateGroups.iter() {
 			var keepRows []uint32
@@ -220,8 +220,8 @@ func (m *mapStorage) finishWriteCycle() {
 			dirty = append(dirty, common.NewRange[uint32](mapIndex, 1))
 		}
 	}
-	valid.normalize()
-	dirty.normalize()
+	valid = valid.normalize()
+	dirty = dirty.normalize()
 	epochRange := rangeSet[uint32]{common.NewRange[uint32](m.epoch<<m.params.logMapsPerEpoch, m.params.mapsPerEpoch)}
 	m.valid = m.valid.union(valid)
 	m.overlay = m.overlay.exclude(valid)
