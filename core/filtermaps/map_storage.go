@@ -27,11 +27,9 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
-const maxWritesPerBatch = 100000
-
 type mapStorage struct {
 	params             *Params
-	db                 ethdb.KeyValueStore
+	mapDb              *mapDatabase
 	triggerCh, closeCh chan struct{}
 	closeWg            sync.WaitGroup
 
@@ -40,33 +38,18 @@ type mapStorage struct {
 	overlay                    rangeSet[uint32] // memory maps
 	validBlocks, overlayBlocks rangeSet[uint64]
 	maps                       map[uint32]*finishedMap
-
-	lastBlockCache *lru.Cache[uint32, lastBlockOfMap]
-	lvPointerCache *lru.Cache[uint64, uint64]
-
-	// current write cycle
-	epoch        uint32
-	deleteAll    bool
-	writeMaps    map[uint32]*finishedMap
-	writePattern []writePatterItem
 }
 
-type writePatterItem struct {
-	mapIndex, dbLayer uint32
-	keepRows          []uint32 // keep existing rows of layer group
-}
-
-func newMapStorage(params *Params, db ethdb.KeyValueStore) *mapStorage {
+func newMapStorage(params *Params, mapDb *mapDatabase) *mapStorage {
 	m := &mapStorage{
-		params:         params,
-		db:             db,
-		triggerCh:      make(chan struct{}, 1),
-		closeCh:        make(chan struct{}),
-		maps:           make(map[uint32]*finishedMap),
-		lastBlockCache: lru.NewCache[uint32, lastBlockOfMap](cachedLastBlocks),
-		lvPointerCache: lru.NewCache[uint64, uint64](cachedLvPointers),
+		params:    params,
+		mapDb:     mapDb,
+		triggerCh: make(chan struct{}, 1),
+		closeCh:   make(chan struct{}),
+		maps:      make(map[uint32]*finishedMap),
 	}
-	m.loadMapRange()
+	m.valid, m.dirty = m.loadMapRange()
+	//TODO validBlocks
 	m.closeWg.Add(1)
 	go m.eventLoop()
 	return m
@@ -136,14 +119,6 @@ func (m *mapStorage) getLastBlockOfMap(mapIndex uint32) (uint64, common.Hash, er
 	return 0, common.Hash{}, errors.New("last block of map not found")
 }
 
-func (m *mapStorage) loadMapRange() {
-	panic("TODO")
-}
-
-func (m *mapStorage) storeMapRange(valid, dirty rangeSet[uint32]) {
-	panic("TODO")
-}
-
 func (m *mapStorage) eventLoop() {
 	for {
 		select {
@@ -181,237 +156,63 @@ func (m *mapStorage) stop() {
 	m.closeWg.Wait()
 }
 
-func (m *mapStorage) startWriteCycle() bool {
+func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	m.lock.Lock()
-	var storeRange bool
-	defer func() {
-		valid, dirty := m.valid, m.dirty
-		m.lock.Unlock()
-		if storeRange {
-			m.storeMapRange(valid, dirty)
-		}
-	}()
 
+	var epoch uint32
 	if len(m.overlay) > 0 {
-		m.epoch = m.overlay[len(m.overlay)-1].First() >> m.params.logMapsPerEpoch
+		epoch = m.overlay[len(m.overlay)-1].First() >> m.params.logMapsPerEpoch
 	} else if len(m.dirty) > 0 {
-		m.epoch = m.dirty[len(m.dirty)-1].First() >> m.params.logMapsPerEpoch
+		epoch = m.dirty[len(m.dirty)-1].First() >> m.params.logMapsPerEpoch
 	} else {
-		return false
+		m.lock.Unlock()
+		return true, nil
 	}
 	epochRange := rangeSet[uint32]{common.NewRange[uint32](m.epoch<<m.params.logMapsPerEpoch, m.params.mapsPerEpoch)}
 	writeMaps := epochRange.intersection(m.overlay)
 	deleteMaps := epochRange.intersection(m.dirty).exclude(writeMaps)
-	keepMaps := epochRange.intersection(m.valid).exclude(writeMaps)
-	m.deleteAll = len(writeMaps) == 0 && len(keepMaps) == 0
-	if m.deleteAll {
-		return true
-	}
-	m.writeMaps = make(map[uint32]*finishedMap)
-	for i := range writeMaps.iter() {
-		m.writeMaps[i] = m.maps[i]
-	}
-	m.writePattern = nil
-	updateMaps := writeMaps.union(deleteMaps)
-	for dbLayer, groupSize := range m.params.rowGroupSize {
-		updateGroups := updateMaps
-		if groupSize > 1 {
-			updateRb := make(rangeBoundaries[uint32], 0, len(updateMaps)*2)
-			for _, r := range updateMaps {
-				first, last := r.First()/groupSize, r.Last()/groupSize
-				updateRb.add(common.NewRange[uint32](first, last+1-first), 1)
-			}
-			updateGroups = updateRb.makeSet(1)
-		}
-		for i := range updateGroups.iter() {
-			var keepRows []uint32
-			if groupSize > 1 {
-				for j := range groupSize {
-					if keepMaps.includes(i*groupSize + j) {
-						keepRows = append(keepRows, j)
-					}
-				}
-			}
-			m.writePattern = append(m.writePattern, writePatterItem{
-				mapIndex: i * groupSize,
-				dbLayer:  uint32(dbLayer),
-				keepRows: keepRows,
-			})
-		}
-	}
-	sort.Slice(m.writePattern, func(i, j int) bool {
-		return m.writePattern[i].mapIndex < m.writePattern[j].mapIndex ||
-			(m.writePattern[i].mapIndex == m.writePattern[j].mapIndex && m.writePattern[i].dbLayer < m.writePattern[j].dbLayer)
-	})
-	m.valid = m.valid.exclude(writeMaps)
-	m.dirty = m.dirty.union(writeMaps)
-	storeRange = true
-	return true
-}
-
-func (m *mapStorage) processWriteCycle(stopCallback func() bool) (bool, error) {
-	if m.deleteAll {
-		return m.deleteEpoch(m.epoch, stopCallback)
-	}
-	batch := m.db.NewBatch()
-	rowsPerBatch := uint32(max(maxWritesPerBatch/len(m.writePattern), 1))
-	for rowIndex := range m.params.mapHeight {
-		if err := m.writeRowUpdates(batch, rowIndex); err != nil {
-			return false, err
-		}
-		if rowIndex%rowsPerBatch == rowsPerBatch-1 {
-			if err := batch.Write(); err != nil {
-				return false, err
-			}
-			if stopCallback() {
-				return false, nil
-			}
-			batch = m.db.NewBatch()
-		}
-	}
-	if err := batch.Write(); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func (m *mapStorage) finishWriteCycle() {
-	m.lock.Lock()
-	defer func() {
-		valid, dirty := m.valid, m.dirty
+	validInEpoch := epochRange.intersection(m.valid)
+	keepMaps := validInEpoch.exclude(writeMaps)
+	if len(writeMaps) == 0 && len(keepMaps) == 0 {
+		m.updateRange(m.valid.exclude(epochRange), m.dirty.union(validInEpoch))
 		m.lock.Unlock()
-		m.storeMapRange(valid, dirty)
-	}()
-
-	var validRb, dirtyRb rangeBoundaries[uint32]
-	for mapIndex, fm := range m.writeMaps {
-		if m.maps[mapIndex] == fm {
-			delete(m.maps, mapIndex)
-			validRb.add(common.NewRange[uint32](mapIndex, 1), 1)
-		} else {
-			dirtyRb.add(common.NewRange[uint32](mapIndex, 1), 1)
+		done, err := m.mapDb.deleteEpoch(epoch, stopCallback)
+		if done {
+			m.lock.Lock()
+			m.updateRange(m.valid, m.dirty.exclude(epochRange))
+			m.lock.Unlock()
 		}
+		return done, err
 	}
-	valid := validRb.makeSet(1)
-	dirty := dirtyRb.makeSet(1)
-	epochRange := rangeSet[uint32]{common.NewRange[uint32](m.epoch<<m.params.logMapsPerEpoch, m.params.mapsPerEpoch)}
-	m.valid = m.valid.union(valid)
-	m.overlay = m.overlay.exclude(valid)
-	m.dirty = m.dirty.exclude(epochRange).union(dirty)
-	m.writeMaps, m.writePattern = nil, nil
-}
-
-func (m *mapStorage) resetWriteCycle() {
-	m.lock.Lock()
-	m.writeMaps, m.writePattern = nil, nil
+	maps := make(map[uint32]*finishedMap)
+	for i := range writeMaps.iter() {
+		maps[i] = m.maps[i]
+	}
+	updateMaps := writeMaps.union(deleteMaps)
+	m.updateRange(m.valid.exclude(updateMaps), m.dirty.union(updateMaps))
 	m.lock.Unlock()
-}
-
-func (m *mapStorage) deleteEpoch(epoch uint32, stopCallback func() bool) (bool, error) {
-	panic("TODO")
-}
-
-func (m *mapStorage) writeRowUpdates(batch ethdb.Batch, rowIndex uint32) error {
-	for _, w := range m.writePattern {
-		if groupSize := m.params.rowGroupSize[w.dbLayer]; groupSize == 1 {
-			var row FilterRow
-			if fm := m.writeMaps[w.mapIndex]; fm != nil {
-				row = fm.getRow(rowIndex, m.params.maxRowLength[w.dbLayer])
-			}
-			var from uint32
-			if w.dbLayer > 0 {
-				from = m.params.maxRowLength[w.dbLayer-1]
-			}
-			if uint32(len(row)) > from {
-				row = row[from:]
+	done, err := m.mapDb.writeMaps(writeMaps, deleteMaps, keepMaps, maps, stopCallback)
+	if done {
+		m.lock.Lock()
+		var validRb, dirtyRb rangeBoundaries[uint32]
+		for mapIndex, fm := range m.writeMaps {
+			if m.maps[mapIndex] == fm {
+				delete(m.maps, mapIndex)
+				validRb.add(common.NewRange[uint32](mapIndex, 1), 1)
 			} else {
-				row = nil
+				dirtyRb.add(common.NewRange[uint32](mapIndex, 1), 1)
 			}
-			rawdb.WriteFilterMapSingleRow(batch, m.params.mapRowIndex(w.mapIndex, rowIndex), w.dbLayer, row, m.params.logMapWidth)
-		} else {
-			rows := make([][]uint32, groupSize)
-			if w.keepRows != nil {
-				oldRows, err := rawdb.ReadFilterMapRowGroup(m.db, m.params.mapRowIndex(w.mapIndex, rowIndex), w.dbLayer, groupSize, m.params.logMapWidth)
-				if err != nil {
-					return err
-				}
-				for _, i := range w.keepRows {
-					rows[i] = oldRows[i]
-				}
-			}
-			var from uint32
-			if w.dbLayer > 0 {
-				from = m.params.maxRowLength[w.dbLayer-1]
-			}
-			to := m.params.maxRowLength[w.dbLayer]
-			for i := range groupSize {
-				if fm := m.writeMaps[w.mapIndex+i]; fm != nil {
-					if row := fm.getRow(rowIndex, to); uint32(len(row)) > from {
-						rows[i] = row[from:]
-					}
-				}
-			}
-			rawdb.WriteFilterMapRowGroup(batch, m.params.mapRowIndex(w.mapIndex, rowIndex), w.dbLayer, rows, m.params.logMapWidth)
 		}
+		newValid := validRb.makeSet(1)
+		newDirty := dirtyRb.makeSet(1)
+		m.updateRange(m.valid.union(newValid), m.dirty.exclude(epochRange).union(newDirty), m.overlay.exclude(newValid))
+		m.lock.Unlock()
 	}
-	return nil
+	return done, err
 }
 
-// getBlockLvPointer returns the starting log value index where the log values
-// generated by the given block are located.
-//
-// Note that this function assumes that the indexer read lock is being held when
-// called from outside the indexerLoop goroutine.
-func (m *mapStorage) getBlockLvPointerFromDb(blockNumber uint64) (uint64, error) {
-	if lvPointer, ok := f.lvPointerCache.Get(blockNumber); ok {
-		return lvPointer, nil
-	}
-	lvPointer, err := rawdb.ReadBlockLvPointer(f.db, blockNumber)
-	if err != nil {
-		return 0, fmt.Errorf("failed to retrieve log value pointer of block %d: %v", blockNumber, err)
-	}
-	f.lvPointerCache.Add(blockNumber, lvPointer)
-	return lvPointer, nil
-}
-
-// storeBlockLvPointer stores the starting log value index where the log values
-// generated by the given block are located.
-func (m *mapStorage) storeBlockLvPointerInDb(batch ethdb.Batch, blockNumber, lvPointer uint64) {
-	f.lvPointerCache.Add(blockNumber, lvPointer)
-	rawdb.WriteBlockLvPointer(batch, blockNumber, lvPointer)
-}
-
-// deleteBlockLvPointer deletes the starting log value index where the log values
-// generated by the given block are located.
-func (m *mapStorage) deleteBlockLvPointerFromDb(batch ethdb.Batch, blockNumber uint64) {
-	f.lvPointerCache.Remove(blockNumber)
-	rawdb.DeleteBlockLvPointer(batch, blockNumber)
-}
-
-// getLastBlockOfMap returns the number and id of the block that generated the
-// last log value entry of the given map.
-func (m *mapStorage) getLastBlockOfMapFromDb(mapIndex uint32) (uint64, common.Hash, error) {
-	if lastBlock, ok := f.lastBlockCache.Get(mapIndex); ok {
-		return lastBlock.number, lastBlock.id, nil
-	}
-	number, id, err := rawdb.ReadFilterMapLastBlock(f.db, mapIndex)
-	if err != nil {
-		return 0, common.Hash{}, fmt.Errorf("failed to retrieve last block of map %d: %v", mapIndex, err)
-	}
-	f.lastBlockCache.Add(mapIndex, lastBlockOfMap{number: number, id: id})
-	return number, id, nil
-}
-
-// storeLastBlockOfMap stores the number of the block that generated the last
-// log value entry of the given map.
-func (m *mapStorage) storeLastBlockOfMapInDb(batch ethdb.Batch, mapIndex uint32, number uint64, id common.Hash) {
-	f.lastBlockCache.Add(mapIndex, lastBlockOfMap{number: number, id: id})
-	rawdb.WriteFilterMapLastBlock(batch, mapIndex, number, id)
-}
-
-// deleteLastBlockOfMap deletes the number of the block that generated the last
-// log value entry of the given map.
-func (m *mapStorage) deleteLastBlockOfMapFromDb(batch ethdb.Batch, mapIndex uint32) {
-	f.lastBlockCache.Remove(mapIndex)
-	rawdb.DeleteFilterMapLastBlock(batch, mapIndex)
+func (m *mapStorage) updateRange(valid, dirty, overlay rangeSet[uint32]) {
+	m.valid, m.dirty, m.overlay = valid, dirty, overlay
+	m.mapDb.storeMapRange(valid, dirty)
+	//TODO validBlocks
 }
