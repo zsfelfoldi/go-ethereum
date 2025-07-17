@@ -28,6 +28,8 @@ type memoryMap struct {
 	entries   []mmEntry // size = valuesPerMap
 	rows      []mmRow   // size = mapHeight
 	nextEntry uint32
+	blockPtrs []uint64
+	lastBlock lastBlockOfMap
 }
 
 // mmEntry is a linked list entry. The field next points to the next entry in the
@@ -60,6 +62,8 @@ func (m *memoryMap) clone() *memoryMap {
 		entries:   slices.Clone(m.entries),
 		rows:      slices.Clone(m.rows),
 		nextEntry: m.nextEntry,
+		blockPtrs: slices.Clone(m.blockPtrs),
+		lastBlock: m.lastBlock,
 	}
 }
 
@@ -99,15 +103,19 @@ func (m *memoryMap) getRow(rowIndex, maxLen uint32) FilterRow {
 // It is more compact and allows more efficient row lookup than memoryMap.
 // Note that it assumes params.mapHeight <= 2**16 which is checked in deriveFields.
 type finishedMap struct {
-	rowPtrs []uint16 // points to rowData index after end of row; 2**16 can wrap around to 0
-	rowData []uint32
+	rowPtrs   []uint16 // points to rowData index after end of row; 2**16 can wrap around to 0
+	rowData   []uint32
+	blockPtrs []uint64
+	lastBlock lastBlockOfMap
 }
 
 // finished creates a new finishedMap from a memoryMap.
 func (m *memoryMap) finished() *finishedMap {
 	fm := &finishedMap{
-		rowPtrs: make([]uint16, len(m.rows)),
-		rowData: make([]uint32, m.nextEntry),
+		rowPtrs:   make([]uint16, len(m.rows)),
+		rowData:   make([]uint32, m.nextEntry),
+		blockPtrs: slices.Clone(m.blockPtrs),
+		lastBlock: m.lastBlock,
 	}
 	var ptr uint16
 	for i, row := range m.rows {
