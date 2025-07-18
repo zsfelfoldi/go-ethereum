@@ -125,7 +125,36 @@ type writePatterItem struct {
 	keepRows          []uint32 // keep existing rows of layer group
 }
 
+// all maps in a single epoch
+// first map of deleted section should be first of the epoch or after a valid map
+// last map block pointer of deleted section is only deleted if next map is in
+// the same epoch and not valid
+func (m *mapDatabase) deletePointers(deleteMaps common.Range[uint32], stopCallback func() bool) error {
+	if deleteMaps.First()>>m.params.logMapsPerEpoch != deleteMaps.Last()>>m.params.logMapsPerEpoch {
+		panic("all deleted maps should be in a single epoch")
+	}
+	var firstBlock uint64
+	if deleteMaps.First() > 0 {
+		lb, _, err := m.getLastBlockOfMap(deleteMaps.First() - 1)
+		if err != nil {
+			return false, err
+		}
+		firstBlock = lb + 1
+	}
+	lb, _, err := m.getLastBlockOfMap(deleteMaps.Last())
+	if err != nil {
+		return false, err
+	}
+	blockRange := common.NewRange[uint64](firstBlock, lb-firstBlock) // keep last pointer
+	if err := rawdb.DeleteBlockLvPointers(m.db, blockRange, m.hashScheme, stopCallback); err != nil {
+		return err
+	}
+}
+
 func (m *mapDatabase) writeMaps(writeMaps, deleteMaps, keepMaps rangeSet[uint32], maps map[uint32]*finishedMap, stopCallback func() bool) (bool, error) {
+	// remove deleted/changed block lv pointers
+	updateMaps := writeMaps.union(deleteMaps)
+
 	writePattern := m.makeWritePattern(writeMaps, deleteMaps, keepMaps)
 	batch := m.db.NewBatch()
 	rowsPerBatch := uint32(max(maxWritesPerBatch/len(writePattern), 1))
