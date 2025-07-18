@@ -18,6 +18,8 @@ package filtermaps
 
 import (
 	"slices"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // memoryMap is an in-memory representation of a filter map that represents rows
@@ -66,6 +68,15 @@ func (m *memoryMap) clone() *memoryMap {
 		lastBlock: m.lastBlock,
 	}
 }
+
+/*func (m *memoryMap) firstBlock() uint64 {
+	return m.lastBlock.number + 1 - uint64(len(m.blockPtrs))
+}
+
+func (m *memoryMap) blocks() common.Range[uint64] {
+	l := uint64(len(m.blockPtrs))
+	return common.NewRange[uint64](m.lastBlock.number+1-l, l)
+}*/
 
 // addToRow adds a new entry to the specified row.
 func (m *memoryMap) addToRow(rowIndex, value uint32) {
@@ -129,6 +140,15 @@ func (m *memoryMap) finished() *finishedMap {
 		fm.rowPtrs[i] = ptr
 	}
 	return fm
+}
+
+func (fm *finishedMap) firstBlock() uint64 {
+	return fm.lastBlock.number + 1 - uint64(len(fm.blockPtrs))
+}
+
+func (fm *finishedMap) blocks() common.Range[uint64] {
+	l := uint64(len(fm.blockPtrs))
+	return common.NewRange[uint64](fm.lastBlock.number+1-l, l)
 }
 
 // getRow returns a row of the map, truncated if maxLen is smaller than the actual

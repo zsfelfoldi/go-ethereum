@@ -17,20 +17,17 @@
 package filtermaps
 
 import (
-	"sort"
+	"errors"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/lru"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/log"
 )
 
 type mapStorage struct {
 	params             *Params
 	mapDb              *mapDatabase
 	triggerCh, closeCh chan struct{}
+	pauseCh            chan bool //TODO
 	closeWg            sync.WaitGroup
 
 	lock                       sync.Mutex
@@ -47,9 +44,13 @@ func newMapStorage(params *Params, mapDb *mapDatabase) *mapStorage {
 		mapDb:     mapDb,
 		triggerCh: make(chan struct{}, 1),
 		closeCh:   make(chan struct{}),
+		pauseCh:   make(chan bool, 1),
 		maps:      make(map[uint32]*finishedMap),
 	}
-	m.valid, m.dirty, m.initialized = m.mapDb.loadMapRange()
+	valid, dirty, err := m.mapDb.loadMapRange()
+	if err == nil {
+		m.valid, m.dirty, m.initialized = valid, dirty, true
+	}
 	//TODO validBlocks
 	m.closeWg.Add(1)
 	go m.eventLoop()
@@ -76,6 +77,7 @@ func (m *mapStorage) eventLoop() {
 			}
 		default:
 		}
+		return stopped
 	}
 
 	if !m.initialized {
@@ -89,6 +91,9 @@ func (m *mapStorage) eventLoop() {
 
 	for !stopped {
 		done, err := m.doWriteCycle(stopCallback)
+		if err != nil {
+			panic("TODO")
+		}
 		if !done && !stopped { // wait for next event if no changes done
 			select {
 			case <-m.triggerCh:
@@ -150,15 +155,15 @@ func (m *mapStorage) deleteMaps(delRange common.Range[uint32]) {
 
 func (m *mapStorage) getBlockLvPointer(blockNumber uint64) (uint64, error) {
 	if m.overlayBlocks.includes(blockNumber) {
-		for mapIndex, fm := range m.maps { //TODO ??optimize with binary search?
-			if mapIndex <= fm.lastBlock.number && mapIndex >= fm.firstBlock() {
-				return fm.blockPtrs[mapIndex-fm.firstBlock()], nil
+		for _, fm := range m.maps { //TODO ??optimize with binary search?
+			if fm.blocks().Includes(blockNumber) {
+				return fm.blockPtrs[blockNumber-fm.firstBlock()], nil
 			}
 		}
-		return 0, rrors.New("memory overlay block pointer not found")
+		return 0, errors.New("memory overlay block pointer not found")
 	}
 	if m.validBlocks.includes(blockNumber) {
-		return m.getBlockLvPointerFromDb(blockNumber)
+		return m.mapDb.getBlockLvPointer(blockNumber)
 	}
 	return 0, errors.New("block log value pointer not found")
 }
@@ -172,7 +177,7 @@ func (m *mapStorage) getLastBlockOfMap(mapIndex uint32) (uint64, common.Hash, er
 		return fm.lastBlock.number, fm.lastBlock.id, nil
 	}
 	if m.valid.includes(mapIndex) || m.valid.includes(mapIndex+1) {
-		return m.getLastBlockOfMapFromDb(mapIndex)
+		return m.mapDb.getLastBlockOfMap(mapIndex)
 	}
 	return 0, common.Hash{}, errors.New("last block of map not found")
 }
@@ -189,18 +194,18 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 		m.lock.Unlock()
 		return true, nil
 	}
-	epochRange := rangeSet[uint32]{common.NewRange[uint32](m.epoch<<m.params.logMapsPerEpoch, m.params.mapsPerEpoch)}
+	epochRange := rangeSet[uint32]{common.NewRange[uint32](epoch<<m.params.logMapsPerEpoch, m.params.mapsPerEpoch)}
 	writeMaps := epochRange.intersection(m.overlay)
 	deleteMaps := epochRange.intersection(m.dirty).exclude(writeMaps)
 	validInEpoch := epochRange.intersection(m.valid)
 	keepMaps := validInEpoch.exclude(writeMaps)
 	if len(writeMaps) == 0 && len(keepMaps) == 0 {
-		m.updateRange(m.valid.exclude(epochRange), m.dirty.union(validInEpoch))
+		m.updateRange(m.valid.exclude(epochRange), m.dirty.union(validInEpoch), m.overlay)
 		m.lock.Unlock()
 		done, err := m.mapDb.deleteEpoch(epoch, stopCallback)
 		if done {
 			m.lock.Lock()
-			m.updateRange(m.valid, m.dirty.exclude(epochRange))
+			m.updateRange(m.valid, m.dirty.exclude(epochRange), m.overlay)
 			m.lock.Unlock()
 		}
 		return done, err
@@ -210,13 +215,13 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 		maps[i] = m.maps[i]
 	}
 	updateMaps := writeMaps.union(deleteMaps)
-	m.updateRange(m.valid.exclude(updateMaps), m.dirty.union(updateMaps))
+	m.updateRange(m.valid.exclude(updateMaps), m.dirty.union(updateMaps), m.overlay)
 	m.lock.Unlock()
 	done, err := m.mapDb.writeMaps(writeMaps, deleteMaps, keepMaps, maps, stopCallback)
 	if done {
 		m.lock.Lock()
 		var validRb, dirtyRb rangeBoundaries[uint32]
-		for mapIndex, fm := range m.writeMaps {
+		for mapIndex, fm := range maps {
 			if m.maps[mapIndex] == fm {
 				delete(m.maps, mapIndex)
 				validRb.add(common.NewRange[uint32](mapIndex, 1), 1)

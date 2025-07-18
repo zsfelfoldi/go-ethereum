@@ -19,13 +19,11 @@ package filtermaps
 import (
 	"fmt"
 	"sort"
-	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/log"
 )
 
 const maxWritesPerBatch = 100000
@@ -116,6 +114,10 @@ func (m *mapDatabase) deleteLastBlockOfMap(batch ethdb.Batch, mapIndex uint32) {
 
 func (m *mapDatabase) deleteEpoch(epoch uint32, stopCallback func() bool) (bool, error) {
 	panic("TODO")
+}
+
+func (m *mapDatabase) reset(stopCallback func() bool) bool {
+	panic("TODO") // safe delete with logs
 }
 
 type writePatterItem struct {
