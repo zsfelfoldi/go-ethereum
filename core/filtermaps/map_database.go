@@ -17,6 +17,7 @@
 package filtermaps
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 
@@ -38,7 +39,7 @@ type mapDatabase struct {
 }
 
 func newMapDatabase(params *Params, db ethdb.KeyValueStore) *mapDatabase {
-	return &mapStorage{
+	return &mapDatabase{
 		params:         params,
 		db:             db,
 		lastBlockCache: lru.NewCache[uint32, lastBlockOfMap](cachedLastBlocks),
@@ -123,7 +124,30 @@ type writePatterItem struct {
 }
 
 func (m *mapDatabase) writeMaps(writeMaps, deleteMaps, keepMaps rangeSet[uint32], maps map[uint32]*finishedMap, stopCallback func() bool) (bool, error) {
-	var writePattern []writePatterItem
+	writePattern := m.makeWritePattern(writeMaps, deleteMaps, keepMaps)
+	batch := m.db.NewBatch()
+	rowsPerBatch := uint32(max(maxWritesPerBatch/len(writePattern), 1))
+	for rowIndex := range m.params.mapHeight {
+		if err := m.writeRowUpdates(batch, writePattern, maps, rowIndex); err != nil {
+			return false, err
+		}
+		if rowIndex%rowsPerBatch == rowsPerBatch-1 {
+			if err := batch.Write(); err != nil {
+				return false, err
+			}
+			if stopCallback() {
+				return false, nil
+			}
+			batch = m.db.NewBatch()
+		}
+	}
+	if err := batch.Write(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (m *mapDatabase) makeWritePattern(writeMaps, deleteMaps, keepMaps rangeSet[uint32]) (writePattern []writePatterItem) {
 	updateMaps := writeMaps.union(deleteMaps)
 	for dbLayer, groupSize := range m.params.rowGroupSize {
 		updateGroups := updateMaps
@@ -155,39 +179,14 @@ func (m *mapDatabase) writeMaps(writeMaps, deleteMaps, keepMaps rangeSet[uint32]
 		return writePattern[i].mapIndex < writePattern[j].mapIndex ||
 			(writePattern[i].mapIndex == writePattern[j].mapIndex && writePattern[i].dbLayer < writePattern[j].dbLayer)
 	})
+	return
 }
 
-func (m *mapStorage) processWriteCycle(stopCallback func() bool) (bool, error) {
-	if m.deleteAll {
-		return m.deleteEpoch(m.epoch, stopCallback)
-	}
-	batch := m.db.NewBatch()
-	rowsPerBatch := uint32(max(maxWritesPerBatch/len(writePattern), 1))
-	for rowIndex := range m.params.mapHeight {
-		if err := m.writeRowUpdates(batch, rowIndex); err != nil {
-			return false, err
-		}
-		if rowIndex%rowsPerBatch == rowsPerBatch-1 {
-			if err := batch.Write(); err != nil {
-				return false, err
-			}
-			if stopCallback() {
-				return false, nil
-			}
-			batch = m.db.NewBatch()
-		}
-	}
-	if err := batch.Write(); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func (m *mapStorage) writeRowUpdates(batch ethdb.Batch, rowIndex uint32) error {
+func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePatterItem, maps map[uint32]*finishedMap, rowIndex uint32) error {
 	for _, w := range writePattern {
 		if groupSize := m.params.rowGroupSize[w.dbLayer]; groupSize == 1 {
 			var row FilterRow
-			if fm := m.writeMaps[w.mapIndex]; fm != nil {
+			if fm := maps[w.mapIndex]; fm != nil {
 				row = fm.getRow(rowIndex, m.params.maxRowLength[w.dbLayer])
 			}
 			var from uint32
@@ -217,7 +216,7 @@ func (m *mapStorage) writeRowUpdates(batch ethdb.Batch, rowIndex uint32) error {
 			}
 			to := m.params.maxRowLength[w.dbLayer]
 			for i := range groupSize {
-				if fm := m.writeMaps[w.mapIndex+i]; fm != nil {
+				if fm := maps[w.mapIndex+i]; fm != nil {
 					if row := fm.getRow(rowIndex, to); uint32(len(row)) > from {
 						rows[i] = row[from:]
 					}

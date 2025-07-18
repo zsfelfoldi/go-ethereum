@@ -34,6 +34,7 @@ type mapStorage struct {
 	closeWg            sync.WaitGroup
 
 	lock                       sync.Mutex
+	initialized                bool
 	valid, dirty               rangeSet[uint32] // valid and dirty maps in database
 	overlay                    rangeSet[uint32] // memory maps
 	validBlocks, overlayBlocks rangeSet[uint64]
@@ -48,11 +49,68 @@ func newMapStorage(params *Params, mapDb *mapDatabase) *mapStorage {
 		closeCh:   make(chan struct{}),
 		maps:      make(map[uint32]*finishedMap),
 	}
-	m.valid, m.dirty = m.loadMapRange()
+	m.valid, m.dirty, m.initialized = m.mapDb.loadMapRange()
 	//TODO validBlocks
 	m.closeWg.Add(1)
 	go m.eventLoop()
 	return m
+}
+
+func (m *mapStorage) eventLoop() {
+	defer m.closeWg.Done()
+
+	var stopped bool
+	stopCallback := func() bool {
+		select {
+		case <-m.triggerCh:
+		case <-m.closeCh:
+			stopped = true
+		case paused := <-m.pauseCh:
+			for paused && !stopped {
+				select {
+				case <-m.triggerCh:
+				case <-m.closeCh:
+					stopped = true
+				case paused = <-m.pauseCh:
+				}
+			}
+		default:
+		}
+	}
+
+	if !m.initialized {
+		if !m.mapDb.reset(stopCallback) {
+			return // node stopped before cleaning old database
+		}
+		m.lock.Lock()
+		m.initialized = true
+		m.lock.Unlock()
+	}
+
+	for !stopped {
+		done, err := m.doWriteCycle(stopCallback)
+		if !done && !stopped { // wait for next event if no changes done
+			select {
+			case <-m.triggerCh:
+			case <-m.closeCh:
+				stopped = true
+			case paused := <-m.pauseCh:
+				for paused && !stopped {
+					select {
+					case <-m.triggerCh:
+					case <-m.closeCh:
+						stopped = true
+					case paused = <-m.pauseCh:
+					}
+				}
+			}
+		}
+	}
+}
+
+func (m *mapStorage) stop() {
+	close(m.closeCh)
+	m.closeWg.Wait()
 }
 
 func (m *mapStorage) addMap(mapIndex uint32, fm *finishedMap, forceCommit bool) {
@@ -117,43 +175,6 @@ func (m *mapStorage) getLastBlockOfMap(mapIndex uint32) (uint64, common.Hash, er
 		return m.getLastBlockOfMapFromDb(mapIndex)
 	}
 	return 0, common.Hash{}, errors.New("last block of map not found")
-}
-
-func (m *mapStorage) eventLoop() {
-	for {
-		select {
-		case <-m.triggerCh:
-			for m.startWriteCycle() {
-				done, err := m.processWriteCycle(func() bool {
-					select {
-					case <-m.triggerCh:
-					case <-m.closeCh:
-						return true
-					default:
-					}
-					return false
-
-				})
-				if done {
-					m.finishWriteCycle()
-				} else {
-					if err != nil {
-						log.Error("Error processing log index write cycle", "error", err)
-					}
-					m.resetWriteCycle()
-					break
-				}
-			}
-		case <-m.closeCh:
-			m.closeWg.Done()
-			return
-		}
-	}
-}
-
-func (m *mapStorage) stop() {
-	close(m.closeCh)
-	m.closeWg.Wait()
 }
 
 func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
