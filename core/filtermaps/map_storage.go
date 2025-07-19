@@ -33,6 +33,7 @@ type mapStorage struct {
 	lock                       sync.Mutex
 	initialized                bool
 	valid, dirty               rangeSet[uint32] // valid and dirty maps in database
+	epochBoundaries            rangeSet[uint32] // epochs where last map has last block pointer and corresponding reverse block lv pointer
 	overlay                    rangeSet[uint32] // memory maps
 	validBlocks, overlayBlocks rangeSet[uint64]
 	maps                       map[uint32]*finishedMap
@@ -199,10 +200,13 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	deleteMaps := epochRange.intersection(m.dirty).exclude(writeMaps)
 	validInEpoch := epochRange.intersection(m.valid)
 	keepMaps := validInEpoch.exclude(writeMaps)
+	// delete old pointers
+	m.mapDb.deletePointers(writeMaps.union(deleteMaps), m.valid, m.epochBoundaries, stopCallback)
 	if len(writeMaps) == 0 && len(keepMaps) == 0 {
+		// delete map rows of entire epoch if nothing to write or keep
 		m.updateRange(m.valid.exclude(epochRange), m.dirty.union(validInEpoch), m.overlay)
 		m.lock.Unlock()
-		done, err := m.mapDb.deleteEpoch(epoch, stopCallback)
+		done, err := m.mapDb.deleteEpochRows(epoch, stopCallback)
 		if done {
 			m.lock.Lock()
 			m.updateRange(m.valid, m.dirty.exclude(epochRange), m.overlay)
@@ -217,24 +221,26 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	updateMaps := writeMaps.union(deleteMaps)
 	m.updateRange(m.valid.exclude(updateMaps), m.dirty.union(updateMaps), m.overlay)
 	m.lock.Unlock()
+	// write/overwrite map rows and delete dirty map data, write new pointers
 	done, err := m.mapDb.writeMaps(writeMaps, deleteMaps, keepMaps, maps, stopCallback)
-	if done {
-		m.lock.Lock()
-		var validRb, dirtyRb rangeBoundaries[uint32]
-		for mapIndex, fm := range maps {
-			if m.maps[mapIndex] == fm {
-				delete(m.maps, mapIndex)
-				validRb.add(common.NewRange[uint32](mapIndex, 1), 1)
-			} else {
-				dirtyRb.add(common.NewRange[uint32](mapIndex, 1), 1)
-			}
-		}
-		newValid := validRb.makeSet(1)
-		newDirty := dirtyRb.makeSet(1)
-		m.updateRange(m.valid.union(newValid), m.dirty.exclude(epochRange).union(newDirty), m.overlay.exclude(newValid))
-		m.lock.Unlock()
+	if !done {
+		return err
 	}
-	return done, err
+	m.lock.Lock()
+	var validRb, dirtyRb rangeBoundaries[uint32]
+	for mapIndex, fm := range maps {
+		if m.maps[mapIndex] == fm {
+			delete(m.maps, mapIndex)
+			validRb.add(common.NewRange[uint32](mapIndex, 1), 1)
+		} else {
+			dirtyRb.add(common.NewRange[uint32](mapIndex, 1), 1)
+		}
+	}
+	newValid := validRb.makeSet(1)
+	newDirty := dirtyRb.makeSet(1)
+	m.updateRange(m.valid.union(newValid), m.dirty.exclude(epochRange).union(newDirty), m.overlay.exclude(newValid))
+	m.lock.Unlock()
+	return true, nil
 }
 
 func (m *mapStorage) updateRange(valid, dirty, overlay rangeSet[uint32]) {

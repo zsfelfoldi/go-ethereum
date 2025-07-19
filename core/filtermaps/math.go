@@ -263,6 +263,32 @@ func (a rangeSet[T]) includes(v T) bool {
 	return false
 }
 
+func (a rangeSet[T]) lastUntil(v T) (last T, found bool) {
+	for _, r := range a {
+		if r.First() > v {
+			return
+		}
+		if r.AfterLast() > v {
+			return v, true
+		}
+		last, found = r.Last(), true
+	}
+	return
+}
+
+func (a rangeSet[T]) firstFrom(v T) (last T, found bool) {
+	for _, r := range a {
+		if r.First() > v {
+			return
+		}
+		if r.AfterLast() > v {
+			return v, true
+		}
+		last, found = r.Last(), true
+	}
+	return
+}
+
 type rangeBoundary[T uint32 | uint64] struct {
 	v T
 	d int
