@@ -120,12 +120,7 @@ func (m *mapDatabase) reset(stopCallback func() bool) bool {
 	panic("TODO") // safe delete with logs
 }
 
-type writePatterItem struct {
-	mapIndex, dbLayer uint32
-	keepRows          []uint32 // keep existing rows of layer group
-}
-
-func (m *mapDatabase) deletePointers(deleteMaps, validMaps, epochBoundaries common.Range[uint32], stopCallback func() bool) error {
+func (m *mapDatabase) deletePointers(deleteMaps common.Range[uint32], stopCallback func() bool) error {
 	var firstBlock, afterLastBlock uint64
 	if deleteMaps.First() > 0 {
 		lb, _, err := m.getLastBlockOfMap(deleteMaps.First() - 1)
@@ -156,6 +151,12 @@ func (m *mapDatabase) deletePointers(deleteMaps, validMaps, epochBoundaries comm
 		}
 	}
 	return nil
+}
+
+type writePatterItem struct {
+	mapIndex, dbLayer uint32
+	keepRows          common.Range[uint32] // keep existing rows of layer group
+	dirty             bool                 // there are dirty entries in the layer group
 }
 
 func (m *mapDatabase) writeMaps(writeMaps, deleteMaps, keepMaps rangeSet[uint32], maps map[uint32]*finishedMap, stopCallback func() bool) (bool, error) {
@@ -259,17 +260,21 @@ func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePat
 			} else {
 				row = nil
 			}
-			rawdb.WriteFilterMapSingleRow(batch, m.params.mapRowIndex(w.mapIndex, rowIndex), w.dbLayer, row, m.params.logMapWidth)
+			if len(row) > 0 || w.dirty {
+				rawdb.WriteFilterMapSingleRow(batch, m.params.mapRowIndex(w.mapIndex, rowIndex), w.dbLayer, row, m.params.logMapWidth)
+			}
 		} else {
 			rows := make([][]uint32, groupSize)
-			if w.keepRows != nil {
+			writeGroup := w.dirty
+			if w.keepRows.Count() > 0 {
 				oldRows, err := rawdb.ReadFilterMapRowGroup(m.db, m.params.mapRowIndex(w.mapIndex, rowIndex), w.dbLayer, groupSize, m.params.logMapWidth)
 				if err != nil {
 					return err
 				}
-				for _, i := range w.keepRows {
+				for _, i := range w.keepRows.Iter() {
 					rows[i] = oldRows[i]
 				}
+
 			}
 			var from uint32
 			if w.dbLayer > 0 {
@@ -280,10 +285,13 @@ func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePat
 				if fm := maps[w.mapIndex+i]; fm != nil {
 					if row := fm.getRow(rowIndex, to); uint32(len(row)) > from {
 						rows[i] = row[from:]
+						writeGroup = true
 					}
 				}
 			}
-			rawdb.WriteFilterMapRowGroup(batch, m.params.mapRowIndex(w.mapIndex, rowIndex), w.dbLayer, rows, m.params.logMapWidth)
+			if writeGroup {
+				rawdb.WriteFilterMapRowGroup(batch, m.params.mapRowIndex(w.mapIndex, rowIndex), w.dbLayer, rows, m.params.logMapWidth)
+			}
 		}
 	}
 	return nil

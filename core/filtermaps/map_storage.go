@@ -32,8 +32,9 @@ type mapStorage struct {
 
 	lock                       sync.Mutex
 	initialized                bool
+	tailEpochs                 uint32           // epochs initialized with last map block pointer and corresponding reverse block lv pointer
 	valid, dirty               rangeSet[uint32] // valid and dirty maps in database
-	epochBoundaries            rangeSet[uint32] // epochs where last map has last block pointer and corresponding reverse block lv pointer
+	epochBoundaries            rangeSet[uint32]
 	overlay                    rangeSet[uint32] // memory maps
 	validBlocks, overlayBlocks rangeSet[uint64]
 	maps                       map[uint32]*finishedMap
@@ -183,8 +184,31 @@ func (m *mapStorage) getLastBlockOfMap(mapIndex uint32) (uint64, common.Hash, er
 	return 0, common.Hash{}, errors.New("last block of map not found")
 }
 
+func (m *mapStorage) extendPointerRange(deleteRange common.Range[uint32]) common.Range[uint32] {
+	epoch := deleteRange.First() >> m.params.logMapsPerEpoch
+	if deleteRange.Last()>>m.params.logMapsPerEpoch != epoch {
+		panic("deleted map range crosses epoch boundary")
+	}
+	first := min(m.tailEpochs, epoch) << m.params.logMapsPerEpoch
+	if lb, ok := m.valid.lastBefore(deleteRange.First()); ok {
+		first = max(first, lb+1)
+	}
+	if lb, ok := m.epochBoundaries.lastBefore(); ok {
+		first = max(first, (lb+1)<<m.params.logMapsPerEpoch)
+	}
+	afterLast := uint32(math.MaxUint32)
+	if epoch < m.tailEpochs {
+		afterLast = (epoch + 1) << m.params.logMapsPerEpoch
+	}
+	if fa, ok := m.valid.firstAfter(deleteRange.Last()); ok {
+		afterLast = min(afterLast, fa)
+	}
+	return common.NewRange[uint32](first, afterLast-first)
+}
+
 func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	m.lock.Lock()
+	defer m.lock.Unlock()
 
 	var epoch uint32
 	if len(m.overlay) > 0 {
@@ -192,7 +216,6 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	} else if len(m.dirty) > 0 {
 		epoch = m.dirty[len(m.dirty)-1].First() >> m.params.logMapsPerEpoch
 	} else {
-		m.lock.Unlock()
 		return true, nil
 	}
 	epochRange := rangeSet[uint32]{common.NewRange[uint32](epoch<<m.params.logMapsPerEpoch, m.params.mapsPerEpoch)}
@@ -201,16 +224,15 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	validInEpoch := epochRange.intersection(m.valid)
 	keepMaps := validInEpoch.exclude(writeMaps)
 	// delete old pointers
-	m.mapDb.deletePointers(writeMaps.union(deleteMaps), m.valid, m.epochBoundaries, stopCallback)
+	m.mapDb.deletePointers(m.extendPointerRange(writeMaps.union(deleteMaps)), stopCallback)
 	if len(writeMaps) == 0 && len(keepMaps) == 0 {
 		// delete map rows of entire epoch if nothing to write or keep
 		m.updateRange(m.valid.exclude(epochRange), m.dirty.union(validInEpoch), m.overlay)
 		m.lock.Unlock()
 		done, err := m.mapDb.deleteEpochRows(epoch, stopCallback)
+		m.lock.Lock()
 		if done {
-			m.lock.Lock()
 			m.updateRange(m.valid, m.dirty.exclude(epochRange), m.overlay)
-			m.lock.Unlock()
 		}
 		return done, err
 	}
@@ -223,10 +245,10 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	m.lock.Unlock()
 	// write/overwrite map rows and delete dirty map data, write new pointers
 	done, err := m.mapDb.writeMaps(writeMaps, deleteMaps, keepMaps, maps, stopCallback)
+	m.lock.Lock()
 	if !done {
 		return err
 	}
-	m.lock.Lock()
 	var validRb, dirtyRb rangeBoundaries[uint32]
 	for mapIndex, fm := range maps {
 		if m.maps[mapIndex] == fm {
@@ -239,7 +261,6 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	newValid := validRb.makeSet(1)
 	newDirty := dirtyRb.makeSet(1)
 	m.updateRange(m.valid.union(newValid), m.dirty.exclude(epochRange).union(newDirty), m.overlay.exclude(newValid))
-	m.lock.Unlock()
 	return true, nil
 }
 
