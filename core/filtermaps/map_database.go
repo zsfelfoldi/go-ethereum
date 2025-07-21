@@ -17,29 +17,35 @@
 package filtermaps
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"sort"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 const maxWritesPerBatch = 100000
 
 type mapDatabase struct {
-	params *Params
-	db     ethdb.KeyValueStore
+	params     *Params
+	db         ethdb.KeyValueStore
+	hashScheme bool
 
 	lastBlockCache *lru.Cache[uint32, lastBlockOfMap]
 	lvPointerCache *lru.Cache[uint64, uint64]
 }
 
-func newMapDatabase(params *Params, db ethdb.KeyValueStore) *mapDatabase {
+func newMapDatabase(params *Params, db ethdb.KeyValueStore, hashScheme bool) *mapDatabase {
 	return &mapDatabase{
 		params:         params,
 		db:             db,
+		hashScheme:     hashScheme,
 		lastBlockCache: lru.NewCache[uint32, lastBlockOfMap](cachedLastBlocks),
 		lvPointerCache: lru.NewCache[uint64, uint64](cachedLvPointers),
 	}
@@ -112,12 +118,24 @@ func (m *mapDatabase) deleteLastBlockOfMap(batch ethdb.Batch, mapIndex uint32) {
 	rawdb.DeleteFilterMapLastBlock(batch, mapIndex)
 }
 
-func (m *mapDatabase) deleteEpoch(epoch uint32, stopCallback func() bool) (bool, error) {
-	panic("TODO")
+func (m *mapDatabase) deleteEpochRows(epoch uint32, stopCallback func() bool) (bool, error) {
+	deleteFn := func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error {
+		first := m.params.mapRowIndex(epoch<<m.params.logMapsPerEpoch, 0)
+		afterLast := m.params.mapRowIndex((epoch+1)<<m.params.logMapsPerEpoch, 0)
+		return rawdb.DeleteFilterMapRows(db, common.NewRange(first, afterLast-first), hashScheme, stopCb)
+	}
+	action := fmt.Sprintf("Deleting epoch #%d", epoch)
+	if err := m.safeDeleteWithLogs(deleteFn, action, stopCallback); err != rawdb.ErrDeleteRangeInterrupted {
+		return err == nil, err
+	}
+	return false, nil
 }
 
-func (m *mapDatabase) reset(stopCallback func() bool) bool {
-	panic("TODO") // safe delete with logs
+func (m *mapDatabase) reset(stopCallback func() bool) (bool, error) {
+	if err := m.safeDeleteWithLogs(rawdb.DeleteFilterMapsDb, "Resetting log index database", stopCallback); err != rawdb.ErrDeleteRangeInterrupted {
+		return err == nil, err
+	}
+	return false, nil
 }
 
 func (m *mapDatabase) deletePointers(deleteMaps common.Range[uint32], stopCallback func() bool) error {
@@ -125,28 +143,30 @@ func (m *mapDatabase) deletePointers(deleteMaps common.Range[uint32], stopCallba
 	if deleteMaps.First() > 0 {
 		lb, _, err := m.getLastBlockOfMap(deleteMaps.First() - 1)
 		if err != nil {
-			return false, err
+			return err
 		}
 		firstBlock = lb + 1
 	}
 	if deleteMaps.AfterLast() < math.MaxUint32 { //TODO change map index to uint64?
 		lb, _, err := m.getLastBlockOfMap(deleteMaps.Last())
 		if err != nil {
-			return false, err
+			return err
 		}
 		afterLastBlock = lb
 	} else {
 		afterLastBlock = math.MaxUint64
 	}
 	if afterLastBlock > firstBlock {
+		m.lvPointerCache.Purge()
 		blockRange := common.NewRange[uint64](firstBlock, afterLastBlock-firstBlock) // keep last pointer
-		if err := rawdb.DeleteBlockLvPointers(m.db, blockRange, m.hashScheme, stopCallback); err != nil {
+		if err := rawdb.DeleteBlockLvPointers(m.db, blockRange, m.hashScheme, func(bool) bool { return stopCallback() }); err != nil {
 			return err
 		}
 	}
 	if deleteMaps.Count() > 1 {
-		mapRange := common.NewRange[uint64](deleteMaps.First(), deleteMaps.Count()-1) // keep last pointer
-		if err := rawdb.DeleteFilterMapLastBlocks(m.db, mapRange, m.hashScheme, stopCallback); err != nil {
+		m.lastBlockCache.Purge()
+		mapRange := common.NewRange[uint32](deleteMaps.First(), deleteMaps.Count()-1) // keep last pointer
+		if err := rawdb.DeleteFilterMapLastBlocks(m.db, mapRange, m.hashScheme, func(bool) bool { return stopCallback() }); err != nil {
 			return err
 		}
 	}
@@ -155,19 +175,20 @@ func (m *mapDatabase) deletePointers(deleteMaps common.Range[uint32], stopCallba
 
 type writePatterItem struct {
 	mapIndex, dbLayer uint32
-	keepRows          common.Range[uint32] // keep existing rows of layer group
+	valid             common.Range[uint32] // keep existing rows of layer group
 	dirty             bool                 // there are dirty entries in the layer group
 }
 
-func (m *mapDatabase) writeMaps(writeMaps, deleteMaps, keepMaps rangeSet[uint32], maps map[uint32]*finishedMap, stopCallback func() bool) (bool, error) {
-	writePattern := m.makeWritePattern(writeMaps, deleteMaps, keepMaps)
+// dirty: before setting write range to dirty
+func (m *mapDatabase) writeMaps(writeMaps, valid, dirty common.Range[uint32], maps map[uint32]*finishedMap, stopCallback func() bool) (bool, error) {
+	writePattern := m.makeWritePattern(writeMaps, valid, dirty)
 	batch := m.db.NewBatch()
 	rowsPerBatch := uint32(max(maxWritesPerBatch/len(writePattern), 1))
 	var (
 		batchCnt uint32
 		writeErr error
 	)
-	checkWrite := func() bool {
+	checkStopOrCommit := func() bool {
 		batchCnt++
 		if batchCnt >= rowsPerBatch {
 			if writeErr = batch.Write(); writeErr != nil {
@@ -186,19 +207,19 @@ func (m *mapDatabase) writeMaps(writeMaps, deleteMaps, keepMaps rangeSet[uint32]
 		if err := m.writeRowUpdates(batch, writePattern, maps, rowIndex); err != nil {
 			return false, err
 		}
-		if checkWrite() {
+		if checkStopOrCommit() {
 			return false, writeErr
 		}
 	}
-	for mapIndex := range writeMaps.iter() {
+	for mapIndex := range writeMaps.Iter() {
 		fm := maps[mapIndex]
 		rawdb.WriteFilterMapLastBlock(batch, mapIndex, fm.lastBlock.number, fm.lastBlock.id)
-		if checkWrite() {
+		if checkStopOrCommit() {
 			return false, writeErr
 		}
 		for i, lvPtr := range fm.blockPtrs {
 			rawdb.WriteBlockLvPointer(batch, fm.firstBlock()+uint64(i), lvPtr)
-			if checkWrite() {
+			if checkStopOrCommit() {
 				return false, writeErr
 			}
 		}
@@ -209,31 +230,17 @@ func (m *mapDatabase) writeMaps(writeMaps, deleteMaps, keepMaps rangeSet[uint32]
 	return true, nil
 }
 
-func (m *mapDatabase) makeWritePattern(writeMaps, deleteMaps, keepMaps rangeSet[uint32]) (writePattern []writePatterItem) {
-	updateMaps := writeMaps.union(deleteMaps)
+func (m *mapDatabase) makeWritePattern(writeMaps, valid, dirty common.Range[uint32]) (writePattern []writePatterItem) {
 	for dbLayer, groupSize := range m.params.rowGroupSize {
-		updateGroups := updateMaps
-		if groupSize > 1 {
-			updateRb := make(rangeBoundaries[uint32], 0, len(updateMaps)*2)
-			for _, r := range updateMaps {
-				first, last := r.First()/groupSize, r.Last()/groupSize
-				updateRb.add(common.NewRange[uint32](first, last+1-first), 1)
-			}
-			updateGroups = updateRb.makeSet(1)
-		}
-		for i := range updateGroups.iter() {
-			var keepRows []uint32
-			if groupSize > 1 {
-				for j := range groupSize {
-					if keepMaps.includes(i*groupSize + j) {
-						keepRows = append(keepRows, j)
-					}
-				}
-			}
+		updateRange := dirty.Union(writeMaps)
+		firstGroup, lastGroup := updateRange.First()/groupSize, updateRange.Last()/groupSize
+		for i := firstGroup; i <= lastGroup; i++ {
+			groupRange := common.NewRange[uint32](i*groupSize, groupSize)
 			writePattern = append(writePattern, writePatterItem{
 				mapIndex: i * groupSize,
 				dbLayer:  uint32(dbLayer),
-				keepRows: keepRows,
+				valid:    valid.Intersection(groupRange),
+				dirty:    !dirty.Intersection(groupRange).IsEmpty(),
 			})
 		}
 	}
@@ -266,13 +273,13 @@ func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePat
 		} else {
 			rows := make([][]uint32, groupSize)
 			writeGroup := w.dirty
-			if w.keepRows.Count() > 0 {
+			if w.valid.Count() > 0 {
 				oldRows, err := rawdb.ReadFilterMapRowGroup(m.db, m.params.mapRowIndex(w.mapIndex, rowIndex), w.dbLayer, groupSize, m.params.logMapWidth)
 				if err != nil {
 					return err
 				}
-				for _, i := range w.keepRows.Iter() {
-					rows[i] = oldRows[i]
+				for mapIndex := range w.valid.Iter() {
+					rows[mapIndex-w.mapIndex] = oldRows[mapIndex-w.mapIndex]
 				}
 
 			}
@@ -295,4 +302,39 @@ func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePat
 		}
 	}
 	return nil
+}
+
+// safeDeleteWithLogs is a wrapper for a function that performs a safe range
+// delete operation using rawdb.SafeDeleteRange. It emits log messages if the
+// process takes long enough to call the stop callback.
+func (m *mapDatabase) safeDeleteWithLogs(deleteFn func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error, action string, stopCb func() bool) error {
+	var (
+		start          = time.Now()
+		logPrinted     bool
+		lastLogPrinted = start
+	)
+	switch err := deleteFn(m.db, m.hashScheme, func(deleted bool) bool {
+		if deleted && !logPrinted || time.Since(lastLogPrinted) > time.Second*10 {
+			log.Info(action+" in progress...", "elapsed", common.PrettyDuration(time.Since(start)))
+			logPrinted, lastLogPrinted = true, time.Now()
+		}
+		return stopCb()
+	}); {
+	case err == nil:
+		if logPrinted {
+			log.Info(action+" finished", "elapsed", common.PrettyDuration(time.Since(start)))
+		}
+		return nil
+	case errors.Is(err, rawdb.ErrDeleteRangeInterrupted):
+		log.Warn(action+" interrupted", "elapsed", common.PrettyDuration(time.Since(start)))
+		return err
+	default:
+		log.Error(action+" failed", "error", err)
+		return err
+	}
+}
+
+// removeBloomBits removes old bloom bits data from the database.
+func (m *mapDatabase) removeBloomBits(stopCb func() bool) {
+	m.safeDeleteWithLogs(rawdb.DeleteBloomBitsDb, "Removing old bloom bits database", stopCb)
 }

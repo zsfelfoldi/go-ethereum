@@ -18,6 +18,7 @@ package filtermaps
 
 import (
 	"errors"
+	"math"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -83,7 +84,7 @@ func (m *mapStorage) eventLoop() {
 	}
 
 	if !m.initialized {
-		if !m.mapDb.reset(stopCallback) {
+		if done, _ := m.mapDb.reset(stopCallback); !done {
 			return // node stopped before cleaning old database
 		}
 		m.lock.Lock()
@@ -190,17 +191,16 @@ func (m *mapStorage) extendPointerRange(deleteRange common.Range[uint32]) common
 		panic("deleted map range crosses epoch boundary")
 	}
 	first := min(m.tailEpochs, epoch) << m.params.logMapsPerEpoch
-	if lb, ok := m.valid.lastBefore(deleteRange.First()); ok {
-		first = max(first, lb+1)
-	}
-	if lb, ok := m.epochBoundaries.lastBefore(); ok {
-		first = max(first, (lb+1)<<m.params.logMapsPerEpoch)
+	if deleteRange.First() > 0 {
+		if c, ok := m.valid.closestLte(deleteRange.First() - 1); ok {
+			first = max(first, c+1)
+		}
 	}
 	afterLast := uint32(math.MaxUint32)
 	if epoch < m.tailEpochs {
 		afterLast = (epoch + 1) << m.params.logMapsPerEpoch
 	}
-	if fa, ok := m.valid.firstAfter(deleteRange.Last()); ok {
+	if fa, ok := m.valid.closestGte(deleteRange.AfterLast()); ok {
 		afterLast = min(afterLast, fa)
 	}
 	return common.NewRange[uint32](first, afterLast-first)
@@ -210,6 +210,7 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
+	// always operate on a single epoch
 	var epoch uint32
 	if len(m.overlay) > 0 {
 		epoch = m.overlay[len(m.overlay)-1].First() >> m.params.logMapsPerEpoch
@@ -218,16 +219,15 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	} else {
 		return true, nil
 	}
+	//TODO wait for group boundary unless last map is added
 	epochRange := rangeSet[uint32]{common.NewRange[uint32](epoch<<m.params.logMapsPerEpoch, m.params.mapsPerEpoch)}
-	writeMaps := epochRange.intersection(m.overlay)
-	deleteMaps := epochRange.intersection(m.dirty).exclude(writeMaps)
-	validInEpoch := epochRange.intersection(m.valid)
-	keepMaps := validInEpoch.exclude(writeMaps)
+	writeMaps := epochRange.intersection(m.overlay).singleRange()
+	validInEpoch := epochRange.intersection(m.valid).singleRange()
+	dirtyInEpoch := epochRange.intersection(m.dirty).singleRange()
 	// delete old pointers
-	m.mapDb.deletePointers(m.extendPointerRange(writeMaps.union(deleteMaps)), stopCallback)
-	if len(writeMaps) == 0 && len(keepMaps) == 0 {
+	m.mapDb.deletePointers(m.extendPointerRange(dirtyInEpoch), stopCallback)
+	if writeMaps.IsEmpty() && validInEpoch.IsEmpty() {
 		// delete map rows of entire epoch if nothing to write or keep
-		m.updateRange(m.valid.exclude(epochRange), m.dirty.union(validInEpoch), m.overlay)
 		m.lock.Unlock()
 		done, err := m.mapDb.deleteEpochRows(epoch, stopCallback)
 		m.lock.Lock()
@@ -237,30 +237,29 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 		return done, err
 	}
 	maps := make(map[uint32]*finishedMap)
-	for i := range writeMaps.iter() {
+	for i := range writeMaps.Iter() {
 		maps[i] = m.maps[i]
 	}
-	updateMaps := writeMaps.union(deleteMaps)
-	m.updateRange(m.valid.exclude(updateMaps), m.dirty.union(updateMaps), m.overlay)
+	// temporarily mark newly written maps as dirty (replaced/deleted maps are already dirty)
+	m.updateRange(m.valid, m.dirty.union(rangeSet[uint32]{writeMaps}), m.overlay)
 	m.lock.Unlock()
 	// write/overwrite map rows and delete dirty map data, write new pointers
-	done, err := m.mapDb.writeMaps(writeMaps, deleteMaps, keepMaps, maps, stopCallback)
+	done, err := m.mapDb.writeMaps(writeMaps, validInEpoch, dirtyInEpoch, maps, stopCallback)
 	m.lock.Lock()
 	if !done {
-		return err
+		return false, err
 	}
-	var validRb, dirtyRb rangeBoundaries[uint32]
-	for mapIndex, fm := range maps {
-		if m.maps[mapIndex] == fm {
-			delete(m.maps, mapIndex)
-			validRb.add(common.NewRange[uint32](mapIndex, 1), 1)
-		} else {
-			dirtyRb.add(common.NewRange[uint32](mapIndex, 1), 1)
+	// check if newly written maps are still valid according to the current memory
+	// map overlay and shorten range if some maps have been invalidated
+	for mapIndex := range writeMaps.Iter() {
+		if m.maps[mapIndex] != maps[mapIndex] {
+			writeMaps = common.NewRange[uint32](writeMaps.First(), mapIndex-writeMaps.First())
+			break
 		}
+		delete(m.maps, mapIndex)
 	}
-	newValid := validRb.makeSet(1)
-	newDirty := dirtyRb.makeSet(1)
-	m.updateRange(m.valid.union(newValid), m.dirty.exclude(epochRange).union(newDirty), m.overlay.exclude(newValid))
+	writeMapsRs := rangeSet[uint32]{writeMaps}
+	m.updateRange(m.valid.union(writeMapsRs), m.dirty.exclude(writeMapsRs), m.overlay.exclude(writeMapsRs))
 	return true, nil
 }
 

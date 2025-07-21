@@ -146,7 +146,7 @@ var (
 	SyncCommitteeKey      = []byte("committee-") // bigEndian64(syncPeriod) -> serialized committee
 
 	// new log index
-	filterMapsPrefix         = "fm-"
+	filterMapsPrefix         = "fm*" //TODO fm-
 	filterMapsRangeKey       = []byte(filterMapsPrefix + "R")
 	filterMapRowPrefix       = []byte(filterMapsPrefix + "r") // filterMapRowPrefix + mapRowIndex (uint64 big endian) -> filter row
 	filterMapLastBlockPrefix = []byte(filterMapsPrefix + "b") // filterMapLastBlockPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)

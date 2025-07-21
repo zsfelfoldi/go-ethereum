@@ -263,7 +263,7 @@ func (a rangeSet[T]) includes(v T) bool {
 	return false
 }
 
-func (a rangeSet[T]) lastUntil(v T) (last T, found bool) {
+func (a rangeSet[T]) closestLte(v T) (last T, found bool) {
 	for _, r := range a {
 		if r.First() > v {
 			return
@@ -276,15 +276,14 @@ func (a rangeSet[T]) lastUntil(v T) (last T, found bool) {
 	return
 }
 
-func (a rangeSet[T]) firstFrom(v T) (last T, found bool) {
+func (a rangeSet[T]) closestGte(v T) (last T, found bool) {
 	for _, r := range a {
 		if r.First() > v {
-			return
+			return r.First(), true
 		}
 		if r.AfterLast() > v {
 			return v, true
 		}
-		last, found = r.Last(), true
 	}
 	return
 }
@@ -377,4 +376,14 @@ func (a rangeSet[T]) totalCount() T {
 		count += r.Count()
 	}
 	return count
+}
+
+func (a rangeSet[T]) singleRange() common.Range[T] {
+	if len(a) > 1 {
+		panic("singleRange called for non-continuous rangeSet")
+	}
+	if len(a) == 1 {
+		return a[0]
+	}
+	return common.NewRange[T](0, 0)
 }

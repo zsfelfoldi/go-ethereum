@@ -17,7 +17,6 @@
 package filtermaps
 
 import (
-	"errors"
 	"slices"
 	"sync"
 	"time"
@@ -170,7 +169,7 @@ func NewFilterMaps(db ethdb.KeyValueStore, initView *ChainView, historyCutoff, f
 // Start starts the indexer.
 func (f *FilterMaps) Start() {
 	f.closeWg.Add(1)
-	go f.removeBloomBits()
+	//go f.removeBloomBits()
 }
 
 // Stop ensures that the indexer is fully stopped before returning.
@@ -280,138 +279,12 @@ func (f *FilterMaps) isShuttingDown() bool {
 	}
 	f.setRange(batch, f.targetView, fmr, false)
 	return batch.Write()
-}*/
+}
 
 // removeBloomBits removes old bloom bits data from the database.
 func (f *FilterMaps) removeBloomBits() {
 	f.safeDeleteWithLogs(rawdb.DeleteBloomBitsDb, "Removing old bloom bits database", f.isShuttingDown)
 	f.closeWg.Done()
-}
-
-// safeDeleteWithLogs is a wrapper for a function that performs a safe range
-// delete operation using rawdb.SafeDeleteRange. It emits log messages if the
-// process takes long enough to call the stop callback.
-func (f *FilterMaps) safeDeleteWithLogs(deleteFn func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error, action string, stopCb func() bool) error {
-	var (
-		start          = time.Now()
-		logPrinted     bool
-		lastLogPrinted = start
-	)
-	switch err := deleteFn(f.db, f.hashScheme, func(deleted bool) bool {
-		if deleted && !logPrinted || time.Since(lastLogPrinted) > time.Second*10 {
-			log.Info(action+" in progress...", "elapsed", common.PrettyDuration(time.Since(start)))
-			logPrinted, lastLogPrinted = true, time.Now()
-		}
-		return stopCb()
-	}); {
-	case err == nil:
-		if logPrinted {
-			log.Info(action+" finished", "elapsed", common.PrettyDuration(time.Since(start)))
-		}
-		return nil
-	case errors.Is(err, rawdb.ErrDeleteRangeInterrupted):
-		log.Warn(action+" interrupted", "elapsed", common.PrettyDuration(time.Since(start)))
-		return err
-	default:
-		log.Error(action+" failed", "error", err)
-		return err
-	}
-}
-
-// deleteTailEpoch deletes index data from the specified epoch. The last block
-// pointer for the last map of the epoch and the corresponding block log value
-// pointer are retained as these are always assumed to be available for each
-// epoch as boundary markers.
-// The function returns true if all index data related to the epoch (except for
-// the boundary markers) has been fully removed.
-/*func (f *FilterMaps) deleteTailEpoch(epoch uint32) (bool, error) {
-	f.indexLock.Lock()
-	defer f.indexLock.Unlock()
-
-	// determine epoch boundaries
-	lastBlock, _, err := f.getLastBlockOfMap(f.lastEpochMap(epoch))
-	if err != nil {
-		return false, fmt.Errorf("failed to retrieve last block of deleted epoch %d: %v", epoch, err)
-	}
-	var firstBlock uint64
-	firstMap := f.firstEpochMap(epoch)
-	if epoch > 0 {
-		firstBlock, _, err = f.getLastBlockOfMap(firstMap - 1)
-		if err != nil {
-			return false, fmt.Errorf("failed to retrieve last block before deleted epoch %d: %v", epoch, err)
-		}
-		firstBlock++
-	}
-	// update rendered range if necessary
-	var (
-		fmr            = f.indexedRange
-		firstEpoch     = f.mapEpoch(f.indexedRange.maps.First())
-		afterLastEpoch = f.mapEpoch(f.indexedRange.maps.AfterLast() + f.mapsPerEpoch - 1)
-	)
-	if f.indexedRange.tailPartialEpoch != 0 && firstEpoch > 0 {
-		firstEpoch--
-	}
-	switch {
-	case epoch < firstEpoch:
-	// cleanup of already unindexed epoch; range not affected
-	case epoch == firstEpoch && epoch+1 < afterLastEpoch:
-		// first fully or partially rendered epoch and there is at least one
-		// rendered map in the next epoch; remove from indexed range
-		fmr.tailPartialEpoch = 0
-		fmr.maps.SetFirst(f.firstEpochMap(epoch + 1))
-		fmr.blocks.SetFirst(lastBlock + 1)
-		f.setRange(f.db, f.indexedView, fmr, false)
-	default:
-		// cannot be cleaned or unindexed; return with error
-		return false, errors.New("invalid tail epoch number")
-	}
-	// remove index data
-	deleteFn := func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error {
-		first := f.mapRowIndex(firstMap, 0)
-		count := f.mapRowIndex(firstMap+f.mapsPerEpoch, 0) - first
-		if err := rawdb.DeleteFilterMapRows(f.db, common.NewRange(first, count), hashScheme, stopCb); err != nil {
-			return err
-		}
-		for mapIndex := firstMap; mapIndex < firstMap+f.mapsPerEpoch; mapIndex++ {
-			f.filterMapCache.Remove(mapIndex)
-		}
-		delMapRange := common.NewRange(firstMap, f.mapsPerEpoch-1) // keep last entry
-		if err := rawdb.DeleteFilterMapLastBlocks(f.db, delMapRange, hashScheme, stopCb); err != nil {
-			return err
-		}
-		for mapIndex := firstMap; mapIndex < firstMap+f.mapsPerEpoch-1; mapIndex++ {
-			f.lastBlockCache.Remove(mapIndex)
-		}
-		delBlockRange := common.NewRange(firstBlock, lastBlock-firstBlock) // keep last entry
-		if err := rawdb.DeleteBlockLvPointers(f.db, delBlockRange, hashScheme, stopCb); err != nil {
-			return err
-		}
-		for blockNumber := firstBlock; blockNumber < lastBlock; blockNumber++ {
-			f.lvPointerCache.Remove(blockNumber)
-		}
-		return nil
-	}
-	action := fmt.Sprintf("Deleting tail epoch #%d", epoch)
-	stopFn := func() bool {
-		f.processEvents()
-		return f.stop || !f.targetHeadIndexed()
-	}
-	if err := f.safeDeleteWithLogs(deleteFn, action, stopFn); err == nil {
-		// everything removed; mark as cleaned and report success
-		if f.cleanedEpochsBefore == epoch {
-			f.cleanedEpochsBefore = epoch + 1
-		}
-		return true, nil
-	} else {
-		// more data left in epoch range; mark as dirty and report unfinished
-		if f.cleanedEpochsBefore > epoch {
-			f.cleanedEpochsBefore = epoch
-		}
-		if errors.Is(err, rawdb.ErrDeleteRangeInterrupted) {
-			return false, nil
-		}
-		return false, err
-	}
 }*/
 
 // exportCheckpoints exports epoch checkpoints in the format used by checkpoints.go.
