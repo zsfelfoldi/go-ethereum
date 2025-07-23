@@ -387,3 +387,15 @@ func (a rangeSet[T]) singleRange() common.Range[T] {
 	}
 	return common.NewRange[T](0, 0)
 }
+
+func (a rangeSet[T]) equal(b rangeSet[T]) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, r := range a {
+		if b[i] != r {
+			return false
+		}
+	}
+	return true
+}

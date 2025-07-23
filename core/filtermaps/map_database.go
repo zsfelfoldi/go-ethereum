@@ -30,7 +30,12 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
-const maxWritesPerBatch = 100000
+const (
+	databaseVersion   = 3    // reindexed if database version does not match
+	cachedLastBlocks  = 1000 // last block of map pointers
+	cachedLvPointers  = 1000 // first log value pointer of block pointers
+	maxWritesPerBatch = 100000
+)
 
 type mapDatabase struct {
 	params     *Params
@@ -51,12 +56,42 @@ func newMapDatabase(params *Params, db ethdb.KeyValueStore, hashScheme bool) *ma
 	}
 }
 
-func (m *mapDatabase) loadMapRange() (valid, dirty rangeSet[uint32], err error) {
-	panic("TODO")
+func (m *mapDatabase) loadMapRange() (valid, dirty rangeSet[uint32], tailEpochs uint32, found bool) {
+	fmr, ok, err := rawdb.ReadFilterMapsRange(m.db)
+	if !ok || err != nil || fmr.Version != databaseVersion {
+		return
+	}
+	return decodeRangeSet32(fmr.ValidMaps), decodeRangeSet32(fmr.DirtyMaps), fmr.TailEpochs, true
 }
 
-func (m *mapDatabase) storeMapRange(valid, dirty rangeSet[uint32]) {
-	panic("TODO")
+func (m *mapDatabase) storeMapRange(valid, dirty rangeSet[uint32], tailEpochs uint32) {
+	rawdb.WriteFilterMapsRange(m.db, rawdb.FilterMapsRange{
+		Version:    databaseVersion,
+		ValidMaps:  encodeRangeSet32(valid),
+		DirtyMaps:  encodeRangeSet32(dirty),
+		TailEpochs: tailEpochs,
+	})
+}
+
+func (m *mapDatabase) deleteMapRange() {
+	rawdb.DeleteFilterMapsRange(m.db)
+}
+
+func decodeRangeSet32(enc []uint32) rangeSet[uint32] {
+	rs := make(rangeSet[uint32], len(enc)/2)
+	for i := range rs {
+		rs[i] = common.NewRange(enc[i*2], enc[i*2+1])
+	}
+	return rs
+}
+
+func encodeRangeSet32(rs rangeSet[uint32]) []uint32 {
+	enc := make([]uint32, len(rs)*2)
+	for i, r := range rs {
+		enc[i*2] = r.First()
+		enc[i*2+1] = r.Count()
+	}
+	return enc
 }
 
 // getBlockLvPointer returns the starting log value index where the log values
@@ -132,6 +167,7 @@ func (m *mapDatabase) deleteEpochRows(epoch uint32, stopCallback func() bool) (b
 }
 
 func (m *mapDatabase) reset(stopCallback func() bool) (bool, error) {
+	rawdb.DeleteFilterMapsRange(m.db)
 	if err := m.safeDeleteWithLogs(rawdb.DeleteFilterMapsDb, "Resetting log index database", stopCallback); err != rawdb.ErrDeleteRangeInterrupted {
 		return err == nil, err
 	}

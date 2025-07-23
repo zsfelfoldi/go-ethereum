@@ -35,7 +35,6 @@ type mapStorage struct {
 	initialized                bool
 	tailEpochs                 uint32           // epochs initialized with last map block pointer and corresponding reverse block lv pointer
 	valid, dirty               rangeSet[uint32] // valid and dirty maps in database
-	epochBoundaries            rangeSet[uint32]
 	overlay                    rangeSet[uint32] // memory maps
 	validBlocks, overlayBlocks rangeSet[uint64]
 	maps                       map[uint32]*finishedMap
@@ -50,11 +49,12 @@ func newMapStorage(params *Params, mapDb *mapDatabase) *mapStorage {
 		pauseCh:   make(chan bool, 1),
 		maps:      make(map[uint32]*finishedMap),
 	}
-	valid, dirty, err := m.mapDb.loadMapRange()
-	if err == nil {
-		m.valid, m.dirty, m.initialized = valid, dirty, true
+	if valid, dirty, tailEpochs, ok := m.mapDb.loadMapRange(); ok {
+		m.valid, m.dirty, m.tailEpochs, m.initialized = valid, dirty, tailEpochs, true
+		if m.setValidBlocks() != nil {
+			m.uninitialize()
+		}
 	}
-	//TODO validBlocks
 	m.closeWg.Add(1)
 	go m.eventLoop()
 	return m
@@ -232,7 +232,9 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 		done, err := m.mapDb.deleteEpochRows(epoch, stopCallback)
 		m.lock.Lock()
 		if done {
-			m.updateRange(m.valid, m.dirty.exclude(epochRange), m.overlay)
+			if err := m.updateRange(m.valid, m.dirty.exclude(epochRange), m.overlay); err != nil {
+				return false, err
+			}
 		}
 		return done, err
 	}
@@ -241,7 +243,9 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 		maps[i] = m.maps[i]
 	}
 	// temporarily mark newly written maps as dirty (replaced/deleted maps are already dirty)
-	m.updateRange(m.valid, m.dirty.union(rangeSet[uint32]{writeMaps}), m.overlay)
+	if err := m.updateRange(m.valid, m.dirty.union(rangeSet[uint32]{writeMaps}), m.overlay); err != nil {
+		return false, err
+	}
 	m.lock.Unlock()
 	// write/overwrite map rows and delete dirty map data, write new pointers
 	done, err := m.mapDb.writeMaps(writeMaps, validInEpoch, dirtyInEpoch, maps, stopCallback)
@@ -259,12 +263,61 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 		delete(m.maps, mapIndex)
 	}
 	writeMapsRs := rangeSet[uint32]{writeMaps}
-	m.updateRange(m.valid.union(writeMapsRs), m.dirty.exclude(writeMapsRs), m.overlay.exclude(writeMapsRs))
+	if err := m.updateRange(m.valid.union(writeMapsRs), m.dirty.exclude(writeMapsRs), m.overlay.exclude(writeMapsRs)); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
-func (m *mapStorage) updateRange(valid, dirty, overlay rangeSet[uint32]) {
-	m.valid, m.dirty, m.overlay = valid, dirty, overlay
-	m.mapDb.storeMapRange(valid, dirty)
-	//TODO validBlocks
+func (m *mapStorage) updateRange(valid, dirty, overlay rangeSet[uint32]) error {
+	if !valid.equal(m.valid) {
+		m.valid = valid
+		if err := m.setValidBlocks(); err != nil {
+			m.uninitialize()
+			return err
+		}
+	}
+	m.dirty = dirty
+	if !overlay.equal(m.overlay) {
+		m.overlay = overlay
+		m.setOverlayBlocks()
+	}
+	m.mapDb.storeMapRange(valid, dirty, m.tailEpochs)
+	return nil
+}
+
+func (m *mapStorage) uninitialize() {
+	m.valid, m.dirty, m.overlay, m.tailEpochs, m.initialized = nil, nil, nil, 0, false
+	m.mapDb.deleteMapRange()
+}
+
+func (m *mapStorage) setValidBlocks() error {
+	vb := make(rangeBoundaries[uint64], 0, len(m.valid)*2)
+	for _, vr := range m.valid {
+		var first uint64
+		if vr.First() > 0 {
+			lb, _, err := m.mapDb.getLastBlockOfMap(vr.First() - 1)
+			if err != nil {
+				return err
+			}
+			first = lb + 1
+		}
+		last, _, err := m.mapDb.getLastBlockOfMap(vr.Last() - 1)
+		if err != nil {
+			return err
+		}
+		vb.add(common.NewRange[uint64](first, last+1-first), 1)
+	}
+	m.validBlocks = vb.makeSet(1)
+	return nil
+}
+
+func (m *mapStorage) setOverlayBlocks() {
+	ob := make(rangeBoundaries[uint64], 0, len(m.overlay)*2)
+	for _, or := range m.overlay {
+		first := m.maps[or.First()].firstBlock()
+		last := m.maps[or.Last()].lastBlock.number
+		ob.add(common.NewRange[uint64](first, last+1-first), 1)
+	}
+	m.overlayBlocks = ob.makeSet(1)
 }

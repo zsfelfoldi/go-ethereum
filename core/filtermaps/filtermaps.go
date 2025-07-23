@@ -44,14 +44,6 @@ var (
 	matchAllMeter           = metrics.NewRegisteredMeter("filtermaps/match/matchall", nil)      // number of requests returned with ErrMatchAll
 )
 
-const (
-	databaseVersion       = 3    // reindexed if database version does not match
-	cachedLastBlocks      = 1000 // last block of map pointers
-	cachedLvPointers      = 1000 // first log value pointer of block pointers
-	cachedFilterMaps      = 3    // complete filter maps (cached by map renderer)
-	cachedRenderSnapshots = 8    // saved map renderer data at block boundaries
-)
-
 // FilterMaps is the in-memory representation of the log index structure that is
 // responsible for building and updating the index according to the canonical
 // chain.
