@@ -524,7 +524,12 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 	if bc.cfg.TxLookupLimit >= 0 {
 		bc.txIndexer = newTxIndexer(uint64(bc.cfg.TxLookupLimit), bc)
 	}
+	bc.indexerFeed.init(bc)
 	return bc, nil
+}
+
+func (bc *BlockChain) RegisterIndexer(indexer Indexer) {
+	bc.indexerFeed.register(indexer)
 }
 
 func (bc *BlockChain) setupSnapshot() {
@@ -1228,6 +1233,8 @@ func (bc *BlockChain) writeHeadBlock(block *types.Block) {
 
 	bc.currentBlock.Store(block.Header())
 	headBlockGauge.Update(int64(block.NumberU64()))
+
+	bc.indexerFeed.broadcast(block)
 }
 
 // stopWithoutSaving stops the blockchain service. If any imports are currently in progress
@@ -1262,6 +1269,7 @@ func (bc *BlockChain) stopWithoutSaving() {
 // Stop stops the blockchain service. If any imports are currently in progress
 // it will abort them using the procInterrupt.
 func (bc *BlockChain) Stop() {
+	bc.indexerFeed.stop()
 	bc.stopWithoutSaving()
 
 	// Ensure that the entirety of the state snapshot is journaled to disk.
@@ -1579,6 +1587,7 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	blockBatch := bc.db.NewBatch()
 	rawdb.WriteBlock(blockBatch, block)
 	rawdb.WriteReceipts(blockBatch, block.Hash(), block.NumberU64(), receipts)
+	//bc.receiptsCache.Add(block.Hash(), receipts)  //TODO ???
 	rawdb.WritePreimages(blockBatch, statedb.Preimages())
 	if err := blockBatch.Write(); err != nil {
 		log.Crit("Failed to write block into disk", "err", err)
@@ -1588,7 +1597,6 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	if err != nil {
 		return err
 	}
-	bc.indexerFeed.addBlockData(block, types.Receipts(receipts))
 	// If node is running in path mode, skip explicit gc operation
 	// which is unnecessary in this mode.
 	if bc.triedb.Scheme() == rawdb.PathScheme {

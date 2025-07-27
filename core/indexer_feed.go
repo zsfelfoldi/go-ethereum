@@ -18,48 +18,150 @@
 package core
 
 type Indexer interface {
-	AddBlockData(header *types.Header, block *types.Block, receipts types.Receipts) bool
+	AddBlockData(header *types.Header, receipts types.Receipts) (bool, common.Range[uint64])
 	Revert(blockNumber uint64)
-	NeedBlocks() (common.Range[uint64], bool)
+	MissingBlocks(missing common.Range[uint64])
+	Status() (bool, common.Range[uint64])
+	Stop()
 }
 
 type indexerFeed struct {
-	indexers []*indexServer
-	chain    *BlockChain
+	indexersLock sync.Mutex
+	indexers     []*indexServer
+	chain        *BlockChain
+
+	historyCutoff uint64
+	closeCh       chan struct{}
+	closeWg       sync.WaitGroup
 }
 
-func (f *indexerFeed) register(indexer Indexer, sendBlocks, sendReceipts bool) {
+func (f *indexerFeed) init(chain *BlockChain) {
+	f.chain = chain
+	f.closeCh = make(chan struct{})
+}
+
+func (f *indexerFeed) register(indexer Indexer) {
+	f.indexersLock.Lock()
+	defer f.indexersLock.Unlock()
+
 	server := &indexServer{
-		parent:       f,
-		indexer:      indexer,
-		sendBlocks:   sendBlocks,
-		sendReceipts: sendReceipts,
+		parent:    f,
+		indexer:   indexer,
+		sendTimer: time.NewTimer(0),
 	}
-	server.start()
 	f.indexers = append(i.indexers, server)
+	f.closeWg.Add(1)
+	indexer.MissingBlocks(common.NewRange[uint64](0, f.historyCutoff)
+	go server.eventLoop()
 }
 
-func (f *indexerFeed) addBlockData(block *types.Block, receipts types.Receipts) {}
+func (f *indexerFeed) stop() {
+	close(f.closeCh)
+	f.closeWg.Wait()
+}
+
+func (f *indexerFeed) broadcastHead(header *types.Header) {
+	f.indexersLock.Lock()
+	defer f.indexersLock.Unlock()
+
+	for _, indexer := range f.indexers {
+		indexer.sendHead(header)
+	}
+}
 
 type indexServer struct {
-	lock                     sync.Mutex
-	parent                   *indexerFeed
-	indexer                  Indexer
-	sendBlocks, sendReceipts bool
+	lock    sync.Mutex
+	parent  *indexerFeed
+	indexer Indexer // always call under mutex lock; never call after stopped
+	stopped bool
 
-	isReady    bool
+	requestNumber uint64
+	requestValid  bool
+
+	ready      bool
+	sendTimer  *time.Timer
 	needBlocks common.Range[uint64]
 }
 
-func (s *indexServer) start() {
+func (s *indexServer) eventLoop() {
+	for {
+		select {
+		case <-s.sendTimer.C:
+			s.lock.Lock()
 
+			blockNumber, ok := s.needBlocks.First(), !s.needBlocks.IsEmpty()
+			s.lock.Unlock()
+		case <-s.parent.closeCh:
+			s.lock.Lock()
+			s.indexer.Stop()
+			s.stopped = true
+			s.lock.Unlock()
+			s.parent.closeWg.Done()
+			return
+		}
+	}
 }
 
-func (s *indexServer) addBlockData(block *types.Block, receipts types.Receipts) {
+func (s *indexServer) sendHead(header *types.Header) {
+	receipts := s.parent.chain.GetReceiptsByHash(header.Hash()) //TODO number and hash
+	if receipts == nil {
+		log.Error("Receipts belonging to new head are missing", "number", header.Number, "hash", header.Hash())
+		return
+	}
 	s.lock.Lock()
-	defer s.lock.Unlock()
+	if !s.stopped {
+		s.ready, s.needBlocks = s.indexer.AddBlockData(header, receipts)
+		if s.needBlocks.IsEmpty() {
+			s.sendTimer.Stop()
+		} else {
+			if s.ready {
+				s.sendTimer.Reset(0)
+			} else {
+				s.sendTimer.Reset(busyDelay)
+			}
+		}
+	}
+	s.lock.Unlock()
+}
 
-	header := block.Header()
+func (s *indexServer) sendBlockData(header *types.Header) {
+	receipts := s.parent.chain.GetReceiptsByHash(header.Hash()) //TODO number and hash
+	if receipts == nil {
+		return //TODO ???
+	}
+	ready := s.indexer.AddBlockData(header, receipts)
+}
+
+func (s *indexServer) sendByNumber(number uint64) {
+	s.lock.Lock()
+	s.requestNumber, s.requestValid = number, true
+	s.lock.Unlock()
+
+	var (
+		header *types.Header
+		block  *types.Block
+	)
+	if s.sendBlocks {
+		block = s.parent.chain.GetBlockByNumber(number)
+		if block == nil {
+			return //TODO ???
+		}
+		header = block.Header()
+	} else {
+		header = s.parent.chain.GetHeaderByNumber(number)
+		if header == nil {
+			return //TODO ???
+		}
+	}
+
+	s.lock.Lock()
+	if s.requestValid {
+		s.sendBlockData(header, block)
+	}
+	s.lock.Unlock()
+}
+
+/*	header := block.Header()
 	if !s.sendBlocks {
 		block = nil
 	}
@@ -68,3 +170,4 @@ func (s *indexServer) addBlockData(block *types.Block, receipts types.Receipts) 
 	}
 	s.ready = s.indexer.AddBlockData(header, block, receipts)
 }
+*/
