@@ -26,9 +26,9 @@ type Indexer interface {
 }
 
 type indexerFeed struct {
-	indexersLock sync.Mutex
-	indexers     []*indexServer
-	chain        *BlockChain
+	serversLock sync.Mutex
+	servers     []*indexServer
+	chain       *BlockChain
 
 	headers  []*types.Header  // broadcast head header batch
 	receipts []types.Receipts // broadcast head receipts batch
@@ -44,17 +44,24 @@ func (f *indexerFeed) init(chain *BlockChain) {
 }
 
 func (f *indexerFeed) register(indexer Indexer) {
-	f.indexersLock.Lock()
-	defer f.indexersLock.Unlock()
+	f.serversLock.Lock()
+	defer f.serversLock.Unlock()
 
 	server := &indexServer{
 		parent:    f,
 		indexer:   indexer,
 		sendTimer: time.NewTimer(0),
+		lastHead:  f.chain.CurrentBlock(),
 	}
-	f.indexers = append(i.indexers, server)
+	f.servers = append(i.servers, server)
 	f.closeWg.Add(1)
 	indexer.MissingBlocks(common.NewRange[uint64](0, f.historyCutoff))
+	receipts := f.chain.GetReceiptsByHash(server.lastHead.Hash()) //TODO number and hash
+	if receipts != nil {
+		indexer.AddBlockData([]*types.Header{server.lastHead}, []types.Receipts{receipts})
+	} else {
+		log.Error("Receipts belonging to init head are missing", "number", server.lastHead.Number, "hash", server.lastHead.Hash())
+	}
 	go server.eventLoop()
 }
 
@@ -63,9 +70,9 @@ func (f *indexerFeed) stop() {
 	f.closeWg.Wait()
 }
 
-func (f *indexerFeed) broadcastHead(header *types.Header, head bool) {
-	f.indexersLock.Lock()
-	defer f.indexersLock.Unlock()
+func (f *indexerFeed) broadcast(header *types.Header, head bool) {
+	f.serversLock.Lock()
+	defer f.serversLock.Unlock()
 
 	receipts := s.parent.chain.GetReceiptsByHash(header.Hash()) //TODO number and hash
 	if receipts == nil {
@@ -75,11 +82,17 @@ func (f *indexerFeed) broadcastHead(header *types.Header, head bool) {
 	f.headers = append(f.headers, header)
 	f.receipts = append(f.receipts, receipts)
 	if head || len(f.headers) >= maxBatchLength {
-		for _, indexer := range f.indexers {
-			indexer.sendBlockData(f.headers, f.receipts)
+		for _, server := range f.servers {
+			server.sendBlockData(f.headers, f.receipts)
 		}
 		f.headers = f.headers[:0]
 		f.receipts = f.receipts[:0]
+	}
+}
+
+func (f *indexerFeed) revert(header *types.Header) {
+	for _, server := range f.servers {
+		server.revert(header)
 	}
 }
 
@@ -89,21 +102,20 @@ type indexServer struct {
 	indexer Indexer // always call under mutex lock; never call after stopped
 	stopped bool
 
-	requestNumber uint64
-	requestValid  bool
-
+	lastHead   *types.Header
 	ready      bool
 	sendTimer  *time.Timer
 	needBlocks common.Range[uint64]
 }
 
+//TODO Status
 func (s *indexServer) eventLoop() {
 	for {
 		select {
 		case <-s.sendTimer.C:
 			s.lock.Lock()
 			first := max(s.needBlocks.First(), s.historyCutoff)
-			afterLast := min(first+maxBatchLength, s.needBlocks.AfterLast())
+			afterLast := min(first+maxBatchLength, s.needBlocks.AfterLast(), s.lastHead.Number.Uint64()+1)
 			s.lock.Unlock()
 			if first < afterLast {
 				headers, receipts := s.historicBlockData(first, afterLast)
@@ -120,12 +132,23 @@ func (s *indexServer) eventLoop() {
 	}
 }
 
+func (s *indexServer) revert(header *types.Header) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if !s.stopped {
+		s.indexer.Revert(header.Number.Uint64())
+		s.lastHead = header
+	}
+}
+
 func (s *indexServer) sendBlockData(headers []*types.Header, receipts []types.Receipts) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	if !s.stopped {
 		s.ready, s.needBlocks = s.indexer.AddBlockData(headers, receipts)
+		s.lastHead = headers[len(headers)-1]
 		if s.needBlocks.IsEmpty() {
 			s.sendTimer.Stop()
 		} else {
@@ -138,6 +161,33 @@ func (s *indexServer) sendBlockData(headers []*types.Header, receipts []types.Re
 	}
 }
 
-func (s *indexServer) historicBlockData(first, afterLast uint64) {
-	xxx
+func (s *indexServer) historicBlockData(first, afterLast uint64) (headers []*types.Header, receipts []types.Receipts) {
+	s.lock.Lock()
+	head := s.lastHead
+	s.lock.Unlock()
+	numbers := make([]uint64, afterLast+1-first)
+	for number := first; number < afterLast; number++ {
+		numbers[i-first] = number
+	}
+	numbers[afterLast-first] = head.Number.Uint64()
+	hashes, err := s.parent.chain.GetCanonicalHashes(numbers)
+	if err != nil || len(hashes) != afterLast+1-first || hashes[afterLast-first] != head.Hash() {
+		return
+	}
+	headers = make([]*types.Header, 0, afterLast-first)
+	receipts = make([]types.Receipts, 0, afterLast-first)
+	for number := first; number < afterLast; number++ {
+		hash := hashes[i-first]
+		header := s.parent.chain.GetHeader(hash, number)
+		if header == nil {
+			log.Error("Historical header missing", "number", number, "hash", hash)
+			continue
+		}
+		receipts := s.parent.chain.GetReceiptsByHash(hash)
+		if receipts == nil {
+			log.Error("Historical receipts are missing", "number", number, "hash", hash)
+			continue
+		}
+
+	}
 }
