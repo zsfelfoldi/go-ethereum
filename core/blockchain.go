@@ -1155,6 +1155,7 @@ func (bc *BlockChain) ResetWithGenesisBlock(genesis *types.Block) error {
 		log.Crit("Failed to write genesis block", "err", err)
 	}
 	bc.writeHeadBlock(genesis)
+	bc.indexerFeed.revert(genesis.Header())
 	bc.indexerFeed.broadcast(genesis.Header(), true)
 
 	// Last update all in-memory chain markers

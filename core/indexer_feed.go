@@ -17,11 +17,25 @@
 // Package core implements the Ethereum consensus protocol.
 package core
 
+import (
+	"sync"
+	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
+)
+
+const (
+	maxBatchLength = 64
+	busyDelay      = time.Second
+)
+
 type Indexer interface {
 	AddBlockData(headers []*types.Header, receipts []types.Receipts) (bool, common.Range[uint64])
 	Revert(blockNumber uint64)
-	MissingBlocks(missing common.Range[uint64])
 	Status() (bool, common.Range[uint64])
+	MissingBlocks(missing common.Range[uint64])
 	Stop()
 }
 
@@ -33,9 +47,8 @@ type indexerFeed struct {
 	headers  []*types.Header  // broadcast head header batch
 	receipts []types.Receipts // broadcast head receipts batch
 
-	historyCutoff uint64
-	closeCh       chan struct{}
-	closeWg       sync.WaitGroup
+	closeCh chan struct{}
+	closeWg sync.WaitGroup
 }
 
 func (f *indexerFeed) init(chain *BlockChain) {
@@ -53,12 +66,13 @@ func (f *indexerFeed) register(indexer Indexer) {
 		sendTimer: time.NewTimer(0),
 		lastHead:  f.chain.CurrentBlock(),
 	}
-	f.servers = append(i.servers, server)
+	server.historyCutoff, _ = f.chain.HistoryPruningCutoff()
+	f.servers = append(f.servers, server)
 	f.closeWg.Add(1)
-	indexer.MissingBlocks(common.NewRange[uint64](0, f.historyCutoff))
-	receipts := f.chain.GetReceiptsByHash(server.lastHead.Hash()) //TODO number and hash
-	if receipts != nil {
-		indexer.AddBlockData([]*types.Header{server.lastHead}, []types.Receipts{receipts})
+	indexer.MissingBlocks(common.NewRange[uint64](0, server.historyCutoff))
+	blockReceipts := f.chain.GetReceipts(server.lastHead.Hash(), server.lastHead.Number.Uint64())
+	if blockReceipts != nil {
+		indexer.AddBlockData([]*types.Header{server.lastHead}, []types.Receipts{blockReceipts})
 	} else {
 		log.Error("Receipts belonging to init head are missing", "number", server.lastHead.Number, "hash", server.lastHead.Hash())
 	}
@@ -74,16 +88,16 @@ func (f *indexerFeed) broadcast(header *types.Header, head bool) {
 	f.serversLock.Lock()
 	defer f.serversLock.Unlock()
 
-	receipts := s.parent.chain.GetReceiptsByHash(header.Hash()) //TODO number and hash
-	if receipts == nil {
+	blockReceipts := f.chain.GetReceipts(header.Hash(), header.Number.Uint64())
+	if blockReceipts == nil {
 		log.Error("Receipts belonging to new head are missing", "number", header.Number, "hash", header.Hash())
 		return
 	}
 	f.headers = append(f.headers, header)
-	f.receipts = append(f.receipts, receipts)
+	f.receipts = append(f.receipts, blockReceipts)
 	if head || len(f.headers) >= maxBatchLength {
 		for _, server := range f.servers {
-			server.sendBlockData(f.headers, f.receipts)
+			server.sendHeadBlockData(f.headers, f.receipts)
 		}
 		f.headers = f.headers[:0]
 		f.receipts = f.receipts[:0]
@@ -97,29 +111,39 @@ func (f *indexerFeed) revert(header *types.Header) {
 }
 
 type indexServer struct {
-	lock    sync.Mutex
-	parent  *indexerFeed
-	indexer Indexer // always call under mutex lock; never call after stopped
-	stopped bool
+	lock          sync.Mutex
+	parent        *indexerFeed
+	indexer       Indexer // always call under mutex lock; never call after stopped
+	historyCutoff uint64  //TODO
+	stopped       bool
 
-	lastHead   *types.Header
-	ready      bool
-	sendTimer  *time.Timer
-	needBlocks common.Range[uint64]
+	lastHead            *types.Header
+	ready               bool
+	sendTimer           *time.Timer
+	needBlocks          common.Range[uint64]
+	historicRefBlock    uint64
+	lastHistoryErrorLog time.Time
 }
 
-//TODO Status
 func (s *indexServer) eventLoop() {
 	for {
 		select {
 		case <-s.sendTimer.C:
 			s.lock.Lock()
-			first := max(s.needBlocks.First(), s.historyCutoff)
-			afterLast := min(first+maxBatchLength, s.needBlocks.AfterLast(), s.lastHead.Number.Uint64()+1)
-			s.lock.Unlock()
-			if first < afterLast {
-				headers, receipts := s.historicBlockData(first, afterLast)
-				s.sendBlockData(headers, receipts)
+			if s.ready {
+				first := max(s.needBlocks.First(), s.historyCutoff)
+				afterLast := min(first+maxBatchLength, s.needBlocks.AfterLast(), s.lastHead.Number.Uint64()+1)
+				s.lock.Unlock()
+				if first < afterLast {
+					headers, receipts := s.historicBlockData(first, afterLast)
+					if headers != nil {
+						s.sendHistoricBlockData(headers, receipts)
+					}
+				}
+			} else {
+				s.ready, s.needBlocks = s.indexer.Status()
+				s.setTimer()
+				s.lock.Unlock()
 			}
 		case <-s.parent.closeCh:
 			s.lock.Lock()
@@ -137,57 +161,111 @@ func (s *indexServer) revert(header *types.Header) {
 	defer s.lock.Unlock()
 
 	if !s.stopped {
+		if header.Hash() == s.lastHead.Hash() {
+			return
+		}
+		if header.Number.Uint64() >= s.lastHead.Number.Uint64() {
+			panic("invalid indexer revert")
+		}
 		s.indexer.Revert(header.Number.Uint64())
 		s.lastHead = header
+		s.historicRefBlock = min(s.historicRefBlock, header.Number.Uint64())
 	}
 }
 
-func (s *indexServer) sendBlockData(headers []*types.Header, receipts []types.Receipts) {
+func (s *indexServer) sendHeadBlockData(headers []*types.Header, receipts []types.Receipts) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	if !s.stopped {
+		if len(headers) > 0 && headers[0].Hash() == s.lastHead.Hash() {
+			headers = headers[1:]
+			receipts = receipts[1:]
+		}
+		if len(headers) == 0 {
+			return
+		}
+		lastHash := s.lastHead.Hash()
+		for _, header := range headers {
+			if header.ParentHash != lastHash {
+				panic("non-continuous head header chain sent to indexer")
+			}
+			lastHash = header.Hash()
+		}
 		s.ready, s.needBlocks = s.indexer.AddBlockData(headers, receipts)
 		s.lastHead = headers[len(headers)-1]
-		if s.needBlocks.IsEmpty() {
-			s.sendTimer.Stop()
+		s.setTimer()
+	}
+}
+
+func (s *indexServer) setTimer() {
+	if s.needBlocks.IsEmpty() {
+		s.sendTimer.Stop()
+	} else {
+		if s.ready {
+			s.sendTimer.Reset(0)
 		} else {
-			if s.ready {
-				s.sendTimer.Reset(0)
-			} else {
-				s.sendTimer.Reset(busyDelay)
-			}
+			s.sendTimer.Reset(busyDelay)
 		}
+	}
+}
+
+func (s *indexServer) sendHistoricBlockData(headers []*types.Header, receipts []types.Receipts) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if !s.stopped {
+		for len(headers) > 0 && headers[len(headers)-1].Number.Uint64() > s.historicRefBlock {
+			headers = headers[:len(headers)-1]
+			receipts = receipts[:len(receipts)-1]
+		}
+		if len(headers) != 0 {
+			s.ready, s.needBlocks = s.indexer.AddBlockData(headers, receipts)
+		} else {
+			s.ready, s.needBlocks = s.indexer.Status()
+		}
+		s.setTimer()
 	}
 }
 
 func (s *indexServer) historicBlockData(first, afterLast uint64) (headers []*types.Header, receipts []types.Receipts) {
 	s.lock.Lock()
 	head := s.lastHead
+	s.historicRefBlock = head.Number.Uint64()
 	s.lock.Unlock()
 	numbers := make([]uint64, afterLast+1-first)
 	for number := first; number < afterLast; number++ {
-		numbers[i-first] = number
+		numbers[number-first] = number
 	}
 	numbers[afterLast-first] = head.Number.Uint64()
 	hashes, err := s.parent.chain.GetCanonicalHashes(numbers)
-	if err != nil || len(hashes) != afterLast+1-first || hashes[afterLast-first] != head.Hash() {
+	if err != nil || uint64(len(hashes)) != afterLast+1-first || hashes[afterLast-first] != head.Hash() {
 		return
 	}
 	headers = make([]*types.Header, 0, afterLast-first)
 	receipts = make([]types.Receipts, 0, afterLast-first)
 	for number := first; number < afterLast; number++ {
-		hash := hashes[i-first]
+		hash := hashes[number-first]
 		header := s.parent.chain.GetHeader(hash, number)
 		if header == nil {
-			log.Error("Historical header missing", "number", number, "hash", hash)
+			if time.Since(s.lastHistoryErrorLog) >= time.Second*10 {
+				s.lastHistoryErrorLog = time.Now()
+				log.Error("Historical header missing", "number", number, "hash", hash)
+			}
+			s.historyCutoff = number + 1
 			continue
 		}
-		receipts := s.parent.chain.GetReceiptsByHash(hash)
-		if receipts == nil {
-			log.Error("Historical receipts are missing", "number", number, "hash", hash)
+		blockReceipts := s.parent.chain.GetReceipts(hash, number)
+		if blockReceipts == nil {
+			if time.Since(s.lastHistoryErrorLog) >= time.Second*10 {
+				s.lastHistoryErrorLog = time.Now()
+				log.Error("Historical receipts are missing", "number", number, "hash", hash)
+			}
+			s.historyCutoff = number + 1
 			continue
 		}
-
+		headers = append(headers, header)
+		receipts = append(receipts, blockReceipts)
 	}
+	return
 }
