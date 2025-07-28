@@ -1155,6 +1155,7 @@ func (bc *BlockChain) ResetWithGenesisBlock(genesis *types.Block) error {
 		log.Crit("Failed to write genesis block", "err", err)
 	}
 	bc.writeHeadBlock(genesis)
+	bc.indexerFeed.broadcast(genesis.Header(), true)
 
 	// Last update all in-memory chain markers
 	bc.genesisBlock = genesis
@@ -1233,8 +1234,6 @@ func (bc *BlockChain) writeHeadBlock(block *types.Block) {
 
 	bc.currentBlock.Store(block.Header())
 	headBlockGauge.Update(int64(block.NumberU64()))
-
-	bc.indexerFeed.broadcast(block)
 }
 
 // stopWithoutSaving stops the blockchain service. If any imports are currently in progress
@@ -1571,6 +1570,7 @@ func (bc *BlockChain) writeKnownBlock(block *types.Block) error {
 		}
 	}
 	bc.writeHeadBlock(block)
+	bc.indexerFeed.broadcast(block.Header(), true)
 	return nil
 }
 
@@ -1674,6 +1674,7 @@ func (bc *BlockChain) writeBlockAndSetHead(block *types.Block, receipts []*types
 
 	// Set new head.
 	bc.writeHeadBlock(block)
+	bc.indexerFeed.broadcast(block.Header(), true)
 
 	bc.chainFeed.Send(ChainEvent{Header: block.Header()})
 	if len(logs) > 0 {
@@ -2383,6 +2384,7 @@ func (bc *BlockChain) reorg(oldHead *types.Header, newHead *types.Header) error 
 			return errInvalidNewChain
 		}
 	}
+	bc.indexerFeed.revert(commonBlock)
 	// Ensure the user sees large reorgs
 	if len(oldChain) > 0 && len(newChain) > 0 {
 		logFn := log.Info
@@ -2480,6 +2482,7 @@ func (bc *BlockChain) reorg(oldHead *types.Header, newHead *types.Header) error 
 		}
 		// Update the head block
 		bc.writeHeadBlock(block)
+		bc.indexerFeed.broadcast(block.Header(), false)
 	}
 	if len(rebirthLogs) > 0 {
 		bc.logsFeed.Send(rebirthLogs)
@@ -2555,6 +2558,7 @@ func (bc *BlockChain) SetCanonical(head *types.Block) (common.Hash, error) {
 		}
 	}
 	bc.writeHeadBlock(head)
+	bc.indexerFeed.broadcast(head.Header(), true)
 
 	// Emit events
 	logs := bc.collectLogs(head, false)

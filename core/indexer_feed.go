@@ -18,7 +18,7 @@
 package core
 
 type Indexer interface {
-	AddBlockData(header *types.Header, receipts types.Receipts) (bool, common.Range[uint64])
+	AddBlockData(headers []*types.Header, receipts []types.Receipts) (bool, common.Range[uint64])
 	Revert(blockNumber uint64)
 	MissingBlocks(missing common.Range[uint64])
 	Status() (bool, common.Range[uint64])
@@ -29,6 +29,9 @@ type indexerFeed struct {
 	indexersLock sync.Mutex
 	indexers     []*indexServer
 	chain        *BlockChain
+
+	headers  []*types.Header  // broadcast head header batch
+	receipts []types.Receipts // broadcast head receipts batch
 
 	historyCutoff uint64
 	closeCh       chan struct{}
@@ -51,7 +54,7 @@ func (f *indexerFeed) register(indexer Indexer) {
 	}
 	f.indexers = append(i.indexers, server)
 	f.closeWg.Add(1)
-	indexer.MissingBlocks(common.NewRange[uint64](0, f.historyCutoff)
+	indexer.MissingBlocks(common.NewRange[uint64](0, f.historyCutoff))
 	go server.eventLoop()
 }
 
@@ -60,12 +63,23 @@ func (f *indexerFeed) stop() {
 	f.closeWg.Wait()
 }
 
-func (f *indexerFeed) broadcastHead(header *types.Header) {
+func (f *indexerFeed) broadcastHead(header *types.Header, head bool) {
 	f.indexersLock.Lock()
 	defer f.indexersLock.Unlock()
 
-	for _, indexer := range f.indexers {
-		indexer.sendHead(header)
+	receipts := s.parent.chain.GetReceiptsByHash(header.Hash()) //TODO number and hash
+	if receipts == nil {
+		log.Error("Receipts belonging to new head are missing", "number", header.Number, "hash", header.Hash())
+		return
+	}
+	f.headers = append(f.headers, header)
+	f.receipts = append(f.receipts, receipts)
+	if head || len(f.headers) >= maxBatchLength {
+		for _, indexer := range f.indexers {
+			indexer.sendBlockData(f.headers, f.receipts)
+		}
+		f.headers = f.headers[:0]
+		f.receipts = f.receipts[:0]
 	}
 }
 
@@ -88,9 +102,13 @@ func (s *indexServer) eventLoop() {
 		select {
 		case <-s.sendTimer.C:
 			s.lock.Lock()
-
-			blockNumber, ok := s.needBlocks.First(), !s.needBlocks.IsEmpty()
+			first := max(s.needBlocks.First(), s.historyCutoff)
+			afterLast := min(first+maxBatchLength, s.needBlocks.AfterLast())
 			s.lock.Unlock()
+			if first < afterLast {
+				headers, receipts := s.historicBlockData(first, afterLast)
+				s.sendBlockData(headers, receipts)
+			}
 		case <-s.parent.closeCh:
 			s.lock.Lock()
 			s.indexer.Stop()
@@ -102,15 +120,12 @@ func (s *indexServer) eventLoop() {
 	}
 }
 
-func (s *indexServer) sendHead(header *types.Header) {
-	receipts := s.parent.chain.GetReceiptsByHash(header.Hash()) //TODO number and hash
-	if receipts == nil {
-		log.Error("Receipts belonging to new head are missing", "number", header.Number, "hash", header.Hash())
-		return
-	}
+func (s *indexServer) sendBlockData(headers []*types.Header, receipts []types.Receipts) {
 	s.lock.Lock()
+	defer s.lock.Unlock()
+
 	if !s.stopped {
-		s.ready, s.needBlocks = s.indexer.AddBlockData(header, receipts)
+		s.ready, s.needBlocks = s.indexer.AddBlockData(headers, receipts)
 		if s.needBlocks.IsEmpty() {
 			s.sendTimer.Stop()
 		} else {
@@ -121,53 +136,8 @@ func (s *indexServer) sendHead(header *types.Header) {
 			}
 		}
 	}
-	s.lock.Unlock()
 }
 
-func (s *indexServer) sendBlockData(header *types.Header) {
-	receipts := s.parent.chain.GetReceiptsByHash(header.Hash()) //TODO number and hash
-	if receipts == nil {
-		return //TODO ???
-	}
-	ready := s.indexer.AddBlockData(header, receipts)
+func (s *indexServer) historicBlockData(first, afterLast uint64) {
+	xxx
 }
-
-func (s *indexServer) sendByNumber(number uint64) {
-	s.lock.Lock()
-	s.requestNumber, s.requestValid = number, true
-	s.lock.Unlock()
-
-	var (
-		header *types.Header
-		block  *types.Block
-	)
-	if s.sendBlocks {
-		block = s.parent.chain.GetBlockByNumber(number)
-		if block == nil {
-			return //TODO ???
-		}
-		header = block.Header()
-	} else {
-		header = s.parent.chain.GetHeaderByNumber(number)
-		if header == nil {
-			return //TODO ???
-		}
-	}
-
-	s.lock.Lock()
-	if s.requestValid {
-		s.sendBlockData(header, block)
-	}
-	s.lock.Unlock()
-}
-
-/*	header := block.Header()
-	if !s.sendBlocks {
-		block = nil
-	}
-	if !s.sendReceipts {
-		receipts = nil
-	}
-	s.ready = s.indexer.AddBlockData(header, block, receipts)
-}
-*/
