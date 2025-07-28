@@ -266,7 +266,7 @@ func (bc *BlockChain) GetReceiptsByHash(hash common.Hash) types.Receipts {
 	if !ok {
 		return nil
 	}
-	return bc.GetReceipts(hash, *number)
+	return bc.GetReceipts(hash, number)
 }
 
 // GetReceipts retrieves the receipts for all transactions in a given block.
