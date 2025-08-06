@@ -23,7 +23,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
 )
 
 const (
@@ -32,7 +34,15 @@ const (
 	maxIndexViewMaps      = 2
 )
 
-type indexer struct {
+var ( //TODO
+	mapCountGauge    = metrics.NewRegisteredGauge("filtermaps/maps/count", nil)      // actual number of rendered maps
+	mapLogValueMeter = metrics.NewRegisteredMeter("filtermaps/maps/logvalues", nil)  // number of log values processed
+	mapBlockMeter    = metrics.NewRegisteredMeter("filtermaps/maps/blocks", nil)     // number of block delimiters processed
+	mapRenderTimer   = metrics.NewRegisteredTimer("filtermaps/maps/rendertime", nil) // time elapsed while rendering a single map
+	mapWriteTimer    = metrics.NewRegisteredTimer("filtermaps/maps/writetime", nil)  // time elapsed while writing a batch of finished maps to db
+)
+
+type Indexer struct {
 	storage                    *mapStorage
 	missingBlocks              common.Range[uint64]
 	checkpoints                []checkpointList
@@ -46,20 +56,35 @@ type indexer struct {
 	headMapsCache              *lru.Cache[uint32, *finishedMap]
 }
 
-//TODO blockId vs blockHash?
+// Config contains the configuration options for NewFilterMaps.
+type Config struct {
+	History  uint64 // number of historical blocks to index
+	Disabled bool   // disables indexing completely
 
-func newIndexer(storage *mapStorage, checkpoints []checkpointList) *indexer {
-	ix := &indexer{
-		storage:       storage,
+	// This option enables the checkpoint JSON file generator.
+	// If set, the given file will be updated with checkpoint information.
+	ExportFileName string
+
+	// expect trie nodes of hash based state scheme in the filtermaps key range;
+	// use safe iterator based implementation of DeleteRange that skips them
+	HashScheme bool
+}
+
+// TODO blockId vs blockHash?
+// TODO disable, export, history, finalized
+func NewIndexer(db ethdb.KeyValueStore, params *Params, config Config) *Indexer {
+	mapDb := newMapDatabase(params, db, config.HashScheme)
+	ix := &Indexer{
+		storage:       newMapStorage(&DefaultParams, mapDb),
 		checkpoints:   checkpoints,
 		snapshots:     make(map[common.Hash]*indexView),
 		headMapsCache: lru.NewCache[uint32, *finishedMap](maxIndexViewMaps),
 	}
-	ix.headRenderer = ix.initMapBoundary(storage.lastBoundaryBefore(math.MaxUint32), math.MaxUint32)
+	ix.headRenderer = ix.initMapBoundary(ix.storage.lastBoundaryBefore(math.MaxUint32), math.MaxUint32)
 	return ix
 }
 
-func (ix *indexer) initMapBoundary(nextMap, limitMap uint32) *renderState {
+func (ix *Indexer) initMapBoundary(nextMap, limitMap uint32) *renderState {
 	rs := &renderState{
 		params:      ix.storage.params,
 		renderRange: common.NewRange[uint32](nextMap, limitMap-nextMap),
@@ -92,7 +117,7 @@ func (ix *indexer) initMapBoundary(nextMap, limitMap uint32) *renderState {
 	return rs
 }
 
-func (ix *indexer) initSnapshot(snapshot *indexView) *renderState {
+func (ix *Indexer) initSnapshot(snapshot *indexView) *renderState {
 	mapIndex := ix.storage.lastBoundaryBefore(snapshot.firstMapIndex)
 	ix.revertMaps(mapIndex)
 	if snapshot.checkInvalid() {
@@ -109,7 +134,7 @@ func (ix *indexer) initSnapshot(snapshot *indexView) *renderState {
 	}
 }
 
-func (ix *indexer) revertMaps(mapIndex uint32) {
+func (ix *Indexer) revertMaps(mapIndex uint32) {
 	if mapIndex < ix.storage.lastBoundaryBefore(math.MaxUint32) {
 		for hash, iv := range ix.snapshots {
 			if iv.firstMapIndex > mapIndex {
@@ -130,7 +155,7 @@ func (ix *indexer) revertMaps(mapIndex uint32) {
 	}
 }
 
-func (ix *indexer) AddBlockData(headers []*types.Header, receipts []types.Receipts) (ready bool, needBlocks common.Range[uint64]) {
+func (ix *Indexer) AddBlockData(headers []*types.Header, receipts []types.Receipts) (ready bool, needBlocks common.Range[uint64]) {
 	if len(headers) == 0 {
 		return ix.Status()
 	}
@@ -181,7 +206,7 @@ func (cpList checkpointList) epochsUntilBlock(number uint64) uint32 {
 	return first
 }
 
-func (ix *indexer) tryCheckpointInit(number uint64, id common.Hash) {
+func (ix *Indexer) tryCheckpointInit(number uint64, id common.Hash) {
 	var ci int
 	for ci < len(ix.checkpoints) {
 		cpList := ix.checkpoints[ci]
@@ -208,11 +233,11 @@ func (ix *indexer) tryCheckpointInit(number uint64, id common.Hash) {
 }
 
 // TODO single block number? also supply finalized block? combine with AddBlockData/Status?
-func (ix *indexer) MissingBlocks(missing common.Range[uint64]) {
+func (ix *Indexer) MissingBlocks(missing common.Range[uint64]) {
 	ix.missingBlocks = missing
 }
 
-func (ix *indexer) Revert(blockNumber uint64) {
+func (ix *Indexer) Revert(blockNumber uint64) {
 	firstCanonical := ix.lastCanonical + 1 - uint64(len(ix.canonicalHashes))
 	if blockNumber >= firstCanonical && blockNumber <= ix.lastCanonical {
 		blockHash := ix.canonicalHashes[blockNumber-firstCanonical]
@@ -241,7 +266,7 @@ func (ix *indexer) Revert(blockNumber uint64) {
 	ix.headNumber = blockNumber
 }
 
-func (ix *indexer) Status() (bool, common.Range[uint64]) {
+func (ix *Indexer) Status() (bool, common.Range[uint64]) {
 	if ix.headNumber > ix.headRenderer.nextBlock { //TODO head -> finalized
 		// request potential checkpoint in this range if available
 		for _, cpList := range ix.checkpoints {
@@ -264,11 +289,11 @@ func (ix *indexer) Status() (bool, common.Range[uint64]) {
 	return ix.storage.busyLevel() < 2, common.Range[uint64]{}
 }
 
-func (ix *indexer) Stop() {
+func (ix *Indexer) Stop() {
 	ix.storage.stop()
 }
 
-func (ix *indexer) releaseView(hash common.Hash) {
+func (ix *Indexer) releaseView(hash common.Hash) {
 	iv := ix.snapshots[hash]
 	if iv == nil {
 		return
@@ -281,7 +306,7 @@ func (ix *indexer) releaseView(hash common.Hash) {
 	}
 }
 
-func (ix *indexer) GetIndexViewByBlockHash(hash common.Hash) *indexView {
+func (ix *Indexer) GetIndexViewByBlockHash(hash common.Hash) *indexView {
 	ix.snapshotsLock.RLock()
 	iv := ix.snapshots[hash]
 	ix.snapshotsLock.RUnlock()
@@ -292,12 +317,12 @@ func (ix *indexer) GetIndexViewByBlockHash(hash common.Hash) *indexView {
 	return iv
 }
 
-/*func (ix *indexer) GetLatestIndexView() *indexView {
+/*func (ix *Indexer) GetLatestIndexView() *indexView {
 	ix.lock.Lock()
 	defer ix.lock.Lock()
 }*/
 
-func (ix *indexer) storeFinishedMaps(firstMapIndex uint32, maps []*finishedMap, forceCommit, cacheHeadMaps bool) {
+func (ix *Indexer) storeFinishedMaps(firstMapIndex uint32, maps []*finishedMap, forceCommit, cacheHeadMaps bool) {
 	if len(maps) == 0 {
 		return
 	}
@@ -309,7 +334,7 @@ func (ix *indexer) storeFinishedMaps(firstMapIndex uint32, maps []*finishedMap, 
 	}
 }
 
-func (ix *indexer) getFilterMap(mapIndex uint32) (*finishedMap, error) {
+func (ix *Indexer) getFilterMap(mapIndex uint32) (*finishedMap, error) {
 	if fm, ok := ix.headMapsCache.Get(mapIndex); ok {
 		return fm, nil
 	}
@@ -321,7 +346,7 @@ func (ix *indexer) getFilterMap(mapIndex uint32) (*finishedMap, error) {
 	return fm, nil
 }
 
-func (ix *indexer) checkReleasedViews() {
+func (ix *Indexer) checkReleasedViews() {
 	for hash, iv := range ix.snapshots {
 		if iv.checkReleased() {
 			iv.invalidate()
@@ -332,7 +357,7 @@ func (ix *indexer) checkReleasedViews() {
 	}
 }
 
-func (ix *indexer) storeHeadIndexView(number uint64, hash common.Hash) {
+func (ix *Indexer) storeHeadIndexView(number uint64, hash common.Hash) {
 	ix.checkReleasedViews()
 	firstMapIndex := max(ix.headRenderer.mapIndex, maxIndexViewMaps) - maxIndexViewMaps
 	finishedMaps := make([]*finishedMap, 0, ix.headRenderer.mapIndex-firstMapIndex)

@@ -28,6 +28,14 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// FilterRow encodes a single row of a filter map as a list of column indices.
+// Note that the values are always stored in the same order as they were added
+// and if the same column index is added twice, it is also stored twice.
+// Order of column indices and potential duplications do not matter when searching
+// for a value but leaving the original order makes reverting to a previous state
+// simpler.
+type FilterRow []uint32
+
 // Params defines the basic parameters of the log index structure.
 type Params struct {
 	logMapHeight        uint // The number of bits required to represent the map height
