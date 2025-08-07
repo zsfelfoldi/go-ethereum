@@ -319,7 +319,7 @@ func (m *mapStorage) getFilterMapRows(mapIndices []uint32, rowIndex, layers uint
 			if fm == nil {
 				return nil, errors.New("memory overlay map not found") //TODO fmt.Errorf...
 			}
-			rows[i] = fm.getRow(rowIndex, m.params.maxRowLength[min(layers, uint32(len(m.params.maxRowLength)))-1])
+			rows[i] = fm.getRow(rowIndex, m.params.getMaxRowLength(layers))
 		} else {
 			dbMaps = append(dbMaps, mapIndex)
 		}

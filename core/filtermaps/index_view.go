@@ -25,8 +25,134 @@ import (
 )
 
 var (
-	ErrInvalidView = errors.New("chain view already invalidated")
+	ErrInvalidView = errors.New("index view already invalidated")
 )
+
+type IndexView struct {
+	// if invalid <= 0 then the view is considered invalid and will return error
+	// on any read operation (storage maps before firstMapIndex might have changed
+	// since its creation)
+	refCount, invalid int32
+	storage           *mapStorage
+
+	firstMapIndex    uint32
+	firstBlockNumber uint64
+	headBlockNumber  uint64
+	headBlockHash    common.Hash
+	headLvPointer    uint64 // points after head block delimiter
+	headMapIndex     uint32
+	headMap          *memoryMap
+	finishedMaps     []*finishedMap
+}
+
+func (iv *IndexView) Release() {
+	iv.addRefCount(-1)
+}
+
+func (iv *IndexView) addRefCount(add int32) bool {
+	return atomic.AddInt32(&iv.refCount, add) <= 0
+}
+
+func (iv *IndexView) checkReleased() bool {
+	return atomic.LoadInt32(&iv.refCount) <= 0
+}
+
+func (iv *IndexView) invalidate() {
+	atomic.StoreInt32(&iv.invalid, 1)
+}
+
+func (iv *IndexView) checkInvalid() bool {
+	return atomic.LoadInt32(&iv.invalid) != 0
+}
+
+func (iv *IndexView) GetParams() *Params {
+	return iv.storage.params
+}
+
+// returns result for headNumber+1
+func (iv *IndexView) GetBlockLvPointer(blockNumber uint64) (uint64, error) {
+	if iv.checkInvalid() {
+		return 0, ErrInvalidView
+	}
+
+	if blockNumber < iv.firstBlockNumber {
+		lvPtr, err := iv.storage.getBlockLvPointer(blockNumber)
+		if iv.checkInvalid() {
+			return 0, ErrInvalidView
+		}
+		return lvPtr, err
+	}
+	if blockNumber == iv.headBlockNumber+1 {
+		return iv.headLvPointer, nil
+	}
+	if blockNumber > iv.headBlockNumber+1 {
+		return 0, errors.New("block number out of range")
+	}
+	for _, fm := range iv.finishedMaps {
+		if blockNumber >= fm.firstBlock() && blockNumber <= fm.lastBlock.number {
+			return fm.blockPtrs[blockNumber-fm.firstBlock()], nil
+		}
+	}
+	if blockNumber >= iv.headMap.firstBlock() && blockNumber <= iv.headMap.lastBlock.number {
+		return iv.headMap.blockPtrs[blockNumber-iv.headMap.firstBlock()], nil
+	}
+	panic("IndexView.GetBlockLvPointer: gap in blockLvPtrs")
+}
+
+func (iv *IndexView) GetLastBlockOfMap(mapIndex uint32) (uint64, common.Hash, error) {
+	if iv.checkInvalid() {
+		return 0, common.Hash{}, ErrInvalidView
+	}
+
+	if mapIndex < iv.firstMapIndex {
+		lastNumber, lastHash, err := iv.storage.getLastBlockOfMap(mapIndex)
+		if iv.checkInvalid() {
+			return 0, common.Hash{}, ErrInvalidView
+		}
+		return lastNumber, lastHash, err
+	}
+	if mapIndex > iv.headMapIndex {
+		return 0, common.Hash{}, errors.New("map index out of range")
+	}
+	if mapIndex == iv.headMapIndex {
+		return iv.headMap.lastBlock.number, iv.headMap.lastBlock.id, nil
+	}
+	fm := iv.finishedMaps[mapIndex-iv.firstMapIndex]
+	return fm.lastBlock.number, fm.lastBlock.id, nil
+}
+
+// assumes strictly ascending order of map indices
+func (iv *IndexView) GetFilterMapRows(mapIndices []uint32, rowIndex, layers uint32) (rows []FilterRow, err error) {
+	if iv.checkInvalid() {
+		return nil, ErrInvalidView
+	}
+
+	dbIndices := len(mapIndices)
+	for dbIndices > 0 && mapIndices[dbIndices-1] >= iv.firstMapIndex {
+		dbIndices--
+	}
+	if dbIndices > 0 {
+		rows, err = iv.storage.getFilterMapRows(mapIndices[:dbIndices], rowIndex, layers)
+		if iv.checkInvalid() {
+			return nil, ErrInvalidView
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	for i := dbIndices; i < len(mapIndices); i++ {
+		mapIndex := mapIndices[i]
+		var row FilterRow
+		if mapIndex == iv.headMapIndex {
+			row = iv.headMap.getRow(rowIndex, iv.storage.params.getMaxRowLength(layers))
+		}
+		if mapIndex < iv.headMapIndex {
+			row = iv.finishedMaps[mapIndex-iv.firstMapIndex].getRow(rowIndex, iv.storage.params.getMaxRowLength(layers))
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
 
 type renderState struct {
 	params           *Params
@@ -98,7 +224,7 @@ func (rs *renderState) getFinishedMaps() (uint32, []*finishedMap) {
 func (rs *renderState) addValue(logValue common.Hash) {
 	for layerIndex := uint32(0); ; layerIndex++ {
 		rowIndex := rs.params.rowIndex(rs.mapIndex, layerIndex, logValue)
-		if rs.currentMap.rowLength(rowIndex) < rs.params.maxRowLength[min(layerIndex, uint32(len(rs.params.maxRowLength)-1))] {
+		if rs.currentMap.rowLength(rowIndex) < rs.params.getMaxRowLength(layerIndex) {
 			rs.currentMap.addToRow(rowIndex, rs.params.columnIndex(rs.lvPointer, &logValue))
 			break
 		}
@@ -123,122 +249,4 @@ func (rs *renderState) skipValues(count uint64) {
 
 func (rs *renderState) finished() bool {
 	return rs.mapIndex >= rs.renderRange.AfterLast()
-}
-
-type indexView struct {
-	// if invalid <= 0 then the view is considered invalid and will return error
-	// on any read operation (storage maps before firstMapIndex might have changed
-	// since its creation)
-	refCount, invalid int32
-	storage           *mapStorage
-
-	firstMapIndex    uint32
-	firstBlockNumber uint64
-	headBlockNumber  uint64
-	headBlockHash    common.Hash
-	lvPointer        uint64
-	headMapIndex     uint32
-	headMap          *memoryMap
-	finishedMaps     []*finishedMap
-}
-
-func (iv *indexView) Release() {
-	iv.addRefCount(-1)
-}
-
-func (iv *indexView) addRefCount(add int32) bool {
-	return atomic.AddInt32(&iv.refCount, add) <= 0
-}
-
-func (iv *indexView) checkReleased() bool {
-	return atomic.LoadInt32(&iv.refCount) <= 0
-}
-
-func (iv *indexView) invalidate() {
-	atomic.StoreInt32(&iv.invalid, 1)
-}
-
-func (iv *indexView) checkInvalid() bool {
-	return atomic.LoadInt32(&iv.invalid) != 0
-}
-
-func (iv *indexView) GetBlockLvPointer(blockNumber uint64) (uint64, error) {
-	if iv.checkInvalid() {
-		return 0, ErrInvalidView
-	}
-
-	if blockNumber < iv.firstBlockNumber {
-		lvPtr, err := iv.storage.getBlockLvPointer(blockNumber)
-		if iv.checkInvalid() {
-			return 0, ErrInvalidView
-		}
-		return lvPtr, err
-	}
-	if blockNumber > iv.headBlockNumber {
-		return 0, errors.New("block number out of range")
-	}
-	for _, fm := range iv.finishedMaps {
-		if blockNumber >= fm.firstBlock() && blockNumber <= fm.lastBlock.number {
-			return fm.blockPtrs[blockNumber-fm.firstBlock()], nil
-		}
-	}
-	if blockNumber >= iv.headMap.firstBlock() && blockNumber <= iv.headMap.lastBlock.number {
-		return iv.headMap.blockPtrs[blockNumber-iv.headMap.firstBlock()], nil
-	}
-	panic("indexView.GetBlockLvPointer: gap in blockLvPtrs")
-}
-
-func (iv *indexView) GetLastBlockOfMap(mapIndex uint32) (uint64, common.Hash, error) {
-	if iv.checkInvalid() {
-		return 0, common.Hash{}, ErrInvalidView
-	}
-
-	if mapIndex < iv.firstMapIndex {
-		lastNumber, lastHash, err := iv.storage.getLastBlockOfMap(mapIndex)
-		if iv.checkInvalid() {
-			return 0, common.Hash{}, ErrInvalidView
-		}
-		return lastNumber, lastHash, err
-	}
-	if mapIndex > iv.headMapIndex {
-		return 0, common.Hash{}, errors.New("map index out of range")
-	}
-	if mapIndex == iv.headMapIndex {
-		return iv.headMap.lastBlock.number, iv.headMap.lastBlock.id, nil
-	}
-	fm := iv.finishedMaps[mapIndex-iv.firstMapIndex]
-	return fm.lastBlock.number, fm.lastBlock.id, nil
-}
-
-// assumes strictly ascending order of map indices
-func (iv *indexView) GetFilterMapRows(mapIndices []uint32, rowIndex, layers uint32) (rows []FilterRow, err error) {
-	if iv.checkInvalid() {
-		return nil, ErrInvalidView
-	}
-
-	dbIndices := len(mapIndices)
-	for dbIndices > 0 && mapIndices[dbIndices-1] >= iv.firstMapIndex {
-		dbIndices--
-	}
-	if dbIndices > 0 {
-		rows, err = iv.storage.getFilterMapRows(mapIndices[:dbIndices], rowIndex, layers)
-		if iv.checkInvalid() {
-			return nil, ErrInvalidView
-		}
-		if err != nil {
-			return nil, err
-		}
-	}
-	for i := dbIndices; i < len(mapIndices); i++ {
-		mapIndex := mapIndices[i]
-		var row FilterRow
-		if mapIndex == iv.headMapIndex {
-			row = iv.headMap.getRow(rowIndex, iv.storage.params.maxRowLength[min(layers, uint32(len(iv.storage.params.maxRowLength)))-1])
-		}
-		if mapIndex < iv.headMapIndex {
-			row = iv.finishedMaps[mapIndex-iv.firstMapIndex].getRow(rowIndex, iv.storage.params.maxRowLength[min(layers, uint32(len(iv.storage.params.maxRowLength)))-1])
-		}
-		rows = append(rows, row)
-	}
-	return rows, nil
 }

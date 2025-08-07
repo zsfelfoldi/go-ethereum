@@ -52,7 +52,7 @@ type Indexer struct {
 	canonicalHashes            []common.Hash // last one belongs to lastCanonical
 	recentHashes               []common.Hash // last one is the most recently saved
 	snapshotsLock              sync.RWMutex
-	snapshots                  map[common.Hash]*indexView
+	snapshots                  map[common.Hash]*IndexView
 	headMapsCache              *lru.Cache[uint32, *finishedMap]
 }
 
@@ -77,7 +77,7 @@ func NewIndexer(db ethdb.KeyValueStore, params *Params, config Config) *Indexer 
 	ix := &Indexer{
 		storage:       newMapStorage(&DefaultParams, mapDb),
 		checkpoints:   checkpoints,
-		snapshots:     make(map[common.Hash]*indexView),
+		snapshots:     make(map[common.Hash]*IndexView),
 		headMapsCache: lru.NewCache[uint32, *finishedMap](maxIndexViewMaps),
 	}
 	ix.headRenderer = ix.initMapBoundary(ix.storage.lastBoundaryBefore(math.MaxUint32), math.MaxUint32)
@@ -117,7 +117,7 @@ func (ix *Indexer) initMapBoundary(nextMap, limitMap uint32) *renderState {
 	return rs
 }
 
-func (ix *Indexer) initSnapshot(snapshot *indexView) *renderState {
+func (ix *Indexer) initSnapshot(snapshot *IndexView) *renderState {
 	mapIndex := ix.storage.lastBoundaryBefore(snapshot.firstMapIndex)
 	ix.revertMaps(mapIndex)
 	if snapshot.checkInvalid() {
@@ -130,7 +130,7 @@ func (ix *Indexer) initSnapshot(snapshot *indexView) *renderState {
 		renderRange: common.NewRange[uint32](snapshot.headMapIndex, math.MaxUint32-snapshot.headMapIndex),
 		currentMap:  snapshot.headMap.clone(),
 		mapIndex:    snapshot.headMapIndex,
-		lvPointer:   snapshot.lvPointer,
+		lvPointer:   snapshot.headLvPointer,
 	}
 }
 
@@ -306,7 +306,7 @@ func (ix *Indexer) releaseView(hash common.Hash) {
 	}
 }
 
-func (ix *Indexer) GetIndexViewByBlockHash(hash common.Hash) *indexView {
+func (ix *Indexer) GetIndexView(hash common.Hash) *IndexView {
 	ix.snapshotsLock.RLock()
 	iv := ix.snapshots[hash]
 	ix.snapshotsLock.RUnlock()
@@ -316,11 +316,6 @@ func (ix *Indexer) GetIndexViewByBlockHash(hash common.Hash) *indexView {
 	iv.addRefCount(1)
 	return iv
 }
-
-/*func (ix *Indexer) GetLatestIndexView() *indexView {
-	ix.lock.Lock()
-	defer ix.lock.Lock()
-}*/
 
 func (ix *Indexer) storeFinishedMaps(firstMapIndex uint32, maps []*finishedMap, forceCommit, cacheHeadMaps bool) {
 	if len(maps) == 0 {
@@ -380,12 +375,12 @@ func (ix *Indexer) storeHeadIndexView(number uint64, hash common.Hash) {
 		firstBlockNumber = ix.headRenderer.currentMap.firstBlock()
 	}
 	ix.snapshotsLock.Lock()
-	ix.snapshots[hash] = &indexView{
+	ix.snapshots[hash] = &IndexView{
 		refCount:         2,
 		storage:          ix.storage,
 		headBlockNumber:  number,
 		headBlockHash:    hash,
-		lvPointer:        ix.headRenderer.lvPointer,
+		headLvPointer:    ix.headRenderer.lvPointer,
 		headMap:          ix.headRenderer.currentMap.clone(),
 		headMapIndex:     ix.headRenderer.mapIndex,
 		firstMapIndex:    firstMapIndex,
