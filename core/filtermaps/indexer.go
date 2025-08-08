@@ -43,10 +43,11 @@ var ( //TODO
 )
 
 type Indexer struct {
+	config                     Config
 	storage                    *mapStorage
-	missingBlocks              common.Range[uint64]
 	checkpoints                []checkpointList
 	headRenderer, tailRenderer *renderState
+	historyCutoff, finalized   uint64
 	headNumber, tailLastNumber uint64
 	lastCanonical              uint64
 	canonicalHashes            []common.Hash // last one belongs to lastCanonical
@@ -75,6 +76,7 @@ type Config struct {
 func NewIndexer(db ethdb.KeyValueStore, params *Params, config Config) *Indexer {
 	mapDb := newMapDatabase(params, db, config.HashScheme)
 	ix := &Indexer{
+		config:        config,
 		storage:       newMapStorage(&DefaultParams, mapDb),
 		checkpoints:   checkpoints,
 		snapshots:     make(map[common.Hash]*IndexView),
@@ -232,9 +234,8 @@ func (ix *Indexer) tryCheckpointInit(number uint64, id common.Hash) {
 	}
 }
 
-// TODO single block number? also supply finalized block? combine with AddBlockData/Status?
-func (ix *Indexer) MissingBlocks(missing common.Range[uint64]) {
-	ix.missingBlocks = missing
+func (ix *Indexer) SetLimits(historyCutoff, finalized uint64) {
+	ix.historyCutoff, ix.finalized = historyCutoff, finalized
 }
 
 func (ix *Indexer) Revert(blockNumber uint64) {
@@ -267,7 +268,7 @@ func (ix *Indexer) Revert(blockNumber uint64) {
 }
 
 func (ix *Indexer) Status() (bool, common.Range[uint64]) {
-	if ix.headNumber > ix.headRenderer.nextBlock { //TODO head -> finalized
+	if ix.finalized > ix.headRenderer.nextBlock {
 		// request potential checkpoint in this range if available
 		for _, cpList := range ix.checkpoints {
 			if epochs := cpList.epochsUntilBlock(ix.headNumber); epochs > 0 {
