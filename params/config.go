@@ -467,6 +467,7 @@ type ChainConfig struct {
 	BPO5Time      *uint64 `json:"bpo5Time,omitempty"`      // BPO5 switch time (nil = no fork, 0 = already on bpo5)
 	AmsterdamTime *uint64 `json:"amsterdamTime,omitempty"` // Amsterdam switch time (nil = no fork, 0 = already on amsterdam)
 	UBTTime       *uint64 `json:"ubtTime,omitempty"`       // UBT switch time (nil = no fork, 0 = already on UBT)
+	EIP7745Time   *uint64 `json:"eip7745Time,omitempty"`   // EIP7745 switch time (nil = no fork, 0 = already on EIP7745)
 
 	// TerminalTotalDifficulty is the amount of total difficulty reached by
 	// the network that triggers the consensus upgrade.
@@ -888,6 +889,11 @@ func (c *ChainConfig) IsUBTGenesis() bool {
 // IsEIP4762 returns whether eip 4762 has been activated at given block.
 func (c *ChainConfig) IsEIP4762(num *big.Int, time uint64) bool {
 	return c.IsUBT(num, time)
+}
+
+// IsEIP7745 returns whether time is either equal to the eip 7745 fork.
+func (c *ChainConfig) IsEIP7745(num *big.Int, time uint64) bool {
+	return c.IsLondon(num) && isTimestampForked(c.EIP7745Time, time)
 }
 
 // CheckCompatible checks whether scheduled fork transitions have been imported

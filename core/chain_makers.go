@@ -425,7 +425,7 @@ func GenerateChain(config *params.ChainConfig, parent *types.Block, engine conse
 			}
 		}
 		// Assemble the block for delivery.
-		block := AssembleBlock(b.engine, cm, b.header, statedb, &body, b.receipts)
+		block := AssembleBlock(b.engine, cm, b.header, statedb, nil, &body, b.receipts)
 
 		// Write state changes to db
 		root, err := statedb.Commit(b.header.Number.Uint64(), config.IsEIP158(b.header.Number), config.IsCancun(b.header.Number, b.header.Time))
