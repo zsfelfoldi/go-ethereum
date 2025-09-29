@@ -562,7 +562,7 @@ func (b testBackend) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.
 func (b testBackend) GetBody(ctx context.Context, hash common.Hash, number rpc.BlockNumber) (*types.Body, error) {
 	return b.chain.GetBlock(hash, uint64(number.Int64())).Body(), nil
 }
-func (b testBackend) StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*state.StateDB, *types.Header, error) {
+func (b testBackend) StateByNumber(ctx context.Context, number rpc.BlockNumber) (*state.StateDB, *types.Header, error) {
 	if number == rpc.PendingBlockNumber {
 		panic("pending state not implemented")
 	}
@@ -576,9 +576,9 @@ func (b testBackend) StateAndHeaderByNumber(ctx context.Context, number rpc.Bloc
 	stateDb, err := b.chain.StateAt(header)
 	return stateDb, header, err
 }
-func (b testBackend) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*state.StateDB, *types.Header, error) {
+func (b testBackend) StateByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*state.StateDB, *types.Header, error) {
 	if blockNr, ok := blockNrOrHash.Number(); ok {
-		return b.StateAndHeaderByNumber(ctx, blockNr)
+		return b.StateByNumber(ctx, blockNr)
 	}
 	panic("only implemented for number")
 }
@@ -701,6 +701,10 @@ func (b testBackend) CurrentView() *filtermaps.ChainView {
 	panic("implement me")
 }
 func (b testBackend) NewMatcherBackend() filtermaps.MatcherBackend {
+	panic("implement me")
+}
+
+func (b *backendMock) LogIndexer() *logindex.Indexer {
 	panic("implement me")
 }
 
@@ -2545,7 +2549,7 @@ func TestSimulateV1ChainLinkage(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	stateDB, baseHeader, err := backend.StateAndHeaderByNumberOrHash(ctx, rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber))
+	stateDB, baseHeader, err := backend.StateByNumberOrHash(ctx, rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber))
 	if err != nil {
 		t.Fatalf("failed to get state and header: %v", err)
 	}
@@ -2630,7 +2634,7 @@ func TestSimulateV1TxSender(t *testing.T) {
 		ctx = context.Background()
 	)
 	backend := newTestBackend(t, 0, gspec, beacon.New(ethash.NewFaker()), func(i int, b *core.BlockGen) {})
-	stateDB, baseHeader, err := backend.StateAndHeaderByNumberOrHash(ctx, rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber))
+	stateDB, baseHeader, err := backend.StateByNumberOrHash(ctx, rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber))
 	if err != nil {
 		t.Fatalf("failed to get state and header: %v", err)
 	}
@@ -2697,7 +2701,7 @@ func TestSimulateV1WithdrawalsByFork(t *testing.T) {
 		backend := newTestBackend(t, 1, gspec, beacon.New(ethash.NewFaker()), func(i int, b *core.BlockGen) {})
 
 		ctx := context.Background()
-		stateDB, baseHeader, err := backend.StateAndHeaderByNumberOrHash(ctx, rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber))
+		stateDB, baseHeader, err := backend.StateByNumberOrHash(ctx, rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber))
 		if err != nil {
 			t.Fatalf("failed to get state and header: %v", err)
 		}

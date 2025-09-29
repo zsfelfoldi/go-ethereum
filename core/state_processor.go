@@ -18,12 +18,14 @@ package core
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
+	"github.com/ethereum/go-ethereum/core/logindex"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -63,7 +65,7 @@ func (p *StateProcessor) chainConfig() *params.ChainConfig {
 // Process returns the receipts and logs accumulated during the process and
 // returns the amount of gas that was used in the process. If any of the
 // transactions failed to execute due to insufficient gas it will return an error.
-func (p *StateProcessor) Process(ctx context.Context, block *types.Block, statedb *state.StateDB, jumpDestCache vm.JumpDestCache, cfg vm.Config) (*ProcessResult, error) {
+func (p *StateProcessor) Process(ctx context.Context, block *types.Block, statedb *state.StateDB, logIndex *logindex.Indexer, jumpDestCache vm.JumpDestCache, cfg vm.Config) (*ProcessResult, error) {
 	var (
 		config      = p.chainConfig()
 		receipts    = make(types.Receipts, 0, len(block.Transactions()))
@@ -120,7 +122,7 @@ func (p *StateProcessor) Process(ctx context.Context, block *types.Block, stated
 		blockAccessList.Merge(bal)
 		spanEnd(nil)
 	}
-	requests, bal, err := PostExecution(ctx, config, block.Number(), block.Time(), allLogs, evm, uint32(len(block.Transactions())+1))
+	requests, bal, err := PostExecution(ctx, config, block.Number(), block.Time(), block.Hash(), block.ParentHash(), block.Transactions(), receipts, logIndex, evm, uint32(len(block.Transactions())+1))
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +172,7 @@ func PreExecution(ctx context.Context, beaconRoot *common.Hash, parent *types.He
 // PostExecution processes post-execution system calls when Prague is enabled.
 // If Prague is not activated, it returns null requests to differentiate from
 // empty requests.
-func PostExecution(ctx context.Context, config *params.ChainConfig, number *big.Int, time uint64, allLogs []*types.Log, evm *vm.EVM, blockAccessIndex uint32) (requests [][]byte, blockAccessList *bal.ConstructionBlockAccessList, err error) {
+func PostExecution(ctx context.Context, config *params.ChainConfig, number *big.Int, time uint64, optBlockHash, parent common.Hash, transactions types.Transactions, receipts types.Receipts, logIndex *logindex.Indexer, evm *vm.EVM, blockAccessIndex uint32) (requests [][]byte, blockAccessList *bal.ConstructionBlockAccessList, err error) {
 	_, _, spanEnd := telemetry.StartSpan(ctx, "core.postExecution")
 	defer spanEnd(&err)
 
@@ -182,7 +184,7 @@ func PostExecution(ctx context.Context, config *params.ChainConfig, number *big.
 	if config.IsPrague(number, time) {
 		requests = [][]byte{}
 		// EIP-6110
-		if err := ParseDepositLogs(&requests, allLogs, config); err != nil {
+		if err := ParseDepositLogs(&requests, receipts, config); err != nil {
 			return nil, nil, fmt.Errorf("failed to parse deposit logs: %w", err)
 		}
 		// EIP-7002
@@ -368,6 +370,63 @@ func ProcessParentBlockHash(prevHash common.Hash, evm *vm.EVM, blockAccessList *
 	blockAccessList.Merge(evm.StateDB.Finalise(true))
 }
 
+// ProcessIndexTableRoots stores the new index table roots in the index contract
+// as per EIP-8304.
+func ProcessIndexTableRoots(blockNumber uint64, optBlockHash, parentHash common.Hash, transactions types.Transactions, receipts types.Receipts, logIndex *logindex.Indexer, evm *vm.EVM, blockAccessList *bal.ConstructionBlockAccessList) {
+	tableRoot, err := logIndex.GetProcessedTableRoot(optBlockHash, parentHash, transactions, receipts)
+	if err != nil {
+		panic(err)
+	}
+	addIndexTableRoot(blockNumber, 1, tableRoot, evm, blockAccessList)
+	for i := 1; i < len(params.IndexTableSizes); i++ {
+		tableSize := params.IndexTableSizes[i]
+		firstBlockAge := tableSize + tableSize/4 - 1 // diff between first block of table and root inclusion block
+		if blockNumber >= firstBlockAge && (blockNumber-firstBlockAge)%tableSize == 0 {
+			firstBlock := blockNumber - firstBlockAge
+			tableRoot, err := logIndex.GetAsyncTableRoot(parentHash, firstBlock, tableSize)
+			if err != nil {
+				panic(err)
+			}
+			addIndexTableRoot(firstBlock, tableSize, tableRoot, evm, blockAccessList)
+		}
+	}
+}
+
+func addIndexTableRoot(firstBlock, tableSize uint64, tableRoot common.Hash, evm *vm.EVM, blockAccessList *bal.ConstructionBlockAccessList) {
+	if tracer := evm.Config.Tracer; tracer != nil {
+		onSystemCallStart(tracer, evm.GetVMContext())
+		if tracer.OnSystemCallEnd != nil {
+			defer tracer.OnSystemCallEnd()
+		}
+	}
+	gasLimit, gasBudget := systemCallGasBudget(evm)
+	var calldata [96]byte
+	binary.BigEndian.PutUint64(calldata[24:32], firstBlock)
+	binary.BigEndian.PutUint64(calldata[56:64], tableSize)
+	copy(calldata[64:96], tableRoot[:])
+	msg := &Message{
+		From:      params.SystemAddress,
+		GasLimit:  gasLimit,
+		GasPrice:  uint256.NewInt(0),
+		GasFeeCap: uint256.NewInt(0),
+		GasTipCap: uint256.NewInt(0),
+		To:        &params.IndexContractAddress,
+		Data:      calldata[:],
+	}
+	evm.SetTxContext(NewEVMTxContext(msg))
+	evm.StateDB.Prepare(evm.GetRules(), common.Address{}, common.Address{}, nil, nil, nil)
+	evm.StateDB.SetTxContext(common.Hash{}, 0, 0)
+	evm.StateDB.AddAddressToAccessList(params.IndexContractAddress)
+	_, _, err := evm.Call(msg.From, *msg.To, msg.Data, gasBudget, common.U2560)
+	if err != nil {
+		panic(err)
+	}
+	if evm.StateDB.AccessEvents() != nil {
+		evm.StateDB.AccessEvents().Merge(evm.AccessEvents)
+	}
+	blockAccessList.Merge(evm.StateDB.Finalise(true))
+}
+
 // ProcessWithdrawalQueue calls the EIP-7002 withdrawal queue contract.
 // It returns the opaque request data returned by the contract.
 func ProcessWithdrawalQueue(requests *[][]byte, rules params.Rules, evm *vm.EVM, blockAccessIndex uint32, blockAccessList *bal.ConstructionBlockAccessList) error {
@@ -437,15 +496,17 @@ var depositTopic = common.HexToHash("0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912
 
 // ParseDepositLogs extracts the EIP-6110 deposit values from logs emitted by
 // BeaconDepositContract.
-func ParseDepositLogs(requests *[][]byte, logs []*types.Log, config *params.ChainConfig) error {
+func ParseDepositLogs(requests *[][]byte, receipts types.Receipts, config *params.ChainConfig) error {
 	deposits := make([]byte, 1) // note: first byte is 0x00 (== deposit request type)
-	for _, log := range logs {
-		if log.Address == config.DepositContractAddress && len(log.Topics) > 0 && log.Topics[0] == depositTopic {
-			request, err := types.DepositLogToRequest(log.Data)
-			if err != nil {
-				return fmt.Errorf("unable to parse deposit data: %v", err)
+	for _, receipt := range receipts {
+		for _, log := range receipt.Logs {
+			if log.Address == config.DepositContractAddress && len(log.Topics) > 0 && log.Topics[0] == depositTopic {
+				request, err := types.DepositLogToRequest(log.Data)
+				if err != nil {
+					return fmt.Errorf("unable to parse deposit data: %v", err)
+				}
+				deposits = append(deposits, request...)
 			}
-			deposits = append(deposits, request...)
 		}
 	}
 	if len(deposits) > 1 {

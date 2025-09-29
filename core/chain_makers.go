@@ -319,15 +319,11 @@ func (b *BlockGen) collectRequests(readonly bool) (requests [][]byte, bal *bal.C
 		// off the statedb before executing the system calls.
 		statedb = statedb.Copy()
 	}
-	var blockLogs []*types.Log
-	for _, r := range b.receipts {
-		blockLogs = append(blockLogs, r.Logs...)
-	}
 	// TODO use the shared EVM throughout the entire generation cycle
 	blockContext := NewEVMBlockContext(b.header, b.cm, &b.header.Coinbase)
 	evm := vm.NewEVM(blockContext, statedb, b.cm.config, vm.Config{})
 
-	requests, bal, err := PostExecution(context.Background(), b.cm.config, b.header.Number, b.header.Time, blockLogs, evm, uint32(len(b.txs)+1))
+	requests, bal, err := PostExecution(context.Background(), b.cm.config, b.header.Number, b.header.Time, b.header.Hash(), b.header.ParentHash, b.txs, b.receipts, nil /*TODO*/, evm, uint32(len(b.txs)+1))
 	if err != nil {
 		panic(fmt.Sprintf("failed to run post-execution: %v", err))
 	}

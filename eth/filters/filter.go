@@ -19,6 +19,7 @@ package filters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"slices"
@@ -28,6 +29,8 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/history"
+	"github.com/ethereum/go-ethereum/core/logindex"
+	"github.com/ethereum/go-ethereum/core/logindex/indexcontract"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -381,6 +384,32 @@ func (s *searchSession) doSearchIteration() error {
 }
 
 func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([]*types.Log, error) {
+	if indexer := f.sys.backend.LogIndexer(); indexer != nil {
+		fmt.Println("Starting search with log indexer")
+		query := logindex.FilterQuery{
+			FirstBlock: firstBlock,
+			LastBlock:  lastBlock,
+			MaxResults: math.MaxUint64,
+			Reverse:    false,
+			Addresses:  f.addresses,
+			Topics:     f.topics,
+		}
+		refHeader := f.sys.backend.CurrentHeader() //TODO also try with parent
+		logs, resultsRange, _, err := indexer.GetMatches(ctx, query, true, refHeader, indexcontract.NewProver(f.sys.backend))
+		if err != logindex.ErrMatchAll {
+			fmt.Println("Search first/last block:", firstBlock, lastBlock, "results range:", resultsRange, "result count:", len(logs), "error:", err)
+			/*for i, log := range logs {
+				if log != nil {
+					fmt.Println("  ", i, "|", log.BlockNumber, log.TxIndex, log.Index)
+				} else {
+					fmt.Println("  ", i, "| nil")
+				}
+			}*/
+			return logs, err
+		}
+	}
+	fmt.Println("Starting search with filter maps")
+
 	if f.rangeLogsTestHook != nil {
 		defer func() {
 			f.rangeLogsTestHook <- rangeLogsTestEvent{rangeLogsTestDone, common.Range[uint64]{}}
