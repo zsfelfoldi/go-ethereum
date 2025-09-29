@@ -704,6 +704,10 @@ func (b testBackend) NewMatcherBackend() filtermaps.MatcherBackend {
 	panic("implement me")
 }
 
+func (b *backendMock) LogIndexer() *logindex.Indexer {
+	panic("implement me")
+}
+
 func (b testBackend) HistoryPruningCutoff() uint64 {
 	bn, _ := b.chain.HistoryPruningCutoff()
 	return bn

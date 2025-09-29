@@ -19,6 +19,7 @@ package filters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"slices"
@@ -28,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/history"
+	"github.com/ethereum/go-ethereum/core/logindex"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -381,6 +383,23 @@ func (s *searchSession) doSearchIteration() error {
 }
 
 func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([]*types.Log, error) {
+	if indexer := f.sys.backend.LogIndexer(); indexer != nil {
+		fmt.Println("Starting search with log indexer")
+		logs, resultsRange, err := indexer.GetMatches(ctx, firstBlock, lastBlock, math.MaxUint64, 1, f.addresses, f.topics)
+		if err != logindex.ErrMatchAll {
+			fmt.Println("Search first/last block:", firstBlock, lastBlock, "results range:", resultsRange, "result count:", len(logs), "error:", err)
+			/*for i, log := range logs {
+				if log != nil {
+					fmt.Println("  ", i, "|", log.BlockNumber, log.TxIndex, log.Index)
+				} else {
+					fmt.Println("  ", i, "| nil")
+				}
+			}*/
+			return logs, err
+		}
+	}
+	fmt.Println("Starting search with filter maps")
+
 	if f.rangeLogsTestHook != nil {
 		defer func() {
 			f.rangeLogsTestHook <- rangeLogsTestEvent{rangeLogsTestDone, common.Range[uint64]{}}
@@ -457,7 +476,7 @@ func (f *Filter) unindexedLogs(ctx context.Context, chainView *filtermaps.ChainV
 
 // blockLogs returns the logs matching the filter criteria within a single block.
 func (f *Filter) blockLogs(ctx context.Context, header *types.Header) ([]*types.Log, error) {
-	if bloomFilter(header.Bloom, f.addresses, f.topics) {
+	if bloomFilter(types.BytesToBloom(header.BloomOrIndex), f.addresses, f.topics) {
 		return f.checkMatches(ctx, header)
 	}
 	return nil, nil

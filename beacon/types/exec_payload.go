@@ -80,7 +80,7 @@ func convertCapellaHeader(payload *capella.ExecutionPayload, h *types.Header) {
 	h.Coinbase = common.Address(payload.FeeRecipient)
 	h.Root = common.Hash(payload.StateRoot)
 	h.ReceiptHash = common.Hash(payload.ReceiptsRoot)
-	h.Bloom = types.Bloom(payload.LogsBloom)
+	h.BloomOrIndex = types.Bloom(payload.LogsBloom).Bytes()
 	h.Difficulty = common.Big0
 	h.Number = new(big.Int).SetUint64(uint64(payload.BlockNumber))
 	h.GasLimit = uint64(payload.GasLimit)
@@ -99,7 +99,7 @@ func convertDenebHeader(payload *deneb.ExecutionPayload, parentRoot common.Hash,
 	h.Coinbase = common.Address(payload.FeeRecipient)
 	h.Root = common.Hash(payload.StateRoot)
 	h.ReceiptHash = common.Hash(payload.ReceiptsRoot)
-	h.Bloom = types.Bloom(payload.LogsBloom)
+	h.BloomOrIndex = types.Bloom(payload.LogsBloom).Bytes()
 	h.Difficulty = common.Big0
 	h.Number = new(big.Int).SetUint64(uint64(payload.BlockNumber))
 	h.GasLimit = uint64(payload.GasLimit)

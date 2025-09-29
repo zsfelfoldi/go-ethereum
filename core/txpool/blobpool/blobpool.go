@@ -1583,7 +1583,7 @@ func (p *BlobPool) GetRLP(hash common.Hash) []byte {
 	}
 	rlp, err := encodeForNetwork(data)
 	if err != nil {
-		log.Error("Failed to encode pooled tx into the network type", "hash", hash, "err", err)
+		//TODO log.Error("Failed to encode pooled tx into the network type", "hash", hash, "err", err)
 		return nil
 	}
 	return rlp

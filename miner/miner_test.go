@@ -71,8 +71,9 @@ func (bc *testBlockChain) Config() *params.ChainConfig {
 
 func (bc *testBlockChain) CurrentBlock() *types.Header {
 	return &types.Header{
-		Number:   new(big.Int),
-		GasLimit: bc.gasLimit,
+		Number:       new(big.Int),
+		GasLimit:     bc.gasLimit,
+		BloomOrIndex: types.Bloom{}.Bytes(),
 	}
 }
 

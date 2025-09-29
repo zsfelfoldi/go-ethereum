@@ -2467,7 +2467,7 @@ func MakeChain(ctx *cli.Context, stack *node.Node, readonly bool) (*core.BlockCh
 	options.StatelessSelfValidation = ctx.Bool(VMStatelessSelfValidationFlag.Name) || ctx.Bool(VMWitnessStatsFlag.Name)
 	options.EnableWitnessStats = ctx.Bool(VMWitnessStatsFlag.Name)
 
-	chain, err := core.NewBlockChain(chainDb, gspec, engine, options)
+	chain, err := core.NewBlockChain(chainDb, gspec, engine, nil, options)
 	if err != nil {
 		Fatalf("Can't create BlockChain: %v", err)
 	}

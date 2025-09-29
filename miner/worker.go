@@ -225,7 +225,7 @@ func (miner *Miner) generateWork(ctx context.Context, genParam *generateParams, 
 
 	// Assemble the block for delivery.
 	_, _, assembleSpanEnd := telemetry.StartSpan(ctx, "miner.AssembleBlock")
-	block := core.AssembleBlock(miner.chain, work.header, work.state, &body, work.receipts, work.bal)
+	block := core.AssembleBlock(miner.chain, work.header, work.state, miner.logIndex, &body, work.receipts, work.bal)
 	assembleSpanEnd(nil)
 
 	return &newPayloadResult{
@@ -273,6 +273,9 @@ func (miner *Miner) prepareWork(ctx context.Context, genParams *generateParams, 
 		GasLimit:   core.CalcGasLimit(parent.GasLimit, miner.config.GasCeil),
 		Time:       timestamp,
 		Coinbase:   genParams.coinbase,
+	}
+	if !miner.chainConfig.IsEIP7745(header.Number, header.Time) {
+		header.BloomOrIndex = types.Bloom{}.Bytes()
 	}
 	// Set the extra field.
 	if len(miner.config.ExtraData) != 0 {

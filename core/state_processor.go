@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
+	"github.com/ethereum/go-ethereum/core/logindex"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -415,10 +416,18 @@ func onSystemCallStart(tracer *tracing.Hooks, ctx *tracing.VMContext) {
 
 // AssembleBlock finalizes the state and assembles the block with provided
 // body and receipts.
-func AssembleBlock(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, body *types.Body, receipts []*types.Receipt, blockAccessList *bal.ConstructionBlockAccessList) *types.Block {
+func AssembleBlock(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, logIndex *logindex.Indexer, body *types.Body, receipts []*types.Receipt, blockAccessList *bal.ConstructionBlockAccessList) *types.Block {
 	// Assign the post-transition state root
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 
+	if chain.Config().IsEIP7745(header.Number, header.Time) {
+		// Add log index roots
+		logIndexRoots, err := logIndex.GetIndexRoots(header.Number.Uint64(), header.ParentHash, body.Transactions, receipts)
+		if err != nil {
+			panic(fmt.Sprintf("log index error: %v", err))
+		}
+		header.BloomOrIndex = logIndexRoots
+	}
 	if !chain.Config().IsAmsterdam(header.Number, header.Time) {
 		return types.NewBlock(header, body, receipts, trie.NewStackTrie(nil))
 	}

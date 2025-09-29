@@ -521,7 +521,7 @@ func (ethash *Ethash) SealHash(header *types.Header) (hash common.Hash) {
 		header.Root,
 		header.TxHash,
 		header.ReceiptHash,
-		header.Bloom,
+		header.BloomOrIndex,
 		header.Difficulty,
 		header.Number,
 		header.GasLimit,
