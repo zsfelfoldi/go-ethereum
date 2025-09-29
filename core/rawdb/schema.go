@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
+	"lukechampine.com/uint128"
 )
 
 // The fields below define the low level database schema prefixing.
@@ -152,11 +153,12 @@ var (
 	SyncCommitteeKey      = []byte("committee-") // bigEndian64(syncPeriod) -> serialized committee
 
 	// new log index
-	filterMapsPrefix         = "fm-"
+	filterMapsPrefix         = "fm*" //TODO fm-
 	filterMapsRangeKey       = []byte(filterMapsPrefix + "R")
 	filterMapRowPrefix       = []byte(filterMapsPrefix + "r") // filterMapRowPrefix + mapRowIndex (uint64 big endian) -> filter row
 	filterMapLastBlockPrefix = []byte(filterMapsPrefix + "b") // filterMapLastBlockPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
 	filterMapBlockLVPrefix   = []byte(filterMapsPrefix + "p") // filterMapBlockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
+	filterMapSubtreePrefix   = []byte(filterMapsPrefix + "s")
 
 	// old log index
 	bloomBitsMetaPrefix = []byte("iB")
@@ -353,15 +355,12 @@ func IsStorageTrieNode(key []byte) bool {
 }
 
 // filterMapRowKey = filterMapRowPrefix + mapRowIndex (uint64 big endian)
-func filterMapRowKey(mapRowIndex uint64, base bool) []byte {
-	extLen := 8
-	if base {
-		extLen = 9
-	}
+func filterMapRowKey(mapRowIndex uint64, dbLayer uint32) []byte {
 	l := len(filterMapRowPrefix)
-	key := make([]byte, l+extLen)
+	key := make([]byte, l+9)
 	copy(key[:l], filterMapRowPrefix)
 	binary.BigEndian.PutUint64(key[l:l+8], mapRowIndex)
+	key[l+8] = byte(dbLayer)
 	return key
 }
 
@@ -380,6 +379,32 @@ func filterMapBlockLVKey(number uint64) []byte {
 	key := make([]byte, l+8)
 	copy(key[:l], filterMapBlockLVPrefix)
 	binary.BigEndian.PutUint64(key[l:], number)
+	return key
+}
+
+func filterMapSubtreeKey(index uint128.Uint128) []byte {
+	if index.Equals64(0) {
+		panic("null tree index")
+	}
+	key := make([]byte, len(filterMapSubtreePrefix), len(filterMapSubtreePrefix)+19) //TODO is thread safety always needed?
+	copy(key, filterMapSubtreePrefix)
+	if index.Equals64(1) {
+		return append(key, 255, 255)
+	}
+	lz := uint(index.LeadingZeros())
+	index = index.Lsh(lz + 1)
+	indexLen := 127 - lz
+	for {
+		bitLen := min(indexLen, 7)
+		subIndex := int(index.Rsh(128-bitLen).Lo) + 1<<bitLen
+		keyByte := toBinaryTreeKeyByte[subIndex]
+		if indexLen -= bitLen; indexLen == 0 {
+			key = append(key, keyByte+1)
+			break
+		}
+		index = index.Lsh(bitLen)
+		key = append(key, keyByte)
+	}
 	return key
 }
 
@@ -458,4 +483,20 @@ func trienodeHistoryIndexBlockKey(addressHash common.Hash, path []byte, blockID 
 // transitionStateKey = transitionStatusKey + hash
 func transitionStateKey(hash common.Hash) []byte {
 	return append(VerkleTransitionStatePrefix, hash.Bytes()...)
+}
+
+var toBinaryTreeKeyByte, fromBinaryTreeKeyByte [256]byte
+
+func traverseKeyBytes(indexBits, keyByte byte) byte {
+	if indexBits < 128 {
+		keyByte = traverseKeyBytes(indexBits*2, keyByte)
+		keyByte = traverseKeyBytes(indexBits*2+1, keyByte)
+	}
+	toBinaryTreeKeyByte[indexBits] = keyByte
+	fromBinaryTreeKeyByte[keyByte] = indexBits
+	return keyByte + 1
+}
+
+func init() {
+	traverseKeyBytes(1, 0)
 }
