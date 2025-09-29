@@ -169,6 +169,10 @@ func (b *testBackend) NewMatcherBackend() filtermaps.MatcherBackend {
 	return b.fm.NewMatcherBackend()
 }
 
+func (b *testBackend) LogIndexer() *logindex.Indexer {
+	panic("implement me")
+}
+
 func (b *testBackend) startFilterMaps(history uint64, disabled bool, params filtermaps.Params) {
 	head := b.CurrentBlock()
 	chainView := filtermaps.NewChainView(b, head.Number.Uint64(), head.Hash())
