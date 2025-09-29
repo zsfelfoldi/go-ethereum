@@ -65,10 +65,10 @@ func ExecuteStateless(ctx context.Context, config *params.ChainConfig, vmconfig 
 		engine:      beacon.New(ethash.NewFaker()),
 	}
 	processor := NewStateProcessor(chain)
-	validator := NewBlockValidator(config, nil) // No chain, we only validate the state, not the block
+	validator := NewBlockValidator(config, nil, nil) //TODO // No chain, we only validate the state, not the block
 
 	// Run the stateless blocks processing and self-validate certain fields
-	res, err := processor.Process(ctx, block, db, nil, vmconfig, nil)
+	res, err := processor.Process(ctx, block, db, nil /*TODO*/, nil, vmconfig, nil)
 	if err != nil {
 		return common.Hash{}, common.Hash{}, err
 	}
