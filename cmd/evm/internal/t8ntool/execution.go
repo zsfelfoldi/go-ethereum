@@ -247,11 +247,9 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig, 
 	if beaconRoot := pre.Env.ParentBeaconBlockRoot; beaconRoot != nil {
 		core.ProcessBeaconBlockRoot(*beaconRoot, evm, blockAccessList)
 	}
+	var prevHash common.Hash
 	if pre.Env.BlockHashes != nil && chainConfig.IsPrague(new(big.Int).SetUint64(pre.Env.Number), pre.Env.Timestamp) {
-		var (
-			prevNumber = pre.Env.Number - 1
-			prevHash   = pre.Env.BlockHashes[math.HexOrDecimal64(prevNumber)]
-		)
+		prevHash = pre.Env.BlockHashes[math.HexOrDecimal64(pre.Env.Number-1)]
 		core.ProcessParentBlockHash(prevHash, evm, blockAccessList)
 	}
 	for i := 0; txIt.Next(); i++ {
@@ -359,11 +357,7 @@ func (pre *Prestate) Apply(vmConfig vm.Config, chainConfig *params.ChainConfig, 
 	}
 
 	// Gather the execution-layer triggered requests.
-	var allLogs []*types.Log
-	for _, receipt := range receipts {
-		allLogs = append(allLogs, receipt.Logs...)
-	}
-	requests, bal, err := core.PostExecution(context.Background(), chainConfig, vmContext.BlockNumber, vmContext.Time, allLogs, evm, uint32(len(receipts)+1))
+	requests, bal, err := core.PostExecution(context.Background(), chainConfig, vmContext.BlockNumber, vmContext.Time, prevHash, includedTxs, receipts, logIndex, evm, uint32(len(receipts)+1))
 	if err != nil {
 		return nil, nil, nil, NewError(ErrorEVM, fmt.Errorf("failed to process post-execution: %v", err))
 	}
