@@ -324,7 +324,6 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 	// Run pre-execution system calls
 	blockAccessList.Merge(core.PreExecution(ctx, header.ParentBeaconRoot, parent, sim.chainConfig, evm, header.Number, header.Time))
 
-	var allLogs []*types.Log
 	for i, call := range block.Calls {
 		// Terminate if the context is cancelled
 		if err := ctx.Err(); err != nil {
@@ -383,7 +382,6 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 			}
 		} else {
 			callRes.Status = hexutil.Uint64(types.ReceiptStatusSuccessful)
-			allLogs = append(allLogs, callRes.Logs...)
 		}
 		callResults[i] = callRes
 	}
@@ -394,7 +392,7 @@ func (sim *simulator) processBlock(ctx context.Context, block *simBlock, header,
 	}
 
 	// Process EIP-7685 requests
-	requests, bal, err := core.PostExecution(ctx, sim.chainConfig, header.Number, header.Time, allLogs, evm, uint32(len(block.Calls)+1))
+	requests, bal, err := core.PostExecution(ctx, sim.chainConfig, header.Number, header.Time, header.Hash(), header.ParentHash, txes, receipts, nil /*TODO*/, evm, uint32(len(block.Calls)+1))
 	if err != nil {
 		return nil, nil, nil, err
 	}

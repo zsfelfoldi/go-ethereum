@@ -17,6 +17,7 @@
 package state
 
 import (
+	"slices"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -71,8 +72,9 @@ func (c *codeCache) Put(hash common.Hash, code []byte) {
 //
 // Reader is safe for concurrent access.
 type CodeReader struct {
-	db    ethdb.KeyValueReader
-	cache *codeCache
+	db         ethdb.KeyValueReader
+	cache      *codeCache
+	proofCodes map[common.Hash][]byte
 
 	// Cache statistics
 	hit       atomic.Int64 // Number of code lookups found in the cache
@@ -82,10 +84,11 @@ type CodeReader struct {
 }
 
 // newCodeReader constructs the code reader with provided key value store and the cache.
-func newCodeReader(db ethdb.KeyValueReader, cache *codeCache) *CodeReader {
+func newCodeReader(db ethdb.KeyValueReader, cache *codeCache, proofCodes map[common.Hash][]byte) *CodeReader {
 	return &CodeReader{
-		db:    db,
-		cache: cache,
+		db:         db,
+		cache:      cache,
+		proofCodes: proofCodes,
 	}
 }
 
@@ -98,6 +101,9 @@ func (r *CodeReader) Has(addr common.Address, codeHash common.Hash) bool {
 // Code implements state.ContractCodeReader, retrieving a particular contract's code.
 // Null is returned if the contract code is not present.
 func (r *CodeReader) Code(addr common.Address, codeHash common.Hash) []byte {
+	if r.db == nil {
+		return r.proofCodes[codeHash]
+	}
 	code, _ := r.cache.Get(codeHash)
 	if len(code) > 0 {
 		r.hit.Add(1)
@@ -108,6 +114,11 @@ func (r *CodeReader) Code(addr common.Address, codeHash common.Hash) []byte {
 
 	code = rawdb.ReadCode(r.db, codeHash)
 	if len(code) > 0 {
+		if r.proofCodes != nil {
+			if _, ok := r.proofCodes[codeHash]; !ok {
+				r.proofCodes[codeHash] = slices.Clone(code)
+			}
+		}
 		r.cache.Put(codeHash, code)
 		r.missBytes.Add(int64(len(code)))
 	}
@@ -129,6 +140,9 @@ func (r *CodeReader) CodeSize(addr common.Address, codeHash common.Hash) int {
 // for database lookups. The intention is to gradually deprecate the old
 // contract code scheme.
 func (r *CodeReader) CodeWithPrefix(addr common.Address, codeHash common.Hash) []byte {
+	if r.db == nil {
+		return r.proofCodes[codeHash]
+	}
 	code, _ := r.cache.Get(codeHash)
 	if len(code) > 0 {
 		r.hit.Add(1)
@@ -139,6 +153,11 @@ func (r *CodeReader) CodeWithPrefix(addr common.Address, codeHash common.Hash) [
 
 	code = rawdb.ReadCodeWithPrefix(r.db, codeHash)
 	if len(code) > 0 {
+		if r.proofCodes != nil {
+			if _, ok := r.proofCodes[codeHash]; !ok {
+				r.proofCodes[codeHash] = slices.Clone(code)
+			}
+		}
 		r.cache.Put(codeHash, code)
 		r.missBytes.Add(int64(len(code)))
 	}
@@ -203,8 +222,9 @@ func (b *CodeBatch) Commit() error {
 // CodeDB is responsible for managing the contract code and provides the access
 // to it. It can be used as a global object, sharing it between multiple entities.
 type CodeDB struct {
-	db    ethdb.KeyValueStore
-	cache *codeCache
+	db         ethdb.KeyValueStore
+	cache      *codeCache
+	proofCodes map[common.Hash][]byte
 }
 
 // NewCodeDB constructs the contract code database with the provided key value store.
@@ -217,15 +237,36 @@ func NewCodeDB(db ethdb.KeyValueStore) *CodeDB {
 
 // Reader returns the contract code reader.
 func (d *CodeDB) Reader() *CodeReader {
-	return newCodeReader(d.db, d.cache)
+	return newCodeReader(d.db, d.cache, d.proofCodes)
 }
 
 // NewBatch returns the batch for flushing contract codes.
 func (d *CodeDB) NewBatch() *CodeBatch {
+	if d.proofCodes != nil {
+		panic("cannot write to a proof code reader/writer")
+	}
 	return newCodeBatch(d)
 }
 
 // NewBatchWithSize returns the batch with pre-allocated capacity.
 func (d *CodeDB) NewBatchWithSize(size int) *CodeBatch {
+	if d.proofCodes != nil {
+		panic("cannot write to a proof code reader/writer")
+	}
 	return newCodeBatchWithSize(d, size)
+}
+
+func NewProofCodeReader(proofCodes map[common.Hash][]byte) *CodeDB {
+	return &CodeDB{
+		cache:      newCodeCache(),
+		proofCodes: proofCodes,
+	}
+}
+
+func NewProofCodeWriter(db ethdb.KeyValueStore, proofCodes map[common.Hash][]byte) *CodeDB {
+	return &CodeDB{
+		db:         db,
+		cache:      newCodeCache(),
+		proofCodes: proofCodes,
+	}
 }

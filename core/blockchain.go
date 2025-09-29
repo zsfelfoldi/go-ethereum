@@ -38,6 +38,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
 	"github.com/ethereum/go-ethereum/core/history"
+	"github.com/ethereum/go-ethereum/core/logindex"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -334,6 +335,7 @@ type BlockChain struct {
 	jumpDestCache   vm.JumpDestCache                 // Shared JUMPDEST analysis cache for block processing
 	precompileCache *vm.PrecompileCache              // Shared precompile result cache for block processing, nil when disabled
 	txIndexer       *txIndexer                       // Transaction indexer, might be nil if not enabled
+	logIndex        *logindex.Indexer                // EIP-8304 log indexer
 
 	hc               *HeaderChain
 	rmLogsFeed       event.Feed
@@ -345,6 +347,8 @@ type BlockChain struct {
 	blockProcCounter int32
 	scope            event.SubscriptionScope
 	genesisBlock     *types.Block
+	indexServers     indexServers
+	chainViewTracker chainViewTracker
 
 	// This mutex synchronizes chain write operations.
 	// Readers don't need to take it, they can just read the database.
@@ -381,7 +385,7 @@ type BlockChain struct {
 // NewBlockChain returns a fully initialised block chain using information
 // available in the database. It initialises the default Ethereum Validator
 // and Processor.
-func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine, cfg *BlockChainConfig) (*BlockChain, error) {
+func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine, logIndex *logindex.Indexer, cfg *BlockChainConfig) (*BlockChain, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
@@ -427,13 +431,14 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 		engine:             engine,
 		logger:             cfg.VmConfig.Tracer,
 		slowBlockThreshold: cfg.SlowBlockThreshold,
+		logIndex:           logIndex,
 	}
 	bc.hc, err = NewHeaderChain(db, chainConfig, engine, bc.insertStopped)
 	if err != nil {
 		return nil, err
 	}
 	bc.flushInterval.Store(int64(cfg.TrieTimeLimit))
-	bc.validator = NewBlockValidator(chainConfig, bc)
+	bc.validator = NewBlockValidator(chainConfig, bc, logIndex)
 	bc.prefetcher = newStatePrefetcher(chainConfig, bc.hc)
 	bc.processor = NewStateProcessor(bc.hc)
 
@@ -581,7 +586,13 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 			log.Info("Failed to setup size tracker", "err", err)
 		}
 	}
+	bc.indexServers.init(bc)
 	return bc, nil
+}
+
+// RegisterIndexer registers a new indexer to the chain.
+func (bc *BlockChain) RegisterIndexer(indexer Indexer, name string) {
+	bc.indexServers.register(indexer, name)
 }
 
 func (bc *BlockChain) setupSnapshot() {
@@ -693,6 +704,7 @@ func (bc *BlockChain) loadLastState() error {
 	if head := rawdb.ReadFinalizedBlockHash(bc.db); head != (common.Hash{}) {
 		if block := bc.GetBlockByHash(head); block != nil {
 			bc.currentFinalBlock.Store(block.Header())
+			bc.indexServers.setFinalBlock(block.NumberU64())
 			headFinalizedBlockGauge.Update(int64(block.NumberU64()))
 			bc.currentSafeBlock.Store(block.Header())
 			headSafeBlockGauge.Update(int64(block.NumberU64()))
@@ -737,6 +749,7 @@ func (bc *BlockChain) initializeHistoryPruning(latest uint64) error {
 				BlockNumber: freezerTail,
 				BlockHash:   bc.GetCanonicalHash(freezerTail),
 			})
+			bc.indexServers.setHistoryCutoff(freezerTail)
 		}
 		return nil
 
@@ -745,6 +758,7 @@ func (bc *BlockChain) initializeHistoryPruning(latest uint64) error {
 		// Already at the target.
 		if freezerTail == target.BlockNumber {
 			bc.historyPrunePoint.Store(target)
+			bc.indexServers.setHistoryCutoff(target.BlockNumber)
 			return nil
 		}
 		// Database is pruned beyond the target.
@@ -759,6 +773,7 @@ func (bc *BlockChain) initializeHistoryPruning(latest uint64) error {
 		}
 		// Fresh database (latest == 0), will sync from target point.
 		bc.historyPrunePoint.Store(target)
+		bc.indexServers.setHistoryCutoff(target.BlockNumber)
 		return nil
 
 	default:
@@ -812,9 +827,11 @@ func (bc *BlockChain) SetFinalized(header *types.Header) {
 	if header != nil {
 		rawdb.WriteFinalizedBlockHash(bc.db, header.Hash())
 		headFinalizedBlockGauge.Update(int64(header.Number.Uint64()))
+		bc.indexServers.setFinalBlock(header.Number.Uint64())
 	} else {
 		rawdb.WriteFinalizedBlockHash(bc.db, common.Hash{})
 		headFinalizedBlockGauge.Update(0)
+		bc.indexServers.setFinalBlock(0)
 	}
 }
 
@@ -1025,6 +1042,9 @@ func (bc *BlockChain) setHeadBeyondRoot(head uint64, time uint64, root common.Ha
 		if currentBlock := bc.CurrentBlock(); currentBlock != nil && header.Number.Uint64() <= currentBlock.Number.Uint64() {
 			var newHeadBlock *types.Header
 			newHeadBlock, rootNumber = bc.rewindHead(header, root)
+			bc.chainViewTracker.addReorg(newHeadBlock.Number.Uint64())
+			defer bc.chainViewTracker.postReorg()
+			bc.indexServers.revert(newHeadBlock)
 			rawdb.WriteHeadBlockHash(db, newHeadBlock.Hash())
 
 			// Degrade the chain markers if they are explicitly reverted.
@@ -1237,6 +1257,9 @@ func (bc *BlockChain) Reset() error {
 // ResetWithGenesisBlock purges the entire blockchain, restoring it to the
 // specified genesis state.
 func (bc *BlockChain) ResetWithGenesisBlock(genesis *types.Block) error {
+	bc.chainViewTracker.addReorg(0)
+	defer bc.chainViewTracker.postReorg()
+	bc.indexServers.revert(genesis.Header())
 	// Dump the entire block chain and purge the caches
 	if err := bc.SetHead(0); err != nil {
 		return err
@@ -1253,6 +1276,7 @@ func (bc *BlockChain) ResetWithGenesisBlock(genesis *types.Block) error {
 		log.Crit("Failed to write genesis block", "err", err)
 	}
 	bc.writeHeadBlock(genesis)
+	bc.indexServers.broadcast(genesis)
 
 	// Last update all in-memory chain markers
 	bc.genesisBlock = genesis
@@ -1371,6 +1395,7 @@ func (bc *BlockChain) stopWithoutSaving() {
 // Stop stops the blockchain service. If any imports are currently in progress
 // it will abort them using the procInterrupt.
 func (bc *BlockChain) Stop() {
+	bc.indexServers.stop()
 	bc.stopWithoutSaving()
 
 	// Ensure that the entirety of the state snapshot is journaled to disk.
@@ -1654,6 +1679,7 @@ func (bc *BlockChain) writeKnownBlock(block *types.Block) error {
 		}
 	}
 	bc.writeHeadBlock(block)
+	bc.indexServers.broadcast(block)
 	return nil
 }
 
@@ -1674,7 +1700,9 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	defer batch.Close()
 
 	rawdb.WriteBlock(batch, block)
-	rawdb.WriteReceipts(batch, block.Hash(), block.NumberU64(), receipts)
+	blockHash := block.Hash()
+	rawdb.WriteReceipts(batch, blockHash, block.NumberU64(), receipts)
+	bc.indexServers.cacheRawReceipts(blockHash, receipts)
 	rawdb.WritePreimages(batch, statedb.Preimages())
 	if err := batch.Write(); err != nil {
 		log.Crit("Failed to write block into disk", "err", err)
@@ -1788,6 +1816,7 @@ func (bc *BlockChain) writeBlockAndSetHead(block *types.Block, receipts []*types
 
 	// Set new head.
 	bc.writeHeadBlock(block)
+	bc.indexServers.broadcast(block)
 
 	bc.chainFeed.Send(ChainEvent{
 		Header:       block.Header(),
@@ -1859,10 +1888,12 @@ func (bc *BlockChain) insertChain(ctx context.Context, chain types.Blocks, setHe
 	}
 
 	if atomic.AddInt32(&bc.blockProcCounter, 1) == 1 {
+		bc.indexServers.setBlockProcessing(true)
 		bc.blockProcFeed.Send(true)
 	}
 	defer func() {
 		if atomic.AddInt32(&bc.blockProcCounter, -1) == 0 {
+			bc.indexServers.setBlockProcessing(false)
 			bc.blockProcFeed.Send(false)
 		}
 	}()
@@ -2288,7 +2319,7 @@ func (bc *BlockChain) ProcessBlock(ctx context.Context, parentRoot common.Hash, 
 	// Process block using the parent state as reference point
 	pstart := time.Now()
 	pctx, _, spanEnd := telemetry.StartSpan(ctx, "bc.processor.Process")
-	res, err := bc.processor.Process(pctx, block, statedb, bc.jumpDestCache, bc.precompileCache, bc.cfg.VmConfig, &execIndex)
+	res, err := bc.processor.Process(pctx, block, statedb, bc.logIndex, bc.jumpDestCache, bc.precompileCache, bc.cfg.VmConfig, &execIndex)
 	spanEnd(&err)
 	if err != nil {
 		bc.reportBadBlock(block, res, err)
@@ -2644,6 +2675,9 @@ func (bc *BlockChain) reorg(oldHead *types.Header, newHead *types.Header) error 
 			return errInvalidNewChain
 		}
 	}
+	bc.chainViewTracker.addReorg(commonBlock.Number.Uint64())
+	defer bc.chainViewTracker.postReorg()
+	bc.indexServers.revert(commonBlock)
 	// Ensure the user sees large reorgs
 	if len(oldChain) > 0 && len(newChain) > 0 {
 		logFn := log.Info
@@ -2747,6 +2781,7 @@ func (bc *BlockChain) reorg(oldHead *types.Header, newHead *types.Header) error 
 		}
 		// Update the head block
 		bc.writeHeadBlock(block)
+		bc.indexServers.broadcast(block)
 	}
 	if len(rebirthLogs) > 0 {
 		bc.logsFeed.Send(rebirthLogs)
@@ -2823,6 +2858,7 @@ func (bc *BlockChain) SetCanonical(head *types.Block) (common.Hash, error) {
 		}
 	}
 	bc.writeHeadBlock(head)
+	bc.indexServers.broadcast(head)
 
 	// Emit events
 	receipts, logs := bc.collectReceiptsAndLogs(head, false)
