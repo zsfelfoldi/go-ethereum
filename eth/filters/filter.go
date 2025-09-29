@@ -19,6 +19,7 @@ package filters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"slices"
@@ -28,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/history"
+	"github.com/ethereum/go-ethereum/core/logindex/logquery"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -381,6 +383,50 @@ func (s *searchSession) doSearchIteration() error {
 }
 
 func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([]*types.Log, error) {
+	if matcher := f.sys.backend.LogQuery(); matcher != nil {
+		fmt.Println("Starting search with log indexer")
+		patternMatcher, err := logquery.NewLegacyMatcher(f.addresses, f.topics)
+		if err != logquery.ErrMatchAll {
+			if err != nil {
+				return nil, err
+			}
+			query := logquery.FilterQuery{
+				Pattern:     patternMatcher,
+				FirstBlock:  firstBlock,
+				LastBlock:   lastBlock,
+				Limit:       math.MaxUint64,
+				LimitLatest: false,
+			}
+			refHeader := f.sys.backend.CurrentHeader() //TODO also try with parent
+			chainView := f.sys.backend.ChainView(refHeader.Hash(), refHeader.Number.Uint64())
+			if chainView == nil {
+				return nil, errors.New("could not create chain view for reference header")
+			}
+			logs, resultsRange, _, err := matcher.GetMatches(ctx, chainView, query, false)
+			// filter results with fewer topics than the search pattern
+			var j int
+			for i, log := range logs {
+				if len(log.Topics) >= len(f.topics) {
+					if j < i {
+						logs[j] = logs[i]
+					}
+					j++
+				}
+			}
+			logs = logs[:j]
+			fmt.Println("Search first/last block:", firstBlock, lastBlock, "results range:", resultsRange, "result count:", len(logs), "error:", err)
+			/*for i, log := range logs {
+				if log != nil {
+					fmt.Println("  ", i, "|", log.BlockNumber, log.TxIndex, log.Index)
+				} else {
+					fmt.Println("  ", i, "| nil")
+				}
+			}*/
+			return logs, err
+		}
+	}
+	fmt.Println("Starting search with filter maps")
+
 	if f.rangeLogsTestHook != nil {
 		defer func() {
 			f.rangeLogsTestHook <- rangeLogsTestEvent{rangeLogsTestDone, common.Range[uint64]{}}

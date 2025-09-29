@@ -179,11 +179,7 @@ func (api *DebugAPI) replayBuild(ctx context.Context, block *types.Block, stated
 	}
 
 	// Post-execution system calls and finalize.
-	var allLogs []*types.Log
-	for _, r := range receipts {
-		allLogs = append(allLogs, r.Logs...)
-	}
-	_, postBal, err := core.PostExecution(ctx, config, header.Number, header.Time, allLogs, evm, uint32(tcount+1))
+	_, postBal, err := core.PostExecution(ctx, config, header.Number, header.Time, header.Hash(), header.ParentHash, committed, receipts, nil, evm, uint32(tcount+1))
 	if err != nil {
 		return nil, nil, 0, common.Hash{}, err
 	}

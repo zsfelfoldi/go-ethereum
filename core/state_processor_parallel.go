@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/logindex"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/types/bal"
@@ -87,7 +88,7 @@ type txExecResult struct {
 
 // processParallel executes the block's transactions concurrently using the
 // block-level access list.
-func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block, statedb *state.StateDB, jumpDestCache vm.JumpDestCache, precompileCache *vm.PrecompileCache, cfg vm.Config) (*ProcessResult, error) {
+func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block, statedb *state.StateDB, logIndex *logindex.Indexer, jumpDestCache vm.JumpDestCache, precompileCache *vm.PrecompileCache, cfg vm.Config) (*ProcessResult, error) {
 	var (
 		config = p.chainConfig()
 		header = block.Header()
@@ -181,10 +182,10 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 	// Gather the per-transaction results in block order and charge their gas into
 	// a single block-level gas pool, exactly as sequential execution does.
 	var (
-		receipts = make(types.Receipts, 0, len(txs))
-		allLogs  []*types.Log
-		gp       = NewGasPool(block.GasLimit())
-		logIndex uint
+		receipts        = make(types.Receipts, 0, len(txs))
+		allLogs         []*types.Log
+		gp              = NewGasPool(block.GasLimit())
+		logIndexCounter uint
 	)
 	for i := range txs {
 		receipt := results[i].receipt
@@ -198,8 +199,8 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 		// Correct the receipt object with block-level fields
 		receipt.CumulativeGasUsed = gp.CumulativeUsed()
 		for _, lg := range receipt.Logs {
-			lg.Index = logIndex
-			logIndex++
+			lg.Index = logIndexCounter
+			logIndexCounter++
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
@@ -219,7 +220,7 @@ func (p *StateProcessor) processParallel(ctx context.Context, block *types.Block
 	if precompileCache != nil {
 		postEVM.SetPrecompileCache(precompileCache)
 	}
-	requests, postBAL, err := PostExecution(ctx, config, header.Number, header.Time, allLogs, postEVM, postIndex)
+	requests, postBAL, err := PostExecution(ctx, config, header.Number, header.Time, header.Hash(), header.ParentHash, txs, receipts, logIndex, postEVM, postIndex)
 	postEVM.Release()
 	if err != nil {
 		return nil, err
