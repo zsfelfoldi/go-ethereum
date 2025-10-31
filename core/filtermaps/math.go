@@ -51,7 +51,10 @@ type Params struct {
 	mapsPerEpoch uint32 // The number of maps in an epoch
 	valuesPerMap uint64 // The number of log values marked on each filter map
 
-	rowGroupSize []uint32
+	// These fields only affect database storage
+	rowGroupSize      []uint32
+	topNodeMinSize    uint64
+	topSubtreeMinSize uint64
 }
 
 // DefaultParams is the set of parameters used on mainnet.
@@ -63,6 +66,8 @@ var DefaultParams = Params{
 	logMappingFrequency: []uint{10, 6, 2, 0},
 	maxRowLength:        []uint32{8, 168, 2728, 10920},
 	rowGroupSize:        []uint32{256, 16, 1, 1},
+	topNodeMinSize:      512,
+	topSubtreeMinSize:   8192,
 }
 
 // RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing

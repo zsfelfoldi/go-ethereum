@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	databaseVersion   = 4    // reindexed if database version does not match
+	databaseVersion   = 401  // reindexed if database version does not match
 	cachedLastBlocks  = 1000 // last block of map pointers
 	cachedLvPointers  = 1000 // first log value pointer of block pointers
 	maxWritesPerBatch = 1000000
