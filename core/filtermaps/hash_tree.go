@@ -269,3 +269,20 @@ func (t treeIndex) shiftRight(b uint) treeIndex {
 	}
 	return treeIndex{lo: t.lo>>b + t.hi<<(64-b), hi: t.hi >> b}
 }
+
+type subtreeReader interface {
+	subtree(index treeIndex) []byte
+}
+
+type treeNodeReader interface {
+	node(index treeIndex) (merkle.Value, uint32)
+}
+
+type nodeReader struct {
+	subtreeBackend subtreeReader
+	nodeBackend    treeNodeReader
+}
+
+func (n *nodeReader) node(index treeIndex) (merkle.Value, uint32) {
+
+}

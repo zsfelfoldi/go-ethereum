@@ -177,6 +177,7 @@ type renderState struct {
 	nextBlock        uint64
 	partialBlock     bool
 	partialBlockHash common.Hash
+	tree             *merkleTree
 }
 
 func (rs *renderState) checkNextHash(hash common.Hash) bool {
@@ -258,7 +259,10 @@ func (rs *renderState) advance(count uint64) {
 	rs.lvPointer += count
 	if uint32(rs.lvPointer>>rs.params.logValuesPerMap) > rs.mapIndex {
 		if rs.currentMap != nil {
-			rs.finishedMaps = append(rs.finishedMaps, rs.currentMap.finished())
+			fm := rs.currentMap.finished()
+			fm.subtrees = rs.tree.storedSubtrees
+			rs.tree.storedSubtrees = nil
+			rs.finishedMaps = append(rs.finishedMaps, fm)
 		}
 		rs.mapIndex++
 		if rs.renderRange.Includes(rs.mapIndex) {
