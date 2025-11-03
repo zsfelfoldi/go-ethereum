@@ -32,11 +32,6 @@ type memoryMap struct {
 	nextEntry uint32
 	blockPtrs []uint64
 	lastBlock lastBlockOfMap
-
-	epochPath        merkle.IncrementalPath
-	rowTree          [][]merkle.Value
-	mapRowEntryPaths []merkle.IncrementalPath
-	logEntryPath     merkle.IncrementalPath
 }
 
 // mmEntry is a linked list entry. The field next points to the next entry in the

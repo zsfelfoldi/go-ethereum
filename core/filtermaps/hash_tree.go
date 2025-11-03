@@ -17,67 +17,255 @@
 package filtermaps
 
 import (
-	"errors"
-	"fmt"
+	"crypto/sha256"
 	"math"
-	"sort"
-	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/lru"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/beacon/merkle"
 )
 
-type merkleNode struct {
-	value merkle.Value
-	size  uint64 // 62 bits estimated storage size plus unknown and finalized flag
+type merkleTreeNode struct {
+	value                     merkle.Value
+	meta, parent, left, right uint32
 }
 
 var (
-	mnSizeMask      = (uint64(1) << 62) - 1
-	mnUnknownMask   = uint64(1) << 62
-	mnFinalizedMask = uint64(1) << 63
+	mnWeightMask      = (uint32(1) << 28) - 1
+	mnStoredMask      = uint32(1) << 28
+	mnSubtreeRootMask = uint32(1) << 29
+	mnUnknownMask     = uint32(1) << 30
+	mnCompleteMask    = uint32(1) << 31
 )
 
-func merkleHash(a, b *merkleNode) (r merkleNode) {
-	if (a.size || b.size)&mnUnknownMask != 0 {
-		panic("cannot hash unknown node")
+func (n *merkleTreeNode) isUnknown() bool     { return n.meta&mnUnknownMask != 0 }
+func (n *merkleTreeNode) isComplete() bool    { return n.meta&mnCompleteMask != 0 }
+func (n *merkleTreeNode) isStored() bool      { return n.meta&mnStoredMask != 0 }
+func (n *merkleTreeNode) isSubtreeRoot() bool { return n.meta&mnSubtreeRootMask != 0 }
+func (n *merkleTreeNode) weight() uint32      { return n.meta & mnWeightMask }
+
+var nullPtr = uint32(math.MaxUint32)
+
+type merkleTree struct {
+	params         *Params
+	nodes          []merkleTreeNode
+	firstEmpty     uint32
+	storedSubtrees []storedSubtree
+}
+
+func (params *Params) newMerkleTree() *merkleTree {
+	return &merkleTree{
+		params: params,
+		nodes: []merkleTreeNode{merkleTreeNode{
+			meta:   mnUnknownMask,
+			parent: nullPtr,
+			left:   nullPtr,
+			right:  nullPtr,
+		}},
+		firstEmpty: nullPtr,
 	}
-	r.size = (a.size+b.size)&mnSizeMask + (a.size & b.size & mnFinalizedMask) // add sizes, binary and finalized flags
+}
+
+func (mt *merkleTree) deleteNode(node uint32) {
+	mt.nodes[node].right = mt.firstEmpty
+	mt.firstEmpty = node
+}
+
+func (mt *merkleTree) newNode() uint32 {
+	if mt.firstEmpty != nullPtr {
+		node := mt.firstEmpty
+		mt.firstEmpty = mt.nodes[node].right
+		return node
+	}
+	node := uint32(len(mt.nodes))
+	mt.nodes = append(mt.nodes, merkleTreeNode{})
+	return node
+}
+
+func (mt *merkleTree) hashNode(node uint32) {
+	n := &mt.nodes[node]
+	if n.left == nullPtr || n.right == nullPtr {
+		panic("cannot hash node with no children")
+	}
+	a := &mt.nodes[n.left]
+	b := &mt.nodes[n.right]
+	if a.isUnknown() {
+		mt.hashNode(n.left)
+	}
+	if b.isUnknown() {
+		mt.hashNode(n.right)
+	}
 	hasher := sha256.New()
 	hasher.Write(a.value[:])
 	hasher.Write(b.value[:])
-	hasher.Sum(r.value[:0])
+	hasher.Sum(n.value[:0])
+	n.meta = 0
+	if !a.isComplete() || !b.isComplete() {
+		return
+	}
+	n.meta += mnCompleteMask
+	stored := a.isStored()
+	if b.isStored() != stored {
+		panic("completed siblings with different stored flag")
+	}
+	weight := a.meta&mnWeightMask + b.meta&mnWeightMask
+	if weight >= mt.params.nodeWeightThreshold {
+		weight = mt.params.singleHashWeight
+		if stored {
+			n.meta += mnSubtreeRootMask
+		} else {
+			stored = true
+		}
+	}
+	n.meta += weight
+	if stored {
+		n.meta += mnStoredMask
+	}
+}
+
+func (mt *merkleTree) getTreeIndex(node uint32) treeIndex {
+	ti := rootIndex
+	for node != 0 {
+		parent := mt.nodes[node].parent
+		ti = ti.shiftRight(1)
+		if mt.nodes[parent].right == node {
+			ti.hi += uint64(1) << 63
+		}
+		node = parent
+	}
+	return ti
+}
+
+func (mt *merkleTree) setCompleted(node uint32) {
+	if node == 0 {
+		panic("root node cannot be completed")
+	}
+	n := &mt.nodes[node]
+	if n.isUnknown() {
+		panic("unknown node cannot be completed")
+	}
+	n.meta |= mnCompleteMask
+	for {
+		parent := n.parent
+		p := &mt.nodes[parent]
+		sibling := p.left + p.right - node
+		s := &mt.nodes[sibling]
+		if !s.isComplete() {
+			break
+		}
+		if n.isStored() && !s.isStored() {
+			s.meta = mnStoredMask + mnCompleteMask + mt.params.singleHashWeight
+			mt.collapseSubtree(sibling)
+		}
+		if !n.isStored() && s.isStored() {
+			n.meta = mnStoredMask + mnCompleteMask + mt.params.singleHashWeight
+			mt.collapseSubtree(node)
+		}
+		if n.isSubtreeRoot() {
+			mt.storedSubtrees = append(mt.storedSubtrees, mt.collapseAndStoreSubtree(n.parent))
+		}
+		mt.hashNode(parent)
+		if p.isStored() && !n.isStored() {
+			mt.collapseSubtree(parent)
+		}
+		n, node = p, parent
+	}
 	return
 }
 
-type merklePath struct {
-	index uint64
-	path  [][2]merkleNode // leaf to root
-	root  merkleNode
-}
-
-func (p *merklePath) leaf() merkleNode {
-	return p.path[0][p.index%2]
-}
-
-func (p *merklePath) setLeaf(v merkleNode) {
-	index := p.index
-	p.path[0][index%2] = v
-	var i int
-	for index > 1 {
-		i++
-		index /= 2
-		if p.path[i][index%2].size&mnUnknownMask != 0 {
+// completed if weight != 0
+func (mt *merkleTree) setValue(node uint32, value merkle.Value, weight uint32) {
+	n := &mt.nodes[node]
+	n.value = value
+	n.meta = weight
+	if weight != 0 {
+		n.meta += mnCompleteMask
+	}
+	for n.parent != nullPtr {
+		n := &mt.nodes[n.parent]
+		if n.isUnknown() {
 			break
 		}
-		p.path[i][index%2].size = mnUnknownMask
+		n.meta = mnUnknownMask
 	}
-	p.root.size = mnUnknownMask
+	if weight != 0 {
+		mt.setCompleted(node)
+	}
 }
 
-func (p *merklePath) advance(index uint64) {}
+const (
+	tsCollectShapeBits = iota
+	tsCollectLeavesAndDelete
+	tsDelete
+)
 
-func (p *merklePath) root() merkleNode {}
+func (mt *merkleTree) traverseSubtree(node uint32, action int, encBytes *[]byte, encBitPtr *int) {
+	n := &mt.nodes[node]
+	if action == tsCollectShapeBits {
+		if *encBitPtr == 0 {
+			*encBytes = append(*encBytes, 0)
+		}
+		if n.left == nullPtr {
+			(*encBytes)[len(*encBytes)-1] += byte(1) << *encBitPtr
+		}
+		(*encBitPtr)++
+		if *encBitPtr == 8 {
+			*encBitPtr = 0
+		}
+	}
+	if n.left == nullPtr {
+		if action == tsCollectLeavesAndDelete {
+			*encBytes = append(*encBytes, n.value[:]...)
+		}
+		return
+	}
+	mt.traverseSubtree(n.left, action, encBytes, encBitPtr)
+	mt.traverseSubtree(n.right, action, encBytes, encBitPtr)
+	if action == tsCollectLeavesAndDelete || action == tsDelete {
+		mt.deleteNode(n.left)
+		mt.deleteNode(n.right)
+		n.left, n.right = nullPtr, nullPtr
+	}
+}
+
+func (mt *merkleTree) collapseSubtree(node uint32) {
+	mt.traverseSubtree(node, tsDelete, nil, nil)
+}
+
+func (mt *merkleTree) collapseAndStoreSubtree(node uint32) (res storedSubtree) {
+	var bitPtr int
+	mt.traverseSubtree(node, tsCollectShapeBits, &res.nodeEnc, &bitPtr)
+	mt.traverseSubtree(node, tsCollectLeavesAndDelete, &res.nodeEnc, nil)
+	return
+}
+
+type storedSubtree struct {
+	index   treeIndex
+	nodeEnc []byte
+}
+
+/*func (s []storedSubtree) Len() int           { return len(s) }
+func (s []storedSubtree) Less(i, j int) bool { return s[i].index.lessThan(s[j].index) }
+func (s []storedSubtree) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }*/
+
+type treeIndex struct {
+	lo, hi uint64
+}
+
+var rootIndex = treeIndex{hi: uint64(1) << 63}
+
+func (a treeIndex) lessThan(b treeIndex) bool {
+	return a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo)
+}
+
+func (t treeIndex) shiftLeft(b uint) treeIndex {
+	if b >= 64 {
+		return treeIndex{hi: t.lo << (b - 64)}
+	}
+	return treeIndex{lo: t.lo << b, hi: t.hi<<b + t.lo>>(64-b)}
+}
+
+func (t treeIndex) shiftRight(b uint) treeIndex {
+	if b >= 64 {
+		return treeIndex{lo: t.hi >> (b - 64)}
+	}
+	return treeIndex{lo: t.lo>>b + t.hi<<(64-b), hi: t.hi >> b}
+}
