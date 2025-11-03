@@ -260,7 +260,7 @@ func (rs *renderState) advance(count uint64) {
 	if uint32(rs.lvPointer>>rs.params.logValuesPerMap) > rs.mapIndex {
 		if rs.currentMap != nil {
 			fm := rs.currentMap.finished()
-			fm.subtrees = rs.tree.storedSubtrees
+			fm.subtrees = rs.tree.getStoredSubtrees()
 			rs.tree.storedSubtrees = nil
 			rs.finishedMaps = append(rs.finishedMaps, fm)
 		}

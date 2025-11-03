@@ -19,6 +19,7 @@ package filtermaps
 import (
 	"crypto/sha256"
 	"math"
+	"sort"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 )
@@ -48,7 +49,7 @@ type merkleTree struct {
 	params         *Params
 	nodes          []merkleTreeNode
 	firstEmpty     uint32
-	storedSubtrees []storedSubtree
+	storedSubtrees storedSubtrees
 }
 
 func (params *Params) newMerkleTree() *merkleTree {
@@ -127,7 +128,7 @@ func (mt *merkleTree) getTreeIndex(node uint32) treeIndex {
 		parent := mt.nodes[node].parent
 		ti = ti.shiftRight(1)
 		if mt.nodes[parent].right == node {
-			ti.hi += uint64(1) << 63
+			ti[1] += uint64(1) << 63
 		}
 		node = parent
 	}
@@ -237,37 +238,61 @@ func (mt *merkleTree) collapseAndStoreSubtree(node uint32) (res storedSubtree) {
 	return
 }
 
+func (mt *merkleTree) getStoredSubtrees() storedSubtrees {
+	st := mt.storedSubtrees
+	mt.storedSubtrees = nil
+	sort.Sort(st)
+	return st
+}
+
 type storedSubtree struct {
 	index   treeIndex
 	nodeEnc []byte
 }
 
-/*func (s []storedSubtree) Len() int           { return len(s) }
-func (s []storedSubtree) Less(i, j int) bool { return s[i].index.lessThan(s[j].index) }
-func (s []storedSubtree) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }*/
+type storedSubtrees []storedSubtree
 
-type treeIndex struct {
-	lo, hi uint64
+func (s storedSubtrees) Len() int           { return len(s) }
+func (s storedSubtrees) Less(i, j int) bool { return s[i].index.lessThan(s[j].index) }
+func (s storedSubtrees) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+
+// assumes sorted list
+func (s storedSubtrees) get(index treeIndex) []byte {
+	a, b := 0, len(s)
+	for a < b {
+		m := (a + b) / 2
+		if s[m].index == index {
+			return s[m].nodeEnc
+		}
+		if s[m].index.lessThan(index) {
+			a = m + 1
+		} else {
+			b = m
+		}
+	}
+	return nil
 }
 
-var rootIndex = treeIndex{hi: uint64(1) << 63}
+type treeIndex [2]uint64 // lo, hi
 
-func (a treeIndex) lessThan(b treeIndex) bool {
-	return a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo)
+var rootIndex = treeIndex{0, uint64(1) << 63}
+
+func (t treeIndex) lessThan(u treeIndex) bool {
+	return t[1] < u[1] || (t[1] == u[1] && t[0] < u[0])
 }
 
 func (t treeIndex) shiftLeft(b uint) treeIndex {
 	if b >= 64 {
-		return treeIndex{hi: t.lo << (b - 64)}
+		return treeIndex{0, t[0] << (b - 64)}
 	}
-	return treeIndex{lo: t.lo << b, hi: t.hi<<b + t.lo>>(64-b)}
+	return treeIndex{t[0] << b, t[1]<<b + t[0]>>(64-b)}
 }
 
 func (t treeIndex) shiftRight(b uint) treeIndex {
 	if b >= 64 {
-		return treeIndex{lo: t.hi >> (b - 64)}
+		return treeIndex{t[1] >> (b - 64), 0}
 	}
-	return treeIndex{lo: t.lo>>b + t.hi<<(64-b), hi: t.hi >> b}
+	return treeIndex{t[0]>>b + t[1]<<(64-b), t[1] >> b}
 }
 
 type subtreeReader interface {
@@ -284,5 +309,5 @@ type nodeReader struct {
 }
 
 func (n *nodeReader) node(index treeIndex) (merkle.Value, uint32) {
-
+	panic(nil)
 }

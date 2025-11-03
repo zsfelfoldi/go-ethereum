@@ -119,7 +119,7 @@ type finishedMap struct {
 	rowData   []uint32
 	blockPtrs []uint64
 	lastBlock lastBlockOfMap
-	subtrees  []storedSubtree
+	subtrees  storedSubtrees
 }
 
 // finished creates a new finishedMap from a memoryMap.
