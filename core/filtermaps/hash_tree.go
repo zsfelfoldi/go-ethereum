@@ -19,6 +19,7 @@ package filtermaps
 import (
 	"crypto/sha256"
 	"math"
+	"math/bits"
 	"sort"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
@@ -126,7 +127,7 @@ func (mt *merkleTree) getTreeIndex(node uint32) treeIndex {
 	ti := rootIndex
 	for node != 0 {
 		parent := mt.nodes[node].parent
-		ti = ti.shiftRight(1)
+		ti = ti.parent()
 		if mt.nodes[parent].right == node {
 			ti[1] += uint64(1) << 63
 		}
@@ -198,7 +199,7 @@ const (
 	tsDelete
 )
 
-func (mt *merkleTree) traverseSubtree(node uint32, action int, encBytes *[]byte, encBitPtr *int) {
+func (mt *merkleTree) traverseSubtree(node uint32, action int, encBytes *serializedSubtree, encBitPtr *int) {
 	n := &mt.nodes[node]
 	if action == tsCollectShapeBits {
 		if *encBitPtr == 0 {
@@ -245,9 +246,15 @@ func (mt *merkleTree) getStoredSubtrees() storedSubtrees {
 	return st
 }
 
+type serializedSubtree []byte
+
+func (s serializedSubtree) node(index treeIndex) (merkle.Value, bool) {
+
+}
+
 type storedSubtree struct {
 	index   treeIndex
-	nodeEnc []byte
+	nodeEnc serializedSubtree
 }
 
 type storedSubtrees []storedSubtree
@@ -257,7 +264,7 @@ func (s storedSubtrees) Less(i, j int) bool { return s[i].index.lessThan(s[j].in
 func (s storedSubtrees) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 // assumes sorted list
-func (s storedSubtrees) get(index treeIndex) []byte {
+func (s storedSubtrees) subtree(index treeIndex) serializedSubtree {
 	a, b := 0, len(s)
 	for a < b {
 		m := (a + b) / 2
@@ -295,8 +302,37 @@ func (t treeIndex) shiftRight(b uint) treeIndex {
 	return treeIndex{t[0]>>b + t[1]<<(64-b), t[1] >> b}
 }
 
+func (t treeIndex) trailingZeros() uint {
+	if t[0] == 0 {
+		return uint(bits.TrailingZeros64(t[1])) + 64
+	}
+	return uint(bits.TrailingZeros64(t[0]))
+}
+
+// bit 0 == LSB
+func (t treeIndex) setBit(bit uint, set bool) treeIndex {
+	if bit > 127 {
+		panic("invalid bit index")
+	}
+	index, mask := bit/64, uint64(1)<<(bit%64)
+	if set {
+		t[index] |= mask
+	} else {
+		t[index] &= ^mask
+	}
+	return t
+}
+
+func (t treeIndex) parent() treeIndex {
+	tz := t.trailingZeros()
+	if tz >= 127 {
+		panic("cannot get parent of root index")
+	}
+	return t.setBit(tz, false).setBit(tz+1, true)
+}
+
 type subtreeReader interface {
-	subtree(index treeIndex) []byte
+	subtree(index treeIndex) serializedSubtree
 }
 
 type treeNodeReader interface {
@@ -304,10 +340,29 @@ type treeNodeReader interface {
 }
 
 type nodeReader struct {
+	params         *Params
 	subtreeBackend subtreeReader
 	nodeBackend    treeNodeReader
 }
 
 func (n *nodeReader) node(index treeIndex) (merkle.Value, uint32) {
-	panic(nil)
+	si := index
+	var shift uint
+loop:
+	for {
+		if st := n.subtreeBackend.subtree(si); st != nil {
+			if node, ok := st.node(index.shiftLeft(shift)); ok {
+				return node, n.params.singleHashWeight
+			} else {
+				break loop
+			}
+		}
+		if si == rootIndex {
+			break loop
+		}
+		si = si.parent()
+		shift++
+	}
+	// not found in the available subtrees; look in nodeBackend
+	return n.nodeBackend.node(index)
 }
