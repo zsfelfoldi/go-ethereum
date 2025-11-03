@@ -23,6 +23,7 @@ import (
 	"sort"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/common/lru"
 )
 
 type merkleTreeNode struct {
@@ -129,7 +130,7 @@ func (mt *merkleTree) getTreeIndex(node uint32) treeIndex {
 		parent := mt.nodes[node].parent
 		ti = ti.parent()
 		if mt.nodes[parent].right == node {
-			ti[1] += uint64(1) << 63
+			ti = ti.setBit(127, true)
 		}
 		node = parent
 	}
@@ -248,8 +249,43 @@ func (mt *merkleTree) getStoredSubtrees() storedSubtrees {
 
 type serializedSubtree []byte
 
-func (s serializedSubtree) node(index treeIndex) (merkle.Value, bool) {
+func (s serializedSubtree) shapeBit(bitIndex int) bool {
+	return s[bitIndex/8]&(byte(1)<<(bitIndex%8)) != 0
+}
 
+func (s serializedSubtree) node(index treeIndex) (value merkle.Value, leaf, internal bool) {
+	l := len(s)
+	leafCount := (l*8 + 1) / 258
+	shapeOffset := l - leafCount*32
+	if shapeOffset != (leafCount*2+6)/8 {
+		panic("invalid serialized subtree")
+	}
+	var bitIndex, leafIndex int
+	for index != rootIndex {
+		if s.shapeBit(bitIndex) {
+			return // index points beyond subtree leaf
+		}
+		bitIndex++
+		if index.getBit(127) { // right subtree; skip left subtree shape
+			for expLeaves := 1; expLeaves > 0; {
+				if s.shapeBit(bitIndex) {
+					expLeaves--
+					leafIndex++
+				} else {
+					expLeaves++
+				}
+				bitIndex++
+			}
+		}
+		index = index.shiftLeft(1)
+	}
+	if s.shapeBit(bitIndex) { // index points to subtree leaf
+		copy(value[:], s[shapeOffset+32*leafIndex:shapeOffset+32*(leafIndex+1)])
+		leaf = true
+		return
+	}
+	internal = true // index points to internal node
+	return
 }
 
 type storedSubtree struct {
@@ -309,6 +345,18 @@ func (t treeIndex) trailingZeros() uint {
 	return uint(bits.TrailingZeros64(t[0]))
 }
 
+func (t treeIndex) level() uint {
+	return 127 - t.trailingZeros()
+}
+
+// bit 0 == LSB
+func (t treeIndex) getBit(bit uint) bool {
+	if bit > 127 {
+		panic("invalid bit index")
+	}
+	return t[bit/64]&(uint64(1)<<(bit%64)) != 0
+}
+
 // bit 0 == LSB
 func (t treeIndex) setBit(bit uint, set bool) treeIndex {
 	if bit > 127 {
@@ -331,6 +379,14 @@ func (t treeIndex) parent() treeIndex {
 	return t.setBit(tz, false).setBit(tz+1, true)
 }
 
+func (t treeIndex) child(right bool) treeIndex {
+	tz := t.trailingZeros()
+	if tz == 0 {
+		panic("tree is too deep")
+	}
+	return t.setBit(tz, right).setBit(tz-1, true)
+}
+
 type subtreeReader interface {
 	subtree(index treeIndex) serializedSubtree
 }
@@ -339,30 +395,74 @@ type treeNodeReader interface {
 	node(index treeIndex) (merkle.Value, uint32)
 }
 
-type nodeReader struct {
-	params         *Params
-	subtreeBackend subtreeReader
-	nodeBackend    treeNodeReader
+// implements treeNodeReader
+type subtreeNodeReader struct {
+	params   *Params
+	reader   subtreeReader
+	cache    *lru.Cache[treeIndex, cachedNode]
+	fallback treeNodeReader
 }
 
-func (n *nodeReader) node(index treeIndex) (merkle.Value, uint32) {
+type cachedNode struct {
+	value  merkle.Value
+	weight uint32
+}
+
+// Note that nodes outside the subtree are also cached, associated with the
+// specified global tree index. This assumes that every index is looked up from
+// the closest ancestor subtree and it is indeed globally not present in the
+// subtree set when not found in the given subtree.
+func (n *subtreeNodeReader) nodeFromSubtree(subtree serializedSubtree, subtreeLevel uint, index treeIndex) (merkle.Value, uint32) {
+	if node, ok := n.cache.Get(index); ok {
+		return node.value, node.weight
+	}
+	value, leaf, internal := subtree.node(index.shiftLeft(subtreeLevel))
+	var weight uint32
+	if leaf {
+		weight = n.params.singleHashWeight
+	}
+	if internal {
+		left, lw := n.nodeFromSubtree(subtree, subtreeLevel, index.child(false))
+		if lw == 0 {
+			panic("child of internal subtree node not found")
+		}
+		right, rw := n.nodeFromSubtree(subtree, subtreeLevel, index.child(true))
+		if rw == 0 {
+			panic("child of internal subtree node not found")
+		}
+		hasher := sha256.New()
+		hasher.Write(left[:])
+		hasher.Write(right[:])
+		hasher.Sum(value[:0])
+		weight = lw + rw
+	}
+	n.cache.Add(index, cachedNode{value: value, weight: weight})
+	return value, n.params.singleHashWeight
+}
+
+func (n *subtreeNodeReader) node(index treeIndex) (merkle.Value, uint32) {
+	if node, ok := n.cache.Get(index); ok {
+		return node.value, node.weight
+	}
 	si := index
-	var shift uint
+	subtreeLevel := index.level()
 loop:
 	for {
-		if st := n.subtreeBackend.subtree(si); st != nil {
-			if node, ok := st.node(index.shiftLeft(shift)); ok {
-				return node, n.params.singleHashWeight
+		if subtree := n.reader.subtree(si); subtree != nil {
+			if node, weight := n.nodeFromSubtree(subtree, subtreeLevel, index); weight != 0 {
+				return node, weight
 			} else {
 				break loop
 			}
 		}
-		if si == rootIndex {
+		if subtreeLevel == 0 {
 			break loop
 		}
 		si = si.parent()
-		shift++
+		subtreeLevel--
 	}
-	// not found in the available subtrees; look in nodeBackend
-	return n.nodeBackend.node(index)
+	if n.fallback != nil {
+		return n.fallback.node(index)
+	}
+	return merkle.Value{}, 0
 }
