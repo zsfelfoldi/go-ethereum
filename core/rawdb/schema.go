@@ -157,6 +157,7 @@ var (
 	filterMapRowPrefix       = []byte(filterMapsPrefix + "r") // filterMapRowPrefix + mapRowIndex (uint64 big endian) -> filter row
 	filterMapLastBlockPrefix = []byte(filterMapsPrefix + "b") // filterMapLastBlockPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
 	filterMapBlockLVPrefix   = []byte(filterMapsPrefix + "p") // filterMapBlockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
+	filterMapSubtreePrefix   = []byte(filterMapsPrefix + "s")
 
 	// old log index
 	bloomBitsMetaPrefix = []byte("iB")
@@ -380,6 +381,60 @@ func filterMapBlockLVKey(number uint64) []byte {
 	return key
 }
 
+var (
+	nullIndex = []uint64{0, 0}
+	rootIndex = []uint64{0, uint64(1) << 63}
+)
+
+func filterMapSubtreeKey(index [2]uint64) []byte {
+	if index == nullIndex {
+		panic("null tree index")
+	}
+	key := make([]byte, len(filterMapSubtreePrefix), len(filterMapSubtreePrefix)+19) //TODO is thread safety always needed?
+	copy(key, filterMapSubtreePrefix)
+	if index == rootIndex {
+		return append(key, 255, 255)
+	}
+	for {
+		bitLen := uint(7)
+		if index[1] == 0 {
+			bitLen = min(bitLen, 63-bits.TrailingZeros64(index[0]))
+		}
+		indexBits := byte(index[1]>>(64-bitLen)) + byte(1)<<bitLen
+		index[1] = index[1]<<bitLen + index[0]>>(64-bitLen)
+		index[0] <<= bitLen
+		keyByte := toBinaryTreeKeyByte[next]
+		if index == rootIndex {
+			key = append(key, keyByte+1)
+			break
+		}
+		key = append(key, keyByte)
+	}
+	return key
+}
+
+func filterMapSubtreeKeyToIndex(key []byte) (res [2]uint64, ok bool) {
+	if len(key) <= len(filterMapSubtreePrefix) || !bytes.Equal(key[:len(filterMapSubtreePrefix)], filterMapSubtreePrefix) {
+		return
+	}
+	res, ok = rootIndex, true
+	for i := range len(key) - len(filterMapSubtreePrefix) {
+		keyByte := key[len(key)-1-i]
+		if i == 0 {
+			keyByte--
+		}
+		if keyByte == 255 {
+			return rootIndex, true
+		}
+		indexBits := fromBinaryTreeKeyByte[keyByte]
+		bitLen := 7 - bits.LeadingZeros8(indexBits)
+		indexBits -= byte(1) << bitLen
+		res[0] = res[0]>>bitLen + res[1]<<(64-bitLen)
+		res[1] = res[1]>>bitLen + uint64(indexBits)<<(64-bitLen)
+	}
+	return
+}
+
 // accountHistoryIndexKey = StateHistoryAccountMetadataPrefix + addressHash
 func accountHistoryIndexKey(addressHash common.Hash) []byte {
 	return append(StateHistoryAccountMetadataPrefix, addressHash.Bytes()...)
@@ -455,4 +510,20 @@ func trienodeHistoryIndexBlockKey(addressHash common.Hash, path []byte, blockID 
 // transitionStateKey = transitionStatusKey + hash
 func transitionStateKey(hash common.Hash) []byte {
 	return append(VerkleTransitionStatePrefix, hash.Bytes()...)
+}
+
+var toBinaryTreeKeyByte, fromBinaryTreeKeyByte [256]byte
+
+func traverseKeyBytes(indexBits, keyByte byte) byte {
+	if indexBits < 128 {
+		keyByte = traverseKeyBytes(indexBits*2, keyByte)
+		keyByte = traverseKeyBytes(indexBits*2+1, keyByte)
+	}
+	toBinaryTreeKeyByte[indexBits] = keyByte
+	fromBinaryTreeKeyByte[keyByte] = indexBits
+	return keyByte + 1
+}
+
+func init() {
+	traverseKeyBytes(1, 0)
 }

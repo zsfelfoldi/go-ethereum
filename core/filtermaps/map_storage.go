@@ -596,7 +596,10 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	// write/overwrite map rows and delete dirty map data, write new pointers
 	done, err := m.mapDb.writeMapRows(writeMaps, dirtyInEpoch, keepEmptyInEpoch, maps, stopCallback)
 	if done {
-		done, err = m.mapDb.writePointers(writeMaps, maps, stopCallback)
+		done, err = m.mapDb.writeSubtrees(writeMaps, dirtyInEpoch, keepEmptyInEpoch, maps, stopCallback)
+		if done {
+			done, err = m.mapDb.writePointers(writeMaps, maps, stopCallback)
+		}
 	}
 	m.lock.Lock()
 	writeInProgress = m.writeInProgress
@@ -708,4 +711,7 @@ func (m *mapStorage) updateOverlayBlocks() {
 	}
 	m.overlayBlocks = ob.makeSet(1)
 	m.overlayCount = m.overlay.count()
+}
+
+func (m *mapStorage) subtree(index treeIndex) serializedSubtree {
 }

@@ -34,6 +34,7 @@ const (
 	databaseVersion   = 401  // reindexed if database version does not match
 	cachedLastBlocks  = 1000 // last block of map pointers
 	cachedLvPointers  = 1000 // first log value pointer of block pointers
+	cachedSubtrees    = 5000
 	maxWritesPerBatch = 1000000
 )
 
@@ -46,6 +47,7 @@ type mapDatabase struct {
 
 	lastBlockCache *lru.Cache[uint32, lastBlockOfMap]
 	lvPointerCache *lru.Cache[uint64, uint64]
+	subtreeCache   *lru.Cache[treeIndex, serializedSubtree]
 
 	testReadRows bool
 }
@@ -65,6 +67,7 @@ func newMapDatabase(params *Params, db ethdb.KeyValueStore, hashScheme bool) *ma
 		hashScheme:     hashScheme,
 		lastBlockCache: lru.NewCache[uint32, lastBlockOfMap](cachedLastBlocks),
 		lvPointerCache: lru.NewCache[uint64, uint64](cachedLvPointers),
+		subtreeCache:   lru.NewCache[treeIndex, serializedSubtree](cachedSubtrees),
 	}
 }
 
@@ -525,6 +528,12 @@ func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePat
 	return nil
 }
 
+func (m *mapDatabase) deleteSubtrees(deleteRange common.Range[uint32], stopCallback func() bool) (bool, error) {
+}
+
+func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*finishedMap, stopCallback func() bool) (bool, error) {
+}
+
 // safeDeleteWithLogs is a wrapper for a function that performs a safe range
 // delete operation using rawdb.SafeDeleteRange. It emits log messages if the
 // process takes long enough to call the stop callback.
@@ -572,4 +581,13 @@ func (m *mapDatabase) storeCheckpointList(firstEpoch uint32, cpList checkpointLi
 	for i, cp := range cpList {
 		m.storeEpochCheckpoint(firstEpoch+uint32(i), cp)
 	}
+}
+
+func (m *mapDatabase) subtree(index treeIndex) serializedSubtree {
+	if subtree, ok := m.subtreeCache.Get(index); ok {
+		return subtree
+	}
+	subtree := serializedSubtree(rawdb.GetFilterMapSubtree(m.db, index))
+	m.subtreeCache.Add(index, subtree)
+	return subtree
 }

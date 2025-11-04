@@ -639,3 +639,14 @@ func DeleteBloomBitsDb(db ethdb.KeyValueStore, hashScheme bool, stopCallback fun
 	}
 	return deletePrefixRange(db, bloomBitsMetaPrefix, hashScheme, stopCallback)
 }
+
+func ReadFilterMapsSubtree(db ethdb.Iteratee, index [2]uint64) (uint, []byte, error) {
+	it := db.NewIterator(filterMapSubtreeKey(index), nil)
+	defer it.Release()
+
+	if !it.Next() {
+		return 0, nil, nil
+	}
+	foundIndex, ok := filterMapSubtreeKeyToIndex(it.Key())
+
+}

@@ -167,6 +167,9 @@ func (iv *IndexView) GetFilterMapRows(mapIndices []uint32, rowIndex, layerIndex 
 	return rows, nil
 }
 
+func (iv *IndexView) subtree(index treeIndex) serializedSubtree {
+}
+
 type renderState struct {
 	params           *Params
 	renderRange      common.Range[uint32]
