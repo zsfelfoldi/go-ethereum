@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/lukechampine/uint128"
 )
 
 // DecodeTxLookupEntry decodes the supplied tx lookup data.
@@ -640,13 +641,18 @@ func DeleteBloomBitsDb(db ethdb.KeyValueStore, hashScheme bool, stopCallback fun
 	return deletePrefixRange(db, bloomBitsMetaPrefix, hashScheme, stopCallback)
 }
 
-func ReadFilterMapsSubtree(db ethdb.Iteratee, index [2]uint64) (uint, []byte, error) {
-	it := db.NewIterator(filterMapSubtreeKey(index), nil)
-	defer it.Release()
-
-	if !it.Next() {
-		return 0, nil, nil
+func ReadFilterMapsSubtree(db ethdb.KeyValueReader, index uint128.Uint128) ([]byte, error) {
+	key := filterMapSubtreeKey(index)
+	if !db.Has(key) {
+		return nil, nil
 	}
-	foundIndex, ok := filterMapSubtreeKeyToIndex(it.Key())
+	return db.Get(key)
+}
 
+func WriteFilterMapsSubtree(db ethdb.KeyValueWriter, index uint128.Uint128, subtree []byte) {
+	db.Put(filterMapSubtreeKey(index), subtree)
+}
+
+func DeleteFilterMapsSubtrees(db ethdb.KeyValueStore, from, to uint128.Uint128, hashScheme bool, stopCallback func(bool) bool) error {
+	return SafeDeleteRange(db, filterMapSubtreeKey(from), append(filterMapSubtreeKey(to), 0), hashScheme, stopCallback)
 }

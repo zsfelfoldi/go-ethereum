@@ -572,6 +572,9 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 		// delete map rows of entire epoch if nothing to write or keep
 		m.lock.Unlock()
 		done, err := m.mapDb.deleteEpochRows(epoch, stopCallback)
+		if done {
+			done, err = m.mapDb.deleteEpochSubtrees(epoch, stopCallback)
+		}
 		m.lock.Lock()
 		if done {
 			if err := m.updateRange(m.valid, m.dirty.exclude(epochRange), m.overlay, m.knownEpochs); err != nil {
@@ -596,9 +599,12 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	// write/overwrite map rows and delete dirty map data, write new pointers
 	done, err := m.mapDb.writeMapRows(writeMaps, dirtyInEpoch, keepEmptyInEpoch, maps, stopCallback)
 	if done {
-		done, err = m.mapDb.writeSubtrees(writeMaps, dirtyInEpoch, keepEmptyInEpoch, maps, stopCallback)
+		done, err = m.mapDb.deleteSubtrees(dirtyInEpoch, stopCallback)
 		if done {
-			done, err = m.mapDb.writePointers(writeMaps, maps, stopCallback)
+			done, err = m.mapDb.writeSubtrees(writeMaps, maps, stopCallback)
+			if done {
+				done, err = m.mapDb.writePointers(writeMaps, maps, stopCallback)
+			}
 		}
 	}
 	m.lock.Lock()

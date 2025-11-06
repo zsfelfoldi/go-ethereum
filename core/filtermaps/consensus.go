@@ -16,6 +16,10 @@
 
 package filtermaps
 
+import (
+	"github.com/lukechampine/uint128"
+)
+
 const (
 	// relative to root
 	rtiEpochs    = 2
@@ -49,12 +53,17 @@ const (
 	rtiDelimiterMetaDummy       = 15
 )
 
+type treeIndex uint128.Uint128
+
+var rootIndex uint128.From64(1)
+
 func (t *treeIndex) matchRoot(relIndex uint64) bool {
-	levels := 63 - bits.LeadingZeros64(relIndex)
-	if levels > t.level() || ((*t)[1]>>(64-levels))+(uint64(1)<<levels) != relIndex {
+	rLevel := 63 - bits.LeadingZeros64(relIndex)
+	tLevel := t.level()
+	if rLevel > tLevel || t.Rsh(tLevel-rLevel) != uint128.From64(relIndex) {
 		return false
 	}
-	*t = t.shiftLeft(levels)
+	*t = t.Rsh(rLevel)
 	return true
 
 }
@@ -62,11 +71,12 @@ func (t *treeIndex) matchRoot(relIndex uint64) bool {
 func (t *treeIndex) splitRoot(levels uint) common.Range[uint64] {
 	tl := t.level()
 	if tl >= levels {
-		subIndex := (*t)[1] >> (64 - levels)
-		*t = t.shiftLeft(levels)
+		subIndex := t.Rsh(tl-levels).Lo - (uint64(1) << levels)
+		m := rootIndex.Lsh(tl-levels)
+		*t = t.And(m.Sub(rootIndex)).Add(m)
 		return common.NewRange[uint64](subIndex, 1)
 	}
-	subIndex := (*t)[1] >> (64 - tl)
+	subIndex := t.And64((uint64(1)<<tl)-1).Lo
 	*t = rootIndex
 	return common.NewRange[uint64](subIndex<<(levels-tl), uint64(1)<<(levels-tl))
 }
@@ -87,4 +97,32 @@ func (p *Params) finalizedInMap(index treeIndex) uint32 {
 		mapSubIndex = p.mapsPerEpoch - 1
 	}
 	return epoch*p.mapsPerEpoch + mapSubIndex
+}
+
+func (t treeIndex) level() uint {
+	return 127 - uint(t.LeadingZeros())
+}
+
+func (t treeIndex) gtSub(subIndex uint64) {
+	shift := 63 - bits.LeadingZeros64(subIndex)
+	return t.Lsh(shift).Add64(subIndex - (uint64(1) << shift))
+}
+
+func (t treeIndex) arraySub(baseIndex treeIndex, arrayIndex uint64, indexLen uint) {
+	return t.Lsh(indexLen).Add64(arrayIndex)
+}
+
+func ti64(i uint64) treeIndex {
+	return uint128.From64(i)
+}
+
+func (p *Params) mapRowRoot(mapIndex, rowIndex uint32) treeIndex {
+	epochRoot := ti64(rtiEpochs).arraySub(uint64(mapIndex/p.mapsPerEpoch), p.logEpochHistory)
+	rowRoot := epochRoot.gtSub(rtiFilterMaps).arraySub(uint64(rowIndex), p.logMapHeight)
+	return rowRoot.arraySub(uint64(mapIndex%p.mapsPerEpoch), p.logMapsPerEpoch)
+}
+
+func (p *Params) logEnrtyRoot(lvIndex uint64) treeIndex {
+	epochRoot := ti64(rtiEpochs).arraySub(lvIndex/(p.mapsPerEpoch*p.valuesPerMap), p.logEpochHistory)
+	return epochRoot.gtSub(rtiLogEntries).arraySub(lvIndex%(p.mapsPerEpoch*p.valuesPerMap), p.logMapsPerEpoch+p.logValuesPerMap)
 }

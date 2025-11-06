@@ -36,6 +36,7 @@ const (
 	cachedLvPointers  = 1000 // first log value pointer of block pointers
 	cachedSubtrees    = 5000
 	maxWritesPerBatch = 1000000
+	subtreesPerBatch  = 5000
 )
 
 // mapDatabase implements the database storage layer for filter maps and the
@@ -164,7 +165,25 @@ func (m *mapDatabase) deleteEpochRows(epoch uint32, stopCallback func() bool) (b
 		afterLast := m.params.mapRowIndex(m.params.firstEpochMap(epoch+1), 0)
 		return rawdb.DeleteFilterMapRows(db, common.NewRange(first, afterLast-first), hashScheme, stopCb)
 	}
-	action := fmt.Sprintf("Deleting epoch #%d", epoch)
+	action := fmt.Sprintf("Deleting epoch #%d rows", epoch)
+	switch err := m.safeDeleteWithLogs(deleteFn, action, stopCallback); err {
+	case nil:
+		return true, nil
+	case rawdb.ErrDeleteRangeInterrupted:
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+func (m *mapDatabase) deleteEpochSubtrees(epoch uint32, stopCallback func() bool) (bool, error) {
+	deleteFn := func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error {
+		epochRoot := mergeArrayIndex(rtiEpochs, epoch, p.logEpochHistory)
+		from := mergeGtIndex(epochRoot, rtiFilterMaps)
+		to := mergeGtIndex(epochRoot, rtiLogEntries)
+		return rawdb.DeleteFilterMapsSubtrees(db, from, to, hashScheme, stopCb)
+	}
+	action := fmt.Sprintf("Deleting epoch #%d subtrees", epoch)
 	switch err := m.safeDeleteWithLogs(deleteFn, action, stopCallback); err {
 	case nil:
 		return true, nil
@@ -529,9 +548,96 @@ func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePat
 }
 
 func (m *mapDatabase) deleteSubtrees(deleteRange common.Range[uint32], stopCallback func() bool) (bool, error) {
+	var from, to treeIndex
+	deleteFn := func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error {
+		for to.And64(1) == 1 {
+			to = to.Rsh(1)
+		}
+		return rawdb.DeleteFilterMapsSubtrees(db, from, to, hashScheme, stopCb)
+	}
+	action := "Deleting filter map subtrees"
+	for rowIndex := range m.params.mapHeight {
+		from = m.params.mapRowRoot(deleteRange.First(), rowIndex)
+		to = m.params.mapRowRoot(deleteRange.Last(), rowIndex)
+		switch err := m.safeDeleteWithLogs(deleteFn, action, stopCallback); err {
+		case nil:
+		case rawdb.ErrDeleteRangeInterrupted:
+			return false, nil
+		default:
+			return false, err
+		}
+	}
+	action = "Deleting log entry subtrees"
+	from = m.params.logEnrtyRoot(uint64(deleteRange.First()) * m.params.valuesPerMap)
+	to = m.params.logEnrtyRoot(uint64(deleteRange.AfterLast())*m.params.valuesPerMap - 1)
+	switch err := m.safeDeleteWithLogs(deleteFn, action, stopCallback); err {
+	case nil:
+		return true, nil
+	case rawdb.ErrDeleteRangeInterrupted:
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*finishedMap, stopCallback func() bool) (bool, error) {
+	var stCount int
+	for _, m := range maps {
+		stCount += len(m.subtrees)
+	}
+	type stPointer struct {
+		i, j uint32
+	}
+	pointers := make([]stPointer, 0, stCount)
+	for i, m := range maps {
+		for j := range m.subtrees {
+			pointers = append(pointers, stPointer{i, j})
+		}
+	}
+	sort.Slice(pointers, func(a, b int) bool {
+		return maps[pointers[a].i].subtrees[pointers[a].j].index.lessThan(maps[pointers[b].i].subtrees[pointers[b].j].index)
+	})
+	batch := m.db.NewBatch()
+	var (
+		batchCnt uint32
+		writeErr error
+	)
+	checkStopOrCommit := func() bool {
+		batchCnt++
+		if batchCnt >= subtreesPerBatch {
+			if writeErr = batch.Write(); writeErr != nil {
+				return true
+			}
+			if stopCallback() {
+				return true
+			}
+			batch = m.db.NewBatch()
+			batchCnt = 0
+		}
+		return false
+	}
+	for _, stp := range pointers {
+		subtree := maps[stp.i].subtrees[stp.j]
+		rawdb.WriteFilterMapsSubtree(batch, subtree.index, subtree.nodeEnc)
+		if checkStopOrCommit() {
+			return false, writeErr
+		}
+	}
+	if err := batch.Write(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (a treeIndex) lessThan(b treeIndex) bool {
+	la, lb := a.level(), b.level()
+	if la >= lb && a.Rsh(la-lb) == b {
+		return true
+	}
+	if lb > la && b.Rsh(lb-la) == a {
+		return false
+	}
+	return a.Lsh(127-la).Cmp(b.Lsh(127-lb)) < 0
 }
 
 // safeDeleteWithLogs is a wrapper for a function that performs a safe range

@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/lukechampine/uint128"
 )
 
 // The fields below define the low level database schema prefixing.
@@ -381,58 +382,30 @@ func filterMapBlockLVKey(number uint64) []byte {
 	return key
 }
 
-var (
-	nullIndex = []uint64{0, 0}
-	rootIndex = []uint64{0, uint64(1) << 63}
-)
-
-func filterMapSubtreeKey(index [2]uint64) []byte {
-	if index == nullIndex {
+func filterMapSubtreeKey(index uint128.Uint128) []byte {
+	if index.Equals64(0) {
 		panic("null tree index")
 	}
 	key := make([]byte, len(filterMapSubtreePrefix), len(filterMapSubtreePrefix)+19) //TODO is thread safety always needed?
 	copy(key, filterMapSubtreePrefix)
-	if index == rootIndex {
+	if index.Equals64(1) {
 		return append(key, 255, 255)
 	}
+	lz := uint(index.LeadingZeros())
+	index = index.Lsh(lz + 1)
+	indexLen := 127 - lz
 	for {
-		bitLen := uint(7)
-		if index[1] == 0 {
-			bitLen = min(bitLen, 63-bits.TrailingZeros64(index[0]))
-		}
-		indexBits := byte(index[1]>>(64-bitLen)) + byte(1)<<bitLen
-		index[1] = index[1]<<bitLen + index[0]>>(64-bitLen)
-		index[0] <<= bitLen
-		keyByte := toBinaryTreeKeyByte[next]
-		if index == rootIndex {
+		bitLen := min(indexLen, 7)
+		subIndex := int(index.Rsh(128-bitLen).Lo) + 1<<bitLen
+		keyByte := toBinaryTreeKeyByte[subIndex]
+		if indexLen -= bitLen; indexLen == 0 {
 			key = append(key, keyByte+1)
 			break
 		}
+		index = index.Lsh(bitLen)
 		key = append(key, keyByte)
 	}
 	return key
-}
-
-func filterMapSubtreeKeyToIndex(key []byte) (res [2]uint64, ok bool) {
-	if len(key) <= len(filterMapSubtreePrefix) || !bytes.Equal(key[:len(filterMapSubtreePrefix)], filterMapSubtreePrefix) {
-		return
-	}
-	res, ok = rootIndex, true
-	for i := range len(key) - len(filterMapSubtreePrefix) {
-		keyByte := key[len(key)-1-i]
-		if i == 0 {
-			keyByte--
-		}
-		if keyByte == 255 {
-			return rootIndex, true
-		}
-		indexBits := fromBinaryTreeKeyByte[keyByte]
-		bitLen := 7 - bits.LeadingZeros8(indexBits)
-		indexBits -= byte(1) << bitLen
-		res[0] = res[0]>>bitLen + res[1]<<(64-bitLen)
-		res[1] = res[1]>>bitLen + uint64(indexBits)<<(64-bitLen)
-	}
-	return
 }
 
 // accountHistoryIndexKey = StateHistoryAccountMetadataPrefix + addressHash
