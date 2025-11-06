@@ -43,6 +43,7 @@ type Params struct {
 	logMapWidth         uint // The number of bits required to represent the map width
 	logMapsPerEpoch     uint // The number of bits required to represent the number of maps per epoch
 	logValuesPerMap     uint // The number of bits required to represent the number of log values per map
+	logEpochHistory     uint
 	logMappingFrequency []uint
 	maxRowLength        []uint32
 
@@ -63,6 +64,7 @@ var DefaultParams = Params{
 	logMapWidth:         24,
 	logMapsPerEpoch:     10,
 	logValuesPerMap:     16,
+	logEpochHistory:     24,
 	logMappingFrequency: []uint{10, 6, 2, 0},
 	maxRowLength:        []uint32{8, 168, 2728, 10920},
 	rowGroupSize:        []uint32{256, 16, 1, 1},

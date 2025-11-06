@@ -30,7 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/lukechampine/uint128"
+	"lukechampine.com/uint128"
 )
 
 // DecodeTxLookupEntry decodes the supplied tx lookup data.
@@ -643,8 +643,8 @@ func DeleteBloomBitsDb(db ethdb.KeyValueStore, hashScheme bool, stopCallback fun
 
 func ReadFilterMapsSubtree(db ethdb.KeyValueReader, index uint128.Uint128) ([]byte, error) {
 	key := filterMapSubtreeKey(index)
-	if !db.Has(key) {
-		return nil, nil
+	if has, err := db.Has(key); !has || err != nil {
+		return nil, err
 	}
 	return db.Get(key)
 }

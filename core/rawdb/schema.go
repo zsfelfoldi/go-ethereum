@@ -24,7 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
-	"github.com/lukechampine/uint128"
+	"lukechampine.com/uint128"
 )
 
 // The fields below define the low level database schema prefixing.
