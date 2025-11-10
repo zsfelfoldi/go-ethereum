@@ -77,10 +77,10 @@ func (t *treeIndex) splitRoot(levels uint) common.Range[uint64] {
 	if tl >= levels {
 		subIndex := t.rsh(tl-levels).Lo - (uint64(1) << levels)
 		m := rootIndex.lsh(tl - levels)
-		*t = t.And(m.Sub(rootIndex)).Add(m)
+		*t = treeIndex(uint128.Uint128(*t).And(uint128.Uint128(m).Sub(uint128.Uint128(rootIndex))).Add(uint128.Uint128(m)))
 		return common.NewRange[uint64](subIndex, 1)
 	}
-	subIndex := t.And64((uint64(1) << tl) - 1).Lo
+	subIndex := uint128.Uint128(*t).And64((uint64(1) << tl) - 1).Lo
 	*t = rootIndex
 	return common.NewRange[uint64](subIndex<<(levels-tl), uint64(1)<<(levels-tl))
 }
@@ -104,16 +104,16 @@ func (p *Params) finalizedInMap(index treeIndex) uint32 {
 }
 
 func (t treeIndex) level() uint {
-	return 127 - uint(t.LeadingZeros())
+	return 127 - uint(uint128.Uint128(t).LeadingZeros())
 }
 
 func (t treeIndex) gtSub(subIndex uint64) treeIndex {
 	shift := uint(63 - bits.LeadingZeros64(subIndex))
-	return t.lsh(shift).Add64(subIndex - (uint64(1) << shift))
+	return treeIndex(uint128.Uint128(t.lsh(shift)).Add64(subIndex - (uint64(1) << shift)))
 }
 
 func (t treeIndex) arraySub(arrayIndex uint64, indexLen uint) treeIndex {
-	return t.lsh(indexLen).Add64(arrayIndex)
+	return treeIndex(uint128.Uint128(t.lsh(indexLen)).Add64(arrayIndex))
 }
 
 func ti64(i uint64) treeIndex                { return treeIndex(uint128.From64(i)) }
@@ -131,11 +131,12 @@ func (p *Params) logEnrtyRoot(lvIndex uint64) treeIndex {
 	return epochRoot.gtSub(rtiLogEntries).arraySub(lvIndex%(uint64(p.mapsPerEpoch)*p.valuesPerMap), p.logMapsPerEpoch+p.logValuesPerMap)
 }
 
-func (p *Params) progListLeaf(leafIndex uint32) treeIndex {
+// relative to progressive list root
+func (p *Params) progListSubIndex(leafIndex uint64) treeIndex {
 	height := p.progListHeightFirst
 	index := ti64(rtiProgListTree)
 	for {
-		stLength := 1 << height
+		stLength := uint64(1) << height
 		if leafIndex < stLength {
 			return index.gtSub(rtiProgListSubtree).arraySub(leafIndex, height)
 		}

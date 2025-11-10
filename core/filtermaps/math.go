@@ -56,8 +56,8 @@ type Params struct {
 
 	// These fields only affect database storage
 	rowGroupSize        []uint32
-	nodeWeightThreshold uint32
-	singleHashWeight    uint32
+	nodeWeightThreshold uint16
+	singleHashWeight    uint16
 }
 
 // DefaultParams is the set of parameters used on mainnet.
