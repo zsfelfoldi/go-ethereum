@@ -180,7 +180,10 @@ type renderState struct {
 	nextBlock        uint64
 	partialBlock     bool
 	partialBlockHash common.Hash
-	tree             *merkleTree
+
+	tree         *merkleTree
+	mapRowRoots  []uint32
+	logEntryRoot uint32
 }
 
 func (rs *renderState) checkNextHash(hash common.Hash) bool {

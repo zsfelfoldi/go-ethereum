@@ -50,7 +50,8 @@ var nullPtr = uint32(math.MaxUint32)
 type merkleTree struct {
 	params         *Params
 	nodes          []merkleTreeNode
-	firstEmpty     uint32
+	firstFree      uint32
+	emptyValues    map[merkle.Value]struct{ left, right merkle.Value } //TODO
 	storedSubtrees storedSubtrees
 }
 
@@ -63,19 +64,19 @@ func (params *Params) newMerkleTree() *merkleTree {
 			left:   nullPtr,
 			right:  nullPtr,
 		}},
-		firstEmpty: nullPtr,
+		firstFree: nullPtr,
 	}
 }
 
 func (mt *merkleTree) deleteNode(node uint32) {
-	mt.nodes[node].right = mt.firstEmpty
-	mt.firstEmpty = node
+	mt.nodes[node].right = mt.firstFree
+	mt.firstFree = node
 }
 
 func (mt *merkleTree) newNode() uint32 {
-	if mt.firstEmpty != nullPtr {
-		node := mt.firstEmpty
-		mt.firstEmpty = mt.nodes[node].right
+	if mt.firstFree != nullPtr {
+		node := mt.firstFree
+		mt.firstFree = mt.nodes[node].right
 		return node
 	}
 	node := uint32(len(mt.nodes))
@@ -83,9 +84,49 @@ func (mt *merkleTree) newNode() uint32 {
 	return node
 }
 
+func (mt *merkleTree) expand(node uint32, subIndex treeIndex) uint32 {
+	for subIndex != rootIndex {
+		n := &mt.nodes[node]
+		if n.left == nullPtr {
+			if !n.isEmptySubtree() {
+				panic("cannot expand non-empty subtree")
+			}
+			children, ok := mt.emptyValues[n.value]
+			if !ok {
+				panic("unknown empty subtree hash")
+			}
+			n.left = mt.newNode()
+			mt.nodes[n.left] = merkleTreeNode{
+				value:  children.left,
+				meta:   mnEmptySubtree,
+				parent: node,
+				left:   nullPtr,
+				right:  nullPtr,
+			}
+			n.right = mt.newNode()
+			mt.nodes[n.right] = merkleTreeNode{
+				value:  children.right,
+				meta:   mnEmptySubtree,
+				parent: node,
+				left:   nullPtr,
+				right:  nullPtr,
+			}
+		}
+		switch {
+		case subIndex.matchRoot(2):
+			node = n.left
+		case subIndex.matchRoot(3):
+			node = n.right
+		default:
+			panic("invalid expand subIndex")
+		}
+	}
+	return node
+}
+
 func (mt *merkleTree) hashNode(node uint32) {
 	n := &mt.nodes[node]
-	if n.left == nullPtr || n.right == nullPtr {
+	if n.isLeaf() {
 		panic("cannot hash node with no children")
 	}
 	a := &mt.nodes[n.left]
@@ -137,7 +178,7 @@ func (mt *merkleTree) getTreeIndex(node uint32) treeIndex {
 	return ti
 }
 
-func (mt *merkleTree) setCompleted(node uint32) {
+func (mt *merkleTree) setCompleted(node uint32, completedAt uint64) {
 	if node == 0 {
 		panic("root node cannot be completed")
 	}

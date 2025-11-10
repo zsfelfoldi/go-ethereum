@@ -46,6 +46,8 @@ type Params struct {
 	logEpochHistory     uint
 	logMappingFrequency []uint
 	maxRowLength        []uint32
+	progListHeightFirst uint
+	progListHeightStep  uint
 
 	// These fields can be derived with the information above
 	mapHeight    uint32 // The number of rows in the filter map
@@ -67,6 +69,8 @@ var DefaultParams = Params{
 	logEpochHistory:     24,
 	logMappingFrequency: []uint{10, 6, 2, 0},
 	maxRowLength:        []uint32{8, 168, 2728, 10920},
+	progListHeightFirst: 0,
+	progListHeightStep:  2,
 	rowGroupSize:        []uint32{256, 16, 1, 1},
 	nodeWeightThreshold: 512,
 	singleHashWeight:    8192,

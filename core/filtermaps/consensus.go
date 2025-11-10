@@ -130,3 +130,17 @@ func (p *Params) logEnrtyRoot(lvIndex uint64) treeIndex {
 	epochRoot := ti64(rtiEpochs).arraySub(lvIndex/(uint64(p.mapsPerEpoch)*p.valuesPerMap), p.logEpochHistory)
 	return epochRoot.gtSub(rtiLogEntries).arraySub(lvIndex%(uint64(p.mapsPerEpoch)*p.valuesPerMap), p.logMapsPerEpoch+p.logValuesPerMap)
 }
+
+func (p *Params) progListLeaf(leafIndex uint32) treeIndex {
+	height := p.progListHeightFirst
+	index := ti64(rtiProgListTree)
+	for {
+		stLength := 1 << height
+		if leafIndex < stLength {
+			return index.gtSub(rtiProgListSubtree).arraySub(leafIndex, height)
+		}
+		leafIndex -= stLength
+		height += p.progListHeightStep
+		index = index.gtSub(rtiProgListNextTree)
+	}
+}
