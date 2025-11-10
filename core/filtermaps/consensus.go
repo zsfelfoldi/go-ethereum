@@ -18,10 +18,6 @@ package filtermaps
 
 import (
 	"math"
-	"math/bits"
-
-	"github.com/ethereum/go-ethereum/common"
-	"lukechampine.com/uint128"
 )
 
 const (
@@ -57,34 +53,6 @@ const (
 	rtiDelimiterMetaDummy       = 15
 )
 
-type treeIndex uint128.Uint128
-
-var rootIndex = treeIndex(uint128.From64(1))
-
-func (t *treeIndex) matchRoot(relIndex uint64) bool {
-	rLevel := uint(63 - bits.LeadingZeros64(relIndex))
-	tLevel := t.level()
-	if rLevel > tLevel || t.rsh(tLevel-rLevel) != ti64(relIndex) {
-		return false
-	}
-	*t = t.rsh(rLevel)
-	return true
-
-}
-
-func (t *treeIndex) splitRoot(levels uint) common.Range[uint64] {
-	tl := t.level()
-	if tl >= levels {
-		subIndex := t.rsh(tl-levels).Lo - (uint64(1) << levels)
-		m := rootIndex.lsh(tl - levels)
-		*t = treeIndex(uint128.Uint128(*t).And(uint128.Uint128(m).Sub(uint128.Uint128(rootIndex))).Add(uint128.Uint128(m)))
-		return common.NewRange[uint64](subIndex, 1)
-	}
-	subIndex := uint128.Uint128(*t).And64((uint64(1) << tl) - 1).Lo
-	*t = rootIndex
-	return common.NewRange[uint64](subIndex<<(levels-tl), uint64(1)<<(levels-tl))
-}
-
 func (p *Params) finalizedInMap(index treeIndex) uint32 {
 	if !index.matchRoot(rtiEpochs) {
 		return math.MaxUint32
@@ -102,23 +70,6 @@ func (p *Params) finalizedInMap(index treeIndex) uint32 {
 	}
 	return epoch*p.mapsPerEpoch + mapSubIndex
 }
-
-func (t treeIndex) level() uint {
-	return 127 - uint(uint128.Uint128(t).LeadingZeros())
-}
-
-func (t treeIndex) gtSub(subIndex uint64) treeIndex {
-	shift := uint(63 - bits.LeadingZeros64(subIndex))
-	return treeIndex(uint128.Uint128(t.lsh(shift)).Add64(subIndex - (uint64(1) << shift)))
-}
-
-func (t treeIndex) arraySub(arrayIndex uint64, indexLen uint) treeIndex {
-	return treeIndex(uint128.Uint128(t.lsh(indexLen)).Add64(arrayIndex))
-}
-
-func ti64(i uint64) treeIndex                { return treeIndex(uint128.From64(i)) }
-func (t treeIndex) lsh(shift uint) treeIndex { return treeIndex(uint128.Uint128(t).Lsh(shift)) }
-func (t treeIndex) rsh(shift uint) treeIndex { return treeIndex(uint128.Uint128(t).Rsh(shift)) }
 
 func (p *Params) mapRowRoot(mapIndex, rowIndex uint32) treeIndex {
 	epochRoot := ti64(rtiEpochs).arraySub(uint64(mapIndex/p.mapsPerEpoch), p.logEpochHistory)

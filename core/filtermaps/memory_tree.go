@@ -19,7 +19,6 @@ package filtermaps
 import (
 	"crypto/sha256"
 	"math"
-	"math/bits"
 	"sort"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
@@ -111,6 +110,7 @@ type merkleTree struct {
 	nodes          []merkleTreeNode
 	firstFree      uint32
 	emptyValues    map[merkle.Value]struct{ left, right merkle.Value } //TODO
+	finalizedBlock uint64
 	storedSubtrees storedSubtrees
 }
 
@@ -118,6 +118,7 @@ func (params *Params) newMerkleTree() *merkleTree {
 	return &merkleTree{
 		params: params,
 		nodes: []merkleTreeNode{merkleTreeNode{
+			//TODO meta fields?
 			parent: nullPtr,
 			left:   nullPtr,
 			right:  nullPtr,
@@ -203,7 +204,7 @@ func (mt *merkleTree) rehashNode(node uint32) {
 		if a.isFinalized() && b.isFinalized() {
 			n.setFinalized()
 		} else {
-			n.setCompleted(n.finalizedBlock, max(a.completedByBlock(n.finalizedBlock), b.completedByBlock(n.finalizedBlock)))
+			n.setCompleted(mt.finalizedBlock, max(a.completedByBlock(mt.finalizedBlock), b.completedByBlock(mt.finalizedBlock)))
 		}
 	} else {
 		n.setIncomplete()
@@ -245,10 +246,10 @@ func (mt *merkleTree) rehashNode(node uint32) {
 }*/
 
 func (mt *merkleTree) setCompleted(node uint32, completedAt uint64) {
+	n := &mt.nodes[node]
 	if n.parent == nullPtr {
 		panic("root node cannot be completed")
 	}
-	n := &mt.nodes[node]
 	if n.needsRehash() {
 		panic("node with unknown hash value cannot be completed")
 	}
@@ -263,12 +264,12 @@ func (mt *merkleTree) setCompleted(node uint32, completedAt uint64) {
 		}
 		if n.isStored() && !s.isStored() {
 			s.setStored(true)
-			s.setWeight(mt.params.singleHashWeight)
+			s.setWeight(uint32(mt.params.singleHashWeight))
 			mt.collapseSubtree(sibling)
 		}
 		if !n.isStored() && s.isStored() {
 			n.setStored(true)
-			n.setWeight(mt.params.singleHashWeight)
+			n.setWeight(uint32(mt.params.singleHashWeight))
 			mt.collapseSubtree(node)
 		}
 		if n.isSubtreeRoot() {
@@ -448,7 +449,7 @@ type cachedNode struct {
 	weight uint32
 }
 
-// Note that nodes outside the subtree are also cached, associated with the
+// Note that the non-existence of nodes is also cached, associated with the
 // specified global tree index. This assumes that every index is looked up from
 // the closest ancestor subtree and it is indeed globally not present in the
 // subtree set when not found in the given subtree.
@@ -456,10 +457,10 @@ func (n *subtreeNodeReader) nodeFromSubtree(subtree serializedSubtree, subtreeLe
 	if node, ok := n.cache.Get(index); ok {
 		return node.value, node.weight
 	}
-	value, leaf, internal := subtree.node(index.shiftLeft(subtreeLevel))
+	value, leaf, internal := subtree.node(index.subIndex(subtreeLevel))
 	var weight uint32
 	if leaf {
-		weight = n.params.singleHashWeight
+		weight = uint32(n.params.singleHashWeight)
 	}
 	if internal {
 		left, lw := n.nodeFromSubtree(subtree, subtreeLevel, index.leftChild())
@@ -477,7 +478,7 @@ func (n *subtreeNodeReader) nodeFromSubtree(subtree serializedSubtree, subtreeLe
 		weight = lw + rw
 	}
 	n.cache.Add(index, cachedNode{value: value, weight: weight})
-	return value, n.params.singleHashWeight
+	return value, uint32(n.params.singleHashWeight)
 }
 
 func (n *subtreeNodeReader) node(index treeIndex) (merkle.Value, uint32) {

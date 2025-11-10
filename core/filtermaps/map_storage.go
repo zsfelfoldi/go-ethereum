@@ -719,5 +719,6 @@ func (m *mapStorage) updateOverlayBlocks() {
 	m.overlayCount = m.overlay.count()
 }
 
-func (m *mapStorage) subtree(index treeIndex) serializedSubtree {
+func (m *mapStorage) subtree(index treeIndex) (serializedSubtree, error) {
+	panic("TODO")
 }

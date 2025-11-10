@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
+	"lukechampine.com/uint128"
 )
 
 const (
@@ -178,10 +179,10 @@ func (m *mapDatabase) deleteEpochRows(epoch uint32, stopCallback func() bool) (b
 
 func (m *mapDatabase) deleteEpochSubtrees(epoch uint32, stopCallback func() bool) (bool, error) {
 	deleteFn := func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error {
-		epochRoot := mergeArrayIndex(rtiEpochs, epoch, p.logEpochHistory)
-		from := mergeGtIndex(epochRoot, rtiFilterMaps)
-		to := mergeGtIndex(epochRoot, rtiLogEntries)
-		return rawdb.DeleteFilterMapsSubtrees(db, from, to, hashScheme, stopCb)
+		epochRoot := ti64(rtiEpochs).arraySub(uint64(epoch), m.params.logEpochHistory)
+		from := epochRoot.gtSub(rtiFilterMaps)
+		to := epochRoot.gtSub(rtiLogEntries)
+		return rawdb.DeleteFilterMapsSubtrees(db, uint128.Uint128(from), uint128.Uint128(to), hashScheme, stopCb)
 	}
 	action := fmt.Sprintf("Deleting epoch #%d subtrees", epoch)
 	switch err := m.safeDeleteWithLogs(deleteFn, action, stopCallback); err {
@@ -550,10 +551,10 @@ func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePat
 func (m *mapDatabase) deleteSubtrees(deleteRange common.Range[uint32], stopCallback func() bool) (bool, error) {
 	var from, to treeIndex
 	deleteFn := func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error {
-		for to.And64(1) == 1 {
-			to = to.Rsh(1)
+		for to.and64(1) == 1 {
+			to = to.rsh(1)
 		}
-		return rawdb.DeleteFilterMapsSubtrees(db, from, to, hashScheme, stopCb)
+		return rawdb.DeleteFilterMapsSubtrees(db, uint128.Uint128(from), uint128.Uint128(to), hashScheme, stopCb)
 	}
 	action := "Deleting filter map subtrees"
 	for rowIndex := range m.params.mapHeight {
@@ -591,7 +592,7 @@ func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*fin
 	pointers := make([]stPointer, 0, stCount)
 	for i, m := range maps {
 		for j := range m.subtrees {
-			pointers = append(pointers, stPointer{i, j})
+			pointers = append(pointers, stPointer{uint32(i), uint32(j)})
 		}
 	}
 	sort.Slice(pointers, func(a, b int) bool {
@@ -618,7 +619,7 @@ func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*fin
 	}
 	for _, stp := range pointers {
 		subtree := maps[stp.i].subtrees[stp.j]
-		rawdb.WriteFilterMapsSubtree(batch, subtree.index, subtree.nodeEnc)
+		rawdb.WriteFilterMapsSubtree(batch, uint128.Uint128(subtree.index), subtree.nodeEnc)
 		if checkStopOrCommit() {
 			return false, writeErr
 		}
@@ -631,13 +632,13 @@ func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*fin
 
 func (a treeIndex) lessThan(b treeIndex) bool {
 	la, lb := a.level(), b.level()
-	if la >= lb && a.Rsh(la-lb) == b {
+	if la >= lb && a.rsh(la-lb) == b {
 		return true
 	}
-	if lb > la && b.Rsh(lb-la) == a {
+	if lb > la && b.rsh(lb-la) == a {
 		return false
 	}
-	return a.Lsh(127-la).Cmp(b.Lsh(127-lb)) < 0
+	return a.lsh(127-la).cmp(b.lsh(127-lb)) < 0
 }
 
 // safeDeleteWithLogs is a wrapper for a function that performs a safe range
@@ -689,11 +690,15 @@ func (m *mapDatabase) storeCheckpointList(firstEpoch uint32, cpList checkpointLi
 	}
 }
 
-func (m *mapDatabase) subtree(index treeIndex) serializedSubtree {
+func (m *mapDatabase) subtree(index treeIndex) (serializedSubtree, error) {
 	if subtree, ok := m.subtreeCache.Get(index); ok {
-		return subtree
+		return subtree, nil
 	}
-	subtree := serializedSubtree(rawdb.GetFilterMapSubtree(m.db, index))
+	st, err := rawdb.ReadFilterMapsSubtree(m.db, uint128.Uint128(index))
+	if err != nil {
+		return nil, err
+	}
+	subtree := serializedSubtree(st)
 	m.subtreeCache.Add(index, subtree)
-	return subtree
+	return subtree, nil
 }

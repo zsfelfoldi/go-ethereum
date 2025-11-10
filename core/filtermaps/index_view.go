@@ -168,6 +168,7 @@ func (iv *IndexView) GetFilterMapRows(mapIndices []uint32, rowIndex, layerIndex 
 }
 
 func (iv *IndexView) subtree(index treeIndex) serializedSubtree {
+	panic("TODO")
 }
 
 type renderState struct {
