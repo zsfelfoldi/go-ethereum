@@ -245,7 +245,12 @@ func (mt *merkleTree) rehashNode(node uint32) {
 	return ti
 }*/
 
+func (mt *merkleTree) setDescendantsCompleted(node uint32, completedAt uint64) {
+	panic("TODO")
+}
+
 func (mt *merkleTree) setCompleted(node uint32, completedAt uint64) {
+	panic("TODO")
 	n := &mt.nodes[node]
 	if n.parent == nullPtr {
 		panic("root node cannot be completed")
@@ -253,6 +258,7 @@ func (mt *merkleTree) setCompleted(node uint32, completedAt uint64) {
 	if n.needsRehash() {
 		panic("node with unknown hash value cannot be completed")
 	}
+	mt.setDescendantsCompleted()
 	n.setCompleted(mt.finalizedBlock, completedAt)
 	for {
 		parent := n.parent
@@ -284,6 +290,10 @@ func (mt *merkleTree) setCompleted(node uint32, completedAt uint64) {
 	return
 }
 
+func (mt *merkleTree) setFinalizedBlock(finalized uint64) {
+	panic("TODO")
+}
+
 // completed if weight != 0
 func (mt *merkleTree) setValue(node uint32, value merkle.Value, weight uint32, blockNumber uint64) {
 	n := &mt.nodes[node]
@@ -294,7 +304,7 @@ func (mt *merkleTree) setValue(node uint32, value merkle.Value, weight uint32, b
 		n.setCompleted(mt.finalizedBlock, blockNumber)
 	}
 	for n.parent != nullPtr {
-		n := &mt.nodes[n.parent]
+		n = &mt.nodes[n.parent]
 		if n.needsRehash() {
 			break
 		}

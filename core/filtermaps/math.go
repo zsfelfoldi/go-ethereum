@@ -58,6 +58,8 @@ type Params struct {
 	rowGroupSize        []uint32
 	nodeWeightThreshold uint16
 	singleHashWeight    uint16
+	rowEntryWeight      uint16
+	logByteWeight       uint16
 }
 
 // DefaultParams is the set of parameters used on mainnet.
@@ -72,8 +74,10 @@ var DefaultParams = Params{
 	progListHeightFirst: 0,
 	progListHeightStep:  2,
 	rowGroupSize:        []uint32{256, 16, 1, 1},
-	nodeWeightThreshold: 512,
-	singleHashWeight:    8192,
+	nodeWeightThreshold: 8192,
+	singleHashWeight:    512,
+	rowEntryWeight:      32,
+	logByteWeight:       1,
 }
 
 // RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing

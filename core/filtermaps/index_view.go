@@ -232,10 +232,10 @@ func (rs *renderState) addHeader(header *types.Header) (uint32, []*finishedMap) 
 	if rs.nextBlock != header.Number.Uint64() {
 		panic("wrong block number")
 	}
+	rs.nextBlock++
 	if !rs.finished() {
 		rs.advance(1) //TODO blockValue
 	}
-	rs.nextBlock++
 	lastBlock := lastBlockOfMap{number: header.Number.Uint64(), hash: header.Hash()}
 	if rs.currentMap != nil {
 		rs.currentMap.lastBlock = lastBlock
@@ -251,10 +251,26 @@ func (rs *renderState) addHeader(header *types.Header) (uint32, []*finishedMap) 
 // assumes currentMap != nil
 func (rs *renderState) addValue(logValue common.Hash) {
 	if rs.renderRange.Includes(rs.mapIndex) {
-		for layerIndex := uint32(0); ; layerIndex++ {
+		for layerIndex := uint32(0); ; layerIndex++ { //TODO cache layer mapping?
 			rowIndex := rs.params.rowIndex(rs.mapIndex, layerIndex, logValue)
-			if rs.currentMap.rowLength(rowIndex) < rs.params.getMaxRowLength(layerIndex) {
-				rs.currentMap.addToRow(rowIndex, rs.params.columnIndex(rs.lvPointer, &logValue))
+			if rowLength := rs.currentMap.rowLength(rowIndex); rowLength < rs.params.getMaxRowLength(layerIndex) {
+				value := rs.params.columnIndex(rs.lvPointer, &logValue)
+				rs.currentMap.addToRow(rowIndex, value)
+				rowRoot := rs.mapRowRoots[rowIndex]
+				entryNode := rs.tree.getDescendant(rowRoot, rs.params.progListSubIndex(rowLength/8))
+				countNode := rs.tree.getDescendant(rowRoot, rtiProgListCount)
+				leafPtr := rowLength % 8
+				var entryValue, countValue merkle.Value
+				if leafPtr != 0 {
+					entryValue = rs.tree.getValue(entryNode)
+				}
+				binary.LittleEndian.PutUint32(entryValue[leafPtr*4:leafPtr*4+4], value)
+				rs.tree.setValue(entryNode, entryValue, (leafPtr+1)*rs.params.rowEntryWeight)
+				if leafPtr == 7 {
+					rs.tree.setCompleted(entryNode, rs.nextBlock)
+				}
+				binary.LittleEndian.PutUint32(countValue[:4], rowLength+1)
+				rs.tree.setValue(countNode, countValue, rs.params.rowBaseWeight)
 				break
 			}
 		}
@@ -282,4 +298,17 @@ func (rs *renderState) advance(count uint64) {
 
 func (rs *renderState) finished() bool {
 	return rs.mapIndex >= rs.renderRange.AfterLast()
+}
+
+func (rs *renderState) initMapRowRoots() {
+	epoch := rs.params.mapEpoch(rs.mapIndex)
+	fmRootNode := rs.tree.getDescendant(0, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps))
+	mapSubIndex := rs.mapIndex - rs.params.firstEpochMap(epoch)
+	if rs.mapRowRoots == nil {
+		rs.mapRowRoots = make([]uint32, rs.params.mapHeight)
+	}
+	for rowIndex := range rs.params.mapHeight {
+		mapRowSubIndex := rootIndex.arraySub(rowIndex, rs.params.logMapHeight).arraySub(mapSubIndex, rs.params.logMapsPerEpoch)
+		rs.mapRowRoots[rowIndex] = rs.tree.getDescendant(fmRootNode, mapRowSubIndex)
+	}
 }
