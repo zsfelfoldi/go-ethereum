@@ -517,3 +517,72 @@ loop:
 	}
 	return merkle.Value{}, 0
 }
+
+type nodeWeight uint16
+
+func (a nodeWeight) baseExp() (base, exp uint16) {
+	base, exp = a&0x1ff, a>>9
+	if exp > 0 {
+		base += 0x200
+		exp--
+	}
+	return
+}
+
+func (a nodeWeight) add(b nodeWeight) nodeWeight {
+	ab, ae := a.baseExp()
+	bb, be := b.baseExp()
+	var base, exp uint16
+	if ae > be {
+		bb >>= ae - be
+		exp = ae
+	}
+	if be > ae {
+		ab >>= be - ae
+		exp = be
+	}
+	base = ab + bb
+	if base >= 0x400 {
+		base >>= 1
+		exp++
+	}
+	if base >= 0x200 {
+		base -= 0x200
+		exp++
+	} else if exp != 0 {
+		panic("invalid node weight")
+	}
+	return base + (exp << 9)
+}
+
+func (a nodeWeight) log2() uint16 {
+	base, exp := a.baseExp()
+	if base == 0 {
+		panic("log2 of zero node weight")
+	}
+	return 15 - bits.LeadingZeros16(base) + exp
+}
+
+func (a nodeWeight) storageLevel(p *Params) uint16 {
+	if logWeight := a.log2(); logWeight >= p.logWeightFirstLevel {
+		return (logWeight-p.logWeightFirstLevel)/p.logWeightPerLevel + 1
+	}
+	return 0
+}
+
+func uint32toNodeWeight(v uint32) nodeWeight {
+	lz := bits.LeadingZeros32(v)
+	var exp uint16
+	if lz < 14 {
+		exp = 14 - lz
+		v >>= 14 - lz
+	}
+	base := uint16(v)
+	if base >= 0x200 {
+		base -= 0x200
+		exp++
+	} else if exp != 0 {
+		panic("invalid node weight")
+	}
+	return base + (exp << 9)
+}
