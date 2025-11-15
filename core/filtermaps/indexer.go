@@ -299,6 +299,7 @@ func (ix *Indexer) initMapBoundary(startMap, limitMap uint32) *renderState {
 	rs.renderRange = common.NewRange[uint32](startMap, limitMap-startMap)
 	if rs.renderRange.Includes(rs.mapIndex) {
 		rs.currentMap = rs.params.newMemoryMap()
+		rs.initMapTree()
 	}
 	return rs
 }

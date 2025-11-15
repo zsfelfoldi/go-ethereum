@@ -37,6 +37,7 @@ import (
 // simpler.
 type FilterRow []uint32
 
+//TODO ensure database reset when params are changed
 // Params defines the basic parameters of the log index structure.
 type Params struct {
 	logMapHeight        uint // The number of bits required to represent the map height
@@ -55,31 +56,33 @@ type Params struct {
 	valuesPerMap uint64 // The number of log values marked on each filter map
 
 	// These fields only affect database storage
-	rowGroupSize        []uint32
-	nodeWeightRowBase   uint32
-	nodeWeightRowEntry  uint32
-	nodeWeightLogByte   uint32
-	logWeightFirstLevel uint16
-	logWeightPerLevel   uint16
+	rowGroupSize          []uint32
+	nodeWeightBase        uint32
+	nodeWeightPerByte     uint32
+	filterRowWeightFactor uint32
+	logEntryWeightFactor  uint32
+	logWeightFirstLevel   uint
+	logWeightPerLevel     uint
 }
 
 // DefaultParams is the set of parameters used on mainnet.
 var DefaultParams = Params{
-	logMapHeight:        16,
-	logMapWidth:         24,
-	logMapsPerEpoch:     10,
-	logValuesPerMap:     16,
-	logEpochHistory:     24,
-	logMappingFrequency: []uint{10, 6, 2, 0},
-	maxRowLength:        []uint32{8, 168, 2728, 10920},
-	progListHeightFirst: 0,
-	progListHeightStep:  2,
-	rowGroupSize:        []uint32{256, 16, 1, 1},
-	nodeWeightRowBase:   8,
-	nodeWeightRowEntry:  32,
-	nodeWeightLogByte:   1,
-	logWeightFirstLevel: 12,
-	logWeightPerLevel:   4,
+	logMapHeight:          16,
+	logMapWidth:           24,
+	logMapsPerEpoch:       10,
+	logValuesPerMap:       16,
+	logEpochHistory:       24,
+	logMappingFrequency:   []uint{10, 6, 2, 0},
+	maxRowLength:          []uint32{8, 168, 2728, 10920},
+	progListHeightFirst:   0,
+	progListHeightStep:    2,
+	rowGroupSize:          []uint32{256, 16, 1, 1},
+	nodeWeightBase:        2,
+	nodeWeightPerByte:     1,
+	filterRowWeightFactor: 8,
+	logEntryWeightFactor:  1,
+	logWeightFirstLevel:   12,
+	logWeightPerLevel:     4,
 }
 
 // RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing
@@ -137,6 +140,26 @@ func topicValue(topic common.Hash) common.Hash {
 	return result
 }
 
+func (p *Params) filterRowNodeWeight(bytesUsed uint32) float32 {
+	return float32(p.filterRowWeightFactor * (p.nodeWeightBase + bytesUsed*p.nodeWeightPerByte))
+}
+
+func (p *Params) logEntryNodeWeight(bytesUsed uint32) float32 {
+	return float32(p.logEntryWeightFactor * (p.nodeWeightBase + bytesUsed*p.nodeWeightPerByte))
+}
+
+func (p *Params) storageLevel(weight float32) uint {
+	if weight < 1 {
+		panic("invalid node weight")
+	}
+	log2 := uint(math.Ilogb(float64(weight)))
+	if log2 < p.logWeightFirstLevel {
+		return 0
+	}
+	return (log2-p.logWeightFirstLevel)/p.logWeightPerLevel + 1
+
+}
+
 // sanitize derives any missing fields and validates the parameter values.
 func (p *Params) sanitize() error {
 	p.deriveFields()
@@ -161,6 +184,9 @@ func (p *Params) sanitize() error {
 	}
 	if len(p.maxRowLength) != len(p.rowGroupSize) {
 		return fmt.Errorf("invalid configuration: length of maxRowLength (%d) and rowGroupSize entry (%d) should be equal", len(p.maxRowLength), len(p.rowGroupSize))
+	}
+	if weight := p.logEntryNodeWeight(0) * float32(p.valuesPerMap); p.storageLevel(weight*0.99) < 2 {
+		return fmt.Errorf("invalid configuration: weight of log enties subtree belonging to a single map (%f) should reach stored subtree threshold", weight)
 	}
 	return nil
 }

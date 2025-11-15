@@ -18,7 +18,6 @@ package filtermaps
 
 import (
 	"crypto/sha256"
-	"math"
 	"sort"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
@@ -88,7 +87,7 @@ func (params *Params) newMerkleTree() *merkleTree {
 }
 
 func (mt *merkleTree) deleteNode(node uint32) {
-	mt.nodes[node].right = mt.firstFree
+	mt.nodes[node].setRight(mt.firstFree)
 	mt.firstFree = node
 }
 
@@ -120,14 +119,16 @@ func (mt *merkleTree) getDescendant(node uint32, subIndex treeIndex) uint32 {
 			if !ok {
 				panic("unknown empty subtree hash")
 			}
-			n.left = mt.newNode(node)
-			mt.nodes[n.left].value = children.left
-			mt.nodes[n.left].setValueKnown(true)
-			mt.nodes[n.left].setEmptySubtree(true)
-			n.right = mt.newNode(node)
-			mt.nodes[n.right].value = children.right
-			mt.nodes[n.right].setValueKnown(true)
-			mt.nodes[n.right].setEmptySubtree(true)
+			n.setLeft(mt.newNode(node))
+			l := &mt.nodes[n.left()]
+			l.value = children.left
+			l.setValueKnown(true)
+			l.setEmptySubtree(true)
+			n.setRight(mt.newNode(node))
+			r := &mt.nodes[n.right()]
+			r.value = children.right
+			r.setValueKnown(true)
+			r.setEmptySubtree(true)
 		}
 		switch {
 		case subIndex.matchRoot(2):
@@ -146,15 +147,15 @@ func (mt *merkleTree) setComplete(node uint32) {
 	if n.isComplete() {
 		return
 	}
-	if n.left != nullPtr {
-		mt.setComplete(n.left)
-		mt.setComplete(n.right)
+	if n.left() != nullPtr {
+		mt.setComplete(n.left())
+		mt.setComplete(n.right())
 		return
 	}
 	if !n.isValueKnown() {
 		panic("finalized node with unknown value")
 	}
-	n.setCompleted(true)
+	n.setComplete(true)
 	// propagate completed state to ancestors and collapse completed subtrees if possible
 	for n.parent() != nullPtr {
 		parent := n.parent()
@@ -165,7 +166,7 @@ func (mt *merkleTree) setComplete(node uint32) {
 			break
 		}
 		p.setComplete(true)
-		p.setWeight(n.weight().add(s.weight()))
+		p.weight = n.weight + s.weight
 		if !p.isValueKnown() {
 			mt.getValue(parent)
 		}
@@ -181,7 +182,6 @@ func (mt *merkleTree) setComplete(node uint32) {
 		}
 		n, node = p, parent
 	}
-	return subtrees
 }
 
 func (mt *merkleTree) setValue(node uint32, value merkle.Value, weight float32) {
@@ -209,7 +209,7 @@ func (mt *merkleTree) getValue(node uint32) (merkle.Value, float32) {
 		hasher.Write(lv[:])
 		hasher.Write(rv[:])
 		hasher.Sum(n.value[:0])
-		n.setEmptySubtree(a.isEmptySubtree() && b.isEmptySubtree())
+		n.setEmptySubtree(mt.nodes[n.left()].isEmptySubtree() && mt.nodes[n.right()].isEmptySubtree())
 		n.setValueKnown(true)
 	}
 	return n.value, n.weight
@@ -227,7 +227,7 @@ func (mt *merkleTree) traverseSubtree(node uint32, action int, encBytes *seriali
 		if *encBitPtr == 0 {
 			*encBytes = append(*encBytes, 0)
 		}
-		if n.left == nullPtr {
+		if n.left() == nullPtr {
 			(*encBytes)[len(*encBytes)-1] += byte(1) << *encBitPtr
 		}
 		(*encBitPtr)++

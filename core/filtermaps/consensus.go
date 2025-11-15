@@ -83,13 +83,13 @@ func (p *Params) logEnrtyRoot(lvIndex uint64) treeIndex {
 }
 
 // relative to progressive list root
-func (p *Params) progListSubIndex(leafIndex uint64) treeIndex {
+func (p *Params) progListSubIndex(leafIndex uint32) treeIndex {
 	height := p.progListHeightFirst
 	index := ti64(rtiProgListTree)
 	for {
-		stLength := uint64(1) << height
+		stLength := uint32(1) << height
 		if leafIndex < stLength {
-			return index.gtSub(rtiProgListSubtree).arraySub(leafIndex, height)
+			return index.gtSub(rtiProgListSubtree).arraySub(uint64(leafIndex), height)
 		}
 		leafIndex -= stLength
 		height += p.progListHeightStep
