@@ -25,104 +25,65 @@ import (
 	"github.com/ethereum/go-ethereum/common/lru"
 )
 
+// Note: since merkleTreeNodes account for a big part of the log indexer memory
+// usage, the three node pointers and three boolean flags have been merged into
+// three uint32s consisting of a 31 bit node pointer and a 1 bit flag each.
 type merkleTreeNode struct {
-	value                         merkle.Value
-	metaInfo, parent, left, right uint32
+	value                                                          merkle.Value
+	weight                                                         float32
+	parentAndEmptySubtree, leftAndIsValueKnown, rightAndIsComplete uint32
 }
 
 var (
-	mnEmptySubtreeMask = uint32(1) << 0
-	mnRehashMask       = uint32(1) << 1
-	mnCompleteShift    = uint(2)
-	mnCompleteMask     = uint32(1)<<14 - 1
-	mnWeightShift      = uint(16)
-	mnWeightMask       = uint32(1)<<16 - 1
+	mnFlagMask  = uint32(1) << 31
+	mnValueMask = mnFlagMask - 1
+	nullPtr     = mnValueMask // no parent/child
+	rootPtr     = uint32(0)   // merkle tree root is always at index 0
 )
 
-const (
-	maxFinalizedAge = 0x3ffd
-	mcfModulus      = 0x3ffe
-	mcfIncomplete   = 0x3ffe
-	mcfFinalized    = 0x3fff
-)
-
-func (n *merkleTreeNode) isEmptySubtree() bool { return n.metaInfo&mnEmptySubtreeMask != 0 }
-func (n *merkleTreeNode) needsRehash() bool    { return n.metaInfo&mnRehashMask != 0 }
-func (n *merkleTreeNode) isComplete() bool {
-	return n.getField(mnCompleteMask, mnCompleteShift) != mcfIncomplete
-}
-func (n *merkleTreeNode) completedByBlock(finalized uint64) uint64 {
-	switch cf := n.getField(mnCompleteMask, mnCompleteShift); cf {
-	case mcfIncomplete:
-		return math.MaxUint64
-	case mcfFinalized:
-		return finalized
-	default:
-		return finalized + uint64((cf+mcfModulus-uint32(finalized%mcfModulus))%mcfModulus)
-	}
-}
-func (n *merkleTreeNode) isFinalized() bool {
-	return n.getField(mnCompleteMask, mnCompleteShift) == mcfFinalized
-}
-func (n *merkleTreeNode) weight() nodeWeight {
-	return nodeWeight(n.getField(mnWeightMask, mnWeightShift))
-}
-func (n *merkleTreeNode) setFlag(mask uint32, b bool) {
-	if b {
-		n.metaInfo |= mask
+func (n *merkleTreeNode) isEmptySubtree() bool   { return n.parentAndEmptySubtree&mnFlagMask != 0 }
+func (n *merkleTreeNode) isValueKnown() bool     { return n.leftAndIsValueKnown&mnFlagMask != 0 }
+func (n *merkleTreeNode) isComplete() bool       { return n.rightAndIsComplete&mnFlagMask != 0 }
+func (n *merkleTreeNode) parent() uint32         { return n.parentAndEmptySubtree & mnValueMask }
+func (n *merkleTreeNode) left() uint32           { return n.leftAndIsValueKnown & mnValueMask }
+func (n *merkleTreeNode) right() uint32          { return n.rightAndIsComplete & mnValueMask }
+func (n *merkleTreeNode) setEmptySubtree(f bool) { n.setFlag(&n.parentAndEmptySubtree, f) }
+func (n *merkleTreeNode) setValueKnown(f bool)   { n.setFlag(&n.leftAndIsValueKnown, f) }
+func (n *merkleTreeNode) setComplete(f bool)     { n.setFlag(&n.rightAndIsComplete, f) }
+func (n *merkleTreeNode) setParent(v uint32)     { n.setValue(&n.parentAndEmptySubtree, v) }
+func (n *merkleTreeNode) setLeft(v uint32)       { n.setValue(&n.leftAndIsValueKnown, v) }
+func (n *merkleTreeNode) setRight(v uint32)      { n.setValue(&n.rightAndIsComplete, v) }
+func (n *merkleTreeNode) setFlag(u *uint32, f bool) {
+	if f {
+		*u |= mnFlagMask
 	} else {
-		n.metaInfo &= ^mask
+		*u &= mnValueMask
 	}
 }
-func (n *merkleTreeNode) getField(mask uint32, shift uint) uint32 {
-	return (n.metaInfo >> shift) & mask
-}
-func (n *merkleTreeNode) setField(mask uint32, shift uint, value uint32) {
-	if value > mask {
-		panic("invalid node meta info field")
+func (n *merkleTreeNode) setValue(u *uint32, v uint32) {
+	if v > mnValueMask {
+		panic("invalid node pointer")
 	}
-	n.metaInfo = (n.metaInfo & ^(mask << shift)) + (value << shift)
+	*u = (*u & mnFlagMask) + v
 }
-func (n *merkleTreeNode) setEmptySubtree(b bool) { n.setFlag(mnEmptySubtreeMask, b) }
-func (n *merkleTreeNode) setRehash(b bool)       { n.setFlag(mnRehashMask, b) }
-func (n *merkleTreeNode) setIncomplete() {
-	n.setField(mnCompleteMask, mnCompleteShift, mcfIncomplete)
-}
-func (n *merkleTreeNode) setCompleted(finalized, current uint64) {
-	if current > finalized+maxFinalizedAge {
-		panic("finalized block too old")
-	}
-	n.setField(mnCompleteMask, mnCompleteShift, uint32(current%mcfModulus))
-}
-func (n *merkleTreeNode) setFinalized() {
-	n.setField(mnCompleteMask, mnCompleteShift, mcfFinalized)
-}
-func (n *merkleTreeNode) setWeight(weight nodeWeight) {
-	n.setField(mnWeightMask, mnWeightShift, uint32(weight))
-}
-
-var nullPtr = uint32(math.MaxUint32)
 
 type merkleTree struct {
-	params            *Params
-	nodes             []merkleTreeNode
-	firstFree         uint32
-	emptyValues       map[merkle.Value]struct{ left, right merkle.Value } //TODO
-	finalizedBlock    uint64
-	completedSubtrees map[uint64]storedSubtrees
+	params      *Params
+	nodes       []merkleTreeNode
+	firstFree   uint32
+	emptyValues map[merkle.Value]struct{ left, right merkle.Value } //TODO
+	subtrees    storedSubtrees
 }
 
 func (params *Params) newMerkleTree() *merkleTree {
 	return &merkleTree{
 		params: params,
 		nodes: []merkleTreeNode{merkleTreeNode{
-			//TODO meta fields?
-			parent: nullPtr,
-			left:   nullPtr,
-			right:  nullPtr,
+			parentAndEmptySubtree: nullPtr,
+			leftAndIsValueKnown:   nullPtr,
+			rightAndIsComplete:    nullPtr,
 		}},
-		firstFree:         nullPtr,
-		completedSubtrees: make(map[uint64]storedSubtrees),
+		firstFree: nullPtr,
 	}
 }
 
@@ -133,13 +94,13 @@ func (mt *merkleTree) deleteNode(node uint32) {
 
 func (mt *merkleTree) newNode(parent uint32) uint32 {
 	n := merkleTreeNode{
-		parent: parent,
-		left:   nullPtr,
-		right:  nullPtr,
+		parentAndEmptySubtree: parent,
+		leftAndIsValueKnown:   nullPtr,
+		rightAndIsComplete:    nullPtr,
 	}
 	if mt.firstFree != nullPtr {
 		node := mt.firstFree
-		mt.firstFree = mt.nodes[node].right
+		mt.firstFree = mt.nodes[node].right()
 		mt.nodes[node] = n
 		return node
 	}
@@ -151,7 +112,7 @@ func (mt *merkleTree) newNode(parent uint32) uint32 {
 func (mt *merkleTree) getDescendant(node uint32, subIndex treeIndex) uint32 {
 	for subIndex != rootIndex {
 		n := &mt.nodes[node]
-		if n.left == nullPtr {
+		if n.left() == nullPtr {
 			if !n.isEmptySubtree() {
 				panic("cannot expand non-empty subtree")
 			}
@@ -161,18 +122,18 @@ func (mt *merkleTree) getDescendant(node uint32, subIndex treeIndex) uint32 {
 			}
 			n.left = mt.newNode(node)
 			mt.nodes[n.left].value = children.left
+			mt.nodes[n.left].setValueKnown(true)
 			mt.nodes[n.left].setEmptySubtree(true)
-			mt.nodes[n.left].setIncomplete()
 			n.right = mt.newNode(node)
 			mt.nodes[n.right].value = children.right
+			mt.nodes[n.right].setValueKnown(true)
 			mt.nodes[n.right].setEmptySubtree(true)
-			mt.nodes[n.right].setIncomplete()
 		}
 		switch {
 		case subIndex.matchRoot(2):
-			node = n.left
+			node = n.left()
 		case subIndex.matchRoot(3):
-			node = n.right
+			node = n.right()
 		default:
 			panic("invalid descendant subIndex")
 		}
@@ -180,31 +141,42 @@ func (mt *merkleTree) getDescendant(node uint32, subIndex treeIndex) uint32 {
 	return node
 }
 
-func (mt *merkleTree) propagateCompletedState(node uint32, subtrees storedSubtrees) storedSubtrees {
+func (mt *merkleTree) setComplete(node uint32) {
 	n := &mt.nodes[node]
-	for n.parent != nullPtr {
-		parent := n.parent
+	if n.isComplete() {
+		return
+	}
+	if n.left != nullPtr {
+		mt.setComplete(n.left)
+		mt.setComplete(n.right)
+		return
+	}
+	if !n.isValueKnown() {
+		panic("finalized node with unknown value")
+	}
+	n.setCompleted(true)
+	// propagate completed state to ancestors and collapse completed subtrees if possible
+	for n.parent() != nullPtr {
+		parent := n.parent()
 		p := &mt.nodes[parent]
-		sibling := p.left + p.right - node
+		sibling := p.left() + p.right() - node
 		s := &mt.nodes[sibling]
-		completeField := n.getField(mnCompleteMask, mnCompleteShift)
-		if s.getField(mnCompleteMask, mnCompleteShift) != completeField {
+		if !s.isComplete() {
 			break
 		}
-		p.setField(mnCompleteMask, mnCompleteShift, completeField)
+		p.setComplete(true)
 		p.setWeight(n.weight().add(s.weight()))
-		if p.needsRehash() {
-			mt.getValue(parent) //TODO ??
+		if !p.isValueKnown() {
+			mt.getValue(parent)
 		}
-		pl := p.weight().storageLevel(mt.params)
-		if pl == 0 {
+		if pl := mt.params.storageLevel(p.weight); pl == 0 {
 			mt.collapseSubtree(parent)
 		} else {
-			if nl := n.weight().storageLevel(mt.params); nl < pl {
-				subtrees = append(subtrees, mt.collapseAndStoreSubtree(node))
+			if mt.params.storageLevel(n.weight) < pl {
+				mt.subtrees = append(mt.subtrees, mt.collapseAndStoreSubtree(node))
 			}
-			if sl := s.weight().storageLevel(mt.params); sl < pl {
-				subtrees = append(subtrees, mt.collapseAndStoreSubtree(sibling))
+			if mt.params.storageLevel(s.weight) < pl {
+				mt.subtrees = append(mt.subtrees, mt.collapseAndStoreSubtree(sibling))
 			}
 		}
 		n, node = p, parent
@@ -212,89 +184,35 @@ func (mt *merkleTree) propagateCompletedState(node uint32, subtrees storedSubtre
 	return subtrees
 }
 
-func (mt *merkleTree) setFinalizedSubtree(node uint32, newFinalizedBlock uint64, subtrees storedSubtrees) storedSubtrees {
-	n := &mt.nodes[node]
-	if n.left != nullPtr {
-		subtrees = mt.setFinalizedSubtree(n.left, newFinalizedBlock, subtrees)
-		subtrees = mt.setFinalizedSubtree(n.right, newFinalizedBlock, subtrees)
-		return subtrees
-	}
-	if n.isFinalized() || !n.isComplete() || n.completedByBlock(mt.finalizedBlock) > newFinalizedBlock {
-		return subtrees
-	}
-	if n.needsRehash() {
-		panic("finalized node with unknown value")
-	}
-	n.setFinalized()
-	return mt.propagateCompletedState(node, subtrees)
-}
-
-func (mt *merkleTree) setFinalizedBlock(newFinalizedBlock uint64) storedSubtrees {
-	subtrees := mt.setFinalizedSubtree(0, newFinalizedBlock, nil)
-	mt.finalizedBlock = newFinalizedBlock
-	for block, st := range mt.completedSubtrees {
-		if block > newFinalizedBlock {
-			continue
-		}
-		delete(mt.completedSubtrees, block)
-		subtrees = append(subtrees, st...)
-	}
-	return subtrees
-}
-
-func (mt *merkleTree) setCompletedSubtree(node uint32, completedBy uint64, subtrees storedSubtrees) storedSubtrees {
-	n := &mt.nodes[node]
-	if n.left != nullPtr {
-		subtrees = mt.setCompleted(n.left, completedBy, subtrees)
-		subtrees = mt.setCompleted(n.right, completedBy, subtrees)
-		return subtrees
-	}
-	if n.isComplete() {
-		return subtrees
-	}
-	if n.needsRehash() {
-		panic("completed node with unknown value")
-	}
-	n.setCompleted(mt.finalizedBlock, completedBy)
-	return mt.propagateCompletedState(node, subtrees)
-}
-
-func (mt *merkleTree) setCompleted(node uint32, completedBy uint64) {
-	mt.completedSubtrees[completedBy] = mt.setCompletedSubtree(node, completedBy, mt.completedSubtrees[completedBy])
-}
-
-func (mt *merkleTree) setValue(node uint32, value merkle.Value, weight nodeWeight) {
+func (mt *merkleTree) setValue(node uint32, value merkle.Value, weight float32) {
 	n := &mt.nodes[node]
 	n.value = value
+	n.weight = weight
 	n.setEmptySubtree(false)
-	n.setWeight(weight)
-	n.setRehash(false)
-	n.setIncomplete()
-	for n.parent != nullPtr {
-		n = &mt.nodes[n.parent]
-		if n.needsRehash() {
+	n.setValueKnown(true)
+	// mark ancestors as value unknown (needs re-hashing)
+	for n.parent() != nullPtr {
+		n = &mt.nodes[n.parent()]
+		if !n.isValueKnown() {
 			break
 		}
-		n.setRehash(true)
+		n.setValueKnown(false)
 	}
 }
 
-func (mt *merkleTree) getValue(node uint32) (merkle.Value, nodeWweight) {
+func (mt *merkleTree) getValue(node uint32) (merkle.Value, float32) {
 	n := &mt.nodes[node]
-	if n.needsRehash() {
-		lv, _ := mt.getValue(n.left)
-		rv, _ := mt.getValue(n.right)
+	if !n.isValueKnown() {
+		lv, _ := mt.getValue(n.left())
+		rv, _ := mt.getValue(n.right())
 		hasher := sha256.New()
 		hasher.Write(lv[:])
 		hasher.Write(rv[:])
 		hasher.Sum(n.value[:0])
 		n.setEmptySubtree(a.isEmptySubtree() && b.isEmptySubtree())
-		n.setRehash(false)
-		// a node re-hashed on demand is always incomplete; completed subtrees are hashed immediately
-		n.setWeight(0)
-		n.setIncomplete()
+		n.setValueKnown(true)
 	}
-	return n.value, n.weight()
+	return n.value, n.weight
 }
 
 const (
@@ -317,18 +235,19 @@ func (mt *merkleTree) traverseSubtree(node uint32, action int, encBytes *seriali
 			*encBitPtr = 0
 		}
 	}
-	if n.left == nullPtr {
+	if n.left() == nullPtr {
 		if action == tsCollectLeavesAndDelete {
 			*encBytes = append(*encBytes, n.value[:]...)
 		}
 		return
 	}
-	mt.traverseSubtree(n.left, action, encBytes, encBitPtr)
-	mt.traverseSubtree(n.right, action, encBytes, encBitPtr)
+	mt.traverseSubtree(n.left(), action, encBytes, encBitPtr)
+	mt.traverseSubtree(n.right(), action, encBytes, encBitPtr)
 	if action == tsCollectLeavesAndDelete || action == tsDelete {
-		mt.deleteNode(n.left)
-		mt.deleteNode(n.right)
-		n.left, n.right = nullPtr, nullPtr
+		mt.deleteNode(n.left())
+		n.setLeft(nullPtr)
+		mt.deleteNode(n.right())
+		n.setRight(nullPtr)
 	}
 }
 
@@ -344,10 +263,12 @@ func (mt *merkleTree) collapseAndStoreSubtree(node uint32) (res storedSubtree) {
 }
 
 func (mt *merkleTree) getStoredSubtrees() storedSubtrees {
-	st := mt.storedSubtrees
-	mt.storedSubtrees = nil
-	sort.Sort(st)
-	return st
+	sort.Sort(mt.subtrees)
+	return mt.subtrees
+}
+
+func (mt *merkleTree) clearStoredSubtrees() {
+	mt.subtrees = nil
 }
 
 type serializedSubtree []byte
@@ -394,6 +315,7 @@ func (s serializedSubtree) node(index treeIndex) (value merkle.Value, leaf, inte
 
 type storedSubtree struct {
 	index   treeIndex
+	weight  float32
 	nodeEnc serializedSubtree
 }
 
@@ -498,73 +420,4 @@ loop:
 		return n.fallback.node(index)
 	}
 	return merkle.Value{}, 0
-}
-
-type nodeWeight uint16
-
-func (a nodeWeight) baseExp() (base, exp uint16) {
-	base, exp = a&0x1ff, a>>9
-	if exp > 0 {
-		base += 0x200
-		exp--
-	}
-	return
-}
-
-func (a nodeWeight) add(b nodeWeight) nodeWeight {
-	ab, ae := a.baseExp()
-	bb, be := b.baseExp()
-	var base, exp uint16
-	if ae > be {
-		bb >>= ae - be
-		exp = ae
-	}
-	if be > ae {
-		ab >>= be - ae
-		exp = be
-	}
-	base = ab + bb
-	if base >= 0x400 {
-		base >>= 1
-		exp++
-	}
-	if base >= 0x200 {
-		base -= 0x200
-		exp++
-	} else if exp != 0 {
-		panic("invalid node weight")
-	}
-	return base + (exp << 9)
-}
-
-func (a nodeWeight) log2() uint16 {
-	base, exp := a.baseExp()
-	if base == 0 {
-		panic("log2 of zero node weight")
-	}
-	return 15 - bits.LeadingZeros16(base) + exp
-}
-
-func (a nodeWeight) storageLevel(p *Params) uint16 {
-	if logWeight := a.log2(); logWeight >= p.logWeightFirstLevel {
-		return (logWeight-p.logWeightFirstLevel)/p.logWeightPerLevel + 1
-	}
-	return 0
-}
-
-func uint32toNodeWeight(v uint32) nodeWeight {
-	lz := bits.LeadingZeros32(v)
-	var exp uint16
-	if lz < 14 {
-		exp = 14 - lz
-		v >>= 14 - lz
-	}
-	base := uint16(v)
-	if base >= 0x200 {
-		base -= 0x200
-		exp++
-	} else if exp != 0 {
-		panic("invalid node weight")
-	}
-	return base + (exp << 9)
 }
