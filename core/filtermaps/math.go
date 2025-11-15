@@ -146,11 +146,11 @@ func (p *Params) sanitize() error {
 	if p.logMapWidth > 32 { // column index stored as uint32
 		return fmt.Errorf("invalid configuration: logMapWidth (%d) should not exceed 32", p.logMapWidth)
 	}
-	if p.logMapHeight > 16 { // row index stored as uint16 in finishedMap
+	if p.logMapHeight > 16 { // row index stored as uint16 in completedMap
 		return fmt.Errorf("invalid configuration: logMapHeight (%d) should not exceed 32", p.logMapHeight)
 	}
 	for _, maxRowLength := range p.maxRowLength {
-		if maxRowLength >= 0x10000 { // index wrap-around issue in finishedMap
+		if maxRowLength >= 0x10000 { // index wrap-around issue in completedMap
 			return fmt.Errorf("invalid configuration: maxRowLength entry (%d) should not exceed 2**16", maxRowLength)
 		}
 	}

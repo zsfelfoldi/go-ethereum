@@ -42,7 +42,7 @@ type IndexView struct {
 
 	firstMemoryMap   uint32
 	firstMemoryBlock uint64
-	finishedMaps     []*finishedMap
+	finishedMaps     []*completedMap
 	headMapIndex     uint32
 	headMap          *memoryMap
 }
@@ -177,7 +177,7 @@ type renderState struct {
 	lvPointer        uint64
 	mapIndex         uint32
 	currentMap       *memoryMap
-	finishedMaps     []*finishedMap
+	finishedMaps     []*completedMap
 	nextBlock        uint64
 	partialBlock     bool
 	partialBlockHash common.Hash
@@ -225,7 +225,7 @@ func (rs *renderState) addReceipts(receipts types.Receipts) {
 	}
 }
 
-func (rs *renderState) addHeader(header *types.Header) (uint32, []*finishedMap) {
+func (rs *renderState) addHeader(header *types.Header) (uint32, []*completedMap) {
 	if rs.partialBlock {
 		panic("checkNextHash has to be called before adding partially rendered block")
 	}
@@ -282,7 +282,11 @@ func (rs *renderState) advance(count uint64) {
 	rs.lvPointer += count
 	if uint32(rs.lvPointer>>rs.params.logValuesPerMap) > rs.mapIndex {
 		if rs.currentMap != nil {
-			fm := rs.currentMap.finished()
+			fm := rs.currentMap.completed()
+			for rowIndex := range rs.params.mapHeight {
+				rs.tree.setCompleted(rs.mapRowRoots[rowIndex], rs.nextBlock)
+			}
+
 			fm.subtrees = rs.tree.getStoredSubtrees()
 			rs.tree.storedSubtrees = nil
 			rs.finishedMaps = append(rs.finishedMaps, fm)

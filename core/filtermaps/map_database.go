@@ -248,7 +248,7 @@ func (m *mapDatabase) deletePointers(deleteMaps common.Range[uint32], stopCallba
 }
 
 // writePointers writes the pointers belonging to the give maps to the database.
-func (m *mapDatabase) writePointers(writeRange common.Range[uint32], maps []*finishedMap, stopCallback func() bool) (bool, error) {
+func (m *mapDatabase) writePointers(writeRange common.Range[uint32], maps []*completedMap, stopCallback func() bool) (bool, error) {
 	batch := m.db.NewBatch()
 	var (
 		batchCnt uint32
@@ -375,8 +375,8 @@ func (m *mapDatabase) getFilterMapRowsOfDbLayerGroup(mapIndices []uint32, rowInd
 }
 
 // getFilterMap returns the filter map at the specified index.
-func (m *mapDatabase) getFilterMap(mapIndex uint32) (*finishedMap, error) {
-	fm := new(finishedMap)
+func (m *mapDatabase) getFilterMap(mapIndex uint32) (*completedMap, error) {
+	fm := new(completedMap)
 	lastBlock, lbHash, err := m.getLastBlockOfMap(mapIndex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve last block of map %d: %v", mapIndex, err)
@@ -423,7 +423,7 @@ func (m *mapDatabase) getFilterMap(mapIndex uint32) (*finishedMap, error) {
 // thereby speeding up the write process significantly.
 // Note that writeMapRows only updates the filter map rows and does not touch
 // the belonging pointers.
-func (m *mapDatabase) writeMapRows(writeRange, deleteRange, keepEmptyRange common.Range[uint32], maps []*finishedMap, stopCallback func() bool) (bool, error) {
+func (m *mapDatabase) writeMapRows(writeRange, deleteRange, keepEmptyRange common.Range[uint32], maps []*completedMap, stopCallback func() bool) (bool, error) {
 	if !writeRange.Intersection(keepEmptyRange).IsEmpty() || !deleteRange.Intersection(keepEmptyRange).IsEmpty() {
 		panic("invalid writeMapRows map ranges")
 	}
@@ -493,7 +493,7 @@ func (m *mapDatabase) makeWritePattern(writeRange, deleteRange, keepEmptyRange c
 }
 
 // writeRowUpdates performs the filter row update operation on a single row.
-func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePatterItem, writeRange common.Range[uint32], maps []*finishedMap, rowIndex uint32) error {
+func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePatterItem, writeRange common.Range[uint32], maps []*completedMap, rowIndex uint32) error {
 	for _, w := range writePattern {
 		if groupSize := m.params.rowGroupSize[w.dbLayer]; groupSize == 1 {
 			var row FilterRow
@@ -581,7 +581,7 @@ func (m *mapDatabase) deleteSubtrees(deleteRange common.Range[uint32], stopCallb
 	}
 }
 
-func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*finishedMap, stopCallback func() bool) (bool, error) {
+func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*completedMap, stopCallback func() bool) (bool, error) {
 	var stCount int
 	for _, m := range maps {
 		stCount += len(m.subtrees)

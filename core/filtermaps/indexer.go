@@ -61,7 +61,7 @@ type Indexer struct {
 	recentHashes                                    []common.Hash // last one is the most recently saved
 	snapshotsLock                                   sync.RWMutex
 	snapshots                                       map[common.Hash]*IndexView
-	headMapsCache                                   *lru.Cache[uint32, *finishedMap]
+	headMapsCache                                   *lru.Cache[uint32, *completedMap]
 	lastFinalEpoch                                  uint32
 }
 
@@ -88,7 +88,7 @@ func NewIndexer(db ethdb.KeyValueStore, params Params, config Config) *Indexer {
 		storage:        newMapStorage(&params, mapDb, nil),
 		checkpoints:    checkpoints,
 		snapshots:      make(map[common.Hash]*IndexView),
-		headMapsCache:  lru.NewCache[uint32, *finishedMap](maxIndexViewMaps),
+		headMapsCache:  lru.NewCache[uint32, *completedMap](maxIndexViewMaps),
 		lastFinalEpoch: math.MaxUint32,
 	}
 	if config.Disabled {
@@ -504,7 +504,7 @@ func (ix *Indexer) releaseView(hash common.Hash) {
 	}
 }
 
-func (ix *Indexer) storeFinishedMaps(firstMapIndex uint32, maps []*finishedMap, forceCommit, cacheHeadMaps bool) {
+func (ix *Indexer) storeFinishedMaps(firstMapIndex uint32, maps []*completedMap, forceCommit, cacheHeadMaps bool) {
 	if len(maps) == 0 {
 		return
 	}
@@ -516,7 +516,7 @@ func (ix *Indexer) storeFinishedMaps(firstMapIndex uint32, maps []*finishedMap, 
 	}
 }
 
-func (ix *Indexer) getFilterMap(mapIndex uint32) (*finishedMap, error) {
+func (ix *Indexer) getFilterMap(mapIndex uint32) (*completedMap, error) {
 	if fm, ok := ix.headMapsCache.Get(mapIndex); ok {
 		return fm, nil
 	}
@@ -551,7 +551,7 @@ func (ix *Indexer) storeHeadIndexView(number uint64, hash common.Hash) {
 	}
 	ix.checkReleasedViews()
 	firstMemoryMap := max(ix.headRenderer.mapIndex, maxIndexViewMaps) - maxIndexViewMaps
-	finishedMaps := make([]*finishedMap, 0, ix.headRenderer.mapIndex-firstMemoryMap)
+	finishedMaps := make([]*completedMap, 0, ix.headRenderer.mapIndex-firstMemoryMap)
 	for mapIndex := firstMemoryMap; mapIndex < ix.headRenderer.mapIndex; mapIndex++ {
 		fm, err := ix.getFilterMap(mapIndex)
 		if err != nil {

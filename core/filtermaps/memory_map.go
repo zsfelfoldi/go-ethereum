@@ -25,7 +25,7 @@ import (
 // memoryMap is an in-memory representation of a filter map that represents rows
 // as linked lists and stores entries in a single slice.
 // memoryMap allows adding new elements and is used for rendering maps. Completed
-// maps can be transformed to an immutable finishedMap.
+// maps can be transformed to an immutable completedMap.
 type memoryMap struct {
 	entries   []mmEntry // size = valuesPerMap
 	rows      []mmRow   // size = mapHeight
@@ -111,10 +111,10 @@ func (m *memoryMap) getRow(rowIndex, maxLen uint32) FilterRow {
 	return res
 }
 
-// finishedMap is an immutable memory representation of a single filter map.
+// completedMap is an immutable memory representation of a single filter map.
 // It is more compact and allows more efficient row lookup than memoryMap.
 // Note that it assumes params.mapHeight <= 2**16 which is checked in deriveFields.
-type finishedMap struct {
+type completedMap struct {
 	rowPtrs   []uint16 // points to rowData index after end of row; 2**16 can wrap around to 0
 	rowData   []uint32
 	blockPtrs []uint64
@@ -122,9 +122,10 @@ type finishedMap struct {
 	subtrees  storedSubtrees
 }
 
-// finished creates a new finishedMap from a memoryMap.
-func (m *memoryMap) finished() *finishedMap {
-	fm := &finishedMap{
+// completed creates a new completedMap from a memoryMap. Note that Merkle
+// subtrees are only added later when the map is marked as stabilized.
+func (m *memoryMap) completed() *completedMap {
+	fm := &completedMap{
 		rowPtrs:   make([]uint16, len(m.rows)),
 		rowData:   make([]uint32, m.nextEntry),
 		blockPtrs: slices.Clone(m.blockPtrs),
@@ -144,18 +145,18 @@ func (m *memoryMap) finished() *finishedMap {
 	return fm
 }
 
-func (fm *finishedMap) firstBlock() uint64 {
+func (fm *completedMap) firstBlock() uint64 {
 	return fm.lastBlock.number + 1 - uint64(len(fm.blockPtrs))
 }
 
-func (fm *finishedMap) blocks() common.Range[uint64] {
+func (fm *completedMap) blocks() common.Range[uint64] {
 	l := uint64(len(fm.blockPtrs))
 	return common.NewRange[uint64](fm.lastBlock.number+1-l, l)
 }
 
 // getRow returns a row of the map, truncated if maxLen is smaller than the actual
 // row length. If the row has zero length then it returns a zero length slice.
-func (fm *finishedMap) getRow(rowIndex, maxLen uint32) FilterRow {
+func (fm *completedMap) getRow(rowIndex, maxLen uint32) FilterRow {
 	var start uint16
 	if rowIndex > 0 {
 		start = fm.rowPtrs[rowIndex-1]

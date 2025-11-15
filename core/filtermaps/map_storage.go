@@ -49,7 +49,7 @@ type mapStorage struct {
 	writeInProgress, deleteInProgress rangeSet[uint32] // write cycle in progress
 	overlay                           rangeSet[uint32] // memory maps
 	overlayCount                      uint32
-	overlayMaps                       map[uint32]*finishedMap
+	overlayMaps                       map[uint32]*completedMap
 	validBlocks, overlayBlocks        rangeSet[uint64]
 	epochTrigger                      rangeSet[uint32]
 	suspended                         uint32
@@ -64,7 +64,7 @@ func newMapStorage(params *Params, mapDb *mapDatabase, testHookCh chan bool) *ma
 		mapDb:       mapDb,
 		triggerCh:   make(chan struct{}, 1),
 		closeCh:     make(chan struct{}),
-		overlayMaps: make(map[uint32]*finishedMap),
+		overlayMaps: make(map[uint32]*completedMap),
 		testHookCh:  testHookCh,
 
 		mtForceWrite: params.rowGroupSize[0] * 9 / 8,
@@ -209,7 +209,7 @@ func (m *mapStorage) addKnownEpochs(cpList checkpointList) error {
 // always triggered. If it is false then a write is only triggered when a row
 // group boundary is reached or if the total number of memory maps reaches a limit.
 // addMap always returns right after adding the new map to the memory layer.
-func (m *mapStorage) addMap(mapIndex uint32, fm *finishedMap, forceCommit bool) {
+func (m *mapStorage) addMap(mapIndex uint32, fm *completedMap, forceCommit bool) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
@@ -420,7 +420,7 @@ func (m *mapStorage) getFilterMapRows(mapIndices []uint32, rowIndex, layerIndex 
 }
 
 // getFilterMap returns the filter map at the specified index.
-func (m *mapStorage) getFilterMap(mapIndex uint32) (*finishedMap, error) {
+func (m *mapStorage) getFilterMap(mapIndex uint32) (*completedMap, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 
@@ -583,7 +583,7 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 		}
 		return done, err
 	}
-	maps := make([]*finishedMap, writeMaps.Count())
+	maps := make([]*completedMap, writeMaps.Count())
 	for i := range writeMaps.Iter() {
 		maps[i-writeMaps.First()] = m.overlayMaps[i]
 	}

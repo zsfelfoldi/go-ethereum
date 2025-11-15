@@ -35,7 +35,7 @@ const (
 
 type mapReader struct {
 	getFilterMapRows  func(mapIndices []uint32, rowIndex, layerIndex uint32) ([]FilterRow, error)
-	getFilterMap      func(mapIndex uint32) (*finishedMap, error)
+	getFilterMap      func(mapIndex uint32) (*completedMap, error)
 	getBlockLvPointer func(blockNumber uint64) (uint64, error)
 	getLastBlockOfMap func(mapIndex uint32) (uint64, common.Hash, error)
 }
@@ -52,7 +52,7 @@ func equalRows(a, b []FilterRow) bool {
 	return true
 }
 
-func testMapReader(t *testing.T, testCase string, params *Params, reader mapReader, knownEpochs checkpointList, maps []*finishedMap) {
+func testMapReader(t *testing.T, testCase string, params *Params, reader mapReader, knownEpochs checkpointList, maps []*completedMap) {
 	mapRange := common.NewRange[uint32](uint32(len(knownEpochs))*params.mapsPerEpoch, uint32(len(maps)))
 	for range testFilterMapRowsCount {
 		rowIndex := uint32(rand.Intn(int(params.mapHeight)))
@@ -151,7 +151,7 @@ func testMapReader(t *testing.T, testCase string, params *Params, reader mapRead
 	testNoPointer(params.firstEpochMap(params.mapEpoch(mapRange.AfterLast()) + 1))
 }
 
-func generateTestMaps(params *Params, maps []*finishedMap, amount uint32) []*finishedMap {
+func generateTestMaps(params *Params, maps []*completedMap, amount uint32) []*completedMap {
 	var lastBlock lastBlockOfMap
 	genesis := len(maps) == 0
 	if !genesis {
@@ -162,7 +162,7 @@ func generateTestMaps(params *Params, maps []*finishedMap, amount uint32) []*fin
 		if genesis && blockCount == 0 {
 			blockCount = 1
 		}
-		fm := &finishedMap{
+		fm := &completedMap{
 			rowPtrs:   make([]uint16, params.mapHeight),
 			rowData:   make([]uint32, params.valuesPerMap),
 			blockPtrs: make([]uint64, blockCount),
@@ -206,7 +206,7 @@ func generateTestMaps(params *Params, maps []*finishedMap, amount uint32) []*fin
 	return maps
 }
 
-func generateEpochCheckpoint(mapIndex uint32, maps []*finishedMap) epochCheckpoint {
+func generateEpochCheckpoint(mapIndex uint32, maps []*completedMap) epochCheckpoint {
 	for len(maps[mapIndex].blockPtrs) == 0 {
 		mapIndex--
 	}
@@ -217,7 +217,7 @@ func generateEpochCheckpoint(mapIndex uint32, maps []*finishedMap) epochCheckpoi
 	}
 }
 
-func generateTestCheckpoints(params *Params, maps []*finishedMap) checkpointList {
+func generateTestCheckpoints(params *Params, maps []*completedMap) checkpointList {
 	cpList := make(checkpointList, uint32(len(maps))/params.mapsPerEpoch)
 	for i := range cpList {
 		cpList[i] = generateEpochCheckpoint(params.lastEpochMap(uint32(i)), maps)
