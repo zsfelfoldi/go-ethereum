@@ -18,11 +18,19 @@ package filtermaps
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"sort"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
-	"github.com/ethereum/go-ethereum/common/lru"
 )
+
+func treeHash(left, right merkle.Value) (result merkle.Value) {
+	hasher := sha256.New()
+	hasher.Write(left[:])
+	hasher.Write(right[:])
+	hasher.Sum(result[:0])
+	return
+}
 
 // Note: since merkleTreeNodes account for a big part of the log indexer memory
 // usage, the three node pointers and three boolean flags have been merged into
@@ -67,15 +75,15 @@ func (n *merkleTreeNode) setValue(u *uint32, v uint32) {
 }
 
 type merkleTree struct {
-	params      *Params
-	nodes       []merkleTreeNode
-	firstFree   uint32
-	emptyValues map[merkle.Value]struct{ left, right merkle.Value } //TODO
-	subtrees    storedSubtrees
+	params    *Params
+	nodes     []merkleTreeNode
+	firstFree uint32
+	emptyTree *emptyTree
+	subtrees  storedSubtrees
 }
 
-func (params *Params) newMerkleTree() *merkleTree {
-	return &merkleTree{
+func (params *Params) newMerkleTree(reader merkleBoundaryReader) *merkleTree {
+	mt := &merkleTree{
 		params: params,
 		nodes: []merkleTreeNode{merkleTreeNode{
 			parentAndEmptySubtree: nullPtr,
@@ -83,6 +91,33 @@ func (params *Params) newMerkleTree() *merkleTree {
 			rightAndIsComplete:    nullPtr,
 		}},
 		firstFree: nullPtr,
+	}
+	mt.initTree(reader, rootIndex, rootPtr)
+	return mt
+}
+
+func (mt *merkleTree) initTree(reader merkleBoundaryReader, index treeIndex, node uint32) {
+	n := &mt.nodes[node]
+	value, weight, nodeType := reader.getBoundaryNode(index)
+	switch nodeType {
+	case mtrInternal:
+		n.setLeft(mt.newNode(node))
+		n.setRight(mt.newNode(node))
+		mt.initTree(reader, index.leftChild(), n.left())
+		mt.initTree(reader, index.rightChild(), n.right())
+	case mtrBoundary:
+		n.value, n.weight = value, weight
+		n.setValueKnown(true)
+	case mtrCompleteBoundary:
+		n.value, n.weight = value, weight
+		n.setValueKnown(true)
+		mt.setComplete(node)
+	case mtrEmptyBoundary:
+		n.value, n.weight = value, weight
+		n.setValueKnown(true)
+		n.setEmptySubtree(true)
+	default:
+		panic("invalid node type from boundary reader")
 	}
 }
 
@@ -115,7 +150,7 @@ func (mt *merkleTree) getDescendant(node uint32, subIndex treeIndex) uint32 {
 			if !n.isEmptySubtree() {
 				panic("cannot expand non-empty subtree")
 			}
-			children, ok := mt.emptyValues[n.value]
+			children, ok := mt.emptyTree.children[n.value]
 			if !ok {
 				panic("unknown empty subtree hash")
 			}
@@ -205,10 +240,7 @@ func (mt *merkleTree) getValue(node uint32) (merkle.Value, float32) {
 	if !n.isValueKnown() {
 		lv, _ := mt.getValue(n.left())
 		rv, _ := mt.getValue(n.right())
-		hasher := sha256.New()
-		hasher.Write(lv[:])
-		hasher.Write(rv[:])
-		hasher.Sum(n.value[:0])
+		n.value = treeHash(lv, rv)
 		n.setEmptySubtree(mt.nodes[n.left()].isEmptySubtree() && mt.nodes[n.right()].isEmptySubtree())
 		n.setValueKnown(true)
 	}
@@ -342,82 +374,54 @@ func (s storedSubtrees) subtree(index treeIndex) serializedSubtree {
 	return nil
 }
 
-type subtreeReader interface {
-	subtree(index treeIndex) serializedSubtree
+const (
+	mtrInternal = iota
+	mtrBoundary
+	mtrCompleteBoundary
+	mtrEmptyBoundary
+)
+
+type (
+	merkleNodeReader interface {
+		getNode(index treeIndex) merkle.Value
+	}
+	merkleBoundaryReader interface {
+		getBoundaryNode(index treeIndex) (merkle.Value, float32, int)
+	}
+	merkleTreeReader interface {
+		merkleNodeReader
+		merkleBoundaryReader
+	}
+)
+
+type overlayReader struct {
+	params    *Params
+	mapReader func(mapIndex uint32) merkleTreeReader
+	headLvPtr uint64
 }
 
-type treeNodeReader interface {
-	node(index treeIndex) (merkle.Value, uint32)
+func (p *Params) overlayReader(mapReader func(mapIndex uint32) merkleTreeReader, headLvPtr uint64) merkleTreeReader {
+	return overlayReader{
+		params:    p,
+		mapReader: mapReader,
+		headLvPtr: headLvPtr,
+	}
 }
 
-// implements treeNodeReader
-type subtreeNodeReader struct {
-	params   *Params
-	reader   subtreeReader
-	cache    *lru.Cache[treeIndex, cachedNode]
-	fallback treeNodeReader
+func (r overlayReader) getNode(index treeIndex) merkle.Value {
+	if index == ti64(rtiNextIndex) {
+		var value merkle.Value
+		binary.LittleEndian.PutUint64(value[:8], r.headLvPtr)
+		return value
+	}
+	return r.mapReader(r.params.completedByMap(index)).getNode(index)
 }
 
-type cachedNode struct {
-	value  merkle.Value
-	weight uint32
-}
-
-// Note that the non-existence of nodes is also cached, associated with the
-// specified global tree index. This assumes that every index is looked up from
-// the closest ancestor subtree and it is indeed globally not present in the
-// subtree set when not found in the given subtree.
-func (n *subtreeNodeReader) nodeFromSubtree(subtree serializedSubtree, subtreeLevel uint, index treeIndex) (merkle.Value, uint32) {
-	if node, ok := n.cache.Get(index); ok {
-		return node.value, node.weight
+func (r overlayReader) getBoundaryNode(index treeIndex) (merkle.Value, float32, int) {
+	if index == ti64(rtiNextIndex) {
+		var value merkle.Value
+		binary.LittleEndian.PutUint64(value[:8], r.headLvPtr)
+		return value, 1, mtrBoundary
 	}
-	value, leaf, internal := subtree.node(index.subIndex(subtreeLevel))
-	var weight uint32
-	if leaf {
-		weight = uint32(n.params.singleHashWeight)
-	}
-	if internal {
-		left, lw := n.nodeFromSubtree(subtree, subtreeLevel, index.leftChild())
-		if lw == 0 {
-			panic("child of internal subtree node not found")
-		}
-		right, rw := n.nodeFromSubtree(subtree, subtreeLevel, index.rightChild())
-		if rw == 0 {
-			panic("child of internal subtree node not found")
-		}
-		hasher := sha256.New()
-		hasher.Write(left[:])
-		hasher.Write(right[:])
-		hasher.Sum(value[:0])
-		weight = lw + rw
-	}
-	n.cache.Add(index, cachedNode{value: value, weight: weight})
-	return value, uint32(n.params.singleHashWeight)
-}
-
-func (n *subtreeNodeReader) node(index treeIndex) (merkle.Value, uint32) {
-	if node, ok := n.cache.Get(index); ok {
-		return node.value, node.weight
-	}
-	si := index
-	subtreeLevel := index.level()
-loop:
-	for {
-		if subtree := n.reader.subtree(si); subtree != nil {
-			if node, weight := n.nodeFromSubtree(subtree, subtreeLevel, index); weight != 0 {
-				return node, weight
-			} else {
-				break loop
-			}
-		}
-		if subtreeLevel == 0 {
-			break loop
-		}
-		si = si.parent()
-		subtreeLevel--
-	}
-	if n.fallback != nil {
-		return n.fallback.node(index)
-	}
-	return merkle.Value{}, 0
+	return r.mapReader(r.params.completedByMap(index)).getBoundaryNode(index)
 }

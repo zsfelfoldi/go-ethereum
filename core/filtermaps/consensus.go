@@ -18,6 +18,8 @@ package filtermaps
 
 import (
 	"math"
+
+	"github.com/ethereum/go-ethereum/beacon/merkle"
 )
 
 const (
@@ -53,24 +55,6 @@ const (
 	rtiDelimiterMetaDummy       = 15
 )
 
-func (p *Params) finalizedInMap(index treeIndex) uint32 {
-	if !index.matchRoot(rtiEpochs) {
-		return math.MaxUint32
-	}
-	epoch := uint32(index.splitRoot(p.logEpochHistory).Last())
-	var mapSubIndex uint32
-	switch {
-	case index.matchRoot(rtiFilterMaps):
-		index.splitRoot(p.logMapHeight)
-		mapSubIndex = uint32(index.splitRoot(p.logMapsPerEpoch).Last())
-	case index.matchRoot(rtiLogEntries):
-		mapSubIndex = uint32(index.splitRoot(p.logMapsPerEpoch).Last())
-	default:
-		mapSubIndex = p.mapsPerEpoch - 1
-	}
-	return epoch*p.mapsPerEpoch + mapSubIndex
-}
-
 func (p *Params) mapRowRoot(mapIndex, rowIndex uint32) treeIndex {
 	epochRoot := ti64(rtiEpochs).arraySub(uint64(mapIndex/p.mapsPerEpoch), p.logEpochHistory)
 	rowRoot := epochRoot.gtSub(rtiFilterMaps).arraySub(uint64(rowIndex), p.logMapHeight)
@@ -95,4 +79,59 @@ func (p *Params) progListSubIndex(leafIndex uint32) treeIndex {
 		height += p.progListHeightStep
 		index = index.gtSub(rtiProgListNextTree)
 	}
+}
+
+type emptyTreeChildren struct {
+	left, right merkle.Value
+}
+
+type emptyTree struct {
+	root     merkle.Value
+	children map[merkle.Value]emptyTreeChildren
+}
+
+func (e *emptyTree) addMapping(left, right merkle.Value) merkle.Value {
+	parent := treeHash(left, right)
+	e.children[parent] = emptyTreeChildren{left, right}
+	return parent
+}
+
+func (p *Params) initEmptyTree() *emptyTree {
+	e := &emptyTree{
+		children: make(map[merkle.Value]emptyTreeChildren),
+	}
+	progListRoot := e.addMapping(merkle.Value{}, merkle.Value{})
+	filterMapsRoot := progListRoot
+	for range p.logMapHeight + p.logMapsPerEpoch {
+		filterMapsRoot = e.addMapping(filterMapsRoot, filterMapsRoot)
+	}
+	logEntriesRoot := merkle.Value{}
+	for range p.logValuesPerMap + p.logMapsPerEpoch {
+		logEntriesRoot = e.addMapping(logEntriesRoot, logEntriesRoot)
+	}
+	epochRoot := e.addMapping(filterMapsRoot, logEntriesRoot)
+	epochTreeRoot := epochRoot
+	for range p.logEpochHistory {
+		epochTreeRoot = e.addMapping(epochTreeRoot, epochTreeRoot)
+	}
+	e.root = e.addMapping(epochTreeRoot, merkle.Value{})
+	return e
+}
+
+func (p *Params) completedByMap(index treeIndex) uint32 {
+	if !index.matchRoot(rtiEpochs) {
+		return math.MaxUint32
+	}
+	epoch := uint32(index.splitRoot(p.logEpochHistory).Last())
+	var mapSubIndex uint32
+	switch {
+	case index.matchRoot(rtiFilterMaps):
+		index.splitRoot(p.logMapHeight)
+		mapSubIndex = uint32(index.splitRoot(p.logMapsPerEpoch).Last())
+	case index.matchRoot(rtiLogEntries):
+		mapSubIndex = uint32(index.splitRoot(p.logMapsPerEpoch).Last())
+	default:
+		mapSubIndex = p.mapsPerEpoch - 1
+	}
+	return epoch*p.mapsPerEpoch + mapSubIndex
 }

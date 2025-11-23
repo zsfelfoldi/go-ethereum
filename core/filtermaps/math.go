@@ -54,6 +54,7 @@ type Params struct {
 	mapHeight    uint32 // The number of rows in the filter map
 	mapsPerEpoch uint32 // The number of maps in an epoch
 	valuesPerMap uint64 // The number of log values marked on each filter map
+	emptyTree    *emptyTree
 
 	// These fields only affect database storage
 	rowGroupSize          []uint32
@@ -101,6 +102,7 @@ func (p *Params) deriveFields() {
 	p.mapHeight = uint32(1) << p.logMapHeight
 	p.mapsPerEpoch = uint32(1) << p.logMapsPerEpoch
 	p.valuesPerMap = uint64(1) << p.logValuesPerMap
+	p.emptyTree = p.initEmptyTree()
 }
 
 // mapRowIndex calculates the unified storage index where the given row of the
