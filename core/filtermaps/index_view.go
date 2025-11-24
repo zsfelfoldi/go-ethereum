@@ -42,11 +42,9 @@ type IndexView struct {
 	headBlockHash common.Hash
 	headLvPointer uint64 // points after head block delimiter
 
-	firstMemoryMap   uint32
-	firstMemoryBlock uint64
-	finishedMaps     []*completedMap
-	headMapIndex     uint32
-	headMap          *memoryMap
+	firstOverlayMap   uint32
+	firstOverlayBlock uint64
+	overlayMaps       []*completedMap
 }
 
 func (iv *IndexView) Release() {
@@ -86,7 +84,7 @@ func (iv *IndexView) GetBlockLvPointer(blockNumber uint64) (uint64, error) {
 		return 0, ErrInvalidView
 	}
 
-	if blockNumber < iv.firstMemoryBlock {
+	if blockNumber < iv.firstOverlayBlock {
 		lvPtr, err := iv.storage.getBlockLvPointer(blockNumber)
 		if iv.checkInvalid() {
 			return 0, ErrInvalidView
@@ -99,13 +97,10 @@ func (iv *IndexView) GetBlockLvPointer(blockNumber uint64) (uint64, error) {
 	if blockNumber > iv.blockRange.AfterLast() {
 		return 0, ErrOutOfRange
 	}
-	for _, fm := range iv.finishedMaps {
+	for _, fm := range iv.overlayMaps {
 		if blockNumber >= fm.firstBlock() && blockNumber <= fm.lastBlock.number {
 			return fm.blockPtrs[blockNumber-fm.firstBlock()], nil
 		}
-	}
-	if blockNumber >= iv.headMap.firstBlock() && blockNumber <= iv.headMap.lastBlock.number {
-		return iv.headMap.blockPtrs[blockNumber-iv.headMap.firstBlock()], nil
 	}
 	panic("IndexView.GetBlockLvPointer: gap in blockLvPtrs")
 }
@@ -117,20 +112,18 @@ func (iv *IndexView) GetLastBlockOfMap(mapIndex uint32) (uint64, common.Hash, er
 		return 0, common.Hash{}, ErrInvalidView
 	}
 
-	if mapIndex < iv.firstMemoryMap {
+	if mapIndex < iv.firstOverlayMap {
 		lastNumber, lastHash, err := iv.storage.getLastBlockOfMap(mapIndex)
 		if iv.checkInvalid() {
 			return 0, common.Hash{}, ErrInvalidView
 		}
 		return lastNumber, lastHash, err
 	}
-	if mapIndex > iv.headMapIndex {
+	i := mapIndex - iv.firstOverlayMap
+	if i >= uint32(len(iv.overlayMaps)) {
 		return 0, common.Hash{}, ErrOutOfRange
 	}
-	if mapIndex == iv.headMapIndex {
-		return iv.headMap.lastBlock.number, iv.headMap.lastBlock.hash, nil
-	}
-	fm := iv.finishedMaps[mapIndex-iv.firstMemoryMap]
+	fm := iv.overlayMaps[i]
 	return fm.lastBlock.number, fm.lastBlock.hash, nil
 }
 
@@ -143,7 +136,7 @@ func (iv *IndexView) GetFilterMapRows(mapIndices []uint32, rowIndex, layerIndex 
 	}
 
 	dbIndices := len(mapIndices)
-	for dbIndices > 0 && mapIndices[dbIndices-1] >= iv.firstMemoryMap {
+	for dbIndices > 0 && mapIndices[dbIndices-1] >= iv.firstOverlayMap {
 		dbIndices--
 	}
 	if dbIndices > 0 {
@@ -158,11 +151,8 @@ func (iv *IndexView) GetFilterMapRows(mapIndices []uint32, rowIndex, layerIndex 
 	for i := dbIndices; i < len(mapIndices); i++ {
 		mapIndex := mapIndices[i]
 		var row FilterRow
-		if mapIndex == iv.headMapIndex {
-			row = iv.headMap.getRow(rowIndex, iv.storage.params.getMaxRowLength(layerIndex+1))
-		}
-		if mapIndex < iv.headMapIndex {
-			row = iv.finishedMaps[mapIndex-iv.firstMemoryMap].getRow(rowIndex, iv.storage.params.getMaxRowLength(layerIndex+1))
+		if i := mapIndex - iv.firstOverlayMap; i < uint32(len(iv.overlayMaps)) {
+			row = iv.overlayMaps[i].getRow(rowIndex, iv.storage.params.getMaxRowLength(layerIndex+1))
 		}
 		rows = append(rows, row)
 	}

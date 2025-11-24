@@ -33,7 +33,7 @@ import (
 const (
 	maxCanonicalSnapshots = 4
 	maxRecentSnapshots    = 4
-	maxIndexViewMaps      = 2
+	maxIndexViewMaps      = 3 // including current head map
 )
 
 var (
@@ -308,18 +308,20 @@ func (ix *Indexer) initMapBoundary(startMap, limitMap uint32) *renderState {
 // method is only used to initialize head renderers, a snapshot initialized
 // renderState always has an upper render limit of MaxUint32-1.
 func (ix *Indexer) initSnapshot(snapshot *IndexView) *renderState {
-	mapIndex := ix.storage.lastBoundaryBefore(snapshot.firstMemoryMap)
+	mapIndex := ix.storage.lastBoundaryBefore(snapshot.firstOverlayMap)
 	ix.revertMaps(mapIndex)
 	if snapshot.checkInvalid() {
 		log.Error("Failed to revert to invalidated snapshot", "blockNumber", snapshot.blockRange.Last())
 		return nil
 	}
-
+	headMapIndex := snapshot.firstOverlayMap + uint32(len(snapshot.overlayMaps)-1)
+	headMap := ix.storage.params.newMemoryMap()
+	headMap.initWithMap(snapshot.overlayMaps[len(snapshot.overlayMaps)-1])
 	return &renderState{
 		params:      ix.storage.params,
-		renderRange: common.NewRange[uint32](snapshot.headMapIndex, math.MaxUint32-snapshot.headMapIndex),
-		currentMap:  snapshot.headMap.clone(),
-		mapIndex:    snapshot.headMapIndex,
+		renderRange: common.NewRange[uint32](headMapIndex, math.MaxUint32-headMapIndex),
+		currentMap:  headMap,
+		mapIndex:    headMapIndex,
 		lvPointer:   snapshot.headLvPointer,
 	}
 }
@@ -332,7 +334,7 @@ func (ix *Indexer) initSnapshot(snapshot *IndexView) *renderState {
 func (ix *Indexer) revertMaps(mapIndex uint32) {
 	if mapIndex < ix.storage.lastBoundaryBefore(math.MaxUint32) {
 		for hash, iv := range ix.snapshots {
-			if iv.firstMemoryMap > mapIndex {
+			if iv.firstOverlayMap > mapIndex {
 				iv.invalidate()
 				ix.snapshotsLock.Lock()
 				delete(ix.snapshots, hash)
@@ -551,26 +553,22 @@ func (ix *Indexer) storeHeadIndexView(number uint64, hash common.Hash) {
 		return
 	}
 	ix.checkReleasedViews()
-	firstMemoryMap := max(ix.headRenderer.mapIndex, maxIndexViewMaps) - maxIndexViewMaps
-	finishedMaps := make([]*completedMap, 0, ix.headRenderer.mapIndex-firstMemoryMap)
-	for mapIndex := firstMemoryMap; mapIndex < ix.headRenderer.mapIndex; mapIndex++ {
+	firstOverlayMap := max(ix.headRenderer.mapIndex+1, maxIndexViewMaps) - maxIndexViewMaps
+	overlayMaps := make([]*completedMap, 0, ix.headRenderer.mapIndex+1-firstOverlayMap)
+	for mapIndex := firstOverlayMap; mapIndex < ix.headRenderer.mapIndex; mapIndex++ {
 		fm, err := ix.getFilterMap(mapIndex)
 		if err != nil {
 			log.Error("Error loading recent filter map", "mapIndex", mapIndex, "error", err)
 		}
 		if fm != nil && err == nil {
-			finishedMaps = append(finishedMaps, fm)
+			overlayMaps = append(overlayMaps, fm)
 		} else {
-			finishedMaps = finishedMaps[:0]
-			firstMemoryMap = mapIndex + 1
+			overlayMaps = overlayMaps[:0]
+			firstOverlayMap = mapIndex + 1
 		}
 	}
-	var firstMemoryBlock uint64
-	if len(finishedMaps) > 0 {
-		firstMemoryBlock = finishedMaps[0].firstBlock()
-	} else {
-		firstMemoryBlock = ix.headRenderer.currentMap.firstBlock()
-	}
+	overlayMaps = append(overlayMaps, ix.headRenderer.currentMap.completed())
+	firstOverlayBlock := overlayMaps[0].firstBlock()
 	tailEpoch := max(ix.tailEpoch, ix.targetTailEpoch)
 	tailNumber, err := ix.storage.tailNumberOfEpoch(tailEpoch)
 	if err != nil {
@@ -579,17 +577,15 @@ func (ix *Indexer) storeHeadIndexView(number uint64, hash common.Hash) {
 	}
 	ix.snapshotsLock.Lock()
 	ix.snapshots[hash] = &IndexView{
-		refCount:         2,
-		storage:          ix.storage,
-		tailEpoch:        tailEpoch,
-		blockRange:       common.NewRange(tailNumber, number+1-tailNumber),
-		headBlockHash:    hash,
-		headLvPointer:    ix.headRenderer.lvPointer,
-		headMap:          ix.headRenderer.currentMap.clone(),
-		headMapIndex:     ix.headRenderer.mapIndex,
-		firstMemoryMap:   firstMemoryMap,
-		firstMemoryBlock: firstMemoryBlock,
-		finishedMaps:     finishedMaps,
+		refCount:          2,
+		storage:           ix.storage,
+		tailEpoch:         tailEpoch,
+		blockRange:        common.NewRange(tailNumber, number+1-tailNumber),
+		headBlockHash:     hash,
+		headLvPointer:     ix.headRenderer.lvPointer,
+		firstOverlayMap:   firstOverlayMap,
+		firstOverlayBlock: firstOverlayBlock,
+		overlayMaps:       overlayMaps,
 	}
 	ix.snapshotsLock.Unlock()
 	if number == ix.lastCanonical+1 {

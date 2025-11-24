@@ -17,6 +17,7 @@
 package filtermaps
 
 import (
+	"math"
 	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -57,18 +58,6 @@ func (p *Params) newMemoryMap() *memoryMap {
 	}
 }
 
-// clone creates a copy of the map.
-func (m *memoryMap) clone() *memoryMap {
-	return &memoryMap{
-		//TODO no need to clone entries if one of the maps will never be changed further.
-		entries:   slices.Clone(m.entries),
-		rows:      slices.Clone(m.rows),
-		nextEntry: m.nextEntry,
-		blockPtrs: slices.Clone(m.blockPtrs),
-		lastBlock: m.lastBlock,
-	}
-}
-
 func (m *memoryMap) firstBlock() uint64 {
 	return m.lastBlock.number + 1 - uint64(len(m.blockPtrs))
 }
@@ -97,18 +86,13 @@ func (m *memoryMap) rowLength(rowIndex uint32) uint32 {
 	return m.rows[rowIndex].length
 }
 
-// getRow returns a row of the map, truncated if maxLen is smaller than the actual
-// row length.
-func (m *memoryMap) getRow(rowIndex, maxLen uint32) FilterRow {
-	row := m.rows[rowIndex]
-	length := min(row.length, maxLen)
-	res := make(FilterRow, length)
-	next := row.first
-	for i := range length {
-		entry := m.entries[next]
-		res[i], next = entry.value, entry.next
+func (m *memoryMap) initWithMap(fm *completedMap) {
+	for rowIndex := range fm.rowPtrs {
+		row := fm.getRow(uint32(rowIndex), math.MaxUint32)
+		for _, value := range row {
+			m.addToRow(uint32(rowIndex), value)
+		}
 	}
-	return res
 }
 
 // completedMap is an immutable memory representation of a single filter map.
