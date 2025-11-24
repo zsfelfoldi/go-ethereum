@@ -108,12 +108,13 @@ type completedMap struct {
 
 // completed creates a new completedMap from a memoryMap. Note that Merkle
 // subtrees are only added later when the map is marked as stabilized.
-func (m *memoryMap) completed() *completedMap {
+func (m *memoryMap) completed(subtrees storedSubtrees) *completedMap {
 	fm := &completedMap{
 		rowPtrs:   make([]uint16, len(m.rows)),
 		rowData:   make([]uint32, m.nextEntry),
 		blockPtrs: slices.Clone(m.blockPtrs),
 		lastBlock: m.lastBlock,
+		subtrees:  subtrees,
 	}
 	var ptr uint16
 	for i, row := range m.rows {
