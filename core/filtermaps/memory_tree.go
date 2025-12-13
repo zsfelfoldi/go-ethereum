@@ -78,7 +78,6 @@ type merkleTree struct {
 	params    *Params
 	nodes     []merkleTreeNode
 	firstFree uint32
-	emptyTree *emptyTree
 	subtrees  storedSubtrees
 }
 
@@ -143,33 +142,34 @@ func (mt *merkleTree) newNode(parent uint32) uint32 {
 	return node
 }
 
-func (mt *merkleTree) getDescendant(node uint32, subIndex treeIndex) uint32 {
+type mtNode struct {
+	node  uint32
+	empty *emptySubtree
+}
+
+func (mt *merkleTree) getDescendant(node mtNode, subIndex treeIndex) uint32 {
 	for subIndex != rootIndex {
-		n := &mt.nodes[node]
+		n := &mt.nodes[node.node]
 		if n.left() == nullPtr {
 			if !n.isEmptySubtree() {
 				panic("cannot expand non-empty subtree")
 			}
-			children, ok := mt.emptyTree.children[n.value]
-			if !ok {
-				panic("unknown empty subtree hash")
-			}
-			n.setLeft(mt.newNode(node))
+			n.setLeft(mt.newNode(node.node))
 			l := &mt.nodes[n.left()]
-			l.value = children.left
+			l.value = node.empty.left.value
 			l.setValueKnown(true)
 			l.setEmptySubtree(true)
 			n.setRight(mt.newNode(node))
 			r := &mt.nodes[n.right()]
-			r.value = children.right
+			l.value = node.empty.right.value
 			r.setValueKnown(true)
 			r.setEmptySubtree(true)
 		}
 		switch {
 		case subIndex.matchRoot(2):
-			node = n.left()
+			node = mtNode{node: n.left(), empty: node.empty.left}
 		case subIndex.matchRoot(3):
-			node = n.right()
+			node = mtNode{node: n.right(), empty: node.empty.right}
 		default:
 			panic("invalid descendant subIndex")
 		}

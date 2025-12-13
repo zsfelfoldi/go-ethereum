@@ -20,6 +20,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -160,7 +161,9 @@ func (fm *completedMap) getRow(rowIndex, maxLen uint32) FilterRow {
 }
 
 func (fm *completedMap) getNode(index treeIndex) merkle.Value {
+	panic("TODO")
 }
 
 func (fm *completedMap) getBoundaryNode(index treeIndex) (merkle.Value, float32, int) {
+	panic("TODO")
 }

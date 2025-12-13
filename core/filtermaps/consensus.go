@@ -20,6 +20,7 @@ import (
 	"math"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 const (
@@ -82,11 +83,13 @@ func (p *Params) progListSubIndex(leafIndex uint32) treeIndex {
 }
 
 type emptySubtree struct {
-	node        merkle.Value
+	value       merkle.Value
 	left, right *emptySubtree
 }
 
-func (e *emptySubtree) getNode(index treeIndex) merkle.Value {
+var zeroLeaf = &emptySubtree{}
+
+/*func (e *emptySubtree) getNode(index treeIndex) merkle.Value {
 	for index != rootIndex {
 		if e == nil {
 			panic("unknown empty subtree node")
@@ -100,42 +103,56 @@ func (e *emptySubtree) getNode(index treeIndex) merkle.Value {
 			panic("invalid tree index")
 		}
 	}
+	return e.value
+}*/
+
+func emptyTreeNode(left, right *emptySubtree) *emptySubtree {
+	return &emptySubtree{
+		value: treeHash(left.value, right.value),
+		left:  left,
+		right: right,
+	}
+}
+
+func emptyVector(height uint, leaves *emptySubtree) *emptySubtree {
+	if height == 0 {
+		return leaves
+	}
+	s := emptyVector(height-1, leaves)
+	return emptyTreeNode(s, s)
+}
+
+func (e *emptySubtree) zeroDefault() *emptySubtree {
+	e.value = merkle.Value{}
+	return e
+}
+
+const maxProgListTreeLevel = 16
+
+func (p *Params) emptyProgListTree(level uint) *emptySubtree {
+	if level > maxProgListTreeLevel {
+		return zeroLeaf
+	}
+	treeLevel := emptyVector(p.progListHeightFirst+level*p.progListHeightStep, zeroLeaf)
+	return emptyTreeNode(treeLevel, p.emptyProgListTree(level+1)).zeroDefault()
 }
 
 func (p *Params) initEmptyTree() {
-	emptyVector := make([]emptySubtree, maxVectorHeight)
-	for i := 1; i < maxVectorHeight; i++ {
-		emptyVector[i] = emptySubtree{
-			node:  treeHash(emptyVector[i].node, emptyVector[i].node),
-			left:  &emptyVector[i-1],
-			right: &emptyVector[i-1],
-		}
-	}
-
-	e := &emptyTree{
-		children: make(map[merkle.Value]emptyTreeChildren),
-	}
-	progListRoot := e.addMapping(merkle.Value{}, merkle.Value{})
-	filterMapsRoot := progListRoot
-	for range p.logMapHeight + p.logMapsPerEpoch {
-		filterMapsRoot = e.addMapping(filterMapsRoot, filterMapsRoot)
-	}
-	logEntriesRoot := merkle.Value{}
-	for range p.logValuesPerMap + p.logMapsPerEpoch {
-		logEntriesRoot = e.addMapping(logEntriesRoot, logEntriesRoot)
-	}
-	epochRoot := e.addMapping(filterMapsRoot, logEntriesRoot)
-	epochTreeRoot := epochRoot
-	for range p.logEpochHistory {
-		epochTreeRoot = e.addMapping(epochTreeRoot, epochTreeRoot)
-	}
-	e.root = e.addMapping(epochTreeRoot, merkle.Value{})
-	return e
+	progList := emptyTreeNode(p.emptyProgListTree(0), zeroLeaf).zeroDefault()
+	filterMapsTree := emptyVector(p.logMapHeight+p.logMapsPerEpoch, progList)
+	topicsList := emptyTreeNode(emptyVector(2, zeroLeaf), zeroLeaf)
+	logEntry := emptyTreeNode(emptyTreeNode(zeroLeaf, topicsList), emptyTreeNode(progList, zeroLeaf)).zeroDefault()
+	entryMeta := emptyVector(2, zeroLeaf)
+	indexEntry := emptyTreeNode(logEntry, entryMeta)
+	indexEntriesTree := emptyVector(p.logMapsPerEpoch+p.logValuesPerMap, indexEntry)
+	epochTree := emptyTreeNode(filterMapsTree, indexEntriesTree)
+	epochHistoryTree := emptyVector(p.logEpochHistory, epochTree)
+	p.emptyTreeRoot = emptyTreeNode(epochHistoryTree, zeroLeaf)
 }
 
 func (p *Params) subtreeMapRange(index treeIndex) common.Range[uint32] {
 	if !index.matchRoot(rtiEpochs) {
-		return math.MaxUint32
+		return common.NewRange[uint32](0, math.MaxUint32)
 	}
 	epochRange := index.splitRoot(p.logEpochHistory)
 	if epochRange.Count() > 1 {
