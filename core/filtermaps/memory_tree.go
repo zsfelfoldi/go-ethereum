@@ -147,7 +147,7 @@ type mtNode struct {
 	empty *emptySubtree
 }
 
-func (mt *merkleTree) getDescendant(node mtNode, subIndex treeIndex) uint32 {
+func (mt *merkleTree) getDescendant(node mtNode, subIndex treeIndex) mtNode {
 	for subIndex != rootIndex {
 		n := &mt.nodes[node.node]
 		if n.left() == nullPtr {
@@ -159,7 +159,7 @@ func (mt *merkleTree) getDescendant(node mtNode, subIndex treeIndex) uint32 {
 			l.value = node.empty.left.value
 			l.setValueKnown(true)
 			l.setEmptySubtree(true)
-			n.setRight(mt.newNode(node))
+			n.setRight(mt.newNode(node.node))
 			r := &mt.nodes[n.right()]
 			l.value = node.empty.right.value
 			r.setValueKnown(true)
@@ -416,7 +416,7 @@ func (r overlayReader) getNode(index treeIndex) merkle.Value {
 		binary.LittleEndian.PutUint64(value[:8], r.headLvPtr)
 		return value
 	}
-	return r.mapReader(r.params.completedByMap(index)).getNode(index)
+	return r.mapReader(r.params.subtreeMapRange(index).Last()).getNode(index)
 }
 
 func (r overlayReader) getBoundaryNode(index treeIndex) (merkle.Value, float32, int) {
@@ -430,7 +430,7 @@ func (r overlayReader) getBoundaryNode(index treeIndex) (merkle.Value, float32, 
 		return r.mapReader(mapRange.Last()).getBoundaryNode(index)
 	}
 	if mapRange.First() >= r.mapCount {
-		return r.params.emptyTree.getNode(index), 0, mtrEmptyBoundary
+		return r.params.treeRoot.empty.getNode(index), 0, mtrEmptyBoundary
 	}
 	return merkle.Value{}, 0, mtrInternal
 }

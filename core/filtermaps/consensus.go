@@ -89,7 +89,7 @@ type emptySubtree struct {
 
 var zeroLeaf = &emptySubtree{}
 
-/*func (e *emptySubtree) getNode(index treeIndex) merkle.Value {
+func (e *emptySubtree) getNode(index treeIndex) merkle.Value {
 	for index != rootIndex {
 		if e == nil {
 			panic("unknown empty subtree node")
@@ -104,7 +104,7 @@ var zeroLeaf = &emptySubtree{}
 		}
 	}
 	return e.value
-}*/
+}
 
 func emptyTreeNode(left, right *emptySubtree) *emptySubtree {
 	return &emptySubtree{
@@ -147,7 +147,8 @@ func (p *Params) initEmptyTree() {
 	indexEntriesTree := emptyVector(p.logMapsPerEpoch+p.logValuesPerMap, indexEntry)
 	epochTree := emptyTreeNode(filterMapsTree, indexEntriesTree)
 	epochHistoryTree := emptyVector(p.logEpochHistory, epochTree)
-	p.emptyTreeRoot = emptyTreeNode(epochHistoryTree, zeroLeaf)
+	logIndexTree := emptyTreeNode(epochHistoryTree, zeroLeaf)
+	p.treeRoot = mtNode{node: 0, empty: logIndexTree}
 }
 
 func (p *Params) subtreeMapRange(index treeIndex) common.Range[uint32] {

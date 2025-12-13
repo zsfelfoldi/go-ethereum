@@ -175,8 +175,8 @@ type renderState struct {
 	partialBlockHash common.Hash
 
 	tree         *merkleTree
-	mapRowRoots  []uint32
-	logEntryRoot uint32
+	mapRowRoots  []mtNode
+	logEntryRoot mtNode
 }
 
 func (rs *renderState) checkNextHash(hash common.Hash) bool {
@@ -251,8 +251,8 @@ func (rs *renderState) addValue(logValue common.Hash) {
 				value := rs.params.columnIndex(rs.lvPointer, &logValue)
 				rs.currentMap.addToRow(rowIndex, value)
 				rowRoot := rs.mapRowRoots[rowIndex]
-				entryNode := rs.tree.getDescendant(rowRoot, rs.params.progListSubIndex(rowLength/8))
-				countNode := rs.tree.getDescendant(rowRoot, ti64(rtiProgListCount))
+				entryNode := rs.tree.getDescendant(rowRoot, rs.params.progListSubIndex(rowLength/8)).node
+				countNode := rs.tree.getDescendant(rowRoot, ti64(rtiProgListCount)).node
 				leafPtr := rowLength % 8
 				var entryValue, countValue merkle.Value
 				if leafPtr != 0 {
@@ -280,22 +280,22 @@ func (rs *renderState) addValue(logValue common.Hash) {
 
 func (rs *renderState) initMapTree() {
 	epoch := rs.params.mapEpoch(rs.mapIndex)
-	fmRootNode := rs.tree.getDescendant(0, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps))
+	fmRootNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps))
 	mapSubIndex := rs.mapIndex - rs.params.firstEpochMap(epoch)
 	if rs.mapRowRoots == nil {
-		rs.mapRowRoots = make([]uint32, rs.params.mapHeight)
+		rs.mapRowRoots = make([]mtNode, rs.params.mapHeight)
 	}
 	for rowIndex := range rs.params.mapHeight {
 		mapRowSubIndex := rootIndex.arraySub(uint64(rowIndex), rs.params.logMapHeight).arraySub(uint64(mapSubIndex), rs.params.logMapsPerEpoch)
 		rs.mapRowRoots[rowIndex] = rs.tree.getDescendant(fmRootNode, mapRowSubIndex)
-		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiProgListTree)), merkle.Value{}, rs.params.filterRowNodeWeight(0))
-		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiProgListCount)), merkle.Value{}, rs.params.filterRowNodeWeight(0))
+		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiProgListTree)).node, merkle.Value{}, rs.params.filterRowNodeWeight(0))
+		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiProgListCount)).node, merkle.Value{}, rs.params.filterRowNodeWeight(0))
 	}
 }
 
 func (rs *renderState) completeMapTree() {
 	for rowIndex := range rs.params.mapHeight {
-		rs.tree.setComplete(rs.mapRowRoots[rowIndex])
+		rs.tree.setComplete(rs.mapRowRoots[rowIndex].node)
 	}
 }
 

@@ -37,7 +37,7 @@ import (
 // simpler.
 type FilterRow []uint32
 
-//TODO ensure database reset when params are changed
+// TODO ensure database reset when params are changed
 // Params defines the basic parameters of the log index structure.
 type Params struct {
 	logMapHeight        uint // The number of bits required to represent the map height
@@ -51,10 +51,10 @@ type Params struct {
 	progListHeightStep  uint
 
 	// These fields can be derived with the information above
-	mapHeight     uint32 // The number of rows in the filter map
-	mapsPerEpoch  uint32 // The number of maps in an epoch
-	valuesPerMap  uint64 // The number of log values marked on each filter map
-	emptyTreeRoot *emptySubtree
+	mapHeight    uint32 // The number of rows in the filter map
+	mapsPerEpoch uint32 // The number of maps in an epoch
+	valuesPerMap uint64 // The number of log values marked on each filter map
+	treeRoot     mtNode
 
 	// These fields only affect database storage
 	rowGroupSize          []uint32
