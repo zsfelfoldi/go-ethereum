@@ -397,13 +397,15 @@ type (
 type overlayReader struct {
 	params    *Params
 	mapReader func(mapIndex uint32) merkleTreeReader
+	mapCount  uint32
 	headLvPtr uint64
 }
 
-func (p *Params) overlayReader(mapReader func(mapIndex uint32) merkleTreeReader, headLvPtr uint64) merkleTreeReader {
+func (p *Params) overlayReader(mapReader func(mapIndex uint32) merkleTreeReader, mapCount uint32, headLvPtr uint64) merkleTreeReader {
 	return overlayReader{
 		params:    p,
 		mapReader: mapReader,
+		mapCount:  mapCount,
 		headLvPtr: headLvPtr,
 	}
 }
@@ -423,5 +425,12 @@ func (r overlayReader) getBoundaryNode(index treeIndex) (merkle.Value, float32, 
 		binary.LittleEndian.PutUint64(value[:8], r.headLvPtr)
 		return value, 1, mtrBoundary
 	}
-	return r.mapReader(r.params.completedByMap(index)).getBoundaryNode(index)
+	mapRange := r.params.subtreeMapRange(index)
+	if mapRange.Last() < r.mapCount {
+		return r.mapReader(mapRange.Last()).getBoundaryNode(index)
+	}
+	if mapRange.First() >= r.mapCount {
+		return r.params.emptyTree.getNode(index), 0, mtrEmptyBoundary
+	}
+	return merkle.Value{}, 0, mtrInternal
 }

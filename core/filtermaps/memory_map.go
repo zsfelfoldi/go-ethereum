@@ -99,11 +99,13 @@ func (m *memoryMap) initWithMap(fm *completedMap) {
 // It is more compact and allows more efficient row lookup than memoryMap.
 // Note that it assumes params.mapHeight <= 2**16 which is checked in deriveFields.
 type completedMap struct {
-	rowPtrs   []uint16 // points to rowData index after end of row; 2**16 can wrap around to 0
-	rowData   []uint32
-	blockPtrs []uint64
-	lastBlock lastBlockOfMap
-	subtrees  storedSubtrees
+	rowPtrs        []uint16 // points to rowData index after end of row; 2**16 can wrap around to 0
+	rowData        []uint32
+	blockPtrs      []uint64
+	lastBlock      lastBlockOfMap
+	subtrees       storedSubtrees
+	logEntriesTree *merkleTree // optional; only for head map
+	logEntriesRoot treeIndex
 }
 
 // completed creates a new completedMap from a memoryMap. Note that Merkle
@@ -155,4 +157,10 @@ func (fm *completedMap) getRow(rowIndex, maxLen uint32) FilterRow {
 	// row can have a length of 0x10000.
 	length := fm.rowPtrs[rowIndex] - start
 	return FilterRow(fm.rowData[start : uint32(start)+min(maxLen, uint32(length))])
+}
+
+func (fm *completedMap) getNode(index treeIndex) merkle.Value {
+}
+
+func (fm *completedMap) getBoundaryNode(index treeIndex) (merkle.Value, float32, int) {
 }

@@ -81,22 +81,37 @@ func (p *Params) progListSubIndex(leafIndex uint32) treeIndex {
 	}
 }
 
-type emptyTreeChildren struct {
-	left, right merkle.Value
+type emptySubtree struct {
+	node        merkle.Value
+	left, right *emptySubtree
 }
 
-type emptyTree struct {
-	root     merkle.Value
-	children map[merkle.Value]emptyTreeChildren
+func (e *emptySubtree) getNode(index treeIndex) merkle.Value {
+	for index != rootIndex {
+		if e == nil {
+			panic("unknown empty subtree node")
+		}
+		switch {
+		case index.matchRoot(2):
+			e = e.left
+		case index.matchRoot(3):
+			e = e.right
+		default:
+			panic("invalid tree index")
+		}
+	}
 }
 
-func (e *emptyTree) addMapping(left, right merkle.Value) merkle.Value {
-	parent := treeHash(left, right)
-	e.children[parent] = emptyTreeChildren{left, right}
-	return parent
-}
+func (p *Params) initEmptyTree() {
+	emptyVector := make([]emptySubtree, maxVectorHeight)
+	for i := 1; i < maxVectorHeight; i++ {
+		emptyVector[i] = emptySubtree{
+			node:  treeHash(emptyVector[i].node, emptyVector[i].node),
+			left:  &emptyVector[i-1],
+			right: &emptyVector[i-1],
+		}
+	}
 
-func (p *Params) initEmptyTree() *emptyTree {
 	e := &emptyTree{
 		children: make(map[merkle.Value]emptyTreeChildren),
 	}
@@ -118,20 +133,24 @@ func (p *Params) initEmptyTree() *emptyTree {
 	return e
 }
 
-func (p *Params) completedByMap(index treeIndex) uint32 {
+func (p *Params) subtreeMapRange(index treeIndex) common.Range[uint32] {
 	if !index.matchRoot(rtiEpochs) {
 		return math.MaxUint32
 	}
-	epoch := uint32(index.splitRoot(p.logEpochHistory).Last())
-	var mapSubIndex uint32
+	epochRange := index.splitRoot(p.logEpochHistory)
+	if epochRange.Count() > 1 {
+		return common.NewRange[uint32](uint32(epochRange.First())*p.mapsPerEpoch, uint32(epochRange.Count())*p.mapsPerEpoch)
+	}
+	epoch := uint32(epochRange.First())
 	switch {
 	case index.matchRoot(rtiFilterMaps):
 		index.splitRoot(p.logMapHeight)
-		mapSubIndex = uint32(index.splitRoot(p.logMapsPerEpoch).Last())
+		mapSubRange := index.splitRoot(p.logMapsPerEpoch)
+		return common.NewRange[uint32](epoch*p.mapsPerEpoch+uint32(mapSubRange.First()), uint32(mapSubRange.Count()))
 	case index.matchRoot(rtiLogEntries):
-		mapSubIndex = uint32(index.splitRoot(p.logMapsPerEpoch).Last())
+		mapSubRange := index.splitRoot(p.logMapsPerEpoch)
+		return common.NewRange[uint32](epoch*p.mapsPerEpoch+uint32(mapSubRange.First()), uint32(mapSubRange.Count()))
 	default:
-		mapSubIndex = p.mapsPerEpoch - 1
+		return common.NewRange[uint32](epoch*p.mapsPerEpoch, p.mapsPerEpoch)
 	}
-	return epoch*p.mapsPerEpoch + mapSubIndex
 }
