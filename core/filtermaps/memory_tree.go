@@ -18,7 +18,6 @@ package filtermaps
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"sort"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
@@ -358,7 +357,7 @@ func (s storedSubtrees) Less(i, j int) bool { return s[i].index.lessThan(s[j].in
 func (s storedSubtrees) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 // assumes sorted list
-func (s storedSubtrees) subtree(index treeIndex) serializedSubtree {
+func (s storedSubtrees) getSubtree(index treeIndex) serializedSubtree {
 	a, b := 0, len(s)
 	for a < b {
 		m := (a + b) / 2
@@ -375,7 +374,8 @@ func (s storedSubtrees) subtree(index treeIndex) serializedSubtree {
 }
 
 const (
-	mtrInternal = iota
+	mtrNone = iota
+	mtrInternal
 	mtrBoundary
 	mtrCompleteBoundary
 	mtrEmptyBoundary
@@ -393,44 +393,3 @@ type (
 		merkleBoundaryReader
 	}
 )
-
-type overlayReader struct {
-	params    *Params
-	mapReader func(mapIndex uint32) merkleTreeReader
-	mapCount  uint32
-	headLvPtr uint64
-}
-
-func (p *Params) overlayReader(mapReader func(mapIndex uint32) merkleTreeReader, mapCount uint32, headLvPtr uint64) merkleTreeReader {
-	return overlayReader{
-		params:    p,
-		mapReader: mapReader,
-		mapCount:  mapCount,
-		headLvPtr: headLvPtr,
-	}
-}
-
-func (r overlayReader) getNode(index treeIndex) merkle.Value {
-	if index == ti64(rtiNextIndex) {
-		var value merkle.Value
-		binary.LittleEndian.PutUint64(value[:8], r.headLvPtr)
-		return value
-	}
-	return r.mapReader(r.params.subtreeMapRange(index).Last()).getNode(index)
-}
-
-func (r overlayReader) getBoundaryNode(index treeIndex) (merkle.Value, float32, int) {
-	if index == ti64(rtiNextIndex) {
-		var value merkle.Value
-		binary.LittleEndian.PutUint64(value[:8], r.headLvPtr)
-		return value, 1, mtrBoundary
-	}
-	mapRange := r.params.subtreeMapRange(index)
-	if mapRange.Last() < r.mapCount {
-		return r.mapReader(mapRange.Last()).getBoundaryNode(index)
-	}
-	if mapRange.First() >= r.mapCount {
-		return r.params.treeRoot.empty.getNode(index), 0, mtrEmptyBoundary
-	}
-	return merkle.Value{}, 0, mtrInternal
-}

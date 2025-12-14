@@ -690,7 +690,7 @@ func (m *mapDatabase) storeCheckpointList(firstEpoch uint32, cpList checkpointLi
 	}
 }
 
-func (m *mapDatabase) subtree(index treeIndex) (serializedSubtree, error) {
+func (m *mapDatabase) getSubtree(index treeIndex) (serializedSubtree, error) {
 	if subtree, ok := m.subtreeCache.Get(index); ok {
 		return subtree, nil
 	}

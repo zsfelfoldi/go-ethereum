@@ -19,6 +19,7 @@ package filtermaps
 import (
 	"encoding/binary"
 	"errors"
+	"math"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
@@ -162,8 +163,27 @@ func (iv *IndexView) GetFilterMapRows(mapIndices []uint32, rowIndex, layerIndex 
 	return rows, nil
 }
 
-func (iv *IndexView) subtree(index treeIndex) serializedSubtree {
-	panic("TODO")
+func (iv *IndexView) getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, error) {
+	if mapIndex < iv.firstOverlayMap {
+		return iv.storage.getFilterMapRow(mapIndex, rowIndex)
+	}
+	i := mapIndex - iv.firstOverlayMap
+	if i < uint32(len(iv.overlayMaps)) {
+		return iv.overlayMaps[i].getRow(rowIndex, math.MaxUint32), nil
+	}
+	return nil, nil
+}
+
+func (iv *IndexView) getSubtree(index treeIndex) (serializedSubtree, error) {
+	mapIndex := iv.storage.params.subtreeMapRange(index).Last()
+	if mapIndex < iv.firstOverlayMap {
+		return iv.storage.getSubtree(index)
+	}
+	i := mapIndex - iv.firstOverlayMap
+	if i < uint32(len(iv.overlayMaps)) {
+		return iv.overlayMaps[i].getSubtree(index), nil
+	}
+	return nil, nil
 }
 
 type renderState struct {
@@ -177,9 +197,8 @@ type renderState struct {
 	partialBlock     bool
 	partialBlockHash common.Hash
 
-	tree           *merkleTree
-	mapRowRoots    []mtNode
-	indexEntryRoot mtNode
+	tree        *merkleTree
+	mapRowRoots []mtNode
 }
 
 func (rs *renderState) checkNextHash(hash common.Hash) bool {

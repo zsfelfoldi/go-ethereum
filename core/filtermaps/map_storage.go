@@ -719,6 +719,41 @@ func (m *mapStorage) updateOverlayBlocks() {
 	m.overlayCount = m.overlay.count()
 }
 
-func (m *mapStorage) subtree(index treeIndex) (serializedSubtree, error) {
-	panic("TODO")
+func (m *mapStorage) getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	if m.overlay.includes(mapIndex) {
+		fm := m.overlayMaps[mapIndex]
+		if fm == nil {
+			return nil, errors.New("memory overlay map not found")
+		}
+		return fm.getRow(rowIndex, math.MaxUint32), nil
+	}
+	if m.valid.includes(mapIndex) {
+		rows, err := m.mapDb.getFilterMapRows([]uint32{mapIndex}, rowIndex, math.MaxUint32)
+		if len(rows) == 1 && err == nil {
+			return rows[0], nil
+		}
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (m *mapStorage) getSubtree(index treeIndex) (serializedSubtree, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	mapIndex := m.params.subtreeMapRange(index).Last()
+	if m.overlay.includes(mapIndex) {
+		fm := m.overlayMaps[mapIndex]
+		if fm == nil {
+			return nil, errors.New("memory overlay map not found")
+		}
+		return fm.getSubtree(index), nil
+	}
+	if m.valid.includes(mapIndex) {
+		return m.mapDb.getSubtree(index)
+	}
+	return nil, nil
 }

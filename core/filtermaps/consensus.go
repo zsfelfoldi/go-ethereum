@@ -176,3 +176,17 @@ func (p *Params) subtreeMapRange(index treeIndex) common.Range[uint32] {
 		return common.NewRange[uint32](epoch*p.mapsPerEpoch, p.mapsPerEpoch)
 	}
 }
+
+/*func (p *Params) splitMapRowIndex(index treeIndex) (mapIndex, rowIndex uint32, subIndex treeIndex, leaf, internal bool) {
+	if !index.matchRoot(rtiEpochs) {
+		return 0, 0, treeIndex{}, false
+	}
+	epochRange := index.splitRoot(p.logEpochHistory)
+	if epochRange.Count() > 1 {
+		return common.NewRange[uint32](uint32(epochRange.First())*p.mapsPerEpoch, uint32(epochRange.Count())*p.mapsPerEpoch)
+	}
+	epoch := uint32(epochRange.First())
+	switch {
+	case index.matchRoot(rtiFilterMaps):
+
+}*/
