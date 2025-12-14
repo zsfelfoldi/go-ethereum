@@ -66,7 +66,7 @@ func (p *Params) mapRowRoot(mapIndex, rowIndex uint32) treeIndex {
 	return rowRoot.arraySub(uint64(mapIndex%p.mapsPerEpoch), p.logMapsPerEpoch)
 }
 
-func (p *Params) logEnrtyRoot(lvIndex uint64) treeIndex {
+func (p *Params) indexEnrtyRoot(lvIndex uint64) treeIndex {
 	epochRoot := ti64(rtiEpochs).arraySub(lvIndex/(uint64(p.mapsPerEpoch)*p.valuesPerMap), p.logEpochHistory)
 	return epochRoot.gtSub(rtiIndexEntries).arraySub(lvIndex%(uint64(p.mapsPerEpoch)*p.valuesPerMap), p.logMapsPerEpoch+p.logValuesPerMap)
 }

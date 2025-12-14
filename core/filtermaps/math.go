@@ -147,7 +147,8 @@ func txValue(txHash common.Hash) common.Hash {
 	var result common.Hash
 	hasher := sha256.New()
 	hasher.Write(txHash[:])
-	hasher.Write([1]byte{1}[:])
+	suffix := [1]byte{1}
+	hasher.Write(suffix[:])
 	hasher.Sum(result[:0])
 	return result
 }
@@ -157,7 +158,8 @@ func blockValue(blockHash common.Hash) common.Hash {
 	var result common.Hash
 	hasher := sha256.New()
 	hasher.Write(blockHash[:])
-	hasher.Write([1]byte{2}[:])
+	suffix := [1]byte{2}
+	hasher.Write(suffix[:])
 	hasher.Sum(result[:0])
 	return result
 }

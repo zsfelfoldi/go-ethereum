@@ -569,8 +569,8 @@ func (m *mapDatabase) deleteSubtrees(deleteRange common.Range[uint32], stopCallb
 		}
 	}
 	action = "Deleting log entry subtrees"
-	from = m.params.logEnrtyRoot(uint64(deleteRange.First()) * m.params.valuesPerMap)
-	to = m.params.logEnrtyRoot(uint64(deleteRange.AfterLast())*m.params.valuesPerMap - 1)
+	from = m.params.indexEnrtyRoot(uint64(deleteRange.First()) * m.params.valuesPerMap)
+	to = m.params.indexEnrtyRoot(uint64(deleteRange.AfterLast())*m.params.valuesPerMap - 1)
 	switch err := m.safeDeleteWithLogs(deleteFn, action, stopCallback); err {
 	case nil:
 		return true, nil

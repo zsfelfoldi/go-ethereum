@@ -171,7 +171,7 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 	}
 	if ix.tailRenderer != nil && number == ix.tailRenderer.nextBlock {
 		if ix.tailRenderer.checkNextHash(hash) {
-			ix.tailRenderer.addReceipts(receipts)
+			ix.tailRenderer.addTxAndLogEntries(body.Transactions, receipts)
 			firstMapIndex, finishedMaps := ix.tailRenderer.addBlockEntry(header)
 			ix.storeFinishedMaps(firstMapIndex, finishedMaps, false, false)
 			if ix.tailRenderer.finished() {
