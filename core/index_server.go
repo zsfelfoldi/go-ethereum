@@ -44,7 +44,7 @@ type Indexer interface {
 	// Note that the indexer should never block even if it is busy processing.
 	// It is allowed to re-request the delivered blocks later if the indexer could
 	// not process them when first delivered.
-	AddBlockData(header *types.Header, receipts types.Receipts) (ready bool, needBlocks common.Range[uint64])
+	AddBlockData(header *types.Header, body *types.Body, receipts types.Receipts) (ready bool, needBlocks common.Range[uint64])
 	// Revert rewinds the index to the given head block number. Subsequent
 	// AddBlockData calls will deliver blocks starting from this point.
 	Revert(blockNumber uint64)
@@ -85,6 +85,7 @@ type indexServers struct {
 	rawReceiptsCache *lru.Cache[common.Hash, []*types.Receipt]
 
 	lastHead                  *types.Header
+	lastHeadBody              *types.Body
 	lastHeadReceipts          types.Receipts
 	finalBlock, historyCutoff uint64
 
@@ -133,7 +134,7 @@ func (f *indexServers) register(indexer Indexer, name string) {
 	indexer.SetHistoryCutoff(f.historyCutoff)
 	indexer.SetFinalized(f.finalBlock)
 	if f.lastHead != nil {
-		server.sendStatus.ready, server.sendStatus.needBlocks = indexer.AddBlockData(f.lastHead, f.lastHeadReceipts)
+		server.sendStatus.ready, server.sendStatus.needBlocks = indexer.AddBlockData(f.lastHead, f.lastHeadBody, f.lastHeadReceipts)
 		server.updateSendStatus()
 	}
 	go server.historicReadLoop()
@@ -145,23 +146,23 @@ func (f *indexServers) cacheRawReceipts(blockHash common.Hash, blockReceipts typ
 }
 
 // broadcast sends a new head block to all registered Indexer instances.
-func (f *indexServers) broadcast(header *types.Header) {
+func (f *indexServers) broadcast(block *types.Block) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 
-	blockHash := header.Hash()
+	blockHash := block.Hash()
 	blockReceipts, _ := f.rawReceiptsCache.Get(blockHash)
 	if blockReceipts == nil {
-		blockReceipts = f.chain.GetRawReceipts(blockHash, header.Number.Uint64())
+		blockReceipts = f.chain.GetRawReceipts(blockHash, block.NumberU64())
 		if blockReceipts == nil {
-			log.Error("Receipts belonging to new head are missing", "number", header.Number, "hash", header.Hash())
+			log.Error("Receipts belonging to new head are missing", "number", block.NumberU64(), "hash", block.Hash())
 			return
 		}
 		f.rawReceiptsCache.Add(blockHash, blockReceipts)
 	}
-	f.lastHead, f.lastHeadReceipts = header, blockReceipts
+	f.lastHead, f.lastHeadBody, f.lastHeadReceipts = block.Header(), block.Body(), blockReceipts
 	for _, server := range f.servers {
-		server.sendHeadBlockData(header, blockReceipts)
+		server.sendHeadBlockData(block.Header(), block.Body(), blockReceipts)
 	}
 }
 
@@ -286,13 +287,14 @@ func (s *indexerStatus) isNextExpected(b blockData) bool {
 type blockData struct {
 	blockNumber, revertCount uint64
 	header                   *types.Header
+	body                     *types.Body
 	receipts                 types.Receipts
 }
 
 // sendHeadBlockData immediately sends the latest head block data to the indexer
 // and updates the status of the historical block data serving mechanism
 // accordingly.
-func (s *indexServer) sendHeadBlockData(header *types.Header, receipts types.Receipts) {
+func (s *indexServer) sendHeadBlockData(header *types.Header, body *types.Body, receipts types.Receipts) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -303,7 +305,7 @@ func (s *indexServer) sendHeadBlockData(header *types.Header, receipts types.Rec
 		return
 	}
 	s.lastHead = header
-	ready, needBlocks := s.indexer.AddBlockData(header, receipts)
+	ready, needBlocks := s.indexer.AddBlockData(header, body, receipts)
 	s.updateIndexerStatus(ready, needBlocks, 0)
 	s.updateSendStatus()
 }
@@ -408,10 +410,10 @@ func (s *indexServer) historicSendLoop() {
 			// block and is still guaranteed to be canonical; ignore and request
 			// a queue reset otherwise.
 			if s.sendStatus.isNextExpected(nextBlockData) {
-				ready, needBlocks := s.indexer.AddBlockData(nextBlockData.header, nextBlockData.receipts)
-				s.updateIndexerStatus(ready, needBlocks, 1)
 				// check if the has actually been found in the database
-				if nextBlockData.header != nil && nextBlockData.receipts != nil {
+				if nextBlockData.header != nil && nextBlockData.body != nil && nextBlockData.receipts != nil {
+					ready, needBlocks := s.indexer.AddBlockData(nextBlockData.header, nextBlockData.body, nextBlockData.receipts)
+					s.updateIndexerStatus(ready, needBlocks, 1)
 					if s.sendStatus.needBlocks.IsEmpty() {
 						s.logDelivered(nextBlockData.blockNumber)
 						s.logFinished()
@@ -557,6 +559,7 @@ func (s *indexServer) historicReadLoop() {
 			bd := blockData{blockNumber: s.readPointer, revertCount: s.readStatus.revertCount}
 			if bd.header = s.parent.chain.GetHeaderByNumber(bd.blockNumber); bd.header != nil {
 				blockHash := bd.header.Hash()
+				bd.body = s.parent.chain.GetBody(blockHash)
 				bd.receipts, _ = s.parent.rawReceiptsCache.Get(blockHash)
 				if bd.receipts == nil {
 					// Note: we do not cache historical receipts because typically

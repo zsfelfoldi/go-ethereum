@@ -181,7 +181,7 @@ func (ti *testIndexer) status(status testIndexerStatus) {
 	ti.statusCh <- status
 }
 
-func (ti *testIndexer) AddBlockData(header *types.Header, receipts types.Receipts) (ready bool, needBlocks common.Range[uint64]) {
+func (ti *testIndexer) AddBlockData(header *types.Header, body *types.Body, receipts types.Receipts) (ready bool, needBlocks common.Range[uint64]) {
 	ti.eventCh <- testIndexerEvent{ev: "AddBlockData", blockNumber: header.Number.Uint64(), blockHash: header.Hash()}
 	status := <-ti.statusCh
 	return status.ready, status.needBlocks

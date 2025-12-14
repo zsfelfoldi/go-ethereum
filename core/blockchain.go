@@ -1180,7 +1180,7 @@ func (bc *BlockChain) ResetWithGenesisBlock(genesis *types.Block) error {
 		log.Crit("Failed to write genesis block", "err", err)
 	}
 	bc.writeHeadBlock(genesis)
-	bc.indexServers.broadcast(genesis.Header())
+	bc.indexServers.broadcast(genesis)
 
 	// Last update all in-memory chain markers
 	bc.genesisBlock = genesis
@@ -1599,7 +1599,7 @@ func (bc *BlockChain) writeKnownBlock(block *types.Block) error {
 		}
 	}
 	bc.writeHeadBlock(block)
-	bc.indexServers.broadcast(block.Header())
+	bc.indexServers.broadcast(block)
 	return nil
 }
 
@@ -1708,7 +1708,7 @@ func (bc *BlockChain) writeBlockAndSetHead(block *types.Block, receipts []*types
 
 	// Set new head.
 	bc.writeHeadBlock(block)
-	bc.indexServers.broadcast(block.Header())
+	bc.indexServers.broadcast(block)
 
 	bc.chainFeed.Send(ChainEvent{
 		Header:       block.Header(),
@@ -2546,7 +2546,7 @@ func (bc *BlockChain) reorg(oldHead *types.Header, newHead *types.Header) error 
 		}
 		// Update the head block
 		bc.writeHeadBlock(block)
-		bc.indexServers.broadcast(block.Header())
+		bc.indexServers.broadcast(block)
 	}
 	if len(rebirthLogs) > 0 {
 		bc.logsFeed.Send(rebirthLogs)
@@ -2622,7 +2622,7 @@ func (bc *BlockChain) SetCanonical(head *types.Block) (common.Hash, error) {
 		}
 	}
 	bc.writeHeadBlock(head)
-	bc.indexServers.broadcast(head.Header())
+	bc.indexServers.broadcast(head)
 
 	// Emit events
 	receipts, logs := bc.collectReceiptsAndLogs(head, false)
