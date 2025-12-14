@@ -28,32 +28,36 @@ const (
 	rtiEpochs    = 2
 	rtiNextIndex = 3
 	// relative to epoch root
-	rtiFilterMaps = 2
-	rtiLogEntries = 3
-	// relative to progressive list root
-	rtiProgListTree  = 2
-	rtiProgListCount = 3
+	rtiFilterMaps   = 2
+	rtiIndexEntries = 3
+	// relative to list root (progressive or legacy)
+	rtiListTree  = 2
+	rtiListCount = 3
 	// relative to progressive list tree root
 	rtiProgListSubtree  = 2
 	rtiProgListNextTree = 3
-
-	// log
-	rtiLogAddress      = 8
-	rtiLogTopicsRoot   = 18
-	rtiLogTopicsLength = 19
-	rtiLogData         = 10 // prog list
-	rtiLogZero         = 11
-	// log meta
-	rtiLogMetaBlockNumber = 12
-	rtiLogMetaTxHash      = 13
-	rtiLogMetaTxIndex     = 14
-	rtiLogMetaLogIndex    = 15
-	// block delimiter meta
-	rtiDelimiterZero            = 2
-	rtiDelimiterMetaBlockNumber = 12
-	rtiDelimiterMetaBlockHash   = 13
-	rtiDelimiterMetaTimestamp   = 14
-	rtiDelimiterMetaDummy       = 15
+	// relative to index entry root
+	rtiLogEntry  = 2
+	rtiEntryMeta = 3
+	// relative to log entry root
+	rtiLogAddress = 4
+	rtiLogTopics  = 5 // list[4]
+	rtiLogData    = 6 // prog list
+	// relative to entry meta root
+	// log entry meta
+	rtiLogMetaBlockNumber = 4
+	rtiLogMetaTxHash      = 5
+	rtiLogMetaTxIndex     = 6
+	rtiLogMetaLogIndex    = 7
+	// transaction entry meta
+	rtiTxMetaBlockNumber = 4
+	rtiTxMetaTxHash      = 5
+	rtiTxMetaTxIndex     = 6
+	rtiTxMetaReceiptHash = 7
+	// block entry meta
+	rtiBlockMetaBlockNumber = 4
+	rtiBlockMetaBlockHash   = 5
+	rtiBlockMetaTimestamp   = 6
 )
 
 func (p *Params) mapRowRoot(mapIndex, rowIndex uint32) treeIndex {
@@ -64,13 +68,13 @@ func (p *Params) mapRowRoot(mapIndex, rowIndex uint32) treeIndex {
 
 func (p *Params) logEnrtyRoot(lvIndex uint64) treeIndex {
 	epochRoot := ti64(rtiEpochs).arraySub(lvIndex/(uint64(p.mapsPerEpoch)*p.valuesPerMap), p.logEpochHistory)
-	return epochRoot.gtSub(rtiLogEntries).arraySub(lvIndex%(uint64(p.mapsPerEpoch)*p.valuesPerMap), p.logMapsPerEpoch+p.logValuesPerMap)
+	return epochRoot.gtSub(rtiIndexEntries).arraySub(lvIndex%(uint64(p.mapsPerEpoch)*p.valuesPerMap), p.logMapsPerEpoch+p.logValuesPerMap)
 }
 
 // relative to progressive list root
 func (p *Params) progListSubIndex(leafIndex uint32) treeIndex {
 	height := p.progListHeightFirst
-	index := ti64(rtiProgListTree)
+	index := ti64(rtiListTree)
 	for {
 		stLength := uint32(1) << height
 		if leafIndex < stLength {
@@ -165,7 +169,7 @@ func (p *Params) subtreeMapRange(index treeIndex) common.Range[uint32] {
 		index.splitRoot(p.logMapHeight)
 		mapSubRange := index.splitRoot(p.logMapsPerEpoch)
 		return common.NewRange[uint32](epoch*p.mapsPerEpoch+uint32(mapSubRange.First()), uint32(mapSubRange.Count()))
-	case index.matchRoot(rtiLogEntries):
+	case index.matchRoot(rtiIndexEntries):
 		mapSubRange := index.splitRoot(p.logMapsPerEpoch)
 		return common.NewRange[uint32](epoch*p.mapsPerEpoch+uint32(mapSubRange.First()), uint32(mapSubRange.Count()))
 	default:

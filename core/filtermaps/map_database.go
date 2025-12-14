@@ -181,7 +181,7 @@ func (m *mapDatabase) deleteEpochSubtrees(epoch uint32, stopCallback func() bool
 	deleteFn := func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error {
 		epochRoot := ti64(rtiEpochs).arraySub(uint64(epoch), m.params.logEpochHistory)
 		from := epochRoot.gtSub(rtiFilterMaps)
-		to := epochRoot.gtSub(rtiLogEntries)
+		to := epochRoot.gtSub(rtiIndexEntries)
 		return rawdb.DeleteFilterMapsSubtrees(db, uint128.Uint128(from), uint128.Uint128(to), hashScheme, stopCb)
 	}
 	action := fmt.Sprintf("Deleting epoch #%d subtrees", epoch)

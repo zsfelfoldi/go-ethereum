@@ -142,7 +142,7 @@ func (ix *Indexer) Status() (bool, common.Range[uint64]) {
 // Note that this function also resumes the storage layer background process if
 // it was previously suspended.
 // AddBlockData implements core.Indexer.
-func (ix *Indexer) AddBlockData(header *types.Header, receipts types.Receipts) (ready bool, needBlocks common.Range[uint64]) {
+func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts types.Receipts) (ready bool, needBlocks common.Range[uint64]) {
 	if ix.config.Disabled {
 		return false, common.Range[uint64]{}
 	}
@@ -157,8 +157,8 @@ func (ix *Indexer) AddBlockData(header *types.Header, receipts types.Receipts) (
 	}
 	if number == ix.headRenderer.nextBlock {
 		if ix.headRenderer.checkNextHash(hash) {
-			ix.headRenderer.addReceipts(receipts)
-			firstMapIndex, finishedMaps := ix.headRenderer.addHeader(header)
+			ix.headRenderer.addTxAndLogEntries(body.Transactions, receipts)
+			firstMapIndex, finishedMaps := ix.headRenderer.addBlockEntry(header)
 			ix.storeFinishedMaps(firstMapIndex, finishedMaps, true, true)
 			if number+maxCanonicalSnapshots > ix.headNumber {
 				ix.storeHeadIndexView(number, hash)
@@ -172,7 +172,7 @@ func (ix *Indexer) AddBlockData(header *types.Header, receipts types.Receipts) (
 	if ix.tailRenderer != nil && number == ix.tailRenderer.nextBlock {
 		if ix.tailRenderer.checkNextHash(hash) {
 			ix.tailRenderer.addReceipts(receipts)
-			firstMapIndex, finishedMaps := ix.tailRenderer.addHeader(header)
+			firstMapIndex, finishedMaps := ix.tailRenderer.addBlockEntry(header)
 			ix.storeFinishedMaps(firstMapIndex, finishedMaps, false, false)
 			if ix.tailRenderer.finished() {
 				ix.tailEpoch--
