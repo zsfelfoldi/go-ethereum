@@ -23,6 +23,22 @@ import (
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 )
 
+const (
+	mtrNone = iota
+	mtrUnknownInternal
+	mtrKnownInternal
+	mtrBoundary
+)
+
+type (
+	nodeReader interface {
+		getNode(index treeIndex) (merkle.Value, float32, int, error)
+	}
+	subtreeReader interface {
+		getSubtree(index treeIndex) (serializedSubtree, error)
+	}
+)
+
 func treeHash(left, right merkle.Value) (result merkle.Value) {
 	hasher := sha256.New()
 	hasher.Write(left[:])
@@ -373,23 +389,18 @@ func (s storedSubtrees) getSubtree(index treeIndex) serializedSubtree {
 	return nil
 }
 
-const (
-	mtrNone = iota
-	mtrInternal
-	mtrBoundary
-	mtrCompleteBoundary
-	mtrEmptyBoundary
-)
+// implements nodeReader based on a subtreeReader
+type subtreeNodeReader struct {
+	//params   *Params
+	reader subtreeReader
+	// non-existent entries are cached in both caches
+	subtreeCache *lru.Cache[treeIndex, serializedSubtree]
+	nodeCache    *lru.Cache[treeIndex, cachedNode]
+}
 
-type (
-	merkleNodeReader interface {
-		getNode(index treeIndex) merkle.Value
-	}
-	merkleBoundaryReader interface {
-		getBoundaryNode(index treeIndex) (merkle.Value, float32, int)
-	}
-	merkleTreeReader interface {
-		merkleNodeReader
-		merkleBoundaryReader
-	}
-)
+type cachedNode struct {
+	value  merkle.Value
+	weight uint32
+}
+
+func (r *subtreeNodeReader) getNode(index treeIndex) (merkle.Value, float32, int, error) {}

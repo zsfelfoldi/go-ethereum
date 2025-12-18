@@ -190,3 +190,15 @@ func (p *Params) subtreeMapRange(index treeIndex) common.Range[uint32] {
 	case index.matchRoot(rtiFilterMaps):
 
 }*/
+
+type filterRowReader interface {
+	getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, error)
+}
+
+type filterRowNodeReader struct {
+	params *Params
+	reader filterRowReader
+	cache  *lru.Cache[treeIndex, cachedNode]
+}
+
+func (r *filterRowNodeReader) getNode(index treeIndex) (merkle.Value, float32, int, error) {}

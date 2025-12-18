@@ -46,9 +46,10 @@ type IndexView struct {
 	headBlockHash common.Hash
 	headLvPointer uint64 // points after head block delimiter
 
-	firstOverlayMap   uint32
-	firstOverlayBlock uint64
-	overlayMaps       []*completedMap
+	firstOverlayMap    uint32
+	firstOverlayBlock  uint64
+	overlayMaps        []*completedMap
+	indexEntriesReader nodeReader
 }
 
 func (iv *IndexView) Release() {
