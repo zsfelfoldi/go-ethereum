@@ -392,7 +392,7 @@ func (s serializedSubtree) shapeBit(bitIndex int) bool {
 	return s[4+bitIndex/8]&(byte(1)<<(bitIndex%8)) != 0
 }
 
-func (s serializedSubtree) getNode(index treeIndex) (node nodeWithWeight, nodeType int) {
+func (s serializedSubtree) getNode(index treeIndex) (node nodeWithWeight, avail int) {
 	l := len(s)
 	leafCount := (l*8 + 1) / ((32+4)*8 + 2)
 	shapeOffset := l - leafCount*(32+4)
@@ -423,10 +423,10 @@ func (s serializedSubtree) getNode(index treeIndex) (node nodeWithWeight, nodeTy
 		offset := shapeOffset + (32+4)*leafIndex
 		copy(node.value[:], s[offset:offset+32])
 		node.weight = math.Float32frombits(binary.LittleEndian.Uint32(s[offset+32 : offset+32+4]))
-		nodeType = mtaKnown
+		avail = mtaKnown
 		return
 	}
-	nodeType = mtaInternal
+	avail = mtaInternal
 	return
 }
 
@@ -463,14 +463,12 @@ type subtreeNodeReader struct {
 	//params   *Params
 	reader subtreeReader
 	// non-existent entries are cached in both caches
-	cache *lru.Cache[treeIndex, cachedSubtreeNode]
+	cache *lru.Cache[treeIndex, cachedSubtree]
 }
 
-type cachedSubtreeNode struct {
+type cachedSubtree struct {
 	subtree      serializedSubtree
 	subtreeLevel uint
-	node         nodeWithWeight
-	nodeType     int
 }
 
 type nodeWithWeight struct {
@@ -478,39 +476,53 @@ type nodeWithWeight struct {
 	weight float32
 }
 
-func (r *subtreeNodeReader) getSubtreeAndNode(index treeIndex) (cachedSubtreeNode, error) {
-	if sn, ok := r.cache.Get(index); ok {
-		return sn, nil
+func (r *subtreeNodeReader) getSubtree(index treeIndex) (cachedSubtree, error) {
+	if cs, ok := r.cache.Get(index); ok {
+		return cs, nil
 	}
+	var cs cachedSubtree
 	st, err := r.reader.getSubtree(index)
 	if err != nil {
-		return cachedSubtreeNode{}, err
+		return cachedSubtree{}, err
 	}
-	var sn cachedSubtreeNode
 	if st != nil {
-		sn = cachedSubtreeNode{
+		cs = cachedSubtree{
 			subtree:      st,
 			subtreeLevel: index.level(),
 		}
 	} else {
 		if index != rootIndex {
-			sn, err = r.getSubtreeAndNode(index.parent())
+			cs, err = r.getSubtree(index.parent())
 			if err != nil {
-				return cachedSubtreeNode{}, err
+				return cachedSubtree{}, err
 			}
 		}
 	}
-	if sn.subtree != nil {
-		sn.node, sn.nodeType = sn.subtree.getNode(index.subIndex(sn.subtreeLevel))
-	}
-	r.cache.Add(index, sn)
-	return sn, nil
+	r.cache.Add(index, cs)
+	return cs, nil
 }
 
 func (r *subtreeNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error) {
-	if sn, err := r.getSubtreeAndNode(index); err == nil {
-		return sn.node, sn.nodeType, nil
-	} else {
+	cs, err := r.getSubtree(index)
+	if err != nil {
 		return nodeWithWeight{}, 0, err
 	}
+	if cs.subtree == nil {
+		return nodeWithWeight{}, mtaInternal, nil
+	}
+	nw, avail := cs.subtree.getNode(index.subIndex(cs.subtreeLevel))
+	if avail == mtaInternal && index != rootIndex {
+		// maybe it is a subtree root and the parent's subtree has the value
+		parentCs, err := r.getSubtree(index)
+		if err != nil {
+			return nodeWithWeight{}, 0, err
+		}
+		if parentCs.subtree != nil && parentCs.subtreeLevel != cs.subtreeLevel {
+			parentNw, parentAvail := parentCs.subtree.getNode(index.subIndex(parentCs.subtreeLevel))
+			if parentAvail == mtaKnown {
+				return parentNw, parentAvail, nil
+			}
+		}
+	}
+	return nw, avail, nil
 }
