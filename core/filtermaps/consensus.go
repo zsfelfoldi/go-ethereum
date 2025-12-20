@@ -17,10 +17,12 @@
 package filtermaps
 
 import (
+	"encoding/binary"
 	"math"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/lru"
 )
 
 const (
@@ -180,28 +182,101 @@ func (p *Params) subtreeMapRange(index treeIndex) common.Range[uint32] {
 	}
 }
 
-/*func (p *Params) splitMapRowIndex(index treeIndex) (mapIndex, rowIndex uint32, subIndex treeIndex, leaf, internal bool) {
+func (p *Params) splitMapRowIndex(index treeIndex) (mapIndex, rowIndex uint32, subIndex treeIndex) {
 	if !index.matchRoot(rtiEpochs) {
-		return 0, 0, treeIndex{}, false
+		return
 	}
 	epochRange := index.splitRoot(p.logEpochHistory)
 	if epochRange.Count() > 1 {
-		return common.NewRange[uint32](uint32(epochRange.First())*p.mapsPerEpoch, uint32(epochRange.Count())*p.mapsPerEpoch)
+		return
 	}
 	epoch := uint32(epochRange.First())
-	switch {
-	case index.matchRoot(rtiFilterMaps):
-
-}*/
+	if !index.matchRoot(rtiFilterMaps) {
+		return
+	}
+	rowRange := index.splitRoot(p.logMapHeight)
+	if rowRange.Count() > 1 {
+		return
+	}
+	rowIndex = uint32(rowRange.First())
+	mapSubRange := index.splitRoot(p.logMapsPerEpoch)
+	if mapSubRange.Count() > 1 {
+		return
+	}
+	mapIndex = epoch*p.mapsPerEpoch + uint32(mapSubRange.First())
+	return mapIndex, rowIndex, index
+}
 
 type filterRowReader interface {
 	getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, error)
 }
 
-/*type filterRowNodeReader struct {
+type mapRowIndex struct{ mapIndex, rowIndex uint32 }
+
+type filterRowNodeReader struct {
 	params *Params
 	reader filterRowReader
-	cache  *lru.Cache[treeIndex, nodeWithWeight]
+	cache  *lru.Cache[mapRowIndex, FilterRow]
 }
 
-func (r *filterRowNodeReader) getNode(index treeIndex) (merkle.Value, float32, int, error) {}*/
+func (r *filterRowNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error) {
+	mapIndex, rowIndex, subIndex := r.params.splitMapRowIndex(index)
+	if (subIndex == treeIndex{}) {
+		return nodeWithWeight{}, mtaInternal, nil
+	}
+	row, err := r.reader.getFilterMapRow(mapIndex, rowIndex)
+	if err != nil {
+		return nodeWithWeight{}, 0, err
+	}
+	switch {
+	case subIndex.matchRoot(rtiListTree):
+		return r.params.getProgListNode(row, 0, subIndex)
+	case subIndex.matchRoot(rtiListCount):
+		if subIndex != rootIndex {
+			return nodeWithWeight{}, mtaUnknown, nil
+		}
+		countBytes := uint32(1)
+		if len(row) >= 256 {
+			countBytes = 2
+		}
+		return nodeWithWeight{value: uint64ToValue(uint64(len(row))), weight: r.params.filterRowNodeWeight(countBytes)}, mtaKnown, nil
+	default:
+		panic("invalid tree index")
+	}
+}
+
+func (p *Params) getProgListNode(row FilterRow, level uint, index treeIndex) (nodeWithWeight, int, error) {
+	height := p.progListHeightFirst + level*p.progListHeightStep
+	slen := 1 << height
+	switch {
+	case index.matchRoot(rtiProgListSubtree):
+		chunkRange := index.splitRoot(height)
+		if chunkRange.Count() > 1 {
+			return nodeWithWeight{}, mtaInternal, nil
+		}
+		if index != rootIndex {
+			return nodeWithWeight{}, mtaUnknown, nil
+		}
+		chunk := int(chunkRange.First())
+		first, afterLast := chunk*8, min(chunk*8+8, len(row))
+		if first >= afterLast {
+			return nodeWithWeight{}, mtaKnown, nil
+		}
+		count := afterLast - first
+		nw := nodeWithWeight{weight: p.filterRowNodeWeight(uint32(count) * uint32(p.logMapWidth+7/8))}
+		for i := range count {
+			binary.LittleEndian.PutUint32(nw.value[i*4:i*4+4], row[first+i])
+		}
+		return nw, mtaKnown, nil
+	case index.matchRoot(rtiProgListNextTree):
+		if len(row) > slen {
+			return p.getProgListNode(row[slen:], level+1, index)
+		}
+		if index != rootIndex {
+			return nodeWithWeight{}, mtaUnknown, nil
+		}
+		return nodeWithWeight{}, mtaKnown, nil
+	default:
+		panic("invalid tree index")
+	}
+}
