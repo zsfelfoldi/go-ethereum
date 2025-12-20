@@ -87,8 +87,8 @@ func (p *Params) progListSubIndex(leafIndex uint32) treeIndex {
 }
 
 type emptySubtree struct {
-	value       merkle.Value
-	left, right *emptySubtree
+	value               merkle.Value
+	parent, left, right *emptySubtree
 }
 
 var zeroLeaf = &emptySubtree{}
@@ -111,11 +111,14 @@ func (e *emptySubtree) getNode(index treeIndex) merkle.Value {
 }
 
 func emptyTreeNode(left, right *emptySubtree) *emptySubtree {
-	return &emptySubtree{
+	e := &emptySubtree{
 		value: treeHash(left.value, right.value),
 		left:  left,
 		right: right,
 	}
+	left.parent = e
+	right.parent = e
+	return e
 }
 
 func emptyVector(height uint, leaves *emptySubtree) *emptySubtree {
@@ -151,8 +154,8 @@ func (p *Params) initEmptyTree() {
 	indexEntriesTree := emptyVector(p.logMapsPerEpoch+p.logValuesPerMap, indexEntry)
 	epochTree := emptyTreeNode(filterMapsTree, indexEntriesTree)
 	epochHistoryTree := emptyVector(p.logEpochHistory, epochTree)
-	logIndexTree := emptyTreeNode(epochHistoryTree, zeroLeaf)
-	p.treeRoot = mtNode{node: 0, empty: logIndexTree}
+	emptyIndexTree := emptyTreeNode(epochHistoryTree, zeroLeaf)
+	p.treeRoot = mtNode{node: rootPtr, empty: emptyIndexTree, index: rootIndex}
 }
 
 func (p *Params) subtreeMapRange(index treeIndex) common.Range[uint32] {

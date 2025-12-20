@@ -120,14 +120,14 @@ func (params *Params) newMerkleTree(reader treeInitReader) (*merkleTree, error) 
 	if err != nil {
 		return nil, err
 	}
-	if err := mt.initTree(reader, rootIndex, rootPtr, nw, avail, status); err != nil {
+	if err := mt.initTree(reader, params.treeRoot, nw, avail, status); err != nil {
 		return nil, err
 	}
 	return mt, nil
 }
 
-func (mt *merkleTree) initTree(reader treeInitReader, index treeIndex, node uint32, nw nodeWithWeight, avail, status int) error {
-	n := &mt.nodes[node]
+func (mt *merkleTree) initTree(reader treeInitReader, node mtNode, nw nodeWithWeight, avail, status int) error {
+	n := &mt.nodes[node.node]
 	var recursiveInit bool
 	switch avail {
 	case mtaInternal:
@@ -144,7 +144,7 @@ func (mt *merkleTree) initTree(reader treeInitReader, index treeIndex, node uint
 	case mtsPartial:
 		recursiveInit = true
 	case mtsComplete:
-		mt.setComplete(node, index)
+		mt.setComplete(node)
 	default:
 		panic("invalid node status from tree init reader")
 	}
@@ -152,21 +152,21 @@ func (mt *merkleTree) initTree(reader treeInitReader, index treeIndex, node uint
 		return nil
 	}
 	// initialize descendants recursively
-	nwLeft, availLeft, statusLeft, err := reader.initNode(index.leftChild())
+	nwLeft, availLeft, statusLeft, err := reader.initNode(node.index.leftChild())
 	if err != nil {
 		return err
 	}
-	nwRight, availRight, statusRight, err := reader.initNode(index.leftChild())
+	nwRight, availRight, statusRight, err := reader.initNode(node.index.rightChild())
 	if err != nil {
 		return err
 	}
 	if availLeft != mtaUnknown && availRight != mtaUnknown {
-		n.setLeft(mt.newNode(node))
-		if err := mt.initTree(reader, index.leftChild(), n.left(), nwLeft, availLeft, statusLeft); err != nil {
+		n.setLeft(mt.newNode(node.node))
+		if err := mt.initTree(reader, mt.leftChild(node), nwLeft, availLeft, statusLeft); err != nil {
 			return err
 		}
-		n.setRight(mt.newNode(node))
-		if err := mt.initTree(reader, index.rightChild(), n.right(), nwRight, availRight, statusRight); err != nil {
+		n.setRight(mt.newNode(node.node))
+		if err := mt.initTree(reader, mt.rightChild(node), nwRight, availRight, statusRight); err != nil {
 			return err
 		}
 	} else {
@@ -202,6 +202,7 @@ func (mt *merkleTree) newNode(parent uint32) uint32 {
 type mtNode struct {
 	node  uint32
 	empty *emptySubtree
+	index treeIndex
 }
 
 func (mt *merkleTree) getDescendant(node mtNode, subIndex treeIndex) mtNode {
@@ -224,9 +225,9 @@ func (mt *merkleTree) getDescendant(node mtNode, subIndex treeIndex) mtNode {
 		}
 		switch {
 		case subIndex.matchRoot(2):
-			node = mtNode{node: n.left(), empty: node.empty.left}
+			node = mt.leftChild(node)
 		case subIndex.matchRoot(3):
-			node = mtNode{node: n.right(), empty: node.empty.right}
+			node = mt.rightChild(node)
 		default:
 			panic("invalid descendant subIndex")
 		}
@@ -234,14 +235,35 @@ func (mt *merkleTree) getDescendant(node mtNode, subIndex treeIndex) mtNode {
 	return node
 }
 
-func (mt *merkleTree) setComplete(node uint32, index treeIndex) {
-	n := &mt.nodes[node]
+func (mt *merkleTree) leftChild(node mtNode) mtNode {
+	return mtNode{node: mt.nodes[node.node].left(), empty: node.empty.left, index: node.index.leftChild()}
+}
+
+func (mt *merkleTree) rightChild(node mtNode) mtNode {
+	return mtNode{node: mt.nodes[node.node].right(), empty: node.empty.right, index: node.index.rightChild()}
+}
+
+func (mt *merkleTree) parent(node mtNode) mtNode {
+	return mtNode{node: mt.nodes[node.node].parent(), empty: node.empty.parent, index: node.index.parent()}
+}
+
+func (mt *merkleTree) sibling(node mtNode) mtNode {
+	parent := mt.parent(node)
+	if node.index == parent.index.leftChild() {
+		return mt.rightChild(parent)
+	} else {
+		return mt.leftChild(parent)
+	}
+}
+
+func (mt *merkleTree) setComplete(node mtNode) {
+	n := &mt.nodes[node.node]
 	if n.isComplete() {
 		return
 	}
 	if n.left() != nullPtr {
-		mt.setComplete(n.left(), index.leftChild())
-		mt.setComplete(n.right(), index.rightChild())
+		mt.setComplete(mt.leftChild(node))
+		mt.setComplete(mt.rightChild(node))
 		return
 	}
 	if !n.isValueKnown() {
@@ -250,17 +272,17 @@ func (mt *merkleTree) setComplete(node uint32, index treeIndex) {
 	n.setComplete(true)
 	// propagate completed state to ancestors and collapse completed subtrees if possible
 	for n.parent() != nullPtr {
-		parent := n.parent()
-		p := &mt.nodes[parent]
-		sibling := p.left() + p.right() - node
-		s := &mt.nodes[sibling]
+		parent := mt.parent(node)
+		p := &mt.nodes[parent.node]
+		sibling := mt.sibling(node)
+		s := &mt.nodes[sibling.node]
 		if !s.isComplete() {
 			break
 		}
 		p.setComplete(true)
 		p.weight = n.weight + s.weight
 		if !p.isValueKnown() {
-			mt.getValue(parent)
+			mt.getValue(parent.node)
 		}
 		if pl := mt.params.storageLevel(p.weight); pl == 0 {
 			mt.collapseSubtree(parent)
@@ -343,15 +365,15 @@ func (mt *merkleTree) traverseSubtree(node uint32, action int, encBytes *seriali
 	}
 }
 
-func (mt *merkleTree) collapseSubtree(node uint32) {
-	mt.traverseSubtree(node, tsDelete, nil, nil)
+func (mt *merkleTree) collapseSubtree(node mtNode) {
+	mt.traverseSubtree(node.node, tsDelete, nil, nil)
 }
 
-func (mt *merkleTree) collapseAndStoreSubtree(node uint32, index treeIndex) (res storedSubtree) {
+func (mt *merkleTree) collapseAndStoreSubtree(node mtNode) (res storedSubtree) {
 	var bitPtr int
-	res.index = index
-	mt.traverseSubtree(node, tsCollectShapeBits, &res.nodeEnc, &bitPtr)
-	mt.traverseSubtree(node, tsCollectLeavesAndDelete, &res.nodeEnc, nil)
+	res.index = node.index
+	mt.traverseSubtree(node.node, tsCollectShapeBits, &res.nodeEnc, &bitPtr)
+	mt.traverseSubtree(node.node, tsCollectLeavesAndDelete, &res.nodeEnc, nil)
 	return
 }
 
@@ -465,21 +487,24 @@ func (r *subtreeNodeReader) getSubtreeAndNode(index treeIndex) (cachedSubtreeNod
 		return cachedSubtreeNode{}, err
 	}
 	var sn cachedSubtreeNode
-	if s != nil {
+	if st != nil {
 		sn = cachedSubtreeNode{
 			subtree:      st,
 			subtreeLevel: index.level(),
 		}
 	} else {
 		if index != rootIndex {
-			sn = r.getSubtreeAndNode(index.parent())
+			sn, err = r.getSubtreeAndNode(index.parent())
+			if err != nil {
+				return cachedSubtreeNode{}, err
+			}
 		}
 	}
 	if sn.subtree != nil {
 		sn.node, sn.nodeType = sn.subtree.getNode(index.subIndex(sn.subtreeLevel))
 	}
-	r.subtreeCache.Add(index, sn)
-	return cs, nil
+	r.cache.Add(index, sn)
+	return sn, nil
 }
 
 func (r *subtreeNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error) {

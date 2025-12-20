@@ -290,17 +290,17 @@ func (rs *renderState) addValue(mapValue common.Hash) {
 				value := rs.params.columnIndex(rs.lvPointer, &mapValue)
 				rs.currentMap.addToRow(rowIndex, value)
 				rowRoot := rs.mapRowRoots[rowIndex]
-				entryNode := rs.tree.getDescendant(rowRoot, rs.params.progListSubIndex(rowLength/8)).node
-				countNode := rs.tree.getDescendant(rowRoot, ti64(rtiListCount)).node
+				entryNode := rs.tree.getDescendant(rowRoot, rs.params.progListSubIndex(rowLength/8))
+				countNode := rs.tree.getDescendant(rowRoot, ti64(rtiListCount))
 				leafPtr := rowLength % 8
 				var entryValue, countValue merkle.Value
 				if leafPtr != 0 {
-					entryValue, _ = rs.tree.getValue(entryNode)
+					entryValue, _ = rs.tree.getValue(entryNode.node)
 				}
 				binary.LittleEndian.PutUint32(entryValue[leafPtr*4:leafPtr*4+4], value)
 				leafPtr++
 				rowLength++
-				rs.tree.setValue(entryNode, entryValue, rs.params.filterRowNodeWeight(leafPtr*uint32(rs.params.logMapWidth+7/8)))
+				rs.tree.setValue(entryNode.node, entryValue, rs.params.filterRowNodeWeight(leafPtr*uint32(rs.params.logMapWidth+7/8)))
 				if leafPtr == 8 {
 					rs.tree.setComplete(entryNode)
 				}
@@ -309,7 +309,7 @@ func (rs *renderState) addValue(mapValue common.Hash) {
 				if rowLength >= 256 {
 					countBytes = 2
 				}
-				rs.tree.setValue(countNode, countValue, rs.params.filterRowNodeWeight(countBytes))
+				rs.tree.setValue(countNode.node, countValue, rs.params.filterRowNodeWeight(countBytes))
 				break
 			}
 		}
@@ -379,7 +379,7 @@ func (rs *renderState) initMapTree() {
 
 func (rs *renderState) completeMapTree() {
 	for rowIndex := range rs.params.mapHeight {
-		rs.tree.setComplete(rs.mapRowRoots[rowIndex].node)
+		rs.tree.setComplete(rs.mapRowRoots[rowIndex])
 	}
 }
 
