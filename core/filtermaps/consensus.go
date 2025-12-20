@@ -195,10 +195,10 @@ type filterRowReader interface {
 	getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, error)
 }
 
-type filterRowNodeReader struct {
+/*type filterRowNodeReader struct {
 	params *Params
 	reader filterRowReader
-	cache  *lru.Cache[treeIndex, cachedNode]
+	cache  *lru.Cache[treeIndex, nodeWithWeight]
 }
 
-func (r *filterRowNodeReader) getNode(index treeIndex) (merkle.Value, float32, int, error) {}
+func (r *filterRowNodeReader) getNode(index treeIndex) (merkle.Value, float32, int, error) {}*/

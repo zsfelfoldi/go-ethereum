@@ -18,21 +18,31 @@ package filtermaps
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
+	"math"
 	"sort"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/common/lru"
 )
 
 const (
-	mtrNone = iota
-	mtrUnknownInternal
-	mtrKnownInternal
-	mtrBoundary
+	//
+	mtaUnknown  = iota // does not exist or outside the known range
+	mtaInternal        // value unknown but has known descendants
+	mtaKnown           // value known
+
+	mtsEmpty = iota
+	mtsPartial
+	mtsComplete
 )
 
 type (
 	nodeReader interface {
-		getNode(index treeIndex) (merkle.Value, float32, int, error)
+		getNode(index treeIndex) (nw nodeWithWeight, avail int, err error)
+	}
+	treeInitReader interface {
+		initNode(index treeIndex) (nw nodeWithWeight, avail, status int, err error)
 	}
 	subtreeReader interface {
 		getSubtree(index treeIndex) (serializedSubtree, error)
@@ -96,7 +106,7 @@ type merkleTree struct {
 	subtrees  storedSubtrees
 }
 
-func (params *Params) newMerkleTree(reader merkleBoundaryReader) *merkleTree {
+func (params *Params) newMerkleTree(reader treeInitReader) (*merkleTree, error) {
 	mt := &merkleTree{
 		params: params,
 		nodes: []merkleTreeNode{merkleTreeNode{
@@ -106,33 +116,65 @@ func (params *Params) newMerkleTree(reader merkleBoundaryReader) *merkleTree {
 		}},
 		firstFree: nullPtr,
 	}
-	mt.initTree(reader, rootIndex, rootPtr)
-	return mt
+	nw, avail, status, err := reader.initNode(rootIndex)
+	if err != nil {
+		return nil, err
+	}
+	if err := mt.initTree(reader, rootIndex, rootPtr, nw, avail, status); err != nil {
+		return nil, err
+	}
+	return mt, nil
 }
 
-func (mt *merkleTree) initTree(reader merkleBoundaryReader, index treeIndex, node uint32) {
+func (mt *merkleTree) initTree(reader treeInitReader, index treeIndex, node uint32, nw nodeWithWeight, avail, status int) error {
 	n := &mt.nodes[node]
-	value, weight, nodeType := reader.getBoundaryNode(index)
-	switch nodeType {
-	case mtrInternal:
-		n.setLeft(mt.newNode(node))
-		n.setRight(mt.newNode(node))
-		mt.initTree(reader, index.leftChild(), n.left())
-		mt.initTree(reader, index.rightChild(), n.right())
-	case mtrBoundary:
-		n.value, n.weight = value, weight
+	var recursiveInit bool
+	switch avail {
+	case mtaInternal:
+		recursiveInit = true
+	case mtaKnown:
+		n.value, n.weight = nw.value, nw.weight
 		n.setValueKnown(true)
-	case mtrCompleteBoundary:
-		n.value, n.weight = value, weight
-		n.setValueKnown(true)
-		mt.setComplete(node)
-	case mtrEmptyBoundary:
-		n.value, n.weight = value, weight
-		n.setValueKnown(true)
-		n.setEmptySubtree(true)
 	default:
-		panic("invalid node type from boundary reader")
+		panic("invalid node availability from tree init reader")
 	}
+	switch status {
+	case mtsEmpty:
+		n.setEmptySubtree(true)
+	case mtsPartial:
+		recursiveInit = true
+	case mtsComplete:
+		mt.setComplete(node, index)
+	default:
+		panic("invalid node status from tree init reader")
+	}
+	if !recursiveInit {
+		return nil
+	}
+	// initialize descendants recursively
+	nwLeft, availLeft, statusLeft, err := reader.initNode(index.leftChild())
+	if err != nil {
+		return err
+	}
+	nwRight, availRight, statusRight, err := reader.initNode(index.leftChild())
+	if err != nil {
+		return err
+	}
+	if availLeft != mtaUnknown && availRight != mtaUnknown {
+		n.setLeft(mt.newNode(node))
+		if err := mt.initTree(reader, index.leftChild(), n.left(), nwLeft, availLeft, statusLeft); err != nil {
+			return err
+		}
+		n.setRight(mt.newNode(node))
+		if err := mt.initTree(reader, index.rightChild(), n.right(), nwRight, availRight, statusRight); err != nil {
+			return err
+		}
+	} else {
+		if avail != mtaKnown {
+			panic("unknown internal node with no descendants")
+		}
+	}
+	return nil
 }
 
 func (mt *merkleTree) deleteNode(node uint32) {
@@ -192,14 +234,14 @@ func (mt *merkleTree) getDescendant(node mtNode, subIndex treeIndex) mtNode {
 	return node
 }
 
-func (mt *merkleTree) setComplete(node uint32) {
+func (mt *merkleTree) setComplete(node uint32, index treeIndex) {
 	n := &mt.nodes[node]
 	if n.isComplete() {
 		return
 	}
 	if n.left() != nullPtr {
-		mt.setComplete(n.left())
-		mt.setComplete(n.right())
+		mt.setComplete(n.left(), index.leftChild())
+		mt.setComplete(n.right(), index.rightChild())
 		return
 	}
 	if !n.isValueKnown() {
@@ -285,6 +327,9 @@ func (mt *merkleTree) traverseSubtree(node uint32, action int, encBytes *seriali
 	if n.left() == nullPtr {
 		if action == tsCollectLeavesAndDelete {
 			*encBytes = append(*encBytes, n.value[:]...)
+			var weightEnc [4]byte
+			binary.LittleEndian.PutUint32(weightEnc[:], math.Float32bits(n.weight))
+			*encBytes = append(*encBytes, weightEnc[:]...)
 		}
 		return
 	}
@@ -302,8 +347,9 @@ func (mt *merkleTree) collapseSubtree(node uint32) {
 	mt.traverseSubtree(node, tsDelete, nil, nil)
 }
 
-func (mt *merkleTree) collapseAndStoreSubtree(node uint32) (res storedSubtree) {
+func (mt *merkleTree) collapseAndStoreSubtree(node uint32, index treeIndex) (res storedSubtree) {
 	var bitPtr int
+	res.index = index
 	mt.traverseSubtree(node, tsCollectShapeBits, &res.nodeEnc, &bitPtr)
 	mt.traverseSubtree(node, tsCollectLeavesAndDelete, &res.nodeEnc, nil)
 	return
@@ -321,13 +367,13 @@ func (mt *merkleTree) clearStoredSubtrees() {
 type serializedSubtree []byte
 
 func (s serializedSubtree) shapeBit(bitIndex int) bool {
-	return s[bitIndex/8]&(byte(1)<<(bitIndex%8)) != 0
+	return s[4+bitIndex/8]&(byte(1)<<(bitIndex%8)) != 0
 }
 
-func (s serializedSubtree) node(index treeIndex) (value merkle.Value, leaf, internal bool) {
+func (s serializedSubtree) getNode(index treeIndex) (node nodeWithWeight, nodeType int) {
 	l := len(s)
-	leafCount := (l*8 + 1) / 258
-	shapeOffset := l - leafCount*32
+	leafCount := (l*8 + 1) / ((32+4)*8 + 2)
+	shapeOffset := l - leafCount*(32+4)
 	if shapeOffset != (leafCount*2+6)/8 {
 		panic("invalid serialized subtree")
 	}
@@ -352,17 +398,18 @@ func (s serializedSubtree) node(index treeIndex) (value merkle.Value, leaf, inte
 		}
 	}
 	if s.shapeBit(bitIndex) { // index points to subtree leaf
-		copy(value[:], s[shapeOffset+32*leafIndex:shapeOffset+32*(leafIndex+1)])
-		leaf = true
+		offset := shapeOffset + (32+4)*leafIndex
+		copy(node.value[:], s[offset:offset+32])
+		node.weight = math.Float32frombits(binary.LittleEndian.Uint32(s[offset+32 : offset+32+4]))
+		nodeType = mtaKnown
 		return
 	}
-	internal = true // index points to internal node
+	nodeType = mtaInternal
 	return
 }
 
 type storedSubtree struct {
 	index   treeIndex
-	weight  float32
 	nodeEnc serializedSubtree
 }
 
@@ -394,13 +441,51 @@ type subtreeNodeReader struct {
 	//params   *Params
 	reader subtreeReader
 	// non-existent entries are cached in both caches
-	subtreeCache *lru.Cache[treeIndex, serializedSubtree]
-	nodeCache    *lru.Cache[treeIndex, cachedNode]
+	cache *lru.Cache[treeIndex, cachedSubtreeNode]
 }
 
-type cachedNode struct {
+type cachedSubtreeNode struct {
+	subtree      serializedSubtree
+	subtreeLevel uint
+	node         nodeWithWeight
+	nodeType     int
+}
+
+type nodeWithWeight struct {
 	value  merkle.Value
-	weight uint32
+	weight float32
 }
 
-func (r *subtreeNodeReader) getNode(index treeIndex) (merkle.Value, float32, int, error) {}
+func (r *subtreeNodeReader) getSubtreeAndNode(index treeIndex) (cachedSubtreeNode, error) {
+	if sn, ok := r.cache.Get(index); ok {
+		return sn, nil
+	}
+	st, err := r.reader.getSubtree(index)
+	if err != nil {
+		return cachedSubtreeNode{}, err
+	}
+	var sn cachedSubtreeNode
+	if s != nil {
+		sn = cachedSubtreeNode{
+			subtree:      st,
+			subtreeLevel: index.level(),
+		}
+	} else {
+		if index != rootIndex {
+			sn = r.getSubtreeAndNode(index.parent())
+		}
+	}
+	if sn.subtree != nil {
+		sn.node, sn.nodeType = sn.subtree.getNode(index.subIndex(sn.subtreeLevel))
+	}
+	r.subtreeCache.Add(index, sn)
+	return cs, nil
+}
+
+func (r *subtreeNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error) {
+	if sn, err := r.getSubtreeAndNode(index); err == nil {
+		return sn.node, sn.nodeType, nil
+	} else {
+		return nodeWithWeight{}, 0, err
+	}
+}
