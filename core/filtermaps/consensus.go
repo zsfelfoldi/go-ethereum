@@ -307,7 +307,7 @@ func (p *Params) newLogIndexTreeReader(readers []nodeReader, lvPtr uint64) *logI
 func (l *logIndexTreeReader) initNode(index treeIndex) (nw nodeWithWeight, avail, status int, err error) {
 	if index.matchRoot(rtiNextIndex) {
 		if index == rootIndex {
-			return nodeWithWeight{value: uint64ToValue(l.lvPtr), weight: xxx}, mtaKnown, mtsPartial, nil
+			return nodeWithWeight{value: uint64ToValue(l.lvPtr), weight: 1}, mtaKnown, mtsPartial, nil
 		}
 		return
 	}

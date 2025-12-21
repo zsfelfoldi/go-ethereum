@@ -262,6 +262,9 @@ func (rs *renderState) addTxAndLogEntries(transactions []*types.Transaction, rec
 			}
 		}
 	}
+	// update next_index pointer
+	nextIndexNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiNextIndex))
+	rs.tree.setValue(nextIndexNode.node, uint64ToValue(rs.lvPointer), 1)
 }
 
 func (rs *renderState) addBlockEntry(header *types.Header) (uint32, []*completedMap) {
