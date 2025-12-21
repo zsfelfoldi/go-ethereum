@@ -160,25 +160,25 @@ func (p *Params) initEmptyTree() {
 	p.treeRoot = mtNode{node: rootPtr, empty: emptyIndexTree, index: rootIndex}
 }
 
-func (p *Params) subtreeMapRange(index treeIndex) common.Range[uint32] {
+func (p *Params) subtreeLvRange(index treeIndex) common.Range[uint64] {
 	if !index.matchRoot(rtiEpochs) {
-		return common.NewRange[uint32](0, math.MaxUint32)
+		return common.NewRange[uint64](0, math.MaxUint64)
 	}
 	epochRange := index.splitRoot(p.logEpochHistory)
 	if epochRange.Count() > 1 {
-		return common.NewRange[uint32](uint32(epochRange.First())*p.mapsPerEpoch, uint32(epochRange.Count())*p.mapsPerEpoch)
+		return common.NewRange[uint64](epochRange.First()*uint64(p.mapsPerEpoch)*p.valuesPerMap, epochRange.Count()*uint64(p.mapsPerEpoch)*p.valuesPerMap)
 	}
-	epoch := uint32(epochRange.First())
+	epoch := epochRange.First()
 	switch {
 	case index.matchRoot(rtiFilterMaps):
 		index.splitRoot(p.logMapHeight)
 		mapSubRange := index.splitRoot(p.logMapsPerEpoch)
-		return common.NewRange[uint32](epoch*p.mapsPerEpoch+uint32(mapSubRange.First()), uint32(mapSubRange.Count()))
+		return common.NewRange[uint64]((epoch*uint64(p.mapsPerEpoch)+mapSubRange.First())*p.valuesPerMap, mapSubRange.Count()*p.valuesPerMap)
 	case index.matchRoot(rtiIndexEntries):
-		mapSubRange := index.splitRoot(p.logMapsPerEpoch)
-		return common.NewRange[uint32](epoch*p.mapsPerEpoch+uint32(mapSubRange.First()), uint32(mapSubRange.Count()))
+		valueSubRange := index.splitRoot(p.logMapsPerEpoch + p.logValuesPerMap)
+		return common.NewRange[uint64](epoch*uint64(p.mapsPerEpoch)*p.valuesPerMap+valueSubRange.First(), valueSubRange.Count())
 	default:
-		return common.NewRange[uint32](epoch*p.mapsPerEpoch, p.mapsPerEpoch)
+		return common.NewRange[uint64](epoch*uint64(p.mapsPerEpoch)*p.valuesPerMap, uint64(p.mapsPerEpoch)*p.valuesPerMap)
 	}
 }
 

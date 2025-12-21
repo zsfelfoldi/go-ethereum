@@ -744,7 +744,7 @@ func (m *mapStorage) getSubtree(index treeIndex) (serializedSubtree, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 
-	mapIndex := m.params.subtreeMapRange(index).Last()
+	mapIndex := uint32(m.params.subtreeLvRange(index).Last() / m.params.valuesPerMap)
 	if m.overlay.includes(mapIndex) {
 		fm := m.overlayMaps[mapIndex]
 		if fm == nil {

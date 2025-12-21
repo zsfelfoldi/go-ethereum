@@ -176,7 +176,7 @@ func (iv *IndexView) getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, erro
 }
 
 func (iv *IndexView) getSubtree(index treeIndex) (serializedSubtree, error) {
-	mapIndex := iv.storage.params.subtreeMapRange(index).Last()
+	mapIndex := uint32(iv.storage.params.subtreeLvRange(index).Last() / iv.storage.params.valuesPerMap)
 	if mapIndex < iv.firstOverlayMap {
 		return iv.storage.getSubtree(index)
 	}
