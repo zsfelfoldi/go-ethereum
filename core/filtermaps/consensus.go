@@ -246,11 +246,11 @@ func (r *filterRowNodeReader) getNode(index treeIndex) (nodeWithWeight, int, err
 }
 
 func (p *Params) getProgListNode(row FilterRow, level uint, index treeIndex) (nodeWithWeight, int, error) {
-	height := p.progListHeightFirst + level*p.progListHeightStep
-	slen := 1 << height
+	subtreeHeight := p.progListHeightFirst + level*p.progListHeightStep
+	subtreeLen := 8 << subtreeHeight
 	switch {
 	case index.matchRoot(rtiProgListSubtree):
-		chunkRange := index.splitRoot(height)
+		chunkRange := index.splitRoot(subtreeHeight)
 		if chunkRange.Count() > 1 {
 			return nodeWithWeight{}, mtaInternal, nil
 		}
@@ -269,8 +269,8 @@ func (p *Params) getProgListNode(row FilterRow, level uint, index treeIndex) (no
 		}
 		return nw, mtaKnown, nil
 	case index.matchRoot(rtiProgListNextTree):
-		if len(row) > slen {
-			return p.getProgListNode(row[slen:], level+1, index)
+		if len(row) > subtreeLen {
+			return p.getProgListNode(row[subtreeLen:], level+1, index)
 		}
 		if index != rootIndex {
 			return nodeWithWeight{}, mtaUnknown, nil
