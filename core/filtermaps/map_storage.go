@@ -757,3 +757,10 @@ func (m *mapStorage) getSubtree(index treeIndex) (serializedSubtree, error) {
 	}
 	return nil, nil
 }
+
+func (m *mapStorage) treeInitReader(startMap uint32) treeInitReader {
+	return m.params.newLogIndexTreeReader([]nodeReader{
+		m.params.newFilterRowNodeReader(m),
+		newSubtreeNodeReader(m),
+	}, uint64(startMap)*m.params.valuesPerMap)
+}

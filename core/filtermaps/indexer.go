@@ -301,7 +301,7 @@ func (ix *Indexer) initMapBoundary(startMap, limitMap uint32) *renderState {
 		rs.currentMap = rs.params.newMemoryMap()
 		rs.initMapTree()
 		var err error
-		rs.tree, err = ix.storage.params.newMerkleTree(reader)
+		rs.tree, err = ix.storage.params.newMerkleTree(ix.storage.treeInitReader(startMap))
 		if err != nil {
 			log.Crit("Failed to initialize log index merkle tree at map boundary", "map", startMap, "error", err)
 		}
@@ -322,13 +322,19 @@ func (ix *Indexer) initSnapshot(snapshot *IndexView) *renderState {
 	headMapIndex := snapshot.firstOverlayMap + uint32(len(snapshot.overlayMaps)-1)
 	headMap := ix.storage.params.newMemoryMap()
 	headMap.initWithMap(snapshot.overlayMaps[len(snapshot.overlayMaps)-1])
-	return &renderState{
+	rs := &renderState{
 		params:      ix.storage.params,
 		renderRange: common.NewRange[uint32](headMapIndex, math.MaxUint32-headMapIndex),
 		currentMap:  headMap,
 		mapIndex:    headMapIndex,
 		lvPointer:   snapshot.headLvPointer,
 	}
+	var err error
+	rs.tree, err = ix.storage.params.newMerkleTree(snapshot.treeInitReader())
+	if err != nil {
+		log.Crit("Failed to initialize log index merkle tree from snapshot", "blockNumber", snapshot.blockRange.Last(), "error", err)
+	}
+	return rs
 }
 
 // revertMaps removes all rendered maps starting from mapIndex. It also removes

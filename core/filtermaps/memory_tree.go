@@ -466,6 +466,13 @@ type subtreeNodeReader struct {
 	cache *lru.Cache[treeIndex, cachedSubtree]
 }
 
+func newSubtreeNodeReader(reader subtreeReader) *subtreeNodeReader {
+	return &subtreeNodeReader{
+		reader: reader,
+		cache:  lru.NewCache[treeIndex, cachedSubtree](1000),
+	}
+}
+
 type cachedSubtree struct {
 	subtree      serializedSubtree
 	subtreeLevel uint

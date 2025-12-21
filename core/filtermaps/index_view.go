@@ -187,6 +187,14 @@ func (iv *IndexView) getSubtree(index treeIndex) (serializedSubtree, error) {
 	return nil, nil
 }
 
+func (iv *IndexView) treeInitReader() treeInitReader {
+	return iv.storage.params.newLogIndexTreeReader([]nodeReader{
+		iv.storage.params.newFilterRowNodeReader(iv),
+		newSubtreeNodeReader(iv),
+		iv.indexEntriesReader,
+	}, iv.headLvPointer)
+}
+
 type renderState struct {
 	params           *Params
 	renderRange      common.Range[uint32]

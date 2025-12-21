@@ -219,6 +219,14 @@ type filterRowNodeReader struct {
 	cache  *lru.Cache[mapRowIndex, FilterRow]
 }
 
+func (p *Params) newFilterRowNodeReader(reader filterRowReader) *filterRowNodeReader {
+	return &filterRowNodeReader{
+		params: p,
+		reader: reader,
+		cache:  lru.NewCache[mapRowIndex, FilterRow](1000),
+	}
+}
+
 func (r *filterRowNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error) {
 	mapIndex, rowIndex, subIndex := r.params.splitMapRowIndex(index)
 	if (subIndex == treeIndex{}) {
@@ -279,4 +287,53 @@ func (p *Params) getProgListNode(row FilterRow, level uint, index treeIndex) (no
 	default:
 		panic("invalid tree index")
 	}
+}
+
+type logIndexTreeReader struct {
+	params  *Params
+	readers []nodeReader
+	lvPtr   uint64
+}
+
+func (p *Params) newLogIndexTreeReader(readers []nodeReader, lvPtr uint64) *logIndexTreeReader {
+	return &logIndexTreeReader{
+		params:  p,
+		readers: readers,
+		lvPtr:   lvPtr,
+	}
+}
+
+// initNode implements treeInitReader.
+func (l *logIndexTreeReader) initNode(index treeIndex) (nw nodeWithWeight, avail, status int, err error) {
+	if index.matchRoot(rtiNextIndex) {
+		if index == rootIndex {
+			return nodeWithWeight{value: uint64ToValue(l.lvPtr), weight: xxx}, mtaKnown, mtsPartial, nil
+		}
+		return
+	}
+	for _, reader := range l.readers {
+		readerNw, readerAvail, readerErr := reader.getNode(index)
+		if readerErr != nil {
+			err = readerErr
+			return
+		}
+		if readerAvail > avail {
+			nw, avail = readerNw, readerAvail
+			if avail == mtaKnown {
+				break
+			}
+		}
+	}
+	if avail != mtaUnknown {
+		lvRange := l.params.subtreeLvRange(index)
+		switch {
+		case l.lvPtr >= lvRange.AfterLast():
+			status = mtsComplete
+		case l.lvPtr <= lvRange.First():
+			status = mtsEmpty
+		default:
+			status = mtsPartial
+		}
+	}
+	return
 }
