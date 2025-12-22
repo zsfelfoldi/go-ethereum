@@ -121,20 +121,19 @@ func (params *Params) newMerkleTree(getNode nodeReader, nodeStatus nodeStatus) (
 }
 
 func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode, nw nodeWithWeight, avail int) error {
-	n := &mt.nodes[node.index]
 	var recursiveInit bool
 	switch avail {
 	case mtaInternal:
 		recursiveInit = true
 	case mtaKnown:
-		n.value, n.weight = nw.value, nw.weight
-		n.setValueKnown(true)
+		mt.nodes[node.index].value, mt.nodes[node.index].weight = nw.value, nw.weight
+		mt.nodes[node.index].setValueKnown(true)
 	default:
 		panic("invalid node availability from tree init reader")
 	}
 	switch nodeStatus(node.gti) {
 	case mtsEmpty:
-		n.setEmptySubtree(true)
+		mt.nodes[node.index].setEmptySubtree(true)
 	case mtsPartial:
 		recursiveInit = true
 	case mtsComplete:
@@ -155,11 +154,11 @@ func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node m
 		return err
 	}
 	if availLeft != mtaUnknown && availRight != mtaUnknown {
-		n.setLeft(mt.newNode(node.index))
+		mt.nodes[node.index].setLeft(mt.newNode(node.index))
 		if err := mt.initTree(getNode, nodeStatus, mt.leftChild(node), nwLeft, availLeft); err != nil {
 			return err
 		}
-		n.setRight(mt.newNode(node.index))
+		mt.nodes[node.index].setRight(mt.newNode(node.index))
 		if err := mt.initTree(getNode, nodeStatus, mt.rightChild(node), nwRight, availRight); err != nil {
 			return err
 		}
