@@ -38,15 +38,9 @@ const (
 )
 
 type (
-	nodeReader interface {
-		getNode(index treeIndex) (nw nodeWithWeight, avail int, err error)
-	}
-	treeInitReader interface {
-		initNode(index treeIndex) (nw nodeWithWeight, avail, status int, err error)
-	}
-	subtreeReader interface {
-		getSubtree(index treeIndex) (serializedSubtree, error)
-	}
+	nodeReader    func(index treeIndex) (nw nodeWithWeight, avail int, err error)
+	nodeStatus    func(index treeIndex) int
+	subtreeReader func(index treeIndex) (serializedSubtree, error)
 )
 
 func treeHash(left, right merkle.Value) (result merkle.Value) {
@@ -106,7 +100,7 @@ type merkleTree struct {
 	subtrees  storedSubtrees
 }
 
-func (params *Params) newMerkleTree(reader treeInitReader) (*merkleTree, error) {
+func (params *Params) newMerkleTree(getNode nodeReader, nodeStatus nodeStatus) (*merkleTree, error) {
 	mt := &merkleTree{
 		params: params,
 		nodes: []merkleTreeNode{merkleTreeNode{
@@ -116,17 +110,17 @@ func (params *Params) newMerkleTree(reader treeInitReader) (*merkleTree, error) 
 		}},
 		firstFree: nullPtr,
 	}
-	nw, avail, status, err := reader.initNode(rootIndex)
+	nw, avail, err := getNode(rootIndex)
 	if err != nil {
 		return nil, err
 	}
-	if err := mt.initTree(reader, params.treeRoot, nw, avail, status); err != nil {
+	if err := mt.initTree(getNode, nodeStatus, params.treeRoot, nw, avail); err != nil {
 		return nil, err
 	}
 	return mt, nil
 }
 
-func (mt *merkleTree) initTree(reader treeInitReader, node mtNode, nw nodeWithWeight, avail, status int) error {
+func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode, nw nodeWithWeight, avail int) error {
 	n := &mt.nodes[node.node]
 	var recursiveInit bool
 	switch avail {
@@ -138,7 +132,7 @@ func (mt *merkleTree) initTree(reader treeInitReader, node mtNode, nw nodeWithWe
 	default:
 		panic("invalid node availability from tree init reader")
 	}
-	switch status {
+	switch nodeStatus(node.index) {
 	case mtsEmpty:
 		n.setEmptySubtree(true)
 	case mtsPartial:
@@ -152,21 +146,21 @@ func (mt *merkleTree) initTree(reader treeInitReader, node mtNode, nw nodeWithWe
 		return nil
 	}
 	// initialize descendants recursively
-	nwLeft, availLeft, statusLeft, err := reader.initNode(node.index.leftChild())
+	nwLeft, availLeft, err := getNode(node.index.leftChild())
 	if err != nil {
 		return err
 	}
-	nwRight, availRight, statusRight, err := reader.initNode(node.index.rightChild())
+	nwRight, availRight, err := getNode(node.index.rightChild())
 	if err != nil {
 		return err
 	}
 	if availLeft != mtaUnknown && availRight != mtaUnknown {
 		n.setLeft(mt.newNode(node.node))
-		if err := mt.initTree(reader, mt.leftChild(node), nwLeft, availLeft, statusLeft); err != nil {
+		if err := mt.initTree(getNode, nodeStatus, mt.leftChild(node), nwLeft, availLeft); err != nil {
 			return err
 		}
 		n.setRight(mt.newNode(node.node))
-		if err := mt.initTree(reader, mt.rightChild(node), nwRight, availRight, statusRight); err != nil {
+		if err := mt.initTree(getNode, nodeStatus, mt.rightChild(node), nwRight, availRight); err != nil {
 			return err
 		}
 	} else {
@@ -461,15 +455,15 @@ func (s storedSubtrees) getSubtree(index treeIndex) serializedSubtree {
 // implements nodeReader based on a subtreeReader
 type subtreeNodeReader struct {
 	//params   *Params
-	reader subtreeReader
+	getSubtree subtreeReader
 	// non-existent entries are cached in both caches
 	cache *lru.Cache[treeIndex, cachedSubtree]
 }
 
 func newSubtreeNodeReader(reader subtreeReader) *subtreeNodeReader {
 	return &subtreeNodeReader{
-		reader: reader,
-		cache:  lru.NewCache[treeIndex, cachedSubtree](1000),
+		getSubtree: reader,
+		cache:      lru.NewCache[treeIndex, cachedSubtree](1000),
 	}
 }
 
@@ -483,12 +477,12 @@ type nodeWithWeight struct {
 	weight float32
 }
 
-func (r *subtreeNodeReader) getSubtree(index treeIndex) (cachedSubtree, error) {
+func (r *subtreeNodeReader) getCachedSubtree(index treeIndex) (cachedSubtree, error) {
 	if cs, ok := r.cache.Get(index); ok {
 		return cs, nil
 	}
 	var cs cachedSubtree
-	st, err := r.reader.getSubtree(index)
+	st, err := r.getSubtree(index)
 	if err != nil {
 		return cachedSubtree{}, err
 	}
@@ -499,7 +493,7 @@ func (r *subtreeNodeReader) getSubtree(index treeIndex) (cachedSubtree, error) {
 		}
 	} else {
 		if index != rootIndex {
-			cs, err = r.getSubtree(index.parent())
+			cs, err = r.getCachedSubtree(index.parent())
 			if err != nil {
 				return cachedSubtree{}, err
 			}
@@ -510,7 +504,7 @@ func (r *subtreeNodeReader) getSubtree(index treeIndex) (cachedSubtree, error) {
 }
 
 func (r *subtreeNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error) {
-	cs, err := r.getSubtree(index)
+	cs, err := r.getCachedSubtree(index)
 	if err != nil {
 		return nodeWithWeight{}, 0, err
 	}
@@ -520,7 +514,7 @@ func (r *subtreeNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error
 	nw, avail := cs.subtree.getNode(index.subIndex(cs.subtreeLevel))
 	if avail == mtaInternal && index != rootIndex {
 		// maybe it is a subtree root and the parent's subtree has the value
-		parentCs, err := r.getSubtree(index)
+		parentCs, err := r.getCachedSubtree(index)
 		if err != nil {
 			return nodeWithWeight{}, 0, err
 		}
@@ -532,4 +526,23 @@ func (r *subtreeNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error
 		}
 	}
 	return nw, avail, nil
+}
+
+type mergedNodeReader []nodeReader
+
+func (m mergedNodeReader) getNode(index treeIndex) (nw nodeWithWeight, avail int, err error) {
+	for _, getNode := range m {
+		mergeNw, mergeAvail, mergeErr := getNode(index)
+		if mergeErr != nil {
+			err = mergeErr
+			return
+		}
+		if mergeAvail > avail {
+			nw, avail = mergeNw, mergeAvail
+			if avail == mtaKnown {
+				return
+			}
+		}
+	}
+	return
 }

@@ -758,9 +758,13 @@ func (m *mapStorage) getSubtree(index treeIndex) (serializedSubtree, error) {
 	return nil, nil
 }
 
-func (m *mapStorage) treeInitReader(startMap uint32) treeInitReader {
-	return m.params.newLogIndexTreeReader([]nodeReader{
-		m.params.newFilterRowNodeReader(m),
-		newSubtreeNodeReader(m),
-	}, uint64(startMap)*m.params.valuesPerMap)
+func (m *mapStorage) initTree(mapRange common.Range[uint32]) (*merkleTree, error) {
+	nextEntry := uint64(mapRange.First()) * m.params.valuesPerMap
+	nodeReader := mergedNodeReader{
+		m.params.newFilterRowNodeReader(m.getFilterMapRow).getNode,
+		newSubtreeNodeReader(m.getSubtree).getNode,
+		nextIndexReader(nextEntry).getNode,
+	}.getNode
+	nodeStatus := m.params.newLogIndexNodeStatus(nextEntry).nodeStatus //TODO
+	return m.params.newMerkleTree(nodeReader, nodeStatus)
 }

@@ -28,7 +28,7 @@ import (
 const (
 	// relative to root
 	rtiEpochs    = 2
-	rtiNextIndex = 3
+	rtiNextEntry = 3
 	// relative to epoch root
 	rtiFilterMaps   = 2
 	rtiIndexEntries = 3
@@ -182,65 +182,55 @@ func (p *Params) subtreeLvRange(index treeIndex) common.Range[uint64] {
 	}
 }
 
-func (p *Params) splitMapRowIndex(index treeIndex) (mapIndex, rowIndex uint32, subIndex treeIndex) {
-	if !index.matchRoot(rtiEpochs) {
-		return
-	}
-	epochRange := index.splitRoot(p.logEpochHistory)
-	if epochRange.Count() > 1 {
-		return
-	}
-	epoch := uint32(epochRange.First())
-	if !index.matchRoot(rtiFilterMaps) {
-		return
-	}
-	rowRange := index.splitRoot(p.logMapHeight)
-	if rowRange.Count() > 1 {
-		return
-	}
-	rowIndex = uint32(rowRange.First())
-	mapSubRange := index.splitRoot(p.logMapsPerEpoch)
-	if mapSubRange.Count() > 1 {
-		return
-	}
-	mapIndex = epoch*p.mapsPerEpoch + uint32(mapSubRange.First())
-	return mapIndex, rowIndex, index
-}
-
-type filterRowReader interface {
-	getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, error)
-}
+type filterRowReader func(mapIndex, rowIndex uint32) (FilterRow, error)
 
 type mapRowIndex struct{ mapIndex, rowIndex uint32 }
 
 type filterRowNodeReader struct {
-	params *Params
-	reader filterRowReader
-	cache  *lru.Cache[mapRowIndex, FilterRow]
+	params          *Params
+	getFilterMapRow filterRowReader
+	cache           *lru.Cache[mapRowIndex, FilterRow]
 }
 
 func (p *Params) newFilterRowNodeReader(reader filterRowReader) *filterRowNodeReader {
 	return &filterRowNodeReader{
-		params: p,
-		reader: reader,
-		cache:  lru.NewCache[mapRowIndex, FilterRow](1000),
+		params:          p,
+		getFilterMapRow: reader,
+		cache:           lru.NewCache[mapRowIndex, FilterRow](1000),
 	}
 }
 
 func (r *filterRowNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error) {
-	mapIndex, rowIndex, subIndex := r.params.splitMapRowIndex(index)
-	if (subIndex == treeIndex{}) {
+	if !index.matchRoot(rtiEpochs) {
+		return nodeWithWeight{}, mtaUnknown, nil
+	}
+	epochRange := index.splitRoot(r.params.logEpochHistory)
+	if epochRange.Count() > 1 {
+		return nodeWithWeight{}, mtaUnknown, nil
+	}
+	epoch := uint32(epochRange.First())
+	if !index.matchRoot(rtiFilterMaps) {
+		return nodeWithWeight{}, mtaUnknown, nil
+	}
+	rowRange := index.splitRoot(r.params.logMapHeight)
+	if rowRange.Count() > 1 {
 		return nodeWithWeight{}, mtaInternal, nil
 	}
-	row, err := r.reader.getFilterMapRow(mapIndex, rowIndex)
+	rowIndex := uint32(rowRange.First())
+	mapSubRange := index.splitRoot(r.params.logMapsPerEpoch)
+	if mapSubRange.Count() > 1 {
+		return nodeWithWeight{}, mtaInternal, nil
+	}
+	mapIndex := epoch*r.params.mapsPerEpoch + uint32(mapSubRange.First())
+	row, err := r.getFilterMapRow(mapIndex, rowIndex)
 	if err != nil {
 		return nodeWithWeight{}, 0, err
 	}
 	switch {
-	case subIndex.matchRoot(rtiListTree):
-		return r.params.getProgListNode(row, 0, subIndex)
-	case subIndex.matchRoot(rtiListCount):
-		if subIndex != rootIndex {
+	case index.matchRoot(rtiListTree):
+		return r.params.getProgListNode(row, 0, index)
+	case index.matchRoot(rtiListCount):
+		if index != rootIndex {
 			return nodeWithWeight{}, mtaUnknown, nil
 		}
 		countBytes := uint32(1)
@@ -289,51 +279,35 @@ func (p *Params) getProgListNode(row FilterRow, level uint, index treeIndex) (no
 	}
 }
 
-type logIndexTreeReader struct {
-	params  *Params
-	readers []nodeReader
-	lvPtr   uint64
-}
+type nextIndexReader uint64
 
-func (p *Params) newLogIndexTreeReader(readers []nodeReader, lvPtr uint64) *logIndexTreeReader {
-	return &logIndexTreeReader{
-		params:  p,
-		readers: readers,
-		lvPtr:   lvPtr,
-	}
-}
-
-// initNode implements treeInitReader.
-func (l *logIndexTreeReader) initNode(index treeIndex) (nw nodeWithWeight, avail, status int, err error) {
-	if index.matchRoot(rtiNextIndex) {
-		if index == rootIndex {
-			return nodeWithWeight{value: uint64ToValue(l.lvPtr), weight: 1}, mtaKnown, mtsPartial, nil
-		}
-		return
-	}
-	for _, reader := range l.readers {
-		readerNw, readerAvail, readerErr := reader.getNode(index)
-		if readerErr != nil {
-			err = readerErr
-			return
-		}
-		if readerAvail > avail {
-			nw, avail = readerNw, readerAvail
-			if avail == mtaKnown {
-				break
-			}
-		}
-	}
-	if avail != mtaUnknown {
-		lvRange := l.params.subtreeLvRange(index)
-		switch {
-		case l.lvPtr >= lvRange.AfterLast():
-			status = mtsComplete
-		case l.lvPtr <= lvRange.First():
-			status = mtsEmpty
-		default:
-			status = mtsPartial
-		}
+func (r nextIndexReader) getNode(index treeIndex) (nw nodeWithWeight, avail int, err error) {
+	if index.matchRoot(rtiNextEntry) && index == rootIndex {
+		return nodeWithWeight{value: uint64ToValue(uint64(r)), weight: 1}, mtaKnown, nil
 	}
 	return
+}
+
+type logIndexNodeStatus struct {
+	params    *Params
+	nextEntry uint64
+}
+
+func (p *Params) newLogIndexNodeStatus(nextEntry uint64) logIndexNodeStatus {
+	return logIndexNodeStatus{
+		params:    p,
+		nextEntry: nextEntry,
+	}
+}
+
+func (l logIndexNodeStatus) nodeStatus(index treeIndex) int {
+	entryRange := l.params.subtreeLvRange(index)
+	switch {
+	case l.nextEntry >= entryRange.AfterLast():
+		return mtsComplete
+	case l.nextEntry <= entryRange.First():
+		return mtsEmpty
+	default:
+		return mtsPartial
+	}
 }

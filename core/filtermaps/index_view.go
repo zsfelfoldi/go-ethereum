@@ -44,7 +44,7 @@ type IndexView struct {
 	tailEpoch     uint32               //TODO apply to read functions
 	blockRange    common.Range[uint64] //TODO apply to read functions
 	headBlockHash common.Hash
-	headLvPointer uint64 // points after head block delimiter
+	nextEntry     uint64 // points after head block delimiter
 
 	firstOverlayMap    uint32
 	firstOverlayBlock  uint64
@@ -97,7 +97,7 @@ func (iv *IndexView) GetBlockLvPointer(blockNumber uint64) (uint64, error) {
 		return lvPtr, err
 	}
 	if blockNumber == iv.blockRange.AfterLast() {
-		return iv.headLvPointer, nil
+		return iv.nextEntry, nil
 	}
 	if blockNumber > iv.blockRange.AfterLast() {
 		return 0, ErrOutOfRange
@@ -187,12 +187,14 @@ func (iv *IndexView) getSubtree(index treeIndex) (serializedSubtree, error) {
 	return nil, nil
 }
 
-func (iv *IndexView) treeInitReader() treeInitReader {
-	return iv.storage.params.newLogIndexTreeReader([]nodeReader{
-		iv.storage.params.newFilterRowNodeReader(iv),
-		newSubtreeNodeReader(iv),
-		iv.indexEntriesReader,
-	}, iv.headLvPointer)
+func (iv *IndexView) initTree() (*merkleTree, error) {
+	nodeReader := mergedNodeReader{
+		iv.storage.params.newFilterRowNodeReader(iv.getFilterMapRow).getNode,
+		newSubtreeNodeReader(iv.getSubtree).getNode,
+		nextIndexReader(iv.nextEntry).getNode,
+	}.getNode
+	nodeStatus := iv.storage.params.newLogIndexNodeStatus(iv.nextEntry).nodeStatus
+	return iv.storage.params.newMerkleTree(nodeReader, nodeStatus)
 }
 
 type renderState struct {
@@ -263,7 +265,7 @@ func (rs *renderState) addTxAndLogEntries(transactions []*types.Transaction, rec
 		}
 	}
 	// update next_index pointer
-	nextIndexNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiNextIndex))
+	nextIndexNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiNextEntry))
 	rs.tree.setValue(nextIndexNode.node, uint64ToValue(rs.lvPointer), 1)
 }
 
