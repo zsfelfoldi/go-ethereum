@@ -201,19 +201,20 @@ type mtNode struct {
 
 func (mt *merkleTree) getDescendant(node mtNode, rti treeIndex) mtNode {
 	for rti != gtiRoot {
-		n := &mt.nodes[node.index]
-		if n.left() == nullPtr {
-			if !n.isEmptySubtree() {
+		if mt.nodes[node.index].left() == nullPtr {
+			if !mt.nodes[node.index].isEmptySubtree() {
 				panic("cannot expand non-empty subtree")
 			}
-			n.setLeft(mt.newNode(node.index))
-			l := &mt.nodes[n.left()]
+			leftIndex := mt.newNode(node.index)
+			mt.nodes[node.index].setLeft(leftIndex)
+			l := &mt.nodes[leftIndex]
 			l.value = node.empty.left.value
 			l.setValueKnown(true)
 			l.setEmptySubtree(true)
-			n.setRight(mt.newNode(node.index))
-			r := &mt.nodes[n.right()]
-			l.value = node.empty.right.value
+			rightIndex := mt.newNode(node.index)
+			mt.nodes[node.index].setRight(rightIndex)
+			r := &mt.nodes[rightIndex]
+			r.value = node.empty.right.value
 			r.setValueKnown(true)
 			r.setEmptySubtree(true)
 		}
