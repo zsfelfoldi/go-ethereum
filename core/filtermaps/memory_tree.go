@@ -38,9 +38,9 @@ const (
 )
 
 type (
-	nodeReader    func(index treeIndex) (nw nodeWithWeight, avail int, err error)
-	nodeStatus    func(index treeIndex) int
-	subtreeReader func(index treeIndex) (serializedSubtree, error)
+	nodeReader    func(gti treeIndex) (nw nodeWithWeight, avail int, err error)
+	nodeStatus    func(gti treeIndex) int
+	subtreeReader func(gti treeIndex) (serializedSubtree, error)
 )
 
 func treeHash(left, right merkle.Value) (result merkle.Value) {
@@ -110,7 +110,7 @@ func (params *Params) newMerkleTree(getNode nodeReader, nodeStatus nodeStatus) (
 		}},
 		firstFree: nullPtr,
 	}
-	nw, avail, err := getNode(rootIndex)
+	nw, avail, err := getNode(gtiRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +132,7 @@ func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node m
 	default:
 		panic("invalid node availability from tree init reader")
 	}
-	switch nodeStatus(node.index) {
+	switch nodeStatus(node.gti) {
 	case mtsEmpty:
 		n.setEmptySubtree(true)
 	case mtsPartial:
@@ -146,11 +146,11 @@ func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node m
 		return nil
 	}
 	// initialize descendants recursively
-	nwLeft, availLeft, err := getNode(node.index.leftChild())
+	nwLeft, availLeft, err := getNode(node.gti.leftChild())
 	if err != nil {
 		return err
 	}
-	nwRight, availRight, err := getNode(node.index.rightChild())
+	nwRight, availRight, err := getNode(node.gti.rightChild())
 	if err != nil {
 		return err
 	}
@@ -196,11 +196,11 @@ func (mt *merkleTree) newNode(parent uint32) uint32 {
 type mtNode struct {
 	node  uint32
 	empty *emptySubtree
-	index treeIndex
+	gti   treeIndex
 }
 
-func (mt *merkleTree) getDescendant(node mtNode, subIndex treeIndex) mtNode {
-	for subIndex != rootIndex {
+func (mt *merkleTree) getDescendant(node mtNode, rti treeIndex) mtNode {
+	for rti != gtiRoot {
 		n := &mt.nodes[node.node]
 		if n.left() == nullPtr {
 			if !n.isEmptySubtree() {
@@ -218,9 +218,9 @@ func (mt *merkleTree) getDescendant(node mtNode, subIndex treeIndex) mtNode {
 			r.setEmptySubtree(true)
 		}
 		switch {
-		case subIndex.matchRoot(2):
+		case rti.matchRoot(2):
 			node = mt.leftChild(node)
-		case subIndex.matchRoot(3):
+		case rti.matchRoot(3):
 			node = mt.rightChild(node)
 		default:
 			panic("invalid descendant subIndex")
@@ -230,20 +230,20 @@ func (mt *merkleTree) getDescendant(node mtNode, subIndex treeIndex) mtNode {
 }
 
 func (mt *merkleTree) leftChild(node mtNode) mtNode {
-	return mtNode{node: mt.nodes[node.node].left(), empty: node.empty.left, index: node.index.leftChild()}
+	return mtNode{node: mt.nodes[node.node].left(), empty: node.empty.left, gti: node.gti.leftChild()}
 }
 
 func (mt *merkleTree) rightChild(node mtNode) mtNode {
-	return mtNode{node: mt.nodes[node.node].right(), empty: node.empty.right, index: node.index.rightChild()}
+	return mtNode{node: mt.nodes[node.node].right(), empty: node.empty.right, gti: node.gti.rightChild()}
 }
 
 func (mt *merkleTree) parent(node mtNode) mtNode {
-	return mtNode{node: mt.nodes[node.node].parent(), empty: node.empty.parent, index: node.index.parent()}
+	return mtNode{node: mt.nodes[node.node].parent(), empty: node.empty.parent, gti: node.gti.parent()}
 }
 
 func (mt *merkleTree) sibling(node mtNode) mtNode {
 	parent := mt.parent(node)
-	if node.index == parent.index.leftChild() {
+	if node.gti == parent.gti.leftChild() {
 		return mt.rightChild(parent)
 	} else {
 		return mt.leftChild(parent)
@@ -365,7 +365,7 @@ func (mt *merkleTree) collapseSubtree(node mtNode) {
 
 func (mt *merkleTree) collapseAndStoreSubtree(node mtNode) (res storedSubtree) {
 	var bitPtr int
-	res.index = node.index
+	res.gti = node.gti
 	mt.traverseSubtree(node.node, tsCollectShapeBits, &res.nodeEnc, &bitPtr)
 	mt.traverseSubtree(node.node, tsCollectLeavesAndDelete, &res.nodeEnc, nil)
 	return
@@ -386,7 +386,7 @@ func (s serializedSubtree) shapeBit(bitIndex int) bool {
 	return s[4+bitIndex/8]&(byte(1)<<(bitIndex%8)) != 0
 }
 
-func (s serializedSubtree) getNode(index treeIndex) (node nodeWithWeight, avail int) {
+func (s serializedSubtree) getNode(rti treeIndex) (node nodeWithWeight, avail int) {
 	l := len(s)
 	leafCount := (l*8 + 1) / ((32+4)*8 + 2)
 	shapeOffset := l - leafCount*(32+4)
@@ -394,12 +394,12 @@ func (s serializedSubtree) getNode(index treeIndex) (node nodeWithWeight, avail 
 		panic("invalid serialized subtree")
 	}
 	var bitIndex, leafIndex int
-	for index != rootIndex {
+	for rti != gtiRoot {
 		if s.shapeBit(bitIndex) {
 			return // index points beyond subtree leaf
 		}
 		bitIndex++
-		if index.matchRoot(3) { // right subtree; skip left subtree shape
+		if rti.matchRoot(3) { // right subtree; skip left subtree shape
 			for expLeaves := 1; expLeaves > 0; {
 				if s.shapeBit(bitIndex) {
 					expLeaves--
@@ -410,7 +410,7 @@ func (s serializedSubtree) getNode(index treeIndex) (node nodeWithWeight, avail 
 				bitIndex++
 			}
 		} else {
-			index.matchRoot(2) // left subtree
+			rti.matchRoot(2) // left subtree
 		}
 	}
 	if s.shapeBit(bitIndex) { // index points to subtree leaf
@@ -425,25 +425,25 @@ func (s serializedSubtree) getNode(index treeIndex) (node nodeWithWeight, avail 
 }
 
 type storedSubtree struct {
-	index   treeIndex
+	gti     treeIndex
 	nodeEnc serializedSubtree
 }
 
 type storedSubtrees []storedSubtree
 
 func (s storedSubtrees) Len() int           { return len(s) }
-func (s storedSubtrees) Less(i, j int) bool { return s[i].index.lessThan(s[j].index) }
+func (s storedSubtrees) Less(i, j int) bool { return s[i].gti.lessThan(s[j].gti) }
 func (s storedSubtrees) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 // assumes sorted list
-func (s storedSubtrees) getSubtree(index treeIndex) serializedSubtree {
+func (s storedSubtrees) getSubtree(gti treeIndex) serializedSubtree {
 	a, b := 0, len(s)
 	for a < b {
 		m := (a + b) / 2
-		if s[m].index == index {
+		if s[m].gti == gti {
 			return s[m].nodeEnc
 		}
-		if s[m].index.lessThan(index) {
+		if s[m].gti.lessThan(gti) {
 			a = m + 1
 		} else {
 			b = m
@@ -477,49 +477,49 @@ type nodeWithWeight struct {
 	weight float32
 }
 
-func (r *subtreeNodeReader) getCachedSubtree(index treeIndex) (cachedSubtree, error) {
-	if cs, ok := r.cache.Get(index); ok {
+func (r *subtreeNodeReader) getCachedSubtree(gti treeIndex) (cachedSubtree, error) {
+	if cs, ok := r.cache.Get(gti); ok {
 		return cs, nil
 	}
 	var cs cachedSubtree
-	st, err := r.getSubtree(index)
+	st, err := r.getSubtree(gti)
 	if err != nil {
 		return cachedSubtree{}, err
 	}
 	if st != nil {
 		cs = cachedSubtree{
 			subtree:      st,
-			subtreeLevel: index.level(),
+			subtreeLevel: gti.level(),
 		}
 	} else {
-		if index != rootIndex {
-			cs, err = r.getCachedSubtree(index.parent())
+		if gti != gtiRoot {
+			cs, err = r.getCachedSubtree(gti.parent())
 			if err != nil {
 				return cachedSubtree{}, err
 			}
 		}
 	}
-	r.cache.Add(index, cs)
+	r.cache.Add(gti, cs)
 	return cs, nil
 }
 
-func (r *subtreeNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error) {
-	cs, err := r.getCachedSubtree(index)
+func (r *subtreeNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error) {
+	cs, err := r.getCachedSubtree(gti)
 	if err != nil {
 		return nodeWithWeight{}, 0, err
 	}
 	if cs.subtree == nil {
 		return nodeWithWeight{}, mtaInternal, nil
 	}
-	nw, avail := cs.subtree.getNode(index.subIndex(cs.subtreeLevel))
-	if avail == mtaInternal && index != rootIndex {
+	nw, avail := cs.subtree.getNode(gti.subIndex(cs.subtreeLevel))
+	if avail == mtaInternal && gti != gtiRoot {
 		// maybe it is a subtree root and the parent's subtree has the value
-		parentCs, err := r.getCachedSubtree(index)
+		parentCs, err := r.getCachedSubtree(gti)
 		if err != nil {
 			return nodeWithWeight{}, 0, err
 		}
 		if parentCs.subtree != nil && parentCs.subtreeLevel != cs.subtreeLevel {
-			parentNw, parentAvail := parentCs.subtree.getNode(index.subIndex(parentCs.subtreeLevel))
+			parentNw, parentAvail := parentCs.subtree.getNode(gti.subIndex(parentCs.subtreeLevel))
 			if parentAvail == mtaKnown {
 				return parentNw, parentAvail, nil
 			}
@@ -530,9 +530,9 @@ func (r *subtreeNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error
 
 type mergedNodeReader []nodeReader
 
-func (m mergedNodeReader) getNode(index treeIndex) (nw nodeWithWeight, avail int, err error) {
+func (m mergedNodeReader) getNode(gti treeIndex) (nw nodeWithWeight, avail int, err error) {
 	for _, getNode := range m {
-		mergeNw, mergeAvail, mergeErr := getNode(index)
+		mergeNw, mergeAvail, mergeErr := getNode(gti)
 		if mergeErr != nil {
 			err = mergeErr
 			return

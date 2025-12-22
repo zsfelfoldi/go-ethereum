@@ -596,7 +596,7 @@ func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*com
 		}
 	}
 	sort.Slice(pointers, func(a, b int) bool {
-		return maps[pointers[a].i].subtrees[pointers[a].j].index.lessThan(maps[pointers[b].i].subtrees[pointers[b].j].index)
+		return maps[pointers[a].i].subtrees[pointers[a].j].gti.lessThan(maps[pointers[b].i].subtrees[pointers[b].j].gti)
 	})
 	batch := m.db.NewBatch()
 	var (
@@ -619,7 +619,7 @@ func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*com
 	}
 	for _, stp := range pointers {
 		subtree := maps[stp.i].subtrees[stp.j]
-		rawdb.WriteFilterMapsSubtree(batch, uint128.Uint128(subtree.index), subtree.nodeEnc)
+		rawdb.WriteFilterMapsSubtree(batch, uint128.Uint128(subtree.gti), subtree.nodeEnc)
 		if checkStopOrCommit() {
 			return false, writeErr
 		}
@@ -690,15 +690,15 @@ func (m *mapDatabase) storeCheckpointList(firstEpoch uint32, cpList checkpointLi
 	}
 }
 
-func (m *mapDatabase) getSubtree(index treeIndex) (serializedSubtree, error) {
-	if subtree, ok := m.subtreeCache.Get(index); ok {
+func (m *mapDatabase) getSubtree(gti treeIndex) (serializedSubtree, error) {
+	if subtree, ok := m.subtreeCache.Get(gti); ok {
 		return subtree, nil
 	}
-	st, err := rawdb.ReadFilterMapsSubtree(m.db, uint128.Uint128(index))
+	st, err := rawdb.ReadFilterMapsSubtree(m.db, uint128.Uint128(gti))
 	if err != nil {
 		return nil, err
 	}
 	subtree := serializedSubtree(st)
-	m.subtreeCache.Add(index, subtree)
+	m.subtreeCache.Add(gti, subtree)
 	return subtree, nil
 }

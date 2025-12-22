@@ -157,6 +157,6 @@ func (fm *completedMap) getRow(rowIndex, maxLen uint32) FilterRow {
 	return FilterRow(fm.rowData[start : uint32(start)+min(maxLen, uint32(length))])
 }
 
-func (fm *completedMap) getSubtree(index treeIndex) serializedSubtree {
-	return fm.subtrees.getSubtree(index)
+func (fm *completedMap) getSubtree(gti treeIndex) serializedSubtree {
+	return fm.subtrees.getSubtree(gti)
 }

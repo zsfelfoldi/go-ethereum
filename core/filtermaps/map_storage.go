@@ -740,20 +740,20 @@ func (m *mapStorage) getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, erro
 	return nil, nil
 }
 
-func (m *mapStorage) getSubtree(index treeIndex) (serializedSubtree, error) {
+func (m *mapStorage) getSubtree(gti treeIndex) (serializedSubtree, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 
-	mapIndex := uint32(m.params.subtreeLvRange(index).Last() / m.params.valuesPerMap)
+	mapIndex := uint32(m.params.subtreeLvRange(gti).Last() / m.params.valuesPerMap)
 	if m.overlay.includes(mapIndex) {
 		fm := m.overlayMaps[mapIndex]
 		if fm == nil {
 			return nil, errors.New("memory overlay map not found")
 		}
-		return fm.getSubtree(index), nil
+		return fm.getSubtree(gti), nil
 	}
 	if m.valid.includes(mapIndex) {
-		return m.mapDb.getSubtree(index)
+		return m.mapDb.getSubtree(gti)
 	}
 	return nil, nil
 }

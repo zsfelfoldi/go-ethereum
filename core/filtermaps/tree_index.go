@@ -25,7 +25,7 @@ import (
 
 type treeIndex uint128.Uint128
 
-var rootIndex = treeIndex(uint128.From64(1))
+var gtiRoot = treeIndex(uint128.From64(1))
 
 func (t *treeIndex) matchRoot(relIndex uint64) bool {
 	rLevel := uint(63 - bits.LeadingZeros64(relIndex))
@@ -42,12 +42,12 @@ func (t *treeIndex) splitRoot(levels uint) common.Range[uint64] {
 	tl := t.level()
 	if tl >= levels {
 		subIndex := t.rsh(tl-levels).Lo - (uint64(1) << levels)
-		m := rootIndex.lsh(tl - levels)
-		*t = t.and(m.sub(rootIndex)).add(m)
+		m := gtiRoot.lsh(tl - levels)
+		*t = t.and(m.sub(gtiRoot)).add(m)
 		return common.NewRange[uint64](subIndex, 1)
 	}
 	subIndex := t.and64((uint64(1) << tl) - 1)
-	*t = rootIndex
+	*t = gtiRoot
 	return common.NewRange[uint64](subIndex<<(levels-tl), uint64(1)<<(levels-tl))
 }
 
@@ -56,8 +56,8 @@ func (t treeIndex) subIndex(subtreeLevel uint) treeIndex {
 	if tl < subtreeLevel {
 		panic("subIndex: invalid subtreeLevel")
 	}
-	m := rootIndex.lsh(tl - subtreeLevel)
-	return t.and(m.sub(rootIndex)).add(m)
+	m := gtiRoot.lsh(tl - subtreeLevel)
+	return t.and(m.sub(gtiRoot)).add(m)
 }
 
 func (t treeIndex) add(u treeIndex) treeIndex {

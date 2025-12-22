@@ -176,14 +176,14 @@ func (iv *IndexView) getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, erro
 	return nil, nil
 }
 
-func (iv *IndexView) getSubtree(index treeIndex) (serializedSubtree, error) {
-	mapIndex := uint32(iv.storage.params.subtreeLvRange(index).Last() / iv.storage.params.valuesPerMap)
+func (iv *IndexView) getSubtree(gti treeIndex) (serializedSubtree, error) {
+	mapIndex := uint32(iv.storage.params.subtreeLvRange(gti).Last() / iv.storage.params.valuesPerMap)
 	if mapIndex < iv.firstOverlayMap {
-		return iv.storage.getSubtree(index)
+		return iv.storage.getSubtree(gti)
 	}
 	i := mapIndex - iv.firstOverlayMap
 	if i < uint32(len(iv.overlayMaps)) {
-		return iv.overlayMaps[i].getSubtree(index), nil
+		return iv.overlayMaps[i].getSubtree(gti), nil
 	}
 	return nil, nil
 }
@@ -385,7 +385,7 @@ func (rs *renderState) initMapTree() {
 		rs.mapRowRoots = make([]mtNode, rs.params.mapHeight)
 	}
 	for rowIndex := range rs.params.mapHeight {
-		mapRowSubIndex := rootIndex.arraySub(uint64(rowIndex), rs.params.logMapHeight).arraySub(uint64(mapSubIndex), rs.params.logMapsPerEpoch)
+		mapRowSubIndex := gtiRoot.arraySub(uint64(rowIndex), rs.params.logMapHeight).arraySub(uint64(mapSubIndex), rs.params.logMapsPerEpoch)
 		rs.mapRowRoots[rowIndex] = rs.tree.getDescendant(fmRootNode, mapRowSubIndex)
 		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListTree)).node, merkle.Value{}, rs.params.filterRowNodeWeight(0))
 		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListCount)).node, merkle.Value{}, rs.params.filterRowNodeWeight(0))

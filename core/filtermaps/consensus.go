@@ -95,15 +95,15 @@ type emptySubtree struct {
 
 var zeroLeaf = &emptySubtree{}
 
-func (e *emptySubtree) getNode(index treeIndex) merkle.Value {
-	for index != rootIndex {
+func (e *emptySubtree) getNode(gti treeIndex) merkle.Value {
+	for gti != gtiRoot {
 		if e == nil {
 			panic("unknown empty subtree node")
 		}
 		switch {
-		case index.matchRoot(2):
+		case gti.matchRoot(2):
 			e = e.left
-		case index.matchRoot(3):
+		case gti.matchRoot(3):
 			e = e.right
 		default:
 			panic("invalid tree index")
@@ -157,25 +157,25 @@ func (p *Params) initEmptyTree() {
 	epochTree := emptyTreeNode(filterMapsTree, indexEntriesTree)
 	epochHistoryTree := emptyVector(p.logEpochHistory, epochTree)
 	emptyIndexTree := emptyTreeNode(epochHistoryTree, zeroLeaf)
-	p.treeRoot = mtNode{node: rootPtr, empty: emptyIndexTree, index: rootIndex}
+	p.treeRoot = mtNode{node: rootPtr, empty: emptyIndexTree, gti: gtiRoot}
 }
 
-func (p *Params) subtreeLvRange(index treeIndex) common.Range[uint64] {
-	if !index.matchRoot(rtiEpochs) {
+func (p *Params) subtreeLvRange(gti treeIndex) common.Range[uint64] {
+	if !gti.matchRoot(rtiEpochs) {
 		return common.NewRange[uint64](0, math.MaxUint64)
 	}
-	epochRange := index.splitRoot(p.logEpochHistory)
+	epochRange := gti.splitRoot(p.logEpochHistory)
 	if epochRange.Count() > 1 {
 		return common.NewRange[uint64](epochRange.First()*uint64(p.mapsPerEpoch)*p.valuesPerMap, epochRange.Count()*uint64(p.mapsPerEpoch)*p.valuesPerMap)
 	}
 	epoch := epochRange.First()
 	switch {
-	case index.matchRoot(rtiFilterMaps):
-		index.splitRoot(p.logMapHeight)
-		mapSubRange := index.splitRoot(p.logMapsPerEpoch)
+	case gti.matchRoot(rtiFilterMaps):
+		gti.splitRoot(p.logMapHeight)
+		mapSubRange := gti.splitRoot(p.logMapsPerEpoch)
 		return common.NewRange[uint64]((epoch*uint64(p.mapsPerEpoch)+mapSubRange.First())*p.valuesPerMap, mapSubRange.Count()*p.valuesPerMap)
-	case index.matchRoot(rtiIndexEntries):
-		valueSubRange := index.splitRoot(p.logMapsPerEpoch + p.logValuesPerMap)
+	case gti.matchRoot(rtiIndexEntries):
+		valueSubRange := gti.splitRoot(p.logMapsPerEpoch + p.logValuesPerMap)
 		return common.NewRange[uint64](epoch*uint64(p.mapsPerEpoch)*p.valuesPerMap+valueSubRange.First(), valueSubRange.Count())
 	default:
 		return common.NewRange[uint64](epoch*uint64(p.mapsPerEpoch)*p.valuesPerMap, uint64(p.mapsPerEpoch)*p.valuesPerMap)
@@ -200,24 +200,24 @@ func (p *Params) newFilterRowNodeReader(reader filterRowReader) *filterRowNodeRe
 	}
 }
 
-func (r *filterRowNodeReader) getNode(index treeIndex) (nodeWithWeight, int, error) {
-	if !index.matchRoot(rtiEpochs) {
+func (r *filterRowNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error) {
+	if !gti.matchRoot(rtiEpochs) {
 		return nodeWithWeight{}, mtaUnknown, nil
 	}
-	epochRange := index.splitRoot(r.params.logEpochHistory)
+	epochRange := gti.splitRoot(r.params.logEpochHistory)
 	if epochRange.Count() > 1 {
 		return nodeWithWeight{}, mtaUnknown, nil
 	}
 	epoch := uint32(epochRange.First())
-	if !index.matchRoot(rtiFilterMaps) {
+	if !gti.matchRoot(rtiFilterMaps) {
 		return nodeWithWeight{}, mtaUnknown, nil
 	}
-	rowRange := index.splitRoot(r.params.logMapHeight)
+	rowRange := gti.splitRoot(r.params.logMapHeight)
 	if rowRange.Count() > 1 {
 		return nodeWithWeight{}, mtaInternal, nil
 	}
 	rowIndex := uint32(rowRange.First())
-	mapSubRange := index.splitRoot(r.params.logMapsPerEpoch)
+	mapSubRange := gti.splitRoot(r.params.logMapsPerEpoch)
 	if mapSubRange.Count() > 1 {
 		return nodeWithWeight{}, mtaInternal, nil
 	}
@@ -227,10 +227,10 @@ func (r *filterRowNodeReader) getNode(index treeIndex) (nodeWithWeight, int, err
 		return nodeWithWeight{}, 0, err
 	}
 	switch {
-	case index.matchRoot(rtiListTree):
-		return r.params.getProgListNode(row, 0, index)
-	case index.matchRoot(rtiListCount):
-		if index != rootIndex {
+	case gti.matchRoot(rtiListTree):
+		return r.params.getProgListNode(row, 0, gti)
+	case gti.matchRoot(rtiListCount):
+		if gti != gtiRoot {
 			return nodeWithWeight{}, mtaUnknown, nil
 		}
 		countBytes := uint32(1)
@@ -243,16 +243,16 @@ func (r *filterRowNodeReader) getNode(index treeIndex) (nodeWithWeight, int, err
 	}
 }
 
-func (p *Params) getProgListNode(row FilterRow, level uint, index treeIndex) (nodeWithWeight, int, error) {
+func (p *Params) getProgListNode(row FilterRow, level uint, gti treeIndex) (nodeWithWeight, int, error) {
 	subtreeHeight := p.progListHeightFirst + level*p.progListHeightStep
 	subtreeLen := 8 << subtreeHeight
 	switch {
-	case index.matchRoot(rtiProgListSubtree):
-		chunkRange := index.splitRoot(subtreeHeight)
+	case gti.matchRoot(rtiProgListSubtree):
+		chunkRange := gti.splitRoot(subtreeHeight)
 		if chunkRange.Count() > 1 {
 			return nodeWithWeight{}, mtaInternal, nil
 		}
-		if index != rootIndex {
+		if gti != gtiRoot {
 			return nodeWithWeight{}, mtaUnknown, nil
 		}
 		chunk := int(chunkRange.First())
@@ -266,11 +266,11 @@ func (p *Params) getProgListNode(row FilterRow, level uint, index treeIndex) (no
 			binary.LittleEndian.PutUint32(nw.value[i*4:i*4+4], row[first+i])
 		}
 		return nw, mtaKnown, nil
-	case index.matchRoot(rtiProgListNextTree):
+	case gti.matchRoot(rtiProgListNextTree):
 		if len(row) > subtreeLen {
-			return p.getProgListNode(row[subtreeLen:], level+1, index)
+			return p.getProgListNode(row[subtreeLen:], level+1, gti)
 		}
-		if index != rootIndex {
+		if gti != gtiRoot {
 			return nodeWithWeight{}, mtaUnknown, nil
 		}
 		return nodeWithWeight{}, mtaKnown, nil
@@ -281,8 +281,8 @@ func (p *Params) getProgListNode(row FilterRow, level uint, index treeIndex) (no
 
 type nextIndexReader uint64
 
-func (r nextIndexReader) getNode(index treeIndex) (nw nodeWithWeight, avail int, err error) {
-	if index.matchRoot(rtiNextEntry) && index == rootIndex {
+func (r nextIndexReader) getNode(gti treeIndex) (nw nodeWithWeight, avail int, err error) {
+	if gti.matchRoot(rtiNextEntry) && gti == gtiRoot {
 		return nodeWithWeight{value: uint64ToValue(uint64(r)), weight: 1}, mtaKnown, nil
 	}
 	return
@@ -300,8 +300,8 @@ func (p *Params) newLogIndexNodeStatus(nextEntry uint64) logIndexNodeStatus {
 	}
 }
 
-func (l logIndexNodeStatus) nodeStatus(index treeIndex) int {
-	entryRange := l.params.subtreeLvRange(index)
+func (l logIndexNodeStatus) nodeStatus(gti treeIndex) int {
+	entryRange := l.params.subtreeLvRange(gti)
 	switch {
 	case l.nextEntry >= entryRange.AfterLast():
 		return mtsComplete
