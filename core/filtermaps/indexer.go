@@ -301,6 +301,7 @@ func (ix *Indexer) initMapBoundary(startMap, limitMap uint32) *renderState {
 		rs.currentMap = rs.params.newMemoryMap()
 		rs.initMapTree()
 		var err error
+		fmt.Println("storage.initTree", rs.renderRange)
 		rs.tree, err = ix.storage.initTree(rs.renderRange)
 		if err != nil {
 			log.Crit("Failed to initialize log index merkle tree at map boundary", "map", startMap, "error", err)
@@ -330,6 +331,7 @@ func (ix *Indexer) initSnapshot(snapshot *IndexView) *renderState {
 		lvPointer:   snapshot.nextEntry,
 	}
 	var err error
+	fmt.Println("snapshot.initTree")
 	rs.tree, err = snapshot.initTree()
 	if err != nil {
 		log.Crit("Failed to initialize log index merkle tree from snapshot", "blockNumber", snapshot.blockRange.Last(), "error", err)
@@ -593,7 +595,7 @@ func (ix *Indexer) storeHeadIndexView(number uint64, hash common.Hash) {
 		tailEpoch:         tailEpoch,
 		blockRange:        common.NewRange(tailNumber, number+1-tailNumber),
 		headBlockHash:     hash,
-		nextEntry:     ix.headRenderer.lvPointer,
+		nextEntry:         ix.headRenderer.lvPointer,
 		firstOverlayMap:   firstOverlayMap,
 		firstOverlayBlock: firstOverlayBlock,
 		overlayMaps:       overlayMaps,

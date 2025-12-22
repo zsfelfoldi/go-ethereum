@@ -19,6 +19,7 @@ package filtermaps
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"sync/atomic"
 
@@ -376,6 +377,7 @@ func (rs *renderState) addLogEntryAndMeta(log *types.Log, blockNumber uint64, tx
 }
 
 func (rs *renderState) initMapTree() {
+	fmt.Println("initMapTree", rs.mapIndex)
 	epoch := rs.params.mapEpoch(rs.mapIndex)
 	fmRootNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps))
 	mapSubIndex := rs.mapIndex - rs.params.firstEpochMap(epoch)
@@ -391,6 +393,7 @@ func (rs *renderState) initMapTree() {
 }
 
 func (rs *renderState) completeMapTree() {
+	fmt.Println("completeMapTree", rs.mapIndex)
 	for rowIndex := range rs.params.mapHeight {
 		rs.tree.setComplete(rs.mapRowRoots[rowIndex])
 	}

@@ -33,7 +33,7 @@ type checkpointList []epochCheckpoint
 // be initialized at the epoch boundary.
 type epochCheckpoint struct {
 	BlockNumber uint64 // block that generated the last log value of the given epoch
-	BlockHash     common.Hash
+	BlockHash   common.Hash
 	FirstIndex  uint64 // first log value index of the given block
 }
 
@@ -52,11 +52,13 @@ var checkpointsHoodiJSON []byte
 // checkpoints lists sets of checkpoints for multiple chains. The matching
 // checkpoint set is autodetected by the indexer once the canonical chain is
 // known.
-var checkpoints = []checkpointList{
-	decodeCheckpoints(checkpointsMainnetJSON),
-	decodeCheckpoints(checkpointsSepoliaJSON),
-	decodeCheckpoints(checkpointsHoleskyJSON),
-	decodeCheckpoints(checkpointsHoodiJSON),
+var checkpoints = []checkpointList{ //TODO
+	/*
+	   decodeCheckpoints(checkpointsMainnetJSON),
+	   decodeCheckpoints(checkpointsSepoliaJSON),
+	   decodeCheckpoints(checkpointsHoleskyJSON),
+	   decodeCheckpoints(checkpointsHoodiJSON),
+	*/
 }
 
 func decodeCheckpoints(encoded []byte) (result checkpointList) {
