@@ -309,7 +309,7 @@ func (rs *renderState) addValue(mapValue common.Hash) {
 				leafPtr := rowLength % 8
 				var entryValue, countValue merkle.Value
 				if leafPtr != 0 {
-					entryValue, _ = rs.tree.getValue(entryNode.index)
+					entryValue = rs.tree.getValue(entryNode.index).value
 				}
 				binary.LittleEndian.PutUint32(entryValue[leafPtr*4:leafPtr*4+4], value)
 				leafPtr++

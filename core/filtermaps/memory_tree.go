@@ -308,16 +308,17 @@ func (mt *merkleTree) setValue(nodeIndex uint32, value merkle.Value, weight floa
 	}
 }
 
-func (mt *merkleTree) getValue(nodeIndex uint32) (merkle.Value, float32) {
+func (mt *merkleTree) getValue(nodeIndex uint32) nodeWithWeight {
 	n := &mt.nodes[nodeIndex]
 	if !n.isValueKnown() {
-		lv, _ := mt.getValue(n.left())
-		rv, _ := mt.getValue(n.right())
-		n.value = treeHash(lv, rv)
+		lnw := mt.getValue(n.left())
+		rnw := mt.getValue(n.right())
+		n.value = treeHash(lnw.value, rnw.value)
+		n.weight = lnw.weight + rnw.weight
 		n.setEmptySubtree(mt.nodes[n.left()].isEmptySubtree() && mt.nodes[n.right()].isEmptySubtree())
 		n.setValueKnown(true)
 	}
-	return n.value, n.weight
+	return nodeWithWeight{value: n.value, weight: n.weight}
 }
 
 const (
