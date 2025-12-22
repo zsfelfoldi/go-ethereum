@@ -227,6 +227,8 @@ func (r *filterRowNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error
 		return nodeWithWeight{}, 0, err
 	}
 	switch {
+	case gti == gtiRoot:
+		return nodeWithWeight{}, mtaInternal, nil
 	case gti.matchRoot(rtiListTree):
 		return r.params.getProgListNode(row, 0, gti)
 	case gti.matchRoot(rtiListCount):
@@ -247,6 +249,8 @@ func (p *Params) getProgListNode(row FilterRow, level uint, gti treeIndex) (node
 	subtreeHeight := p.progListHeightFirst + level*p.progListHeightStep
 	subtreeLen := 8 << subtreeHeight
 	switch {
+	case gti == gtiRoot:
+		return nodeWithWeight{}, mtaInternal, nil
 	case gti.matchRoot(rtiProgListSubtree):
 		chunkRange := gti.splitRoot(subtreeHeight)
 		if chunkRange.Count() > 1 {
