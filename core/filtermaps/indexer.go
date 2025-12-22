@@ -299,13 +299,13 @@ func (ix *Indexer) initMapBoundary(startMap, limitMap uint32) *renderState {
 	rs.renderRange = common.NewRange[uint32](startMap, limitMap-startMap)
 	if rs.renderRange.Includes(rs.mapIndex) {
 		rs.currentMap = rs.params.newMemoryMap()
-		rs.initMapTree()
 		var err error
 		fmt.Println("storage.initTree", rs.renderRange)
 		rs.tree, err = ix.storage.initTree(rs.renderRange)
 		if err != nil {
 			log.Crit("Failed to initialize log index merkle tree at map boundary", "map", startMap, "error", err)
 		}
+		rs.initMapTree()
 	}
 	return rs
 }
