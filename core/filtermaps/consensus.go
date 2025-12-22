@@ -157,7 +157,7 @@ func (p *Params) initEmptyTree() {
 	epochTree := emptyTreeNode(filterMapsTree, indexEntriesTree)
 	epochHistoryTree := emptyVector(p.logEpochHistory, epochTree)
 	emptyIndexTree := emptyTreeNode(epochHistoryTree, zeroLeaf)
-	p.treeRoot = mtNode{node: rootPtr, empty: emptyIndexTree, gti: gtiRoot}
+	p.treeRoot = mtNode{index: rootIndex, empty: emptyIndexTree, gti: gtiRoot}
 }
 
 func (p *Params) subtreeLvRange(gti treeIndex) common.Range[uint64] {

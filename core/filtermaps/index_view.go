@@ -266,8 +266,8 @@ func (rs *renderState) addTxAndLogEntries(transactions []*types.Transaction, rec
 		}
 	}
 	// update next_index pointer
-	nextIndexNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiNextEntry))
-	rs.tree.setValue(nextIndexNode.node, uint64ToValue(rs.lvPointer), 1)
+	nextEntryNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiNextEntry))
+	rs.tree.setValue(nextEntryNode.index, uint64ToValue(rs.lvPointer), 1)
 }
 
 func (rs *renderState) addBlockEntry(header *types.Header) (uint32, []*completedMap) {
@@ -309,12 +309,12 @@ func (rs *renderState) addValue(mapValue common.Hash) {
 				leafPtr := rowLength % 8
 				var entryValue, countValue merkle.Value
 				if leafPtr != 0 {
-					entryValue, _ = rs.tree.getValue(entryNode.node)
+					entryValue, _ = rs.tree.getValue(entryNode.index)
 				}
 				binary.LittleEndian.PutUint32(entryValue[leafPtr*4:leafPtr*4+4], value)
 				leafPtr++
 				rowLength++
-				rs.tree.setValue(entryNode.node, entryValue, rs.params.filterRowNodeWeight(leafPtr*uint32(rs.params.logMapWidth+7/8)))
+				rs.tree.setValue(entryNode.index, entryValue, rs.params.filterRowNodeWeight(leafPtr*uint32(rs.params.logMapWidth+7/8)))
 				if leafPtr == 8 {
 					rs.tree.setComplete(entryNode)
 				}
@@ -323,7 +323,7 @@ func (rs *renderState) addValue(mapValue common.Hash) {
 				if rowLength >= 256 {
 					countBytes = 2
 				}
-				rs.tree.setValue(countNode.node, countValue, rs.params.filterRowNodeWeight(countBytes))
+				rs.tree.setValue(countNode.index, countValue, rs.params.filterRowNodeWeight(countBytes))
 				break
 			}
 		}
@@ -337,17 +337,17 @@ func (rs *renderState) indexEntryNode() mtNode {
 
 func (rs *renderState) addBlockMeta(blockNumber uint64, blockHash common.Hash, timestamp uint64) {
 	entryMetaRoot := rs.tree.getDescendant(rs.indexEntryNode(), ti64(rtiEntryMeta))
-	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiBlockMetaBlockNumber)).node, uint64ToValue(blockNumber), rs.params.indexEntryNodeWeight(8))
-	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiBlockMetaBlockHash)).node, merkle.Value(blockHash), rs.params.indexEntryNodeWeight(32))
-	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiBlockMetaTimestamp)).node, uint64ToValue(timestamp), rs.params.indexEntryNodeWeight(8))
+	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiBlockMetaBlockNumber)).index, uint64ToValue(blockNumber), rs.params.indexEntryNodeWeight(8))
+	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiBlockMetaBlockHash)).index, merkle.Value(blockHash), rs.params.indexEntryNodeWeight(32))
+	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiBlockMetaTimestamp)).index, uint64ToValue(timestamp), rs.params.indexEntryNodeWeight(8))
 }
 
 func (rs *renderState) addTxMeta(blockNumber uint64, txHash common.Hash, txIndex int, receiptHash common.Hash) {
 	entryMetaRoot := rs.tree.getDescendant(rs.indexEntryNode(), ti64(rtiEntryMeta))
-	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiTxMetaBlockNumber)).node, uint64ToValue(uint64(blockNumber)), rs.params.indexEntryNodeWeight(8))
-	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiTxMetaTxHash)).node, merkle.Value(txHash), rs.params.indexEntryNodeWeight(32))
-	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiTxMetaTxIndex)).node, uint64ToValue(uint64(txIndex)), rs.params.indexEntryNodeWeight(2))
-	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiTxMetaReceiptHash)).node, merkle.Value(receiptHash), rs.params.indexEntryNodeWeight(32))
+	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiTxMetaBlockNumber)).index, uint64ToValue(uint64(blockNumber)), rs.params.indexEntryNodeWeight(8))
+	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiTxMetaTxHash)).index, merkle.Value(txHash), rs.params.indexEntryNodeWeight(32))
+	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiTxMetaTxIndex)).index, uint64ToValue(uint64(txIndex)), rs.params.indexEntryNodeWeight(2))
+	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiTxMetaReceiptHash)).index, merkle.Value(receiptHash), rs.params.indexEntryNodeWeight(32))
 }
 
 func (rs *renderState) addLogEntryAndMeta(log *types.Log, blockNumber uint64, txHash common.Hash, txIndex, logIndex int) {
@@ -355,25 +355,25 @@ func (rs *renderState) addLogEntryAndMeta(log *types.Log, blockNumber uint64, tx
 	logEntryRoot := rs.tree.getDescendant(indexEntryNode, ti64(rtiLogEntry))
 	var address merkle.Value
 	copy(address[:20], log.Address[:])
-	rs.tree.setValue(rs.tree.getDescendant(logEntryRoot, ti64(rtiLogAddress)).node, address, rs.params.indexEntryNodeWeight(20))
-	rs.tree.setValue(rs.tree.getDescendant(logEntryRoot, ti64(rtiLogTopics).gtSub(rtiListCount)).node, uint64ToValue(uint64(len(log.Topics))), rs.params.indexEntryNodeWeight(1))
+	rs.tree.setValue(rs.tree.getDescendant(logEntryRoot, ti64(rtiLogAddress)).index, address, rs.params.indexEntryNodeWeight(20))
+	rs.tree.setValue(rs.tree.getDescendant(logEntryRoot, ti64(rtiLogTopics).gtSub(rtiListCount)).index, uint64ToValue(uint64(len(log.Topics))), rs.params.indexEntryNodeWeight(1))
 	for i, topic := range log.Topics {
-		rs.tree.setValue(rs.tree.getDescendant(logEntryRoot, ti64(rtiLogTopics).gtSub(rtiListTree).arraySub(uint64(i), 2)).node, merkle.Value(topic), rs.params.indexEntryNodeWeight(32))
+		rs.tree.setValue(rs.tree.getDescendant(logEntryRoot, ti64(rtiLogTopics).gtSub(rtiListTree).arraySub(uint64(i), 2)).index, merkle.Value(topic), rs.params.indexEntryNodeWeight(32))
 	}
 	dataChunks := (len(log.Data) + 31) / 32
 	logDataRoot := rs.tree.getDescendant(logEntryRoot, ti64(rtiLogData))
-	rs.tree.setValue(rs.tree.getDescendant(logDataRoot, ti64(rtiListCount)).node, uint64ToValue(uint64(dataChunks)), rs.params.indexEntryNodeWeight(1))
+	rs.tree.setValue(rs.tree.getDescendant(logDataRoot, ti64(rtiListCount)).index, uint64ToValue(uint64(dataChunks)), rs.params.indexEntryNodeWeight(1))
 	for i := range dataChunks {
 		var chunk merkle.Value
 		start, end := i*32, min((i+1)*32, len(log.Data))
 		copy(chunk[:end-start], log.Data[start:end])
-		rs.tree.setValue(rs.tree.getDescendant(logDataRoot, rs.params.progListSubIndex(uint32(i))).node, chunk, rs.params.indexEntryNodeWeight(uint32(end-start)))
+		rs.tree.setValue(rs.tree.getDescendant(logDataRoot, rs.params.progListSubIndex(uint32(i))).index, chunk, rs.params.indexEntryNodeWeight(uint32(end-start)))
 	}
 	entryMetaRoot := rs.tree.getDescendant(indexEntryNode, ti64(rtiEntryMeta))
-	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiLogMetaBlockNumber)).node, uint64ToValue(uint64(blockNumber)), rs.params.indexEntryNodeWeight(8))
-	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiLogMetaTxHash)).node, merkle.Value(txHash), rs.params.indexEntryNodeWeight(32))
-	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiLogMetaTxIndex)).node, uint64ToValue(uint64(txIndex)), rs.params.indexEntryNodeWeight(2))
-	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiLogMetaLogIndex)).node, uint64ToValue(uint64(logIndex)), rs.params.indexEntryNodeWeight(2))
+	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiLogMetaBlockNumber)).index, uint64ToValue(uint64(blockNumber)), rs.params.indexEntryNodeWeight(8))
+	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiLogMetaTxHash)).index, merkle.Value(txHash), rs.params.indexEntryNodeWeight(32))
+	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiLogMetaTxIndex)).index, uint64ToValue(uint64(txIndex)), rs.params.indexEntryNodeWeight(2))
+	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiLogMetaLogIndex)).index, uint64ToValue(uint64(logIndex)), rs.params.indexEntryNodeWeight(2))
 }
 
 func (rs *renderState) initMapTree() {
@@ -387,8 +387,8 @@ func (rs *renderState) initMapTree() {
 	for rowIndex := range rs.params.mapHeight {
 		mapRowSubIndex := gtiRoot.arraySub(uint64(rowIndex), rs.params.logMapHeight).arraySub(uint64(mapSubIndex), rs.params.logMapsPerEpoch)
 		rs.mapRowRoots[rowIndex] = rs.tree.getDescendant(fmRootNode, mapRowSubIndex)
-		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListTree)).node, merkle.Value{}, rs.params.filterRowNodeWeight(0))
-		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListCount)).node, merkle.Value{}, rs.params.filterRowNodeWeight(0))
+		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListTree)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
+		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListCount)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
 	}
 }
 

@@ -64,7 +64,7 @@ var (
 	mnFlagMask  = uint32(1) << 31
 	mnValueMask = mnFlagMask - 1
 	nullPtr     = mnValueMask // no parent/child
-	rootPtr     = uint32(0)   // merkle tree root is always at index 0
+	rootIndex   = uint32(0)   // merkle tree root is always at index 0
 )
 
 func (n *merkleTreeNode) isEmptySubtree() bool   { return n.parentAndEmptySubtree&mnFlagMask != 0 }
@@ -121,7 +121,7 @@ func (params *Params) newMerkleTree(getNode nodeReader, nodeStatus nodeStatus) (
 }
 
 func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode, nw nodeWithWeight, avail int) error {
-	n := &mt.nodes[node.node]
+	n := &mt.nodes[node.index]
 	var recursiveInit bool
 	switch avail {
 	case mtaInternal:
@@ -155,11 +155,11 @@ func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node m
 		return err
 	}
 	if availLeft != mtaUnknown && availRight != mtaUnknown {
-		n.setLeft(mt.newNode(node.node))
+		n.setLeft(mt.newNode(node.index))
 		if err := mt.initTree(getNode, nodeStatus, mt.leftChild(node), nwLeft, availLeft); err != nil {
 			return err
 		}
-		n.setRight(mt.newNode(node.node))
+		n.setRight(mt.newNode(node.index))
 		if err := mt.initTree(getNode, nodeStatus, mt.rightChild(node), nwRight, availRight); err != nil {
 			return err
 		}
@@ -171,47 +171,47 @@ func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node m
 	return nil
 }
 
-func (mt *merkleTree) deleteNode(node uint32) {
-	mt.nodes[node].setRight(mt.firstFree)
-	mt.firstFree = node
+func (mt *merkleTree) deleteNode(nodeIndex uint32) {
+	mt.nodes[nodeIndex].setRight(mt.firstFree)
+	mt.firstFree = nodeIndex
 }
 
-func (mt *merkleTree) newNode(parent uint32) uint32 {
+func (mt *merkleTree) newNode(parentIndex uint32) uint32 {
 	n := merkleTreeNode{
-		parentAndEmptySubtree: parent,
+		parentAndEmptySubtree: parentIndex,
 		leftAndIsValueKnown:   nullPtr,
 		rightAndIsComplete:    nullPtr,
 	}
 	if mt.firstFree != nullPtr {
-		node := mt.firstFree
-		mt.firstFree = mt.nodes[node].right()
-		mt.nodes[node] = n
-		return node
+		nodeIndex := mt.firstFree
+		mt.firstFree = mt.nodes[nodeIndex].right()
+		mt.nodes[nodeIndex] = n
+		return nodeIndex
 	}
-	node := uint32(len(mt.nodes))
+	nodeIndex := uint32(len(mt.nodes))
 	mt.nodes = append(mt.nodes, n)
-	return node
+	return nodeIndex
 }
 
 type mtNode struct {
-	node  uint32
+	index uint32
 	empty *emptySubtree
 	gti   treeIndex
 }
 
 func (mt *merkleTree) getDescendant(node mtNode, rti treeIndex) mtNode {
 	for rti != gtiRoot {
-		n := &mt.nodes[node.node]
+		n := &mt.nodes[node.index]
 		if n.left() == nullPtr {
 			if !n.isEmptySubtree() {
 				panic("cannot expand non-empty subtree")
 			}
-			n.setLeft(mt.newNode(node.node))
+			n.setLeft(mt.newNode(node.index))
 			l := &mt.nodes[n.left()]
 			l.value = node.empty.left.value
 			l.setValueKnown(true)
 			l.setEmptySubtree(true)
-			n.setRight(mt.newNode(node.node))
+			n.setRight(mt.newNode(node.index))
 			r := &mt.nodes[n.right()]
 			l.value = node.empty.right.value
 			r.setValueKnown(true)
@@ -230,15 +230,15 @@ func (mt *merkleTree) getDescendant(node mtNode, rti treeIndex) mtNode {
 }
 
 func (mt *merkleTree) leftChild(node mtNode) mtNode {
-	return mtNode{node: mt.nodes[node.node].left(), empty: node.empty.left, gti: node.gti.leftChild()}
+	return mtNode{index: mt.nodes[node.index].left(), empty: node.empty.left, gti: node.gti.leftChild()}
 }
 
 func (mt *merkleTree) rightChild(node mtNode) mtNode {
-	return mtNode{node: mt.nodes[node.node].right(), empty: node.empty.right, gti: node.gti.rightChild()}
+	return mtNode{index: mt.nodes[node.index].right(), empty: node.empty.right, gti: node.gti.rightChild()}
 }
 
 func (mt *merkleTree) parent(node mtNode) mtNode {
-	return mtNode{node: mt.nodes[node.node].parent(), empty: node.empty.parent, gti: node.gti.parent()}
+	return mtNode{index: mt.nodes[node.index].parent(), empty: node.empty.parent, gti: node.gti.parent()}
 }
 
 func (mt *merkleTree) sibling(node mtNode) mtNode {
@@ -251,7 +251,7 @@ func (mt *merkleTree) sibling(node mtNode) mtNode {
 }
 
 func (mt *merkleTree) setComplete(node mtNode) {
-	n := &mt.nodes[node.node]
+	n := &mt.nodes[node.index]
 	if n.isComplete() {
 		return
 	}
@@ -267,16 +267,16 @@ func (mt *merkleTree) setComplete(node mtNode) {
 	// propagate completed state to ancestors and collapse completed subtrees if possible
 	for n.parent() != nullPtr {
 		parent := mt.parent(node)
-		p := &mt.nodes[parent.node]
+		p := &mt.nodes[parent.index]
 		sibling := mt.sibling(node)
-		s := &mt.nodes[sibling.node]
+		s := &mt.nodes[sibling.index]
 		if !s.isComplete() {
 			break
 		}
 		p.setComplete(true)
 		p.weight = n.weight + s.weight
 		if !p.isValueKnown() {
-			mt.getValue(parent.node)
+			mt.getValue(parent.index)
 		}
 		if pl := mt.params.storageLevel(p.weight); pl == 0 {
 			mt.collapseSubtree(parent)
@@ -292,8 +292,8 @@ func (mt *merkleTree) setComplete(node mtNode) {
 	}
 }
 
-func (mt *merkleTree) setValue(node uint32, value merkle.Value, weight float32) {
-	n := &mt.nodes[node]
+func (mt *merkleTree) setValue(nodeIndex uint32, value merkle.Value, weight float32) {
+	n := &mt.nodes[nodeIndex]
 	n.value = value
 	n.weight = weight
 	n.setEmptySubtree(false)
@@ -308,8 +308,8 @@ func (mt *merkleTree) setValue(node uint32, value merkle.Value, weight float32) 
 	}
 }
 
-func (mt *merkleTree) getValue(node uint32) (merkle.Value, float32) {
-	n := &mt.nodes[node]
+func (mt *merkleTree) getValue(nodeIndex uint32) (merkle.Value, float32) {
+	n := &mt.nodes[nodeIndex]
 	if !n.isValueKnown() {
 		lv, _ := mt.getValue(n.left())
 		rv, _ := mt.getValue(n.right())
@@ -326,8 +326,8 @@ const (
 	tsDelete
 )
 
-func (mt *merkleTree) traverseSubtree(node uint32, action int, encBytes *serializedSubtree, encBitPtr *int) {
-	n := &mt.nodes[node]
+func (mt *merkleTree) traverseSubtree(nodeIndex uint32, action int, encBytes *serializedSubtree, encBitPtr *int) {
+	n := &mt.nodes[nodeIndex]
 	if action == tsCollectShapeBits {
 		if *encBitPtr == 0 {
 			*encBytes = append(*encBytes, 0)
@@ -360,14 +360,14 @@ func (mt *merkleTree) traverseSubtree(node uint32, action int, encBytes *seriali
 }
 
 func (mt *merkleTree) collapseSubtree(node mtNode) {
-	mt.traverseSubtree(node.node, tsDelete, nil, nil)
+	mt.traverseSubtree(node.index, tsDelete, nil, nil)
 }
 
 func (mt *merkleTree) collapseAndStoreSubtree(node mtNode) (res storedSubtree) {
 	var bitPtr int
 	res.gti = node.gti
-	mt.traverseSubtree(node.node, tsCollectShapeBits, &res.nodeEnc, &bitPtr)
-	mt.traverseSubtree(node.node, tsCollectLeavesAndDelete, &res.nodeEnc, nil)
+	mt.traverseSubtree(node.index, tsCollectShapeBits, &res.nodeEnc, &bitPtr)
+	mt.traverseSubtree(node.index, tsCollectLeavesAndDelete, &res.nodeEnc, nil)
 	return
 }
 
