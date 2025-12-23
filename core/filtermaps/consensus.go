@@ -18,7 +18,6 @@ package filtermaps
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
@@ -76,11 +75,11 @@ func (p *Params) indexEnrtyRoot(lvIndex uint64) treeIndex {
 
 // relative to progressive list root
 func (p *Params) progListSubIndex(leafIndex uint32) treeIndex {
-	fmt.Println("progListSubIndex", leafIndex)
+	//fmt.Println("progListSubIndex", leafIndex)
 	height := p.progListHeightFirst
 	index := ti64(rtiListTree)
 	for {
-		fmt.Println(" height", height, "leafIndex", leafIndex, "index", index)
+		//fmt.Println(" height", height, "leafIndex", leafIndex, "index", index)
 		stLength := uint32(1) << height
 		if leafIndex < stLength {
 			return index.gtSub(rtiProgListSubtree).arraySub(uint64(leafIndex), height)

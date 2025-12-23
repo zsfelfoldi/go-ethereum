@@ -202,20 +202,20 @@ type mtNode struct {
 
 func (mt *merkleTree) getDescendant(node mtNode, rti treeIndex) mtNode {
 	for rti != gtiRoot {
-		fmt.Println("getDescendant", node.gti, node.index, rti)
+		//fmt.Println("getDescendant", node.gti, node.index, rti)
 		if mt.nodes[node.index].left() == nullPtr {
 			if !mt.nodes[node.index].isEmptySubtree() {
 				panic("cannot expand non-empty subtree")
 			}
 			leftIndex := mt.newNode(node.index)
-			fmt.Println(" leftIndex", leftIndex)
+			//fmt.Println(" leftIndex", leftIndex)
 			mt.nodes[node.index].setLeft(leftIndex)
 			l := &mt.nodes[leftIndex]
 			l.value = node.empty.left.value
 			l.setValueKnown(true)
 			l.setEmptySubtree(true)
 			rightIndex := mt.newNode(node.index)
-			fmt.Println(" rightIndex", rightIndex)
+			//fmt.Println(" rightIndex", rightIndex)
 			mt.nodes[node.index].setRight(rightIndex)
 			r := &mt.nodes[rightIndex]
 			r.value = node.empty.right.value
@@ -298,7 +298,7 @@ func (mt *merkleTree) setComplete(node mtNode) {
 }
 
 func (mt *merkleTree) setValue(nodeIndex uint32, value merkle.Value, weight float32) {
-	fmt.Println("setValue", nodeIndex, value, weight)
+	//fmt.Println("setValue", nodeIndex, value, weight)
 	n := &mt.nodes[nodeIndex]
 	n.value = value
 	n.weight = weight
@@ -538,10 +538,10 @@ func (r *subtreeNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error) 
 type mergedNodeReader []nodeReader
 
 func (m mergedNodeReader) getNode(gti treeIndex) (nw nodeWithWeight, avail int, err error) {
-	fmt.Println("mergedNodeReader.getNode", gti)
-	for i, getNode := range m {
+	//fmt.Println("mergedNodeReader.getNode", gti)
+	for _, getNode := range m {
 		mergeNw, mergeAvail, mergeErr := getNode(gti)
-		fmt.Println(" ", i, mergeAvail, mergeErr)
+		//fmt.Println(" ", i, mergeAvail, mergeErr)
 		if mergeErr != nil {
 			err = mergeErr
 			return

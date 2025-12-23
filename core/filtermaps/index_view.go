@@ -304,7 +304,7 @@ func (rs *renderState) addValue(mapValue common.Hash) {
 				value := rs.params.columnIndex(rs.lvPointer, &mapValue)
 				rs.currentMap.addToRow(rowIndex, value)
 				rowRoot := rs.mapRowRoots[rowIndex]
-				fmt.Println("addValue rowIndex", rowIndex, "rowRoot", rowRoot, "rowLength", rowLength)
+				//fmt.Println("addValue rowIndex", rowIndex, "rowRoot", rowRoot, "rowLength", rowLength)
 				entryNode := rs.tree.getDescendant(rowRoot, rs.params.progListSubIndex(rowLength/8))
 				countNode := rs.tree.getDescendant(rowRoot, ti64(rtiListCount))
 				leafPtr := rowLength % 8
