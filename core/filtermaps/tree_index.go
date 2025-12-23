@@ -33,7 +33,8 @@ func (t *treeIndex) matchRoot(relIndex uint64) bool {
 	if rLevel > tLevel || t.rsh(tLevel-rLevel) != ti64(relIndex) {
 		return false
 	}
-	*t = t.rsh(rLevel)
+	m := gtiRoot.lsh(tLevel - rLevel)
+	*t = t.and(m.sub(gtiRoot)).add(m)
 	return true
 
 }

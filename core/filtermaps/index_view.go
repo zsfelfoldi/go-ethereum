@@ -304,6 +304,7 @@ func (rs *renderState) addValue(mapValue common.Hash) {
 				value := rs.params.columnIndex(rs.lvPointer, &mapValue)
 				rs.currentMap.addToRow(rowIndex, value)
 				rowRoot := rs.mapRowRoots[rowIndex]
+				fmt.Println("addValue rowIndex", rowIndex, "rowRoot", rowRoot, "rowLength", rowLength)
 				entryNode := rs.tree.getDescendant(rowRoot, rs.params.progListSubIndex(rowLength/8))
 				countNode := rs.tree.getDescendant(rowRoot, ti64(rtiListCount))
 				leafPtr := rowLength % 8
@@ -387,7 +388,7 @@ func (rs *renderState) initMapTree() {
 	for rowIndex := range rs.params.mapHeight {
 		mapRowSubIndex := gtiRoot.arraySub(uint64(rowIndex), rs.params.logMapHeight).arraySub(uint64(mapSubIndex), rs.params.logMapsPerEpoch)
 		rs.mapRowRoots[rowIndex] = rs.tree.getDescendant(fmRootNode, mapRowSubIndex)
-		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListTree)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
+		//rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListTree)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
 		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListCount)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
 	}
 }

@@ -405,53 +405,63 @@ func (s *indexServer) historicSendLoop() {
 				return
 			}
 		case nextBlockData := <-s.blockDataCh:
-			s.lock.Lock()
-			// check if received block data is indeed from the next expected
-			// block and is still guaranteed to be canonical; ignore and request
-			// a queue reset otherwise.
-			if s.sendStatus.isNextExpected(nextBlockData) {
-				// check if the has actually been found in the database
-				if nextBlockData.header != nil && nextBlockData.body != nil && nextBlockData.receipts != nil {
-					ready, needBlocks := s.indexer.AddBlockData(nextBlockData.header, nextBlockData.body, nextBlockData.receipts)
-					s.updateIndexerStatus(ready, needBlocks, 1)
-					if s.sendStatus.needBlocks.IsEmpty() {
-						s.logDelivered(nextBlockData.blockNumber)
-						s.logFinished()
-					} else if s.sendStatus.needBlocks.First() == nextBlockData.blockNumber+1 {
-						s.logDelivered(nextBlockData.blockNumber)
-					}
-				} else {
-					// report error and update missingBlockCutoff in order to
-					// avoid spinning forever on the same error.
-					if time.Since(s.lastHistoryErrorLog) >= time.Second*10 {
-						s.lastHistoryErrorLog = time.Now()
-						if nextBlockData.header == nil {
-							log.Error("Historical header is missing", "number", nextBlockData.blockNumber)
-						} else {
-							log.Error("Historical receipts are missing", "number", nextBlockData.blockNumber, "hash", nextBlockData.header.Hash())
-						}
-					}
-					s.missingBlockCutoff = max(s.missingBlockCutoff, nextBlockData.blockNumber+1)
-					s.indexer.SetHistoryCutoff(max(s.historyCutoff, s.missingBlockCutoff))
-					ready, needBlocks := s.indexer.Status()
-					s.updateIndexerStatus(ready, needBlocks, 0)
-				}
-			} else {
-				// trigger resetting the queue and sending blockData from needBlocks.First()
-				s.sendStatus.resetQueueCount++
-			}
-			s.updateSendStatus()
-			s.lock.Unlock()
+			s.addHistoricBlockData(nextBlockData)
 		case <-s.sendTimer.C:
-			s.lock.Lock()
-			if !s.sendStatus.ready {
-				ready, needBlocks := s.indexer.Status()
-				s.updateIndexerStatus(ready, needBlocks, 0)
-				s.updateSendStatus()
-			}
-			s.lock.Unlock()
+			s.handleHistoricLoopTimer()
 		}
 	}
+}
+
+func (s *indexServer) handleHistoricLoopTimer() {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if !s.sendStatus.ready {
+		ready, needBlocks := s.indexer.Status()
+		s.updateIndexerStatus(ready, needBlocks, 0)
+		s.updateSendStatus()
+	}
+}
+
+func (s *indexServer) addHistoricBlockData(nextBlockData blockData) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	// check if received block data is indeed from the next expected
+	// block and is still guaranteed to be canonical; ignore and request
+	// a queue reset otherwise.
+	if s.sendStatus.isNextExpected(nextBlockData) {
+		// check if the has actually been found in the database
+		if nextBlockData.header != nil && nextBlockData.body != nil && nextBlockData.receipts != nil {
+			ready, needBlocks := s.indexer.AddBlockData(nextBlockData.header, nextBlockData.body, nextBlockData.receipts)
+			s.updateIndexerStatus(ready, needBlocks, 1)
+			if s.sendStatus.needBlocks.IsEmpty() {
+				s.logDelivered(nextBlockData.blockNumber)
+				s.logFinished()
+			} else if s.sendStatus.needBlocks.First() == nextBlockData.blockNumber+1 {
+				s.logDelivered(nextBlockData.blockNumber)
+			}
+		} else {
+			// report error and update missingBlockCutoff in order to
+			// avoid spinning forever on the same error.
+			if time.Since(s.lastHistoryErrorLog) >= time.Second*10 {
+				s.lastHistoryErrorLog = time.Now()
+				if nextBlockData.header == nil {
+					log.Error("Historical header is missing", "number", nextBlockData.blockNumber)
+				} else {
+					log.Error("Historical receipts are missing", "number", nextBlockData.blockNumber, "hash", nextBlockData.header.Hash())
+				}
+			}
+			s.missingBlockCutoff = max(s.missingBlockCutoff, nextBlockData.blockNumber+1)
+			s.indexer.SetHistoryCutoff(max(s.historyCutoff, s.missingBlockCutoff))
+			ready, needBlocks := s.indexer.Status()
+			s.updateIndexerStatus(ready, needBlocks, 0)
+		}
+	} else {
+		// trigger resetting the queue and sending blockData from needBlocks.First()
+		s.sendStatus.resetQueueCount++
+	}
+	s.updateSendStatus()
 }
 
 // updateStatus updates the asynchronous reader goroutine's status based on the
