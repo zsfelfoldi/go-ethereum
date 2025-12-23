@@ -282,15 +282,15 @@ func (ix *Indexer) initMapBoundary(startMap, limitMap uint32) *renderState {
 			ix.revertMaps(startMap)
 			continue
 		}
-		lvPointer, err := ix.storage.getBlockLvPointer(lastNumber)
+		nextEntry, err := ix.storage.getBlockLvPointer(lastNumber)
 		if err != nil {
 			log.Error("Block pointer of last block of map not found, reverting database", "mapIndex", startMap-1, "blockNumber", lastNumber)
 			startMap = ix.storage.lastBoundaryBefore(startMap - 1)
 			ix.revertMaps(startMap)
 			continue
 		}
-		rs.lvPointer = lvPointer
-		rs.mapIndex = uint32(lvPointer >> ix.storage.params.logValuesPerMap)
+		rs.nextEntry = nextEntry
+		rs.mapIndex = uint32(nextEntry >> ix.storage.params.logValuesPerMap)
 		rs.nextBlock = lastNumber
 		rs.partialBlock = true
 		rs.partialBlockHash = lastHash
@@ -328,7 +328,7 @@ func (ix *Indexer) initSnapshot(snapshot *IndexView) *renderState {
 		renderRange: common.NewRange[uint32](headMapIndex, math.MaxUint32-headMapIndex),
 		currentMap:  headMap,
 		mapIndex:    headMapIndex,
-		lvPointer:   snapshot.nextEntry,
+		nextEntry:   snapshot.nextEntry,
 	}
 	var err error
 	fmt.Println("snapshot.initTree")
@@ -595,7 +595,7 @@ func (ix *Indexer) storeHeadIndexView(number uint64, hash common.Hash) {
 		tailEpoch:         tailEpoch,
 		blockRange:        common.NewRange(tailNumber, number+1-tailNumber),
 		headBlockHash:     hash,
-		nextEntry:         ix.headRenderer.lvPointer,
+		nextEntry:         ix.headRenderer.nextEntry,
 		firstOverlayMap:   firstOverlayMap,
 		firstOverlayBlock: firstOverlayBlock,
 		overlayMaps:       overlayMaps,

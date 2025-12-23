@@ -201,7 +201,7 @@ func (iv *IndexView) initTree() (*merkleTree, error) {
 type renderState struct {
 	params           *Params
 	renderRange      common.Range[uint32]
-	lvPointer        uint64
+	nextEntry        uint64
 	mapIndex         uint32
 	currentMap       *memoryMap
 	finishedMaps     []*completedMap
@@ -231,7 +231,7 @@ func (rs *renderState) addTxAndLogEntries(transactions []*types.Transaction, rec
 		panic("checkNextHash has to be called before adding partially rendered block")
 	}
 	if rs.currentMap != nil {
-		rs.currentMap.blockPtrs = append(rs.currentMap.blockPtrs, rs.lvPointer)
+		rs.currentMap.blockPtrs = append(rs.currentMap.blockPtrs, rs.nextEntry)
 		rs.currentMap.lastBlock = lastBlockOfMap{number: rs.nextBlock} // hash will be set by addBlockEntry
 	}
 	for i, receipt := range receipts {
@@ -247,7 +247,7 @@ func (rs *renderState) addTxAndLogEntries(transactions []*types.Transaction, rec
 			rs.advance(1)
 		}
 		for j, log := range receipt.Logs {
-			mapRemaining := rs.params.valuesPerMap - rs.lvPointer%rs.params.valuesPerMap
+			mapRemaining := rs.params.valuesPerMap - rs.nextEntry%rs.params.valuesPerMap
 			if mapRemaining <= uint64(len(log.Topics)) {
 				rs.advance(mapRemaining)
 			}
@@ -267,7 +267,7 @@ func (rs *renderState) addTxAndLogEntries(transactions []*types.Transaction, rec
 	}
 	// update next_index pointer
 	nextEntryNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiNextEntry))
-	rs.tree.setValue(nextEntryNode.index, uint64ToValue(rs.lvPointer), 1)
+	rs.tree.setValue(nextEntryNode.index, uint64ToValue(rs.nextEntry), 1)
 }
 
 func (rs *renderState) addBlockEntry(header *types.Header) (uint32, []*completedMap) {
@@ -301,7 +301,7 @@ func (rs *renderState) addValue(mapValue common.Hash) {
 		for layerIndex := uint32(0); ; layerIndex++ { //TODO cache layer mapping?
 			rowIndex := rs.params.rowIndex(rs.mapIndex, layerIndex, mapValue)
 			if rowLength := rs.currentMap.rowLength(rowIndex); rowLength < rs.params.getMaxRowLength(layerIndex) {
-				value := rs.params.columnIndex(rs.lvPointer, &mapValue)
+				value := rs.params.columnIndex(rs.nextEntry, &mapValue)
 				rs.currentMap.addToRow(rowIndex, value)
 				rowRoot := rs.mapRowRoots[rowIndex]
 				//fmt.Println("addValue rowIndex", rowIndex, "rowRoot", rowRoot, "rowLength", rowLength)
@@ -333,7 +333,7 @@ func (rs *renderState) addValue(mapValue common.Hash) {
 }
 
 func (rs *renderState) indexEntryNode() mtNode {
-	return rs.tree.getDescendant(rs.params.treeRoot, rs.params.indexEnrtyRoot(rs.lvPointer)) //TODO optimize this
+	return rs.tree.getDescendant(rs.params.treeRoot, rs.params.indexEnrtyRoot(rs.nextEntry)) //TODO optimize this
 }
 
 func (rs *renderState) addBlockMeta(blockNumber uint64, blockHash common.Hash, timestamp uint64) {
@@ -394,15 +394,30 @@ func (rs *renderState) initMapTree() {
 }
 
 func (rs *renderState) completeMapTree() {
-	fmt.Println("completeMapTree", rs.mapIndex)
+	var totalSize int
+	for _, s := range rs.tree.subtrees {
+		totalSize += len(s.nodeEnc)
+	}
+	fmt.Println("completeMapTree", rs.mapIndex, "tree nodes", len(rs.tree.nodes), "subtrees", len(rs.tree.subtrees), "totalSize", totalSize)
+	fmt.Println(" used", rs.tree.debugCountNodes(rootIndex), "free", rs.tree.debugCountFree())
+	epoch := rs.params.mapEpoch(rs.mapIndex)
+	node := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps).arraySub(0, rs.params.logMapHeight))
+	fmt.Println(" *** row 0:", rs.tree.debugCountNodes(node.index), "used")
+	rs.tree.debugPrint(node.index, 1)
+	node = rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiIndexEntries))
+	fmt.Println(" *** index entries:", rs.tree.debugCountNodes(node.index), "used")
+	rs.tree.debugPrint(node.index, 1)
 	for rowIndex := range rs.params.mapHeight {
 		rs.tree.setComplete(rs.mapRowRoots[rowIndex])
 	}
 }
 
 func (rs *renderState) advance(count uint64) {
-	rs.lvPointer += count
-	if uint32(rs.lvPointer>>rs.params.logValuesPerMap) > rs.mapIndex {
+	for range count {
+		rs.tree.setComplete(rs.indexEntryNode()) //TODO optimize
+		rs.nextEntry++
+	}
+	if uint32(rs.nextEntry>>rs.params.logValuesPerMap) > rs.mapIndex {
 		if rs.currentMap != nil {
 			rs.completeMapTree()
 			fm := rs.currentMap.completed(rs.tree.getStoredSubtrees())

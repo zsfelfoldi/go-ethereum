@@ -200,6 +200,34 @@ type mtNode struct {
 	gti   treeIndex
 }
 
+func (mt *merkleTree) debugPrint(nodeIndex uint32, rti uint64) {
+	if nodeIndex == nullPtr {
+		return
+	}
+	n := &mt.nodes[nodeIndex]
+	fmt.Printf(" %b: %064x %f %v %v %v\n", rti, n.value, n.weight, n.isValueKnown(), n.isComplete(), n.isEmptySubtree())
+	mt.debugPrint(n.left(), rti*2)
+	mt.debugPrint(n.right(), rti*2+1)
+}
+
+func (mt *merkleTree) debugCountNodes(nodeIndex uint32) int {
+	if nodeIndex == nullPtr {
+		return 0
+	}
+	n := &mt.nodes[nodeIndex]
+	return 1 + mt.debugCountNodes(n.left()) + mt.debugCountNodes(n.right())
+}
+
+func (mt *merkleTree) debugCountFree() int {
+	nodeIndex := mt.firstFree
+	var count int
+	for nodeIndex != nullPtr {
+		count++
+		nodeIndex = mt.nodes[nodeIndex].right()
+	}
+	return count
+}
+
 func (mt *merkleTree) getDescendant(node mtNode, rti treeIndex) mtNode {
 	for rti != gtiRoot {
 		//fmt.Println("getDescendant", node.gti, node.index, rti)
