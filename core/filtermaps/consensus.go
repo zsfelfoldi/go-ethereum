@@ -201,12 +201,15 @@ func (p *Params) newFilterRowNodeReader(reader filterRowReader) *filterRowNodeRe
 }
 
 func (r *filterRowNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error) {
+	if gti == gtiRoot {
+		return nodeWithWeight{}, mtaInternal, nil
+	}
 	if !gti.matchRoot(rtiEpochs) {
 		return nodeWithWeight{}, mtaUnknown, nil
 	}
 	epochRange := gti.splitRoot(r.params.logEpochHistory)
 	if epochRange.Count() > 1 {
-		return nodeWithWeight{}, mtaUnknown, nil
+		return nodeWithWeight{}, mtaInternal, nil
 	}
 	epoch := uint32(epochRange.First())
 	if !gti.matchRoot(rtiFilterMaps) {
@@ -283,28 +286,33 @@ func (p *Params) getProgListNode(row FilterRow, level uint, gti treeIndex) (node
 	}
 }
 
-type nextIndexReader uint64
-
-func (r nextIndexReader) getNode(gti treeIndex) (nw nodeWithWeight, avail int, err error) {
-	if gti.matchRoot(rtiNextEntry) && gti == gtiRoot {
-		return nodeWithWeight{value: uint64ToValue(uint64(r)), weight: 1}, mtaKnown, nil
-	}
-	return
-}
-
-type logIndexNodeStatus struct {
+type logIndexBoundaryReader struct {
 	params    *Params
 	nextEntry uint64
 }
 
-func (p *Params) newLogIndexNodeStatus(nextEntry uint64) logIndexNodeStatus {
-	return logIndexNodeStatus{
+func (p *Params) newLogIndexBoundaryReader(nextEntry uint64) logIndexBoundaryReader {
+	return logIndexBoundaryReader{
 		params:    p,
 		nextEntry: nextEntry,
 	}
 }
 
-func (l logIndexNodeStatus) nodeStatus(gti treeIndex) int {
+func (l logIndexBoundaryReader) getNode(gti treeIndex) (nw nodeWithWeight, avail int, err error) {
+	if gti.matchRoot(rtiNextEntry) {
+		if gti == gtiRoot {
+			return nodeWithWeight{value: uint64ToValue(l.nextEntry), weight: 1}, mtaKnown, nil
+		}
+		return
+	}
+	entryRange := l.params.subtreeLvRange(gti)
+	if l.nextEntry <= entryRange.First() {
+		return nodeWithWeight{value: l.params.treeRoot.empty.getNode(gti)}, mtaKnown, nil
+	}
+	return
+}
+
+func (l logIndexBoundaryReader) nodeStatus(gti treeIndex) int {
 	entryRange := l.params.subtreeLvRange(gti)
 	switch {
 	case l.nextEntry >= entryRange.AfterLast():

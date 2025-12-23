@@ -19,6 +19,7 @@ package filtermaps
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"sort"
 
@@ -121,6 +122,7 @@ func (params *Params) newMerkleTree(getNode nodeReader, nodeStatus nodeStatus) (
 }
 
 func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode, nw nodeWithWeight, avail int) error {
+	fmt.Println("initTree", node)
 	var recursiveInit bool
 	switch avail {
 	case mtaInternal:
@@ -510,7 +512,7 @@ func (r *subtreeNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error) 
 		return nodeWithWeight{}, 0, err
 	}
 	if cs.subtree == nil {
-		return nodeWithWeight{}, mtaInternal, nil
+		return nodeWithWeight{}, mtaUnknown, nil
 	}
 	nw, avail := cs.subtree.getNode(gti.subIndex(cs.subtreeLevel))
 	if avail == mtaInternal && gti != gtiRoot {
@@ -532,8 +534,10 @@ func (r *subtreeNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error) 
 type mergedNodeReader []nodeReader
 
 func (m mergedNodeReader) getNode(gti treeIndex) (nw nodeWithWeight, avail int, err error) {
-	for _, getNode := range m {
+	fmt.Println("mergedNodeReader.getNode", gti)
+	for i, getNode := range m {
 		mergeNw, mergeAvail, mergeErr := getNode(gti)
+		fmt.Println(" ", i, mergeAvail, mergeErr)
 		if mergeErr != nil {
 			err = mergeErr
 			return

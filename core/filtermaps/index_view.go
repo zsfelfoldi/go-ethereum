@@ -189,13 +189,13 @@ func (iv *IndexView) getSubtree(gti treeIndex) (serializedSubtree, error) {
 }
 
 func (iv *IndexView) initTree() (*merkleTree, error) {
+	boundary := iv.storage.params.newLogIndexBoundaryReader(iv.nextEntry)
 	nodeReader := mergedNodeReader{
 		iv.storage.params.newFilterRowNodeReader(iv.getFilterMapRow).getNode,
 		newSubtreeNodeReader(iv.getSubtree).getNode,
-		nextIndexReader(iv.nextEntry).getNode,
+		boundary.getNode,
 	}.getNode
-	nodeStatus := iv.storage.params.newLogIndexNodeStatus(iv.nextEntry).nodeStatus
-	return iv.storage.params.newMerkleTree(nodeReader, nodeStatus)
+	return iv.storage.params.newMerkleTree(nodeReader, boundary.nodeStatus)
 }
 
 type renderState struct {

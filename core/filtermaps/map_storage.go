@@ -760,11 +760,11 @@ func (m *mapStorage) getSubtree(gti treeIndex) (serializedSubtree, error) {
 
 func (m *mapStorage) initTree(mapRange common.Range[uint32]) (*merkleTree, error) {
 	nextEntry := uint64(mapRange.First()) * m.params.valuesPerMap
+	boundary := m.params.newLogIndexBoundaryReader(nextEntry) //TODO
 	nodeReader := mergedNodeReader{
 		m.params.newFilterRowNodeReader(m.getFilterMapRow).getNode,
 		newSubtreeNodeReader(m.getSubtree).getNode,
-		nextIndexReader(nextEntry).getNode,
+		boundary.getNode,
 	}.getNode
-	nodeStatus := m.params.newLogIndexNodeStatus(nextEntry).nodeStatus //TODO
-	return m.params.newMerkleTree(nodeReader, nodeStatus)
+	return m.params.newMerkleTree(nodeReader, boundary.nodeStatus)
 }
