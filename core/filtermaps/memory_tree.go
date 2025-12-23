@@ -256,13 +256,16 @@ func (mt *merkleTree) sibling(node mtNode) mtNode {
 }
 
 func (mt *merkleTree) setComplete(node mtNode) {
+	//fmt.Println("setComplete", node)
 	n := &mt.nodes[node.index]
 	if n.isComplete() {
 		return
 	}
 	if n.left() != nullPtr {
+		//fmt.Println(" starting children of", node)
 		mt.setComplete(mt.leftChild(node))
 		mt.setComplete(mt.rightChild(node))
+		//fmt.Println(" finished children of", node)
 		return
 	}
 	if !n.isValueKnown() {
@@ -272,8 +275,10 @@ func (mt *merkleTree) setComplete(node mtNode) {
 	// propagate completed state to ancestors and collapse completed subtrees if possible
 	for n.parent() != nullPtr {
 		parent := mt.parent(node)
+		//fmt.Println(" parent", parent)
 		p := &mt.nodes[parent.index]
 		sibling := mt.sibling(node)
+		//fmt.Println(" sibling", sibling)
 		s := &mt.nodes[sibling.index]
 		if !s.isComplete() {
 			break

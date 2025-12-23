@@ -95,7 +95,9 @@ type emptySubtree struct {
 	parent, left, right *emptySubtree
 }
 
-var zeroLeaf = &emptySubtree{}
+func zeroLeaf() *emptySubtree {
+	return &emptySubtree{}
+}
 
 func (e *emptySubtree) getNode(gti treeIndex) merkle.Value {
 	for gti != gtiRoot {
@@ -142,23 +144,24 @@ const maxProgListTreeLevel = 16
 
 func (p *Params) emptyProgListTree(level uint) *emptySubtree {
 	if level > maxProgListTreeLevel {
-		return zeroLeaf
+		return zeroLeaf()
 	}
-	treeLevel := emptyVector(p.progListHeightFirst+level*p.progListHeightStep, zeroLeaf)
+	treeLevel := emptyVector(p.progListHeightFirst+level*p.progListHeightStep, zeroLeaf())
 	return emptyTreeNode(treeLevel, p.emptyProgListTree(level+1)).zeroDefault()
 }
 
 func (p *Params) initEmptyTree() {
-	progList := emptyTreeNode(p.emptyProgListTree(0), zeroLeaf).zeroDefault()
-	filterMapsTree := emptyVector(p.logMapHeight+p.logMapsPerEpoch, progList)
-	topicsList := emptyTreeNode(emptyVector(2, zeroLeaf), zeroLeaf)
-	logEntry := emptyTreeNode(emptyTreeNode(zeroLeaf, topicsList), emptyTreeNode(progList, zeroLeaf)).zeroDefault()
-	entryMeta := emptyVector(2, zeroLeaf)
+	rowProgList := emptyTreeNode(p.emptyProgListTree(0), zeroLeaf()).zeroDefault()
+	filterMapsTree := emptyVector(p.logMapHeight+p.logMapsPerEpoch, rowProgList)
+	topicsList := emptyTreeNode(emptyVector(2, zeroLeaf()), zeroLeaf())
+	lodDataProgList := emptyTreeNode(p.emptyProgListTree(0), zeroLeaf()).zeroDefault()
+	logEntry := emptyTreeNode(emptyTreeNode(zeroLeaf(), topicsList), emptyTreeNode(lodDataProgList, zeroLeaf())).zeroDefault()
+	entryMeta := emptyVector(2, zeroLeaf())
 	indexEntry := emptyTreeNode(logEntry, entryMeta)
 	indexEntriesTree := emptyVector(p.logMapsPerEpoch+p.logValuesPerMap, indexEntry)
 	epochTree := emptyTreeNode(filterMapsTree, indexEntriesTree)
 	epochHistoryTree := emptyVector(p.logEpochHistory, epochTree)
-	emptyIndexTree := emptyTreeNode(epochHistoryTree, zeroLeaf)
+	emptyIndexTree := emptyTreeNode(epochHistoryTree, zeroLeaf())
 	p.treeRoot = mtNode{index: rootIndex, empty: emptyIndexTree, gti: gtiRoot}
 }
 

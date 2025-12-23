@@ -174,7 +174,7 @@ func (p *Params) indexEntryNodeWeight(bytesUsed uint32) float32 {
 
 func (p *Params) storageLevel(weight float32) uint {
 	if weight < 1 {
-		panic("invalid node weight")
+		return 0
 	}
 	log2 := uint(math.Ilogb(float64(weight)))
 	if log2 < p.logWeightFirstLevel {

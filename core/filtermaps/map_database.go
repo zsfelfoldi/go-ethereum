@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	databaseVersion   = 402  // reindexed if database version does not match
+	databaseVersion   = 404  // reindexed if database version does not match
 	cachedLastBlocks  = 1000 // last block of map pointers
 	cachedLvPointers  = 1000 // first log value pointer of block pointers
 	cachedSubtrees    = 5000
@@ -249,6 +249,9 @@ func (m *mapDatabase) deletePointers(deleteMaps common.Range[uint32], stopCallba
 
 // writePointers writes the pointers belonging to the give maps to the database.
 func (m *mapDatabase) writePointers(writeRange common.Range[uint32], maps []*completedMap, stopCallback func() bool) (bool, error) {
+	if writeRange.IsEmpty() {
+		return true, nil
+	}
 	batch := m.db.NewBatch()
 	var (
 		batchCnt uint32
@@ -549,6 +552,9 @@ func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePat
 }
 
 func (m *mapDatabase) deleteSubtrees(deleteRange common.Range[uint32], stopCallback func() bool) (bool, error) {
+	if deleteRange.IsEmpty() {
+		return true, nil
+	}
 	var from, to treeIndex
 	deleteFn := func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error {
 		for to.and64(1) == 1 {
@@ -582,6 +588,9 @@ func (m *mapDatabase) deleteSubtrees(deleteRange common.Range[uint32], stopCallb
 }
 
 func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*completedMap, stopCallback func() bool) (bool, error) {
+	if writeRange.IsEmpty() {
+		return true, nil
+	}
 	var stCount int
 	for _, m := range maps {
 		stCount += len(m.subtrees)
