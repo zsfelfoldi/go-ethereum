@@ -479,6 +479,12 @@ func (rs *renderState) advance(count uint64) {
 			newEntryNode := rs.tree.getRightNeighbor(rs.nextEntryNode) // needs full reinit at epoch boundary
 			rs.tree.setComplete(rs.nextEntryNode)
 			rs.nextEntry++
+			if rs.nextEntry%1000 == 0 {
+				nw := rs.tree.getValue(rootIndex)
+				if rs.nextEntry%1000000 == 0 {
+					fmt.Printf(" root @ %d: 0x%064x   weight: %f\n", rs.nextEntry/1000000, nw.value, nw.weight)
+				}
+			}
 			rs.nextEntryNode = newEntryNode
 		}
 	}
