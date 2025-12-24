@@ -22,9 +22,11 @@ import (
 	"fmt"
 	"math"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
@@ -227,6 +229,9 @@ func uint64ToValue(v uint64) (result merkle.Value) {
 }
 
 func (rs *renderState) addTxAndLogEntries(transactions []*types.Transaction, receipts types.Receipts) {
+	TTaddTxAndLogEntries -= mclock.Now()
+	defer func() { TTaddTxAndLogEntries += mclock.Now() }()
+
 	if rs.partialBlock {
 		panic("checkNextHash has to be called before adding partially rendered block")
 	}
@@ -271,6 +276,9 @@ func (rs *renderState) addTxAndLogEntries(transactions []*types.Transaction, rec
 }
 
 func (rs *renderState) addBlockEntry(header *types.Header) (uint32, []*completedMap) {
+	TTaddBlockEntry -= mclock.Now()
+	defer func() { TTaddBlockEntry += mclock.Now() }()
+
 	if rs.partialBlock {
 		panic("checkNextHash has to be called before adding partially rendered block")
 	}
@@ -378,6 +386,9 @@ func (rs *renderState) addLogEntryAndMeta(log *types.Log, blockNumber uint64, tx
 }
 
 func (rs *renderState) initMapTree() {
+	TTinitMapTree -= mclock.Now()
+	defer func() { TTinitMapTree += mclock.Now() }()
+
 	fmt.Println("initMapTree", rs.mapIndex)
 	epoch := rs.params.mapEpoch(rs.mapIndex)
 	fmRootNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps))
@@ -393,12 +404,23 @@ func (rs *renderState) initMapTree() {
 	}
 }
 
+var TTaddTxAndLogEntries,
+	TTaddBlockEntry,
+	TTinitMapTree,
+	TTcompleteMapTree,
+	TTgetDescendant,
+	TTtreeHash mclock.AbsTime
+
 func (rs *renderState) completeMapTree() {
+	TTcompleteMapTree -= mclock.Now()
+	defer func() { TTcompleteMapTree += mclock.Now() }()
+
 	var totalSize int
 	for _, s := range rs.tree.subtrees {
 		totalSize += len(s.nodeEnc)
 	}
 	fmt.Println("completeMapTree", rs.mapIndex, "tree nodes", len(rs.tree.nodes), "subtrees", len(rs.tree.subtrees), "totalSize", totalSize)
+
 	/*fmt.Println(" used", rs.tree.debugCountNodes(rootIndex), "free", rs.tree.debugCountFree())
 	epoch := rs.params.mapEpoch(rs.mapIndex)
 	node := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps).arraySub(0, rs.params.logMapHeight))
@@ -407,9 +429,17 @@ func (rs *renderState) completeMapTree() {
 	node = rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiIndexEntries))
 	fmt.Println(" *** index entries:", rs.tree.debugCountNodes(node.index), "used")
 	rs.tree.debugPrint(node.index, 1)*/
+
 	for rowIndex := range rs.params.mapHeight {
 		rs.tree.setComplete(rs.mapRowRoots[rowIndex])
 	}
+
+	fmt.Println("TTaddTxAndLogEntries", time.Duration(TTaddTxAndLogEntries+mclock.Now()))
+	fmt.Println("TTaddBlockEntry     ", time.Duration(TTaddBlockEntry))
+	fmt.Println("TTinitMapTree       ", time.Duration(TTinitMapTree))
+	fmt.Println("TTcompleteMapTree   ", time.Duration(TTcompleteMapTree+mclock.Now()))
+	fmt.Println("TTgetDescendant     ", time.Duration(TTgetDescendant))
+	fmt.Println("TTtreeHash          ", time.Duration(TTtreeHash))
 }
 
 func (rs *renderState) advance(count uint64) {

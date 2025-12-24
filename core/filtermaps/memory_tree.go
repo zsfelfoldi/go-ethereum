@@ -25,6 +25,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common/lru"
+	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
 const (
@@ -45,6 +46,9 @@ type (
 )
 
 func treeHash(left, right merkle.Value) (result merkle.Value) {
+	TTtreeHash -= mclock.Now()
+	defer func() { TTtreeHash += mclock.Now() }()
+
 	hasher := sha256.New()
 	hasher.Write(left[:])
 	hasher.Write(right[:])
@@ -229,6 +233,9 @@ func (mt *merkleTree) debugCountFree() int {
 }
 
 func (mt *merkleTree) getDescendant(node mtNode, rti treeIndex) mtNode {
+	TTgetDescendant -= mclock.Now()
+	defer func() { TTgetDescendant += mclock.Now() }()
+
 	for rti != gtiRoot {
 		//fmt.Println("getDescendant", node.gti, node.index, rti)
 		if mt.nodes[node.index].left() == nullPtr {
