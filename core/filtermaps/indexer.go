@@ -305,6 +305,7 @@ func (ix *Indexer) initMapBoundary(startMap, limitMap uint32) *renderState {
 		if err != nil {
 			log.Crit("Failed to initialize log index merkle tree at map boundary", "map", startMap, "error", err)
 		}
+		rs.setNextEntryNode()
 		rs.initMapTree()
 	}
 	return rs

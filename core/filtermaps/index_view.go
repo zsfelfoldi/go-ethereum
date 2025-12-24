@@ -211,8 +211,10 @@ type renderState struct {
 	partialBlock     bool
 	partialBlockHash common.Hash
 
-	tree        *merkleTree
-	mapRowRoots []mtNode
+	// initialized when currentMap != nil
+	tree          *merkleTree
+	mapRowRoots   []mtNode
+	nextEntryNode mtNode
 }
 
 func (rs *renderState) checkNextHash(hash common.Hash) bool {
@@ -305,7 +307,7 @@ func (rs *renderState) addBlockEntry(header *types.Header) (uint32, []*completed
 
 // assumes currentMap != nil
 func (rs *renderState) addValue(mapValue common.Hash) {
-	if rs.renderRange.Includes(rs.mapIndex) {
+	if rs.currentMap != nil {
 		for layerIndex := uint32(0); ; layerIndex++ { //TODO cache layer mapping?
 			rowIndex := rs.params.rowIndex(rs.mapIndex, layerIndex, mapValue)
 			if rowLength := rs.currentMap.rowLength(rowIndex); rowLength < rs.params.getMaxRowLength(layerIndex) {
@@ -340,19 +342,27 @@ func (rs *renderState) addValue(mapValue common.Hash) {
 	rs.advance(1)
 }
 
-func (rs *renderState) indexEntryNode() mtNode {
-	return rs.tree.getDescendant(rs.params.treeRoot, rs.params.indexEnrtyRoot(rs.nextEntry)) //TODO optimize this
+func (rs *renderState) setNextEntryNode() {
+	rs.nextEntryNode = rs.tree.getDescendant(rs.params.treeRoot, rs.params.indexEnrtyRoot(rs.nextEntry)) //TODO optimize this
+	//fmt.Println("setNextEntryNode", rs.nextEntryNode)
 }
 
 func (rs *renderState) addBlockMeta(blockNumber uint64, blockHash common.Hash, timestamp uint64) {
-	entryMetaRoot := rs.tree.getDescendant(rs.indexEntryNode(), ti64(rtiEntryMeta))
+	if rs.currentMap == nil {
+		return
+	}
+	//fmt.Println("rs.nextEntryNode", rs.nextEntryNode)
+	entryMetaRoot := rs.tree.getDescendant(rs.nextEntryNode, ti64(rtiEntryMeta))
 	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiBlockMetaBlockNumber)).index, uint64ToValue(blockNumber), rs.params.indexEntryNodeWeight(8))
 	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiBlockMetaBlockHash)).index, merkle.Value(blockHash), rs.params.indexEntryNodeWeight(32))
 	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiBlockMetaTimestamp)).index, uint64ToValue(timestamp), rs.params.indexEntryNodeWeight(8))
 }
 
 func (rs *renderState) addTxMeta(blockNumber uint64, txHash common.Hash, txIndex int, receiptHash common.Hash) {
-	entryMetaRoot := rs.tree.getDescendant(rs.indexEntryNode(), ti64(rtiEntryMeta))
+	if rs.currentMap == nil {
+		return
+	}
+	entryMetaRoot := rs.tree.getDescendant(rs.nextEntryNode, ti64(rtiEntryMeta))
 	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiTxMetaBlockNumber)).index, uint64ToValue(uint64(blockNumber)), rs.params.indexEntryNodeWeight(8))
 	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiTxMetaTxHash)).index, merkle.Value(txHash), rs.params.indexEntryNodeWeight(32))
 	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiTxMetaTxIndex)).index, uint64ToValue(uint64(txIndex)), rs.params.indexEntryNodeWeight(2))
@@ -360,7 +370,10 @@ func (rs *renderState) addTxMeta(blockNumber uint64, txHash common.Hash, txIndex
 }
 
 func (rs *renderState) addLogEntryAndMeta(log *types.Log, blockNumber uint64, txHash common.Hash, txIndex, logIndex int) {
-	indexEntryNode := rs.indexEntryNode()
+	if rs.currentMap == nil {
+		return
+	}
+	indexEntryNode := rs.nextEntryNode
 	logEntryRoot := rs.tree.getDescendant(indexEntryNode, ti64(rtiLogEntry))
 	var address merkle.Value
 	copy(address[:20], log.Address[:])
@@ -389,16 +402,25 @@ func (rs *renderState) initMapTree() {
 	TTinitMapTree -= mclock.Now()
 	defer func() { TTinitMapTree += mclock.Now() }()
 
-	fmt.Println("initMapTree", rs.mapIndex)
 	epoch := rs.params.mapEpoch(rs.mapIndex)
+	if rs.mapRowRoots != nil && rs.mapIndex > rs.params.firstEpochMap(epoch) {
+		fmt.Println("initMapTree (quick)", rs.mapIndex)
+		for i, r := range rs.mapRowRoots {
+			rs.mapRowRoots[i] = rs.tree.getRightNeighbor(r)
+		}
+		return
+	}
+
+	fmt.Println("initMapTree (full)", rs.mapIndex)
 	fmRootNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps))
 	mapSubIndex := rs.mapIndex - rs.params.firstEpochMap(epoch)
 	if rs.mapRowRoots == nil {
 		rs.mapRowRoots = make([]mtNode, rs.params.mapHeight)
 	}
+	rowSubtreeNode := rs.tree.getDescendant(fmRootNode, gtiRoot.arraySub(0, rs.params.logMapHeight))
 	for rowIndex := range rs.params.mapHeight {
-		mapRowSubIndex := gtiRoot.arraySub(uint64(rowIndex), rs.params.logMapHeight).arraySub(uint64(mapSubIndex), rs.params.logMapsPerEpoch)
-		rs.mapRowRoots[rowIndex] = rs.tree.getDescendant(fmRootNode, mapRowSubIndex)
+		rs.mapRowRoots[rowIndex] = rs.tree.getDescendant(rowSubtreeNode, gtiRoot.arraySub(uint64(mapSubIndex), rs.params.logMapsPerEpoch))
+		rowSubtreeNode = rs.tree.getRightNeighbor(rowSubtreeNode)
 		//rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListTree)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
 		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListCount)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
 	}
@@ -443,11 +465,19 @@ func (rs *renderState) completeMapTree() {
 }
 
 func (rs *renderState) advance(count uint64) {
-	for range count {
-		rs.tree.setComplete(rs.indexEntryNode()) //TODO optimize
-		rs.nextEntry++
+	if rs.currentMap != nil {
+		for range count {
+			//fmt.Println("getRightNeighbor", rs.nextEntryNode)
+			nextEntryNode := rs.tree.getRightNeighbor(rs.nextEntryNode)
+			rs.tree.setComplete(rs.nextEntryNode) //TODO optimize
+			rs.nextEntry++
+			rs.nextEntryNode = nextEntryNode
+		}
 	}
 	if uint32(rs.nextEntry>>rs.params.logValuesPerMap) > rs.mapIndex {
+		if rs.currentMap == nil || rs.mapIndex == rs.params.lastEpochMap(rs.params.mapEpoch(rs.mapIndex)) {
+			rs.setNextEntryNode()
+		}
 		if rs.currentMap != nil {
 			rs.completeMapTree()
 			fm := rs.currentMap.completed(rs.tree.getStoredSubtrees())

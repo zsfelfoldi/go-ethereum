@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	databaseVersion   = 414  // reindexed if database version does not match
+	databaseVersion   = 4    // reindexed if database version does not match
 	cachedLastBlocks  = 1000 // last block of map pointers
 	cachedLvPointers  = 1000 // first log value pointer of block pointers
 	cachedSubtrees    = 5000
@@ -76,6 +76,7 @@ func newMapDatabase(params *Params, db ethdb.KeyValueStore, hashScheme bool) *ma
 // loadMapRange loads the valid and dirty map ranges and known epoch boundaries
 // from the database.
 func (m *mapDatabase) loadMapRange() (valid, dirty rangeSet[uint32], knownEpochs uint32, found bool) {
+	return //TODO
 	fmr, ok, err := rawdb.ReadFilterMapsRange(m.db)
 	if !ok || err != nil || fmr.Version != databaseVersion {
 		return
