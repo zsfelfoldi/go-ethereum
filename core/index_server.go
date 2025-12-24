@@ -544,7 +544,7 @@ func (s *indexServer) updateReadStatus(newStatus indexerStatus) {
 // readPointer-1 are queued.
 func (s *indexServer) canQueueNextBlock() bool {
 	return s.readStatus.needBlocks.Includes(s.readPointer) &&
-		s.readPointer <= s.readStatus.needBlocks.First()+maxHistoricPrefetch
+		s.readPointer < s.readStatus.needBlocks.First()+maxHistoricPrefetch
 }
 
 // historicReadLoop reads requested historical block data asynchronously.

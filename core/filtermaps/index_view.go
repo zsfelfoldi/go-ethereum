@@ -399,14 +399,14 @@ func (rs *renderState) completeMapTree() {
 		totalSize += len(s.nodeEnc)
 	}
 	fmt.Println("completeMapTree", rs.mapIndex, "tree nodes", len(rs.tree.nodes), "subtrees", len(rs.tree.subtrees), "totalSize", totalSize)
-	fmt.Println(" used", rs.tree.debugCountNodes(rootIndex), "free", rs.tree.debugCountFree())
+	/*fmt.Println(" used", rs.tree.debugCountNodes(rootIndex), "free", rs.tree.debugCountFree())
 	epoch := rs.params.mapEpoch(rs.mapIndex)
 	node := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps).arraySub(0, rs.params.logMapHeight))
 	fmt.Println(" *** row 0:", rs.tree.debugCountNodes(node.index), "used")
 	rs.tree.debugPrint(node.index, 1)
 	node = rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiIndexEntries))
 	fmt.Println(" *** index entries:", rs.tree.debugCountNodes(node.index), "used")
-	rs.tree.debugPrint(node.index, 1)
+	rs.tree.debugPrint(node.index, 1)*/
 	for rowIndex := range rs.params.mapHeight {
 		rs.tree.setComplete(rs.mapRowRoots[rowIndex])
 	}

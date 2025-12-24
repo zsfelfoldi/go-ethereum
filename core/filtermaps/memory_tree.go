@@ -316,15 +316,18 @@ func (mt *merkleTree) setComplete(node mtNode) {
 		if !p.isValueKnown() {
 			mt.getValue(parent.index)
 		}
-		if pl := mt.params.storageLevel(p.weight); pl == 0 {
-			mt.collapseSubtree(parent)
-		} else {
-			if mt.params.storageLevel(n.weight) < pl {
-				mt.subtrees = append(mt.subtrees, mt.collapseAndStoreSubtree(node))
-			}
-			if mt.params.storageLevel(s.weight) < pl {
-				mt.subtrees = append(mt.subtrees, mt.collapseAndStoreSubtree(sibling))
-			}
+		nl := mt.params.storageLevel(n.weight)
+		sl := mt.params.storageLevel(s.weight)
+		pl := mt.params.storageLevel(p.weight)
+		if nl == 0 {
+			mt.collapseSubtree(node)
+		} else if nl < pl {
+			mt.subtrees = append(mt.subtrees, mt.collapseAndStoreSubtree(node))
+		}
+		if sl == 0 {
+			mt.collapseSubtree(sibling)
+		} else if sl < pl {
+			mt.subtrees = append(mt.subtrees, mt.collapseAndStoreSubtree(sibling))
 		}
 		n, node = p, parent
 	}
