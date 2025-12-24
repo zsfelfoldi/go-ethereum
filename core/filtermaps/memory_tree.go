@@ -270,21 +270,21 @@ func (mt *merkleTree) getDescendant(node mtNode, rti treeIndex) mtNode {
 }
 
 func (mt *merkleTree) getRightNeighbor(node mtNode) mtNode {
-	fmt.Println("getRightNeighbor node", node)
+	//fmt.Println("getRightNeighbor node", node)
 	parent := mt.parent(node)
-	fmt.Println(" parent", parent, "left", mt.nodes[parent.index].left(), "right", mt.nodes[parent.index].right())
+	//fmt.Println(" parent", parent, "left", mt.nodes[parent.index].left(), "right", mt.nodes[parent.index].right())
 	rti := gtiRoot
 	for mt.nodes[parent.index].right() == node.index {
 		node = parent
 		parent = mt.parent(node)
-		fmt.Println(" parent", parent)
+		//fmt.Println(" parent", parent)
 		rti = rti.add(rti)
 	}
 	node = mt.rightChild(parent)
-	fmt.Println(" node (right child)", node)
+	//fmt.Println(" node (right child)", node)
 	if rti != gtiRoot {
 		node = mt.getDescendant(node, rti)
-		fmt.Println(" rti", rti, "descendant", node)
+		//fmt.Println(" rti", rti, "descendant", node)
 	}
 	return node
 }

@@ -398,50 +398,16 @@ func (rs *renderState) addLogEntryAndMeta(log *types.Log, blockNumber uint64, tx
 	rs.tree.setValue(rs.tree.getDescendant(entryMetaRoot, ti64(rtiLogMetaLogIndex)).index, uint64ToValue(uint64(logIndex)), rs.params.indexEntryNodeWeight(2))
 }
 
-func (rs *renderState) initMapTree() {
-	TTinitMapTree -= mclock.Now()
-	defer func() { TTinitMapTree += mclock.Now() }()
-
-	epoch := rs.params.mapEpoch(rs.mapIndex)
-	if rs.mapRowRoots != nil && rs.mapIndex > rs.params.firstEpochMap(epoch) {
-		fmt.Println("initMapTree (quick)", rs.mapIndex)
-		for i, r := range rs.mapRowRoots {
-			rs.mapRowRoots[i] = rs.tree.getRightNeighbor(r)
-		}
-		return
-	}
-
-	fmt.Println("initMapTree (full)", rs.mapIndex)
-	fmRootNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps))
-	mapSubIndex := rs.mapIndex - rs.params.firstEpochMap(epoch)
-	if rs.mapRowRoots == nil {
-		rs.mapRowRoots = make([]mtNode, rs.params.mapHeight)
-	}
-	rowSubtreeNode := rs.tree.getDescendant(fmRootNode, gtiRoot.arraySub(0, rs.params.logMapHeight))
-	for rowIndex := range rs.params.mapHeight {
-		rs.mapRowRoots[rowIndex] = rs.tree.getDescendant(rowSubtreeNode, gtiRoot.arraySub(uint64(mapSubIndex), rs.params.logMapsPerEpoch))
-		rowSubtreeNode = rs.tree.getRightNeighbor(rowSubtreeNode)
-		//rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListTree)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
-		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListCount)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
-	}
-}
-
-var TTaddTxAndLogEntries,
-	TTaddBlockEntry,
-	TTinitMapTree,
-	TTcompleteMapTree,
-	TTgetDescendant,
-	TTtreeHash mclock.AbsTime
-
-func (rs *renderState) completeMapTree() {
-	TTcompleteMapTree -= mclock.Now()
-	defer func() { TTcompleteMapTree += mclock.Now() }()
+// if mapRowRoots != nil then assumes that it belongs to the previous map and completes its rows.
+func (rs *renderState) advanceMapTree(completeOld, initNew bool) {
+	TTadvanceMapTree -= mclock.Now()
+	defer func() { TTadvanceMapTree += mclock.Now() }()
 
 	var totalSize int
 	for _, s := range rs.tree.subtrees {
 		totalSize += len(s.nodeEnc)
 	}
-	fmt.Println("completeMapTree", rs.mapIndex, "tree nodes", len(rs.tree.nodes), "subtrees", len(rs.tree.subtrees), "totalSize", totalSize)
+	fmt.Println("advanceMapTree", rs.mapIndex, "tree nodes", len(rs.tree.nodes), "subtrees", len(rs.tree.subtrees), "totalSize", totalSize)
 
 	/*fmt.Println(" used", rs.tree.debugCountNodes(rootIndex), "free", rs.tree.debugCountFree())
 	epoch := rs.params.mapEpoch(rs.mapIndex)
@@ -452,45 +418,90 @@ func (rs *renderState) completeMapTree() {
 	fmt.Println(" *** index entries:", rs.tree.debugCountNodes(node.index), "used")
 	rs.tree.debugPrint(node.index, 1)*/
 
-	for rowIndex := range rs.params.mapHeight {
-		rs.tree.setComplete(rs.mapRowRoots[rowIndex])
+	if completeOld != (rs.mapRowRoots != nil) {
+		panic("advanceMapTree: completeOld inconsistent with mapRowRoots")
+	}
+	if !initNew {
+		if completeOld {
+			fmt.Println("advanceMapTree (complete only)", rs.mapIndex)
+			for _, r := range rs.mapRowRoots {
+				rs.tree.setComplete(r)
+			}
+		}
+		return
+	}
+
+	epoch := rs.params.mapEpoch(rs.mapIndex)
+	if completeOld && rs.mapIndex > rs.params.firstEpochMap(epoch) {
+		fmt.Println("advanceMapTree (quick)", rs.mapIndex)
+		for i, r := range rs.mapRowRoots {
+			rs.mapRowRoots[i] = rs.tree.getRightNeighbor(r)
+			rs.tree.setComplete(r)
+		}
+		return
+	}
+
+	fmt.Println("advanceMapTree (full)", rs.mapIndex)
+	fmRootNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps))
+	mapSubIndex := rs.mapIndex - rs.params.firstEpochMap(epoch)
+	if !completeOld {
+		rs.mapRowRoots = make([]mtNode, rs.params.mapHeight)
+	}
+	rowSubtreeNode := rs.tree.getDescendant(fmRootNode, gtiRoot.arraySub(0, rs.params.logMapHeight))
+	for i, r := range rs.mapRowRoots {
+		rs.mapRowRoots[i] = rs.tree.getDescendant(rowSubtreeNode, gtiRoot.arraySub(uint64(mapSubIndex), rs.params.logMapsPerEpoch))
+		rowSubtreeNode = rs.tree.getRightNeighbor(rowSubtreeNode)
+		//rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListTree)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
+		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[i], ti64(rtiListCount)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
+		if completeOld {
+			rs.tree.setComplete(r)
+		}
 	}
 
 	fmt.Println("TTaddTxAndLogEntries", time.Duration(TTaddTxAndLogEntries+mclock.Now()))
 	fmt.Println("TTaddBlockEntry     ", time.Duration(TTaddBlockEntry))
-	fmt.Println("TTinitMapTree       ", time.Duration(TTinitMapTree))
-	fmt.Println("TTcompleteMapTree   ", time.Duration(TTcompleteMapTree+mclock.Now()))
+	fmt.Println("TTadvanceMapTree    ", time.Duration(TTadvanceMapTree+mclock.Now()))
 	fmt.Println("TTgetDescendant     ", time.Duration(TTgetDescendant))
 	fmt.Println("TTtreeHash          ", time.Duration(TTtreeHash))
 }
 
+var TTaddTxAndLogEntries,
+	TTaddBlockEntry,
+	TTadvanceMapTree,
+	TTgetDescendant,
+	TTtreeHash mclock.AbsTime
+
 func (rs *renderState) advance(count uint64) {
 	if rs.currentMap != nil {
+		// advance nextEntry pointer
 		for range count {
 			//fmt.Println("getRightNeighbor", rs.nextEntryNode)
-			nextEntryNode := rs.tree.getRightNeighbor(rs.nextEntryNode)
-			rs.tree.setComplete(rs.nextEntryNode) //TODO optimize
+			newEntryNode := rs.tree.getRightNeighbor(rs.nextEntryNode) // needs full reinit at epoch boundary
+			rs.tree.setComplete(rs.nextEntryNode)
 			rs.nextEntry++
-			rs.nextEntryNode = nextEntryNode
+			rs.nextEntryNode = newEntryNode
 		}
 	}
-	if uint32(rs.nextEntry>>rs.params.logValuesPerMap) > rs.mapIndex {
-		if rs.currentMap == nil || rs.mapIndex == rs.params.lastEpochMap(rs.params.mapEpoch(rs.mapIndex)) {
-			rs.setNextEntryNode()
-		}
-		if rs.currentMap != nil {
-			rs.completeMapTree()
-			fm := rs.currentMap.completed(rs.tree.getStoredSubtrees())
-			rs.tree.clearStoredSubtrees()
-			rs.finishedMaps = append(rs.finishedMaps, fm)
-		}
-		rs.mapIndex++
-		if rs.renderRange.Includes(rs.mapIndex) {
-			rs.currentMap = rs.params.newMemoryMap()
-			rs.initMapTree()
-		} else {
-			rs.currentMap = nil
-		}
+	if newMapIndex := uint32(rs.nextEntry >> rs.params.logValuesPerMap); newMapIndex == rs.mapIndex {
+		return
+	} else if newMapIndex != rs.mapIndex+1 {
+		panic("advance: invalid map index")
+	}
+	// advance map index
+	rs.mapIndex++
+	if rs.currentMap == nil || rs.mapIndex == rs.params.firstEpochMap(rs.params.mapEpoch(rs.mapIndex)) {
+		rs.setNextEntryNode() // next entry pointer at beginning of new epoch
+	}
+	completeOld, initNew := rs.currentMap != nil, rs.renderRange.Includes(rs.mapIndex)
+	rs.advanceMapTree(completeOld, initNew)
+	if completeOld {
+		fm := rs.currentMap.completed(rs.tree.getStoredSubtrees())
+		rs.tree.clearStoredSubtrees()
+		rs.finishedMaps = append(rs.finishedMaps, fm)
+		rs.currentMap = nil
+	}
+	if initNew {
+		rs.currentMap = rs.params.newMemoryMap()
 	}
 }
 
