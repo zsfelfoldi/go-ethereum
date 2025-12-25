@@ -480,7 +480,9 @@ func (rs *renderState) advance(count uint64) {
 			rs.tree.setComplete(rs.nextEntryNode)
 			rs.nextEntry++
 			if rs.nextEntry%1000 == 0 {
+				TTtreeHash -= mclock.Now()
 				nw := rs.tree.getValue(rootIndex)
+				TTtreeHash += mclock.Now()
 				if rs.nextEntry%1000000 == 0 {
 					fmt.Printf(" root @ %d: 0x%064x   weight: %f\n", rs.nextEntry/1000000, nw.value, nw.weight)
 				}

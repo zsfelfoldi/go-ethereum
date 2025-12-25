@@ -46,9 +46,6 @@ type (
 )
 
 func treeHash(left, right merkle.Value) (result merkle.Value) {
-	TTtreeHash -= mclock.Now()
-	defer func() { TTtreeHash += mclock.Now() }()
-
 	hasher := sha256.New()
 	hasher.Write(left[:])
 	hasher.Write(right[:])
