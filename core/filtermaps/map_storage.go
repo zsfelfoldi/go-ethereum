@@ -71,6 +71,7 @@ func newMapStorage(params *Params, mapDb *mapDatabase, testHookCh chan bool) *ma
 		mtBusy:       params.rowGroupSize[0] * 17 / 8,
 	}
 	if valid, dirty, knownEpochs, ok := m.mapDb.loadMapRange(); ok {
+		fmt.Println("mapDatabase init: valid", valid, "dirty", dirty, "knownEpochs", knownEpochs)
 		m.valid, m.dirty, m.knownEpochs, m.initialized = valid, dirty, knownEpochs, true
 		if knownEpochs > 0 {
 			if lastBlock, _, err := m.mapDb.getLastBlockOfMap(m.params.lastEpochMap(knownEpochs - 1)); err == nil {

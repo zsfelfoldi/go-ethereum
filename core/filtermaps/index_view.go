@@ -272,9 +272,11 @@ func (rs *renderState) addTxAndLogEntries(transactions []*types.Transaction, rec
 			}
 		}
 	}
-	// update next_index pointer
-	nextEntryNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiNextEntry))
-	rs.tree.setValue(nextEntryNode.index, uint64ToValue(rs.nextEntry), 1)
+	if rs.tree != nil {
+		// update next_index pointer
+		nextEntryNode := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiNextEntry))
+		rs.tree.setValue(nextEntryNode.index, uint64ToValue(rs.nextEntry), 1)
+	}
 }
 
 func (rs *renderState) addBlockEntry(header *types.Header) (uint32, []*completedMap) {
@@ -489,19 +491,24 @@ func (rs *renderState) advance(count uint64) {
 			}
 			rs.nextEntryNode = newEntryNode
 		}
+	} else {
+		rs.nextEntry += count
 	}
-	if newMapIndex := uint32(rs.nextEntry >> rs.params.logValuesPerMap); newMapIndex == rs.mapIndex {
+	newMapIndex := uint32(rs.nextEntry >> rs.params.logValuesPerMap)
+	if newMapIndex == rs.mapIndex {
 		return
-	} else if newMapIndex != rs.mapIndex+1 {
-		panic("advance: invalid map index")
 	}
+	fmt.Println("advance mapIndex", newMapIndex)
 	// advance map index
 	rs.mapIndex++
-	if rs.currentMap == nil || rs.mapIndex == rs.params.firstEpochMap(rs.params.mapEpoch(rs.mapIndex)) {
-		rs.setNextEntryNode() // next entry pointer at beginning of new epoch
+	if newMapIndex != rs.mapIndex {
+		panic("advance: invalid map index")
 	}
 	completeOld, initNew := rs.currentMap != nil, rs.renderRange.Includes(rs.mapIndex)
+	fmt.Println(" completeOld", completeOld, "initNew", initNew)
+	fmt.Println(" advanceMapTree", rs.tree)
 	rs.advanceMapTree(completeOld, initNew)
+	fmt.Println(" advanceMapTree done")
 	if completeOld {
 		fm := rs.currentMap.completed(rs.tree.getStoredSubtrees())
 		rs.tree.clearStoredSubtrees()
@@ -509,6 +516,9 @@ func (rs *renderState) advance(count uint64) {
 		rs.currentMap = nil
 	}
 	if initNew {
+		if !completeOld || rs.mapIndex == rs.params.firstEpochMap(rs.params.mapEpoch(rs.mapIndex)) {
+			rs.setNextEntryNode() // next entry pointer at beginning of new epoch
+		}
 		rs.currentMap = rs.params.newMemoryMap()
 	}
 }

@@ -267,6 +267,7 @@ func (ix *Indexer) Suspended() {
 // block typically ends after the upper limit. In this case the maps outside the
 // rendered range are not modified, the log values outside the range are ignored.
 func (ix *Indexer) initMapBoundary(startMap, limitMap uint32) *renderState {
+	fmt.Println("initMapBoundary", startMap, limitMap)
 	rs := &renderState{
 		params: ix.storage.params,
 	}
@@ -297,17 +298,18 @@ func (ix *Indexer) initMapBoundary(startMap, limitMap uint32) *renderState {
 		break
 	}
 	rs.renderRange = common.NewRange[uint32](startMap, limitMap-startMap)
+	var err error
+	fmt.Println("storage.initTree", rs.renderRange)
+	rs.tree, err = ix.storage.initTree(rs.renderRange)
+	if err != nil {
+		log.Crit("Failed to initialize log index merkle tree at map boundary", "map", startMap, "error", err)
+	}
 	if rs.renderRange.Includes(rs.mapIndex) {
 		rs.currentMap = rs.params.newMemoryMap()
-		var err error
-		fmt.Println("storage.initTree", rs.renderRange)
-		rs.tree, err = ix.storage.initTree(rs.renderRange)
-		if err != nil {
-			log.Crit("Failed to initialize log index merkle tree at map boundary", "map", startMap, "error", err)
-		}
 		rs.setNextEntryNode()
 		rs.advanceMapTree(false, true)
 	}
+	fmt.Println(" mapIndex", rs.mapIndex, rs.tree)
 	return rs
 }
 

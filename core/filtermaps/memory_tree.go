@@ -134,41 +134,43 @@ func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node m
 	default:
 		panic("invalid node availability from tree init reader")
 	}
-	switch nodeStatus(node.gti) {
+	status := nodeStatus(node.gti)
+	if status == mtsPartial {
+		recursiveInit = true
+	}
+	if recursiveInit {
+		// initialize descendants recursively
+		nwLeft, availLeft, err := getNode(node.gti.leftChild())
+		if err != nil {
+			return err
+		}
+		nwRight, availRight, err := getNode(node.gti.rightChild())
+		if err != nil {
+			return err
+		}
+		if availLeft != mtaUnknown && availRight != mtaUnknown {
+			mt.nodes[node.index].setLeft(mt.newNode(node.index))
+			if err := mt.initTree(getNode, nodeStatus, mt.leftChild(node), nwLeft, availLeft); err != nil {
+				return err
+			}
+			mt.nodes[node.index].setRight(mt.newNode(node.index))
+			if err := mt.initTree(getNode, nodeStatus, mt.rightChild(node), nwRight, availRight); err != nil {
+				return err
+			}
+		} else {
+			if avail != mtaKnown {
+				panic("unknown internal node with no descendants")
+			}
+		}
+	}
+	switch status {
 	case mtsEmpty:
 		mt.nodes[node.index].setEmptySubtree(true)
 	case mtsPartial:
-		recursiveInit = true
 	case mtsComplete:
 		mt.setComplete(node)
 	default:
 		panic("invalid node status from tree init reader")
-	}
-	if !recursiveInit {
-		return nil
-	}
-	// initialize descendants recursively
-	nwLeft, availLeft, err := getNode(node.gti.leftChild())
-	if err != nil {
-		return err
-	}
-	nwRight, availRight, err := getNode(node.gti.rightChild())
-	if err != nil {
-		return err
-	}
-	if availLeft != mtaUnknown && availRight != mtaUnknown {
-		mt.nodes[node.index].setLeft(mt.newNode(node.index))
-		if err := mt.initTree(getNode, nodeStatus, mt.leftChild(node), nwLeft, availLeft); err != nil {
-			return err
-		}
-		mt.nodes[node.index].setRight(mt.newNode(node.index))
-		if err := mt.initTree(getNode, nodeStatus, mt.rightChild(node), nwRight, availRight); err != nil {
-			return err
-		}
-	} else {
-		if avail != mtaKnown {
-			panic("unknown internal node with no descendants")
-		}
 	}
 	return nil
 }
@@ -571,27 +573,34 @@ func (r *subtreeNodeReader) getCachedSubtree(gti treeIndex) (cachedSubtree, erro
 }
 
 func (r *subtreeNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error) {
+	fmt.Println("stnr.getNode", gti)
 	cs, err := r.getCachedSubtree(gti)
 	if err != nil {
+		fmt.Println(" err", err)
 		return nodeWithWeight{}, 0, err
 	}
+	fmt.Println(" subtree", cs.subtree != nil)
 	if cs.subtree == nil {
 		return nodeWithWeight{}, mtaUnknown, nil
 	}
 	nw, avail := cs.subtree.getNode(gti.subIndex(cs.subtreeLevel))
+	fmt.Println(" st.getNode", avail, nw)
 	if avail == mtaInternal && gti != gtiRoot {
 		// maybe it is a subtree root and the parent's subtree has the value
 		parentCs, err := r.getCachedSubtree(gti)
+		fmt.Println(" parent subtree", parentCs.subtree != nil, parentCs.subtreeLevel != cs.subtreeLevel)
 		if err != nil {
 			return nodeWithWeight{}, 0, err
 		}
 		if parentCs.subtree != nil && parentCs.subtreeLevel != cs.subtreeLevel {
 			parentNw, parentAvail := parentCs.subtree.getNode(gti.subIndex(parentCs.subtreeLevel))
+			fmt.Println(" pst.getNode", parentAvail, parentNw)
 			if parentAvail == mtaKnown {
 				return parentNw, parentAvail, nil
 			}
 		}
 	}
+	fmt.Println(" result", avail, nw)
 	return nw, avail, nil
 }
 
