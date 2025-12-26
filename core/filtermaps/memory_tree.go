@@ -163,12 +163,13 @@ func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node m
 			}
 		}
 	}
+	mt.getValue(node.index)
 	switch status {
 	case mtsEmpty:
 		mt.nodes[node.index].setEmptySubtree(true)
 	case mtsPartial:
 	case mtsComplete:
-		mt.setComplete(node)
+		mt.nodes[node.index].setComplete(true)
 	default:
 		panic("invalid node status from tree init reader")
 	}
@@ -452,7 +453,7 @@ func (mt *merkleTree) clearStoredSubtrees() {
 type serializedSubtree []byte
 
 func (s serializedSubtree) shapeBit(bitIndex int) bool {
-	return s[4+bitIndex/8]&(byte(1)<<(bitIndex%8)) != 0
+	return s[bitIndex/8]&(byte(1)<<(bitIndex%8)) != 0
 }
 
 func (s serializedSubtree) getNode(rti treeIndex) (node nodeWithWeight, avail int) {
@@ -462,6 +463,7 @@ func (s serializedSubtree) getNode(rti treeIndex) (node nodeWithWeight, avail in
 	if shapeOffset != (leafCount*2+6)/8 {
 		panic("invalid serialized subtree")
 	}
+	//fmt.Println("sst.getNode", rti, "leafCount", leafCount, "shape", s[:shapeOffset])
 	var bitIndex, leafIndex int
 	for rti != gtiRoot {
 		if s.shapeBit(bitIndex) {
@@ -470,6 +472,7 @@ func (s serializedSubtree) getNode(rti treeIndex) (node nodeWithWeight, avail in
 		bitIndex++
 		if rti.matchRoot(3) { // right subtree; skip left subtree shape
 			for expLeaves := 1; expLeaves > 0; {
+				//fmt.Println("  expLeaves", expLeaves)
 				if s.shapeBit(bitIndex) {
 					expLeaves--
 					leafIndex++
@@ -481,6 +484,7 @@ func (s serializedSubtree) getNode(rti treeIndex) (node nodeWithWeight, avail in
 		} else {
 			rti.matchRoot(2) // left subtree
 		}
+		//fmt.Println(" rti", rti, "leafIndex", leafIndex)
 	}
 	if s.shapeBit(bitIndex) { // index points to subtree leaf
 		offset := shapeOffset + (32+4)*leafIndex
@@ -587,7 +591,7 @@ func (r *subtreeNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error) 
 	fmt.Println(" st.getNode", avail, nw)
 	if avail == mtaInternal && gti != gtiRoot {
 		// maybe it is a subtree root and the parent's subtree has the value
-		parentCs, err := r.getCachedSubtree(gti)
+		parentCs, err := r.getCachedSubtree(gti.parent())
 		fmt.Println(" parent subtree", parentCs.subtree != nil, parentCs.subtreeLevel != cs.subtreeLevel)
 		if err != nil {
 			return nodeWithWeight{}, 0, err

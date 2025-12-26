@@ -222,6 +222,10 @@ func (r *filterRowNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error
 		return nodeWithWeight{}, mtaInternal, nil
 	}
 	epoch := uint32(epochRange.First())
+	if gti == gtiRoot {
+		fmt.Println(" 3a internal")
+		return nodeWithWeight{}, mtaInternal, nil
+	}
 	fmt.Println(" epoch", epoch)
 	if !gti.matchRoot(rtiFilterMaps) {
 		fmt.Println(" 4 unknown")
