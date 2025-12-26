@@ -206,105 +206,87 @@ func (p *Params) newFilterRowNodeReader(reader filterRowReader) *filterRowNodeRe
 	}
 }
 
-func (r *filterRowNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error) {
+func (r *filterRowNodeReader) getNode(gti treeIndex) (nodeWithWeight, bool, error) {
 	fmt.Println("frnr.getNode", gti)
-	if gti == gtiRoot {
-		fmt.Println(" 1 internal")
-		return nodeWithWeight{}, mtaInternal, nil
-	}
 	if !gti.matchRoot(rtiEpochs) {
 		fmt.Println(" 2 unknown")
-		return nodeWithWeight{}, mtaUnknown, nil
+		return nodeWithWeight{}, false, nil
 	}
 	epochRange := gti.splitRoot(r.params.logEpochHistory)
 	if epochRange.Count() > 1 {
 		fmt.Println(" 3 internal")
-		return nodeWithWeight{}, mtaInternal, nil
+		return nodeWithWeight{}, false, nil
 	}
 	epoch := uint32(epochRange.First())
-	if gti == gtiRoot {
-		fmt.Println(" 3a internal")
-		return nodeWithWeight{}, mtaInternal, nil
-	}
 	fmt.Println(" epoch", epoch)
 	if !gti.matchRoot(rtiFilterMaps) {
 		fmt.Println(" 4 unknown")
-		return nodeWithWeight{}, mtaUnknown, nil
+		return nodeWithWeight{}, false, nil
 	}
 	rowRange := gti.splitRoot(r.params.logMapHeight)
 	if rowRange.Count() > 1 {
 		fmt.Println(" 5 internal")
-		return nodeWithWeight{}, mtaInternal, nil
+		return nodeWithWeight{}, false, nil
 	}
 	rowIndex := uint32(rowRange.First())
 	fmt.Println(" rowIndex", rowIndex)
 	mapSubRange := gti.splitRoot(r.params.logMapsPerEpoch)
 	if mapSubRange.Count() > 1 {
 		fmt.Println(" 6 internal")
-		return nodeWithWeight{}, mtaInternal, nil
+		return nodeWithWeight{}, false, nil
 	}
 	mapIndex := epoch*r.params.mapsPerEpoch + uint32(mapSubRange.First())
 	fmt.Println(" mapIndex", mapIndex)
 	row, err := r.getFilterMapRow(mapIndex, rowIndex)
 	if err != nil {
 		fmt.Println(" err", err)
-		return nodeWithWeight{}, 0, err
+		return nodeWithWeight{}, false, err
 	}
 	fmt.Println(" proglist", gti, "rowLen", len(row))
 	switch {
-	case gti == gtiRoot:
-		return nodeWithWeight{}, mtaInternal, nil
 	case gti.matchRoot(rtiListTree):
 		return r.params.getProgListNode(row, 0, gti)
 	case gti.matchRoot(rtiListCount):
 		if gti != gtiRoot {
-			return nodeWithWeight{}, mtaUnknown, nil
+			return nodeWithWeight{}, false, nil
 		}
 		countBytes := uint32(1)
 		if len(row) >= 256 {
 			countBytes = 2
 		}
-		return nodeWithWeight{value: uint64ToValue(uint64(len(row))), weight: r.params.filterRowNodeWeight(countBytes)}, mtaKnown, nil
+		return nodeWithWeight{value: uint64ToValue(uint64(len(row))), weight: r.params.filterRowNodeWeight(countBytes)}, true, nil
 	default:
-		panic("invalid tree index")
+		return nodeWithWeight{}, false, nil
 	}
 }
 
-func (p *Params) getProgListNode(row FilterRow, level uint, gti treeIndex) (nodeWithWeight, int, error) {
+func (p *Params) getProgListNode(row FilterRow, level uint, gti treeIndex) (nodeWithWeight, bool, error) {
 	subtreeHeight := p.progListHeightFirst + level*p.progListHeightStep
 	subtreeLen := 8 << subtreeHeight
 	switch {
-	case gti == gtiRoot:
-		return nodeWithWeight{}, mtaInternal, nil
 	case gti.matchRoot(rtiProgListSubtree):
 		chunkRange := gti.splitRoot(subtreeHeight)
-		if chunkRange.Count() > 1 {
-			return nodeWithWeight{}, mtaInternal, nil
-		}
-		if gti != gtiRoot {
-			return nodeWithWeight{}, mtaUnknown, nil
+		if chunkRange.Count() > 1 || gti != gtiRoot {
+			return nodeWithWeight{}, false, nil
 		}
 		chunk := int(chunkRange.First())
 		first, afterLast := chunk*8, min(chunk*8+8, len(row))
 		if first >= afterLast {
-			return nodeWithWeight{}, mtaKnown, nil
+			return nodeWithWeight{}, false, nil
 		}
 		count := afterLast - first
 		nw := nodeWithWeight{weight: p.filterRowNodeWeight(uint32(count) * uint32(p.logMapWidth+7/8))}
 		for i := range count {
 			binary.LittleEndian.PutUint32(nw.value[i*4:i*4+4], row[first+i])
 		}
-		return nw, mtaKnown, nil
+		return nw, true, nil
 	case gti.matchRoot(rtiProgListNextTree):
 		if len(row) > subtreeLen {
 			return p.getProgListNode(row[subtreeLen:], level+1, gti)
 		}
-		if gti != gtiRoot {
-			return nodeWithWeight{}, mtaUnknown, nil
-		}
-		return nodeWithWeight{}, mtaKnown, nil
+		return nodeWithWeight{}, true, nil
 	default:
-		panic("invalid tree index")
+		return nodeWithWeight{}, len(row) == 0, nil
 	}
 }
 
@@ -320,22 +302,22 @@ func (p *Params) newLogIndexBoundaryReader(nextEntry uint64) logIndexBoundaryRea
 	}
 }
 
-func (l logIndexBoundaryReader) getNode(gti treeIndex) (nw nodeWithWeight, avail int, err error) {
+func (l logIndexBoundaryReader) getNode(gti treeIndex) (nodeWithWeight, bool, error) {
 	fmt.Println("libr.getNode", gti)
 	if gti.matchRoot(rtiNextEntry) {
 		if gti == gtiRoot {
-			return nodeWithWeight{value: uint64ToValue(l.nextEntry), weight: 1}, mtaKnown, nil
+			return nodeWithWeight{value: uint64ToValue(l.nextEntry), weight: 1}, true, nil
 		}
-		return
+		return nodeWithWeight{}, false, nil
 	}
 	entryRange := l.params.subtreeLvRange(gti)
 	fmt.Println(" entryRange", entryRange, "nextEntry", l.nextEntry)
 	if l.nextEntry <= entryRange.First() {
 		fmt.Println(" known")
-		return nodeWithWeight{value: l.params.treeRoot.empty.getNode(gti)}, mtaKnown, nil
+		return nodeWithWeight{value: l.params.treeRoot.empty.getNode(gti)}, true, nil
 	}
 	fmt.Println(" unknown")
-	return
+	return nodeWithWeight{}, false, nil
 }
 
 func (l logIndexBoundaryReader) nodeStatus(gti treeIndex) int {

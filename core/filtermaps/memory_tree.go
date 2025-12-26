@@ -29,18 +29,13 @@ import (
 )
 
 const (
-	//
-	mtaUnknown  = iota // does not exist or outside the known range
-	mtaInternal        // value unknown but has known descendants
-	mtaKnown           // value known
-
 	mtsEmpty = iota
 	mtsPartial
 	mtsComplete
 )
 
 type (
-	nodeReader    func(gti treeIndex) (nw nodeWithWeight, avail int, err error)
+	nodeReader    func(gti treeIndex) (nodeWithWeight, bool, error)
 	nodeStatus    func(gti treeIndex) int
 	subtreeReader func(gti treeIndex) (serializedSubtree, error)
 )
@@ -122,23 +117,15 @@ func (params *Params) newMerkleTree(getNode nodeReader, nodeStatus nodeStatus) (
 	return mt, nil
 }
 
-func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode, nw nodeWithWeight, avail int) error {
+func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode, nw nodeWithWeight, avail bool) error {
+	//TODO evaluate getNode here?
 	fmt.Println("initTree", node)
-	var recursiveInit bool
-	switch avail {
-	case mtaInternal:
-		recursiveInit = true
-	case mtaKnown:
+	if avail {
 		mt.nodes[node.index].value, mt.nodes[node.index].weight = nw.value, nw.weight
 		mt.nodes[node.index].setValueKnown(true)
-	default:
-		panic("invalid node availability from tree init reader")
 	}
 	status := nodeStatus(node.gti)
-	if status == mtsPartial {
-		recursiveInit = true
-	}
-	if recursiveInit {
+	if !avail { //|| status == mtsPartial {
 		// initialize descendants recursively
 		nwLeft, availLeft, err := getNode(node.gti.leftChild())
 		if err != nil {
@@ -148,19 +135,13 @@ func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node m
 		if err != nil {
 			return err
 		}
-		if availLeft != mtaUnknown && availRight != mtaUnknown {
-			mt.nodes[node.index].setLeft(mt.newNode(node.index))
-			if err := mt.initTree(getNode, nodeStatus, mt.leftChild(node), nwLeft, availLeft); err != nil {
-				return err
-			}
-			mt.nodes[node.index].setRight(mt.newNode(node.index))
-			if err := mt.initTree(getNode, nodeStatus, mt.rightChild(node), nwRight, availRight); err != nil {
-				return err
-			}
-		} else {
-			if avail != mtaKnown {
-				panic("unknown internal node with no descendants")
-			}
+		mt.nodes[node.index].setLeft(mt.newNode(node.index))
+		if err := mt.initTree(getNode, nodeStatus, mt.leftChild(node), nwLeft, availLeft); err != nil {
+			return err
+		}
+		mt.nodes[node.index].setRight(mt.newNode(node.index))
+		if err := mt.initTree(getNode, nodeStatus, mt.rightChild(node), nwRight, availRight); err != nil {
+			return err
 		}
 	}
 	mt.getValue(node.index)
@@ -456,7 +437,7 @@ func (s serializedSubtree) shapeBit(bitIndex int) bool {
 	return s[bitIndex/8]&(byte(1)<<(bitIndex%8)) != 0
 }
 
-func (s serializedSubtree) getNode(rti treeIndex) (node nodeWithWeight, avail int) {
+func (s serializedSubtree) getNode(rti treeIndex) (nw nodeWithWeight, leaf, internal bool) {
 	l := len(s)
 	leafCount := (l*8 + 1) / ((32+4)*8 + 2)
 	shapeOffset := l - leafCount*(32+4)
@@ -467,7 +448,7 @@ func (s serializedSubtree) getNode(rti treeIndex) (node nodeWithWeight, avail in
 	var bitIndex, leafIndex int
 	for rti != gtiRoot {
 		if s.shapeBit(bitIndex) {
-			return // index points beyond subtree leaf
+			return nodeWithWeight{}, false, false // index points beyond subtree leaf
 		}
 		bitIndex++
 		if rti.matchRoot(3) { // right subtree; skip left subtree shape
@@ -488,13 +469,11 @@ func (s serializedSubtree) getNode(rti treeIndex) (node nodeWithWeight, avail in
 	}
 	if s.shapeBit(bitIndex) { // index points to subtree leaf
 		offset := shapeOffset + (32+4)*leafIndex
-		copy(node.value[:], s[offset:offset+32])
-		node.weight = math.Float32frombits(binary.LittleEndian.Uint32(s[offset+32 : offset+32+4]))
-		avail = mtaKnown
-		return
+		copy(nw.value[:], s[offset:offset+32])
+		nw.weight = math.Float32frombits(binary.LittleEndian.Uint32(s[offset+32 : offset+32+4]))
+		return nw, true, false
 	}
-	avail = mtaInternal
-	return
+	return nodeWithWeight{}, false, true
 }
 
 type storedSubtree struct {
@@ -576,31 +555,31 @@ func (r *subtreeNodeReader) getCachedSubtree(gti treeIndex) (cachedSubtree, erro
 	return cs, nil
 }
 
-func (r *subtreeNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error) {
+func (r *subtreeNodeReader) getNode(gti treeIndex) (nodeWithWeight, bool, error) {
 	fmt.Println("stnr.getNode", gti)
 	cs, err := r.getCachedSubtree(gti)
 	if err != nil {
 		fmt.Println(" err", err)
-		return nodeWithWeight{}, 0, err
+		return nodeWithWeight{}, false, err
 	}
 	fmt.Println(" subtree", cs.subtree != nil)
 	if cs.subtree == nil {
-		return nodeWithWeight{}, mtaUnknown, nil
+		return nodeWithWeight{}, false, nil
 	}
-	nw, avail := cs.subtree.getNode(gti.subIndex(cs.subtreeLevel))
+	nw, avail, internal := cs.subtree.getNode(gti.subIndex(cs.subtreeLevel))
 	fmt.Println(" st.getNode", avail, nw)
-	if avail == mtaInternal && gti != gtiRoot {
+	if internal && gti != gtiRoot {
 		// maybe it is a subtree root and the parent's subtree has the value
 		parentCs, err := r.getCachedSubtree(gti.parent())
 		fmt.Println(" parent subtree", parentCs.subtree != nil, parentCs.subtreeLevel != cs.subtreeLevel)
 		if err != nil {
-			return nodeWithWeight{}, 0, err
+			return nodeWithWeight{}, false, err
 		}
 		if parentCs.subtree != nil && parentCs.subtreeLevel != cs.subtreeLevel {
-			parentNw, parentAvail := parentCs.subtree.getNode(gti.subIndex(parentCs.subtreeLevel))
+			parentNw, parentAvail, _ := parentCs.subtree.getNode(gti.subIndex(parentCs.subtreeLevel))
 			fmt.Println(" pst.getNode", parentAvail, parentNw)
-			if parentAvail == mtaKnown {
-				return parentNw, parentAvail, nil
+			if parentAvail {
+				return parentNw, true, nil
 			}
 		}
 	}
@@ -610,21 +589,17 @@ func (r *subtreeNodeReader) getNode(gti treeIndex) (nodeWithWeight, int, error) 
 
 type mergedNodeReader []nodeReader
 
-func (m mergedNodeReader) getNode(gti treeIndex) (nw nodeWithWeight, avail int, err error) {
+func (m mergedNodeReader) getNode(gti treeIndex) (nodeWithWeight, bool, error) {
 	//fmt.Println("mergedNodeReader.getNode", gti)
 	for _, getNode := range m {
-		mergeNw, mergeAvail, mergeErr := getNode(gti)
+		nw, avail, err := getNode(gti)
 		//fmt.Println(" ", i, mergeAvail, mergeErr)
-		if mergeErr != nil {
-			err = mergeErr
-			return
+		if err != nil {
+			return nodeWithWeight{}, false, err
 		}
-		if mergeAvail > avail {
-			nw, avail = mergeNw, mergeAvail
-			if avail == mtaKnown {
-				return
-			}
+		if avail {
+			return nw, true, nil
 		}
 	}
-	return
+	return nodeWithWeight{}, false, nil
 }
