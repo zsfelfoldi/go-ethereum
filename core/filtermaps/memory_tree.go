@@ -151,6 +151,9 @@ func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node m
 	case mtsPartial:
 	case mtsComplete:
 		mt.nodes[node.index].setComplete(true)
+		if mt.params.storageLevel(mt.nodes[node.index].weight) == 0 {
+			mt.collapseSubtree(node)
+		}
 	default:
 		panic("invalid node status from tree init reader")
 	}
@@ -327,7 +330,7 @@ func (mt *merkleTree) setComplete(node mtNode) {
 		nl := mt.params.storageLevel(n.weight)
 		sl := mt.params.storageLevel(s.weight)
 		pl := mt.params.storageLevel(p.weight)
-		if nl == 0 {
+		if nl == 0 { //TODO do this also when the sibling is not completed yet
 			mt.collapseSubtree(node)
 		} else if nl < pl {
 			mt.subtrees = append(mt.subtrees, mt.collapseAndStoreSubtree(node))
