@@ -583,7 +583,7 @@ func (ix *Indexer) storeHeadIndexView(number uint64, hash common.Hash) {
 			firstOverlayMap = mapIndex + 1
 		}
 	}
-	overlayMaps = append(overlayMaps, ix.headRenderer.currentMap.completed(ix.headRenderer.tree.getStoredSubtrees()))
+	overlayMaps = append(overlayMaps, ix.headRenderer.currentMap.completed(ix.headRenderer.tree.getStoredSubtrees(), nil))
 	firstOverlayBlock := overlayMaps[0].firstBlock()
 	tailEpoch := max(ix.tailEpoch, ix.targetTailEpoch)
 	tailNumber, err := ix.storage.tailNumberOfEpoch(tailEpoch)

@@ -92,10 +92,11 @@ func (n *merkleTreeNode) setValue(u *uint32, v uint32) {
 }
 
 type merkleTree struct {
-	params    *Params
-	nodes     []merkleTreeNode
-	firstFree uint32
-	subtrees  storedSubtrees
+	params        *Params
+	nodes         []merkleTreeNode
+	firstFree     uint32
+	subtrees      storedSubtrees
+	verticalNodes *storedVerticalNodeLists
 }
 
 func (params *Params) newMerkleTree(getNode nodeReader, nodeStatus nodeStatus) (*merkleTree, error) {
@@ -325,6 +326,9 @@ func (mt *merkleTree) setComplete(node mtNode) {
 		panic("finalized node with unknown value")
 	}
 	n.setComplete(true)
+	if mt.verticalNodes != nil {
+		mt.verticalNodes.setNode(node.gti, nodeWithWeight{value: n.value, weight: n.weight})
+	}
 	// propagate completed state to ancestors and collapse completed subtrees if possible
 	for n.parent() != nullPtr {
 		parent := mt.parent(node)
@@ -569,7 +573,9 @@ func (p *Params) newVerticalNodesWriter(mapIndex uint32) *storedVerticalNodeList
 	}
 	subindex := gtiRoot.arraySub(uint64(mapIndex%p.mapsPerEpoch), p.logMapsPerEpoch)
 	for {
-		s.lists[subindex] = p.newSerializedVerticalNodeList()
+		if subindex.level() < p.verticalNodesHeight {
+			s.lists[subindex] = p.newSerializedVerticalNodeList()
+		}
 		if subindex == gtiRoot {
 			break
 		}

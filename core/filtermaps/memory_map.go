@@ -99,22 +99,24 @@ func (m *memoryMap) initWithMap(fm *completedMap) {
 // It is more compact and allows more efficient row lookup than memoryMap.
 // Note that it assumes params.mapHeight <= 2**16 which is checked in deriveFields.
 type completedMap struct {
-	rowPtrs   []uint16 // points to rowData index after end of row; 2**16 can wrap around to 0
-	rowData   []uint32
-	blockPtrs []uint64
-	lastBlock lastBlockOfMap
-	subtrees  storedSubtrees
+	rowPtrs       []uint16 // points to rowData index after end of row; 2**16 can wrap around to 0
+	rowData       []uint32
+	blockPtrs     []uint64
+	lastBlock     lastBlockOfMap
+	subtrees      storedSubtrees
+	verticalNodes *storedVerticalNodeLists
 }
 
 // completed creates a new completedMap from a memoryMap. Note that Merkle
 // subtrees are only added later when the map is marked as stabilized.
-func (m *memoryMap) completed(subtrees storedSubtrees) *completedMap {
+func (m *memoryMap) completed(subtrees storedSubtrees, verticalNodes *storedVerticalNodeLists) *completedMap {
 	fm := &completedMap{
-		rowPtrs:   make([]uint16, len(m.rows)),
-		rowData:   make([]uint32, m.nextEntry),
-		blockPtrs: slices.Clone(m.blockPtrs),
-		lastBlock: m.lastBlock,
-		subtrees:  subtrees,
+		rowPtrs:       make([]uint16, len(m.rows)),
+		rowData:       make([]uint32, m.nextEntry),
+		blockPtrs:     slices.Clone(m.blockPtrs),
+		lastBlock:     m.lastBlock,
+		subtrees:      subtrees,
+		verticalNodes: verticalNodes,
 	}
 	var ptr uint16
 	for i, row := range m.rows {
