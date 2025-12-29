@@ -506,7 +506,7 @@ func (rs *renderState) advance(count uint64) {
 	}
 	completeOld, initNew := rs.currentMap != nil, rs.renderRange.Includes(rs.mapIndex)
 	fmt.Println(" completeOld", completeOld, "initNew", initNew)
-	fmt.Println(" advanceMapTree", rs.tree)
+	fmt.Println(" advanceMapTree", rs.tree != nil)
 	rs.advanceMapTree(completeOld, initNew)
 	fmt.Println(" advanceMapTree done")
 	if completeOld {

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common/lru"
@@ -111,15 +112,28 @@ func (params *Params) newMerkleTree(getNode nodeReader, nodeStatus nodeStatus) (
 	if err != nil {
 		return nil, err
 	}
+	nmtStart = mclock.Now()
 	if err := mt.initTree(getNode, nodeStatus, params.treeRoot, nw, avail); err != nil {
 		return nil, err
 	}
+	fmt.Println("newMerkleTree", len(mt.nodes))
 	return mt, nil
 }
 
+var (
+	lastIndex     uint32
+	initTreeCount uint64
+	nmtStart      mclock.AbsTime
+)
+
 func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode, nw nodeWithWeight, avail bool) error {
 	//TODO evaluate getNode here?
-	fmt.Println("initTree", node)
+	initTreeCount++
+	if node.index > lastIndex+1000 {
+		dt := time.Duration(mclock.Now() - nmtStart)
+		fmt.Println("initTree", node, initTreeCount, initTreeCount/uint64(node.index), dt, dt/time.Duration(initTreeCount))
+		lastIndex = node.index
+	}
 	if avail {
 		mt.nodes[node.index].value, mt.nodes[node.index].weight = nw.value, nw.weight
 		mt.nodes[node.index].setValueKnown(true)
@@ -559,34 +573,34 @@ func (r *subtreeNodeReader) getCachedSubtree(gti treeIndex) (cachedSubtree, erro
 }
 
 func (r *subtreeNodeReader) getNode(gti treeIndex) (nodeWithWeight, bool, error) {
-	fmt.Println("stnr.getNode", gti)
+	//fmt.Println("stnr.getNode", gti)
 	cs, err := r.getCachedSubtree(gti)
 	if err != nil {
-		fmt.Println(" err", err)
+		//fmt.Println(" err", err)
 		return nodeWithWeight{}, false, err
 	}
-	fmt.Println(" subtree", cs.subtree != nil)
+	//fmt.Println(" subtree", cs.subtree != nil)
 	if cs.subtree == nil {
 		return nodeWithWeight{}, false, nil
 	}
 	nw, avail, internal := cs.subtree.getNode(gti.subIndex(cs.subtreeLevel))
-	fmt.Println(" st.getNode", avail, nw)
+	//fmt.Println(" st.getNode", avail, nw)
 	if internal && gti != gtiRoot {
 		// maybe it is a subtree root and the parent's subtree has the value
 		parentCs, err := r.getCachedSubtree(gti.parent())
-		fmt.Println(" parent subtree", parentCs.subtree != nil, parentCs.subtreeLevel != cs.subtreeLevel)
+		//fmt.Println(" parent subtree", parentCs.subtree != nil, parentCs.subtreeLevel != cs.subtreeLevel)
 		if err != nil {
 			return nodeWithWeight{}, false, err
 		}
 		if parentCs.subtree != nil && parentCs.subtreeLevel != cs.subtreeLevel {
 			parentNw, parentAvail, _ := parentCs.subtree.getNode(gti.subIndex(parentCs.subtreeLevel))
-			fmt.Println(" pst.getNode", parentAvail, parentNw)
+			//fmt.Println(" pst.getNode", parentAvail, parentNw)
 			if parentAvail {
 				return parentNw, true, nil
 			}
 		}
 	}
-	fmt.Println(" result", avail, nw)
+	//fmt.Println(" result", avail, nw)
 	return nw, avail, nil
 }
 

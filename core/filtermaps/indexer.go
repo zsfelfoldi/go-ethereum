@@ -309,7 +309,7 @@ func (ix *Indexer) initMapBoundary(startMap, limitMap uint32) *renderState {
 		rs.setNextEntryNode()
 		rs.advanceMapTree(false, true)
 	}
-	fmt.Println(" mapIndex", rs.mapIndex, rs.tree)
+	fmt.Println(" mapIndex", rs.mapIndex, rs.tree != nil)
 	return rs
 }
 

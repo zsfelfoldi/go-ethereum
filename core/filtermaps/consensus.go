@@ -18,7 +18,6 @@ package filtermaps
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
@@ -207,42 +206,42 @@ func (p *Params) newFilterRowNodeReader(reader filterRowReader) *filterRowNodeRe
 }
 
 func (r *filterRowNodeReader) getNode(gti treeIndex) (nodeWithWeight, bool, error) {
-	fmt.Println("frnr.getNode", gti)
+	//fmt.Println("frnr.getNode", gti)
 	if !gti.matchRoot(rtiEpochs) {
-		fmt.Println(" 2 unknown")
+		//fmt.Println(" 2 unknown")
 		return nodeWithWeight{}, false, nil
 	}
 	epochRange := gti.splitRoot(r.params.logEpochHistory)
 	if epochRange.Count() > 1 {
-		fmt.Println(" 3 internal")
+		//fmt.Println(" 3 internal")
 		return nodeWithWeight{}, false, nil
 	}
 	epoch := uint32(epochRange.First())
-	fmt.Println(" epoch", epoch)
+	//fmt.Println(" epoch", epoch)
 	if !gti.matchRoot(rtiFilterMaps) {
-		fmt.Println(" 4 unknown")
+		//fmt.Println(" 4 unknown")
 		return nodeWithWeight{}, false, nil
 	}
 	rowRange := gti.splitRoot(r.params.logMapHeight)
 	if rowRange.Count() > 1 {
-		fmt.Println(" 5 internal")
+		//fmt.Println(" 5 internal")
 		return nodeWithWeight{}, false, nil
 	}
 	rowIndex := uint32(rowRange.First())
-	fmt.Println(" rowIndex", rowIndex)
+	//fmt.Println(" rowIndex", rowIndex)
 	mapSubRange := gti.splitRoot(r.params.logMapsPerEpoch)
 	if mapSubRange.Count() > 1 {
-		fmt.Println(" 6 internal")
+		//fmt.Println(" 6 internal")
 		return nodeWithWeight{}, false, nil
 	}
 	mapIndex := epoch*r.params.mapsPerEpoch + uint32(mapSubRange.First())
-	fmt.Println(" mapIndex", mapIndex)
+	//fmt.Println(" mapIndex", mapIndex)
 	row, err := r.getFilterMapRow(mapIndex, rowIndex)
 	if err != nil {
-		fmt.Println(" err", err)
+		//fmt.Println(" err", err)
 		return nodeWithWeight{}, false, err
 	}
-	fmt.Println(" proglist", gti, "rowLen", len(row))
+	//fmt.Println(" proglist", gti, "rowLen", len(row))
 	switch {
 	case gti.matchRoot(rtiListTree):
 		return r.params.getProgListNode(row, 0, gti)
@@ -303,7 +302,7 @@ func (p *Params) newLogIndexBoundaryReader(nextEntry uint64) logIndexBoundaryRea
 }
 
 func (l logIndexBoundaryReader) getNode(gti treeIndex) (nodeWithWeight, bool, error) {
-	fmt.Println("libr.getNode", gti)
+	//fmt.Println("libr.getNode", gti)
 	if gti.matchRoot(rtiNextEntry) {
 		if gti == gtiRoot {
 			return nodeWithWeight{value: uint64ToValue(l.nextEntry), weight: 1}, true, nil
@@ -311,12 +310,12 @@ func (l logIndexBoundaryReader) getNode(gti treeIndex) (nodeWithWeight, bool, er
 		return nodeWithWeight{}, false, nil
 	}
 	entryRange := l.params.subtreeLvRange(gti)
-	fmt.Println(" entryRange", entryRange, "nextEntry", l.nextEntry)
+	//fmt.Println(" entryRange", entryRange, "nextEntry", l.nextEntry)
 	if l.nextEntry <= entryRange.First() {
-		fmt.Println(" known")
+		//fmt.Println(" known")
 		return nodeWithWeight{value: l.params.treeRoot.empty.getNode(gti)}, true, nil
 	}
-	fmt.Println(" unknown")
+	//fmt.Println(" unknown")
 	return nodeWithWeight{}, false, nil
 }
 
