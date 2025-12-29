@@ -657,16 +657,16 @@ func DeleteFilterMapsSubtrees(db ethdb.KeyValueStore, from, to uint128.Uint128, 
 	return SafeDeleteRange(db, filterMapsSubtreeKey(from), append(filterMapsSubtreeKey(to), 0), hashScheme, stopCallback)
 }
 
-func ReadFilterMapsEpochRows(db ethdb.KeyValueReader, epoch uint32, mapSubindex uint128.Uint128) ([]byte, error) {
-	return db.Get(filterMapsEpochRowsKey(epoch, mapSubindex))
+func ReadFilterMapsVerticalNodeList(db ethdb.KeyValueReader, epoch uint32, mapSubindex uint128.Uint128) ([]byte, error) {
+	return db.Get(filterMapsVerticalNodeListKey(epoch, mapSubindex))
 }
 
-func WriteFilterMapsEpochRows(db ethdb.KeyValueWriter, epoch uint32, mapSubindex uint128.Uint128, nodeData []byte) {
-	db.Put(filterMapsEpochRowsKey(epoch, mapSubindex), nodeData)
+func WriteFilterMapsVerticalNodeList(db ethdb.KeyValueWriter, epoch uint32, mapSubindex uint128.Uint128, nodeData []byte) {
+	db.Put(filterMapsVerticalNodeListKey(epoch, mapSubindex), nodeData)
 }
 
-func DeleteFilterMapsEpochRows(db ethdb.KeyValueWriter, epoch uint32, mapSubindex uint128.Uint128) {
-	if err := db.Delete(filterMapsEpochRowsKey(epoch, mapSubindex)); err != nil {
-		log.Crit("Failed to delete epoch rows", "err", err)
+func DeleteFilterMapsVerticalNodeList(db ethdb.KeyValueWriter, epoch uint32, mapSubindex uint128.Uint128) {
+	if err := db.Delete(filterMapsVerticalNodeListKey(epoch, mapSubindex)); err != nil {
+		log.Crit("Failed to delete vertical node list", "err", err)
 	}
 }

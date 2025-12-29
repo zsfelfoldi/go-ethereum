@@ -159,7 +159,7 @@ var (
 	filterMapLastBlockPrefix = []byte(filterMapsPrefix + "b") // filterMapLastBlockPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
 	filterMapBlockLVPrefix   = []byte(filterMapsPrefix + "p") // filterMapBlockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
 	filterMapSubtreePrefix   = []byte(filterMapsPrefix + "s")
-	filterMapEpochRowsPrefix = []byte(filterMapsPrefix + "e")
+	filterMapVerticalNodeListPrefix = []byte(filterMapsPrefix + "e")
 
 	// old log index
 	bloomBitsMetaPrefix = []byte("iB")
@@ -413,10 +413,10 @@ func filterMapsSubtreeKey(index uint128.Uint128) []byte {
 	return merkleTreeKey(key, index)
 }
 
-func filterMapsEpochRowsKey(epoch uint32, mapSubindex uint128.Uint128) []byte {
-	l := len(filterMapEpochRowsPrefix)
+func filterMapsVerticalNodeListKey(epoch uint32, mapSubindex uint128.Uint128) []byte {
+	l := len(filterMapVerticalNodeListPrefix)
 	key := make([]byte, l+4, l+4+19)
-	copy(key[:l], filterMapEpochRowsPrefix)
+	copy(key[:l], filterMapVerticalNodeListPrefix)
 	binary.BigEndian.PutUint32(key[l:l+4], epoch)
 	return merkleTreeKey(key, mapSubindex)
 }

@@ -187,6 +187,26 @@ func (p *Params) subtreeLvRange(gti treeIndex) common.Range[uint64] {
 	}
 }
 
+func (p *Params) splitVerticalNodeIndex(gti treeIndex) (epoch uint32, subindex treeIndex, rowIndex uint32, ok bool) {
+	if !gti.matchRoot(rtiEpochs) {
+		return
+	}
+	epochRange := gti.splitRoot(p.logEpochHistory)
+	if epochRange.Count() > 1 {
+		return
+	}
+	epoch = uint32(epochRange.First())
+	if !gti.matchRoot(rtiFilterMaps) {
+		return
+	}
+	rowRange := gti.splitRoot(p.logMapHeight)
+	if rowRange.Count() > 1 {
+		return
+	}
+	rowIndex = uint32(rowRange.First())
+	return epoch, gti, rowIndex, true
+}
+
 type filterRowReader func(mapIndex, rowIndex uint32) (FilterRow, error)
 
 type mapRowIndex struct{ mapIndex, rowIndex uint32 }

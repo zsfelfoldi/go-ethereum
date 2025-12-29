@@ -521,6 +521,106 @@ func (s storedSubtrees) getSubtree(gti treeIndex) serializedSubtree {
 	return nil
 }
 
+type serializedVerticalNodeList []byte
+
+func (s serializedVerticalNodeList) hasNode(rowIndex uint32) bool {
+	i := int(rowIndex) * (32 + 4)
+	return binary.LittleEndian.Uint32(s[i+32:i+32+4]) != 0
+}
+
+func (s serializedVerticalNodeList) getNode(rowIndex uint32) (nw nodeWithWeight) {
+	i := int(rowIndex) * (32 + 4)
+	copy(nw.value[:], s[i:i+32])
+	nw.weight = math.Float32frombits(binary.LittleEndian.Uint32(s[i+32 : i+32+4]))
+	return
+}
+
+func (p *Params) newSerializedVerticalNodeList() serializedVerticalNodeList {
+	return make(serializedVerticalNodeList, int(p.mapHeight)*(32+4))
+}
+
+func (s serializedVerticalNodeList) setNode(rowIndex uint32, nw nodeWithWeight) {
+	i := int(rowIndex) * (32 + 4)
+	copy(s[i:i+32], nw.value[:])
+	binary.LittleEndian.PutUint32(s[i+32:i+32+4], math.Float32bits(nw.weight))
+}
+
+type storedVerticalNodeLists struct {
+	params    *Params
+	epoch     uint32
+	lists     map[treeIndex]serializedVerticalNodeList
+	getListFn func(treeIndex) (serializedVerticalNodeList, error)
+}
+
+func (p *Params) newVerticalNodesReader(epoch uint32, getListFn func(treeIndex) (serializedVerticalNodeList, error)) *storedVerticalNodeLists {
+	return &storedVerticalNodeLists{
+		params:    p,
+		epoch:     epoch,
+		lists:     make(map[treeIndex]serializedVerticalNodeList),
+		getListFn: getListFn,
+	}
+}
+
+func (p *Params) newVerticalNodesWriter(mapIndex uint32) *storedVerticalNodeLists {
+	s := &storedVerticalNodeLists{
+		params: p,
+		epoch:  p.mapEpoch(mapIndex),
+		lists:  make(map[treeIndex]serializedVerticalNodeList),
+	}
+	subindex := gtiRoot.arraySub(uint64(mapIndex%p.mapsPerEpoch), p.logMapsPerEpoch)
+	for {
+		s.lists[subindex] = p.newSerializedVerticalNodeList()
+		if subindex == gtiRoot {
+			break
+		}
+		parent := subindex.parent()
+		if subindex != parent.rightChild() {
+			break
+		}
+		subindex = parent
+	}
+	return s
+}
+
+func (s *storedVerticalNodeLists) getNode(gti treeIndex) (nodeWithWeight, bool, error) {
+	epoch, subindex, rowIndex, ok := s.params.splitVerticalNodeIndex(gti)
+	if !ok || epoch != s.epoch {
+		return nodeWithWeight{}, false, nil
+	}
+	list, ok := s.lists[subindex]
+	if !ok {
+		var err error
+		list, err = s.getListFn(subindex)
+		if err != nil {
+			return nodeWithWeight{}, false, err
+		}
+		s.lists[subindex] = list
+
+	}
+	return list.getNode(rowIndex), true, nil
+}
+
+func (s *storedVerticalNodeLists) setNode(gti treeIndex, nw nodeWithWeight) {
+	epoch, subindex, rowIndex, ok := s.params.splitVerticalNodeIndex(gti)
+	if !ok || epoch != s.epoch {
+		return
+	}
+	if list, ok := s.lists[subindex]; ok {
+		list.setNode(rowIndex, nw)
+	}
+}
+
+func (s *storedVerticalNodeLists) isComplete() bool {
+	for _, list := range s.lists {
+		for rowIndex := range s.params.mapHeight {
+			if !list.hasNode(rowIndex) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // implements nodeReader based on a subtreeReader
 type subtreeNodeReader struct {
 	//params   *Params

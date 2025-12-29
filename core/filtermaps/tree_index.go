@@ -83,8 +83,8 @@ func (t treeIndex) gtSub(subIndex uint64) treeIndex {
 	return t.lsh(shift).add64(subIndex - (uint64(1) << shift))
 }
 
-func (t treeIndex) arraySub(arrayIndex uint64, indexLen uint) treeIndex {
-	return t.lsh(indexLen).add64(arrayIndex)
+func (t treeIndex) arraySub(arrayIndex uint64, height uint) treeIndex {
+	return t.lsh(height).add64(arrayIndex)
 }
 
 func ti64(i uint64) treeIndex                { return treeIndex(uint128.From64(i)) }
