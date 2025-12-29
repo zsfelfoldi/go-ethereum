@@ -642,7 +642,7 @@ func DeleteBloomBitsDb(db ethdb.KeyValueStore, hashScheme bool, stopCallback fun
 }
 
 func ReadFilterMapsSubtree(db ethdb.KeyValueReader, index uint128.Uint128) ([]byte, error) {
-	key := filterMapSubtreeKey(index)
+	key := filterMapsSubtreeKey(index)
 	if has, err := db.Has(key); !has || err != nil {
 		return nil, err
 	}
@@ -650,9 +650,23 @@ func ReadFilterMapsSubtree(db ethdb.KeyValueReader, index uint128.Uint128) ([]by
 }
 
 func WriteFilterMapsSubtree(db ethdb.KeyValueWriter, index uint128.Uint128, subtree []byte) {
-	db.Put(filterMapSubtreeKey(index), subtree)
+	db.Put(filterMapsSubtreeKey(index), subtree)
 }
 
 func DeleteFilterMapsSubtrees(db ethdb.KeyValueStore, from, to uint128.Uint128, hashScheme bool, stopCallback func(bool) bool) error {
-	return SafeDeleteRange(db, filterMapSubtreeKey(from), append(filterMapSubtreeKey(to), 0), hashScheme, stopCallback)
+	return SafeDeleteRange(db, filterMapsSubtreeKey(from), append(filterMapsSubtreeKey(to), 0), hashScheme, stopCallback)
+}
+
+func ReadFilterMapsEpochRows(db ethdb.KeyValueReader, epoch uint32, mapSubindex uint128.Uint128) ([]byte, error) {
+	return db.Get(filterMapsEpochRowsKey(epoch, mapSubindex))
+}
+
+func WriteFilterMapsEpochRows(db ethdb.KeyValueWriter, epoch uint32, mapSubindex uint128.Uint128, nodeData []byte) {
+	db.Put(filterMapsEpochRowsKey(epoch, mapSubindex), nodeData)
+}
+
+func DeleteFilterMapsEpochRows(db ethdb.KeyValueWriter, epoch uint32, mapSubindex uint128.Uint128) {
+	if err := db.Delete(filterMapsEpochRowsKey(epoch, mapSubindex)); err != nil {
+		log.Crit("Failed to delete epoch rows", "err", err)
+	}
 }

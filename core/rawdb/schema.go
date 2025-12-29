@@ -159,6 +159,7 @@ var (
 	filterMapLastBlockPrefix = []byte(filterMapsPrefix + "b") // filterMapLastBlockPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
 	filterMapBlockLVPrefix   = []byte(filterMapsPrefix + "p") // filterMapBlockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
 	filterMapSubtreePrefix   = []byte(filterMapsPrefix + "s")
+	filterMapEpochRowsPrefix = []byte(filterMapsPrefix + "e")
 
 	// old log index
 	bloomBitsMetaPrefix = []byte("iB")
@@ -382,12 +383,10 @@ func filterMapBlockLVKey(number uint64) []byte {
 	return key
 }
 
-func filterMapSubtreeKey(index uint128.Uint128) []byte {
+func merkleTreeKey(key []byte, index uint128.Uint128) []byte {
 	if index.Equals64(0) {
 		panic("null tree index")
 	}
-	key := make([]byte, len(filterMapSubtreePrefix), len(filterMapSubtreePrefix)+19) //TODO is thread safety always needed?
-	copy(key, filterMapSubtreePrefix)
 	if index.Equals64(1) {
 		return append(key, 255, 255)
 	}
@@ -406,6 +405,20 @@ func filterMapSubtreeKey(index uint128.Uint128) []byte {
 		key = append(key, keyByte)
 	}
 	return key
+}
+
+func filterMapsSubtreeKey(index uint128.Uint128) []byte {
+	key := make([]byte, len(filterMapSubtreePrefix), len(filterMapSubtreePrefix)+19) //TODO is thread safety always needed?
+	copy(key, filterMapSubtreePrefix)
+	return merkleTreeKey(key, index)
+}
+
+func filterMapsEpochRowsKey(epoch uint32, mapSubindex uint128.Uint128) []byte {
+	l := len(filterMapEpochRowsPrefix)
+	key := make([]byte, l+4, l+4+19)
+	copy(key[:l], filterMapEpochRowsPrefix)
+	binary.BigEndian.PutUint32(key[l:l+4], epoch)
+	return merkleTreeKey(key, mapSubindex)
 }
 
 // accountHistoryIndexKey = StateHistoryAccountMetadataPrefix + addressHash
