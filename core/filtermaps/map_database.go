@@ -555,7 +555,7 @@ func (m *mapDatabase) writeRowUpdates(batch ethdb.Batch, writePattern []writePat
 	return nil
 }
 
-func (m *mapDatabase) deleteSubtrees(deleteRange common.Range[uint32], stopCallback func() bool) (bool, error) {
+func (m *mapDatabase) deleteTreeData(deleteRange common.Range[uint32], stopCallback func() bool) (bool, error) {
 	if deleteRange.IsEmpty() {
 		return true, nil
 	}
@@ -589,9 +589,21 @@ func (m *mapDatabase) deleteSubtrees(deleteRange common.Range[uint32], stopCallb
 	default:
 		return false, err
 	}
+	action = "Deleting vertical node lists"
+	deleteFn = func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error {
+		return rawdb.DeleteFilterMapsVerticalNodeLists(db, deleteRange, hashScheme, stopCb)
+	}
+	switch err := m.safeDeleteWithLogs(deleteFn, action, stopCallback); err {
+	case nil:
+		return true, nil
+	case rawdb.ErrDeleteRangeInterrupted:
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
-func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*completedMap, stopCallback func() bool) (bool, error) {
+func (m *mapDatabase) writeTreeData(writeRange common.Range[uint32], maps []*completedMap, stopCallback func() bool) (bool, error) {
 	if writeRange.IsEmpty() {
 		return true, nil
 	}
@@ -639,6 +651,13 @@ func (m *mapDatabase) writeSubtrees(writeRange common.Range[uint32], maps []*com
 	}
 	if err := batch.Write(); err != nil {
 		return false, err
+	}
+	for i, fm := range maps {
+		mapIndex := writeRange.First() + uint32(i)
+		for j, nodeData := range fm.verticalNodes {
+			depth := uint8(j) + uint8(m.params.verticalNodesMinDepth)
+			rawdb.WriteFilterMapsVerticalNodeList(m.db, mapIndex, depth, nodeData)
+		}
 	}
 	return true, nil
 }

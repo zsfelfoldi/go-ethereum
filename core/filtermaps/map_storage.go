@@ -600,9 +600,9 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 	// write/overwrite map rows and delete dirty map data, write new pointers
 	done, err := m.mapDb.writeMapRows(writeMaps, dirtyInEpoch, keepEmptyInEpoch, maps, stopCallback)
 	if done {
-		done, err = m.mapDb.deleteSubtrees(dirtyInEpoch, stopCallback)
+		done, err = m.mapDb.deleteTreeData(dirtyInEpoch, stopCallback)
 		if done {
-			done, err = m.mapDb.writeSubtrees(writeMaps, maps, stopCallback)
+			done, err = m.mapDb.writeTreeData(writeMaps, maps, stopCallback)
 			if done {
 				done, err = m.mapDb.writePointers(writeMaps, maps, stopCallback)
 			}
@@ -763,12 +763,18 @@ func (m *mapStorage) getVerticalNodeList(vni verticalNodeIndex) (serializedVerti
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 
+	if uint(vni.depth) < m.params.verticalNodesMinDepth || uint(vni.depth) > m.params.logMapsPerEpoch-m.params.verticalNodesMinDepth {
+		return nil, nil
+	}
 	if m.overlay.includes(vni.mapIndex) {
 		fm := m.overlayMaps[vni.mapIndex]
 		if fm == nil {
 			return nil, errors.New("memory overlay map not found")
 		}
-		return fm.verticalNodes[vni.depth], nil
+		if i := uint(vni.depth) - m.params.verticalNodesMinDepth; i < uint(len(fm.verticalNodes)) {
+			return fm.verticalNodes[i], nil
+		}
+		return nil, nil
 	}
 	if m.valid.includes(vni.mapIndex) {
 		return m.mapDb.getVerticalNodeList(vni)
