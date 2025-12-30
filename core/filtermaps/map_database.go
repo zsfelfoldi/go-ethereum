@@ -178,12 +178,15 @@ func (m *mapDatabase) deleteEpochRows(epoch uint32, stopCallback func() bool) (b
 	}
 }
 
-func (m *mapDatabase) deleteEpochSubtrees(epoch uint32, stopCallback func() bool) (bool, error) {
+func (m *mapDatabase) deleteEpochTreeData(epoch uint32, stopCallback func() bool) (bool, error) {
 	deleteFn := func(db ethdb.KeyValueStore, hashScheme bool, stopCb func(bool) bool) error {
 		epochRoot := ti64(rtiEpochs).arraySub(uint64(epoch), m.params.logEpochHistory)
 		from := epochRoot.gtSub(rtiFilterMaps)
 		to := epochRoot.gtSub(rtiIndexEntries)
-		return rawdb.DeleteFilterMapsSubtrees(db, uint128.Uint128(from), uint128.Uint128(to), hashScheme, stopCb)
+		if err := rawdb.DeleteFilterMapsSubtrees(db, uint128.Uint128(from), uint128.Uint128(to), hashScheme, stopCb); err != nil {
+			return err
+		}
+		return rawdb.DeleteFilterMapsVerticalNodeLists(db, common.NewRange[uint32](m.params.firstEpochMap(epoch), m.params.mapsPerEpoch), hashScheme, stopCb)
 	}
 	action := fmt.Sprintf("Deleting epoch #%d subtrees", epoch)
 	switch err := m.safeDeleteWithLogs(deleteFn, action, stopCallback); err {

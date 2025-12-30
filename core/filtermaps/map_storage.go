@@ -574,7 +574,7 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 		m.lock.Unlock()
 		done, err := m.mapDb.deleteEpochRows(epoch, stopCallback)
 		if done {
-			done, err = m.mapDb.deleteEpochSubtrees(epoch, stopCallback)
+			done, err = m.mapDb.deleteEpochTreeData(epoch, stopCallback)
 		}
 		m.lock.Lock()
 		if done {
@@ -770,7 +770,7 @@ func (m *mapStorage) getVerticalNodeList(vni verticalNodeIndex) (serializedVerti
 		}
 		return fm.verticalNodes[vni.depth], nil
 	}
-	if m.valid.includes(mapIndex) {
+	if m.valid.includes(vni.mapIndex) {
 		return m.mapDb.getVerticalNodeList(vni)
 	}
 	return nil, nil
@@ -778,11 +778,10 @@ func (m *mapStorage) getVerticalNodeList(vni verticalNodeIndex) (serializedVerti
 
 func (m *mapStorage) initTree(mapRange common.Range[uint32]) (*merkleTree, error) {
 	nextEntry := uint64(mapRange.First()) * m.params.valuesPerMap
-	epoch := m.params.mapEpoch(mapRange.First())
 	boundary := m.params.newLogIndexBoundaryReader(nextEntry) //TODO
 	nodeReader := mergedNodeReader{
 		m.params.newFilterRowNodeReader(m.getFilterMapRow).getNode,
-		m.params.newVerticalNodesReader(epoch, m.getVerticalNodeList),
+		m.params.newVerticalNodesReader(m.getVerticalNodeList).getNode,
 		newSubtreeNodeReader(m.getSubtree).getNode,
 		boundary.getNode,
 	}.getNode

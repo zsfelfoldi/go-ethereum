@@ -109,7 +109,7 @@ type completedMap struct {
 
 // completed creates a new completedMap from a memoryMap. Note that Merkle
 // subtrees are only added later when the map is marked as stabilized.
-func (m *memoryMap) completed(subtrees storedSubtrees, verticalNodes *storedVerticalNodeLists) *completedMap {
+func (m *memoryMap) completed(subtrees storedSubtrees, verticalNodes []serializedVerticalNodeList) *completedMap {
 	fm := &completedMap{
 		rowPtrs:       make([]uint16, len(m.rows)),
 		rowData:       make([]uint32, m.nextEntry),

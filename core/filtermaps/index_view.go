@@ -513,7 +513,7 @@ func (rs *renderState) advance(count uint64) {
 	rs.advanceMapTree(completeOld, initNew)
 	fmt.Println(" advanceMapTree done")
 	if completeOld {
-		fm := rs.currentMap.completed(rs.tree.getStoredSubtrees(), rs.tree.verticalNodes)
+		fm := rs.currentMap.completed(rs.tree.getStoredSubtrees(), rs.tree.verticalNodes.lists)
 		rs.tree.clearStoredSubtrees()
 		rs.tree.verticalNodes = nil
 		rs.finishedMaps = append(rs.finishedMaps, fm)

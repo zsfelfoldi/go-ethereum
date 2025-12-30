@@ -413,7 +413,7 @@ func filterMapsSubtreeKey(index uint128.Uint128) []byte {
 	return merkleTreeKey(key, index)
 }
 
-func filterMapsVerticalNodeListKey(mapIndex, depth uint32) []byte {
+func filterMapsVerticalNodeListKey(mapIndex uint32, depth uint8) []byte {
 	l := len(filterMapVerticalNodeListPrefix)
 	key := make([]byte, l+5)
 	copy(key[:l], filterMapVerticalNodeListPrefix)

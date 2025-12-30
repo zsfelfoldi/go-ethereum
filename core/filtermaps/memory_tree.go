@@ -96,7 +96,7 @@ type merkleTree struct {
 	nodes         []merkleTreeNode
 	firstFree     uint32
 	subtrees      storedSubtrees
-	verticalNodes *storedVerticalNodeLists
+	verticalNodes *verticalNodesWriter
 }
 
 func (params *Params) newMerkleTree(getNode nodeReader, nodeStatus nodeStatus) (*merkleTree, error) {
@@ -550,32 +550,41 @@ func (s serializedVerticalNodeList) setNode(rowIndex uint32, nw nodeWithWeight) 
 }
 
 type verticalNodeIndex struct {
-	mapIndex, depth uint32
+	mapIndex uint32
+	depth    uint8
 }
 
-type storedVerticalNodeLists struct {
+type verticalNodesReader struct {
 	params    *Params
-	lists     map[verticalNodeIndex]serializedVerticalNodeList
+	listMap   map[verticalNodeIndex]serializedVerticalNodeList
 	getListFn func(verticalNodeIndex) (serializedVerticalNodeList, error)
 }
 
-func (p *Params) newVerticalNodesReader(getListFn func(verticalNodeIndex) (serializedVerticalNodeList, error)) *storedVerticalNodeLists {
-	return &storedVerticalNodeLists{
+type verticalNodesWriter struct {
+	params  *Params
+	lists   []serializedVerticalNodeList
+	listMap map[verticalNodeIndex]serializedVerticalNodeList
+}
+
+func (p *Params) newVerticalNodesReader(getListFn func(verticalNodeIndex) (serializedVerticalNodeList, error)) *verticalNodesReader {
+	return &verticalNodesReader{
 		params:    p,
-		lists:     make(map[verticalNodeIndex]serializedVerticalNodeList),
+		listMap:   make(map[verticalNodeIndex]serializedVerticalNodeList),
 		getListFn: getListFn,
 	}
 }
 
-func (p *Params) newVerticalNodesWriter(mapIndex uint32) *storedVerticalNodeLists {
-	s := &storedVerticalNodeLists{
-		params: p,
-		lists:  make(map[verticalNodeIndex]serializedVerticalNodeList),
+func (p *Params) newVerticalNodesWriter(mapIndex uint32) *verticalNodesWriter {
+	s := &verticalNodesWriter{
+		params:  p,
+		listMap: make(map[verticalNodeIndex]serializedVerticalNodeList),
 	}
-	var depth uint32
+	var depth uint
 	for depth <= p.logMapsPerEpoch {
 		if depth >= p.verticalNodesMinDepth {
-			s.lists[verticalNodeIndex{mapIndex, depth}] = p.newSerializedVerticalNodeList()
+			list := p.newSerializedVerticalNodeList()
+			s.listMap[verticalNodeIndex{mapIndex, uint8(depth)}] = list
+			s.lists = append(s.lists, list)
 		}
 		if (mapIndex>>depth)&1 == 0 {
 			break
@@ -584,35 +593,35 @@ func (p *Params) newVerticalNodesWriter(mapIndex uint32) *storedVerticalNodeList
 	return s
 }
 
-func (s *storedVerticalNodeLists) getNode(gti treeIndex) (nodeWithWeight, bool, error) {
+func (s *verticalNodesReader) getNode(gti treeIndex) (nodeWithWeight, bool, error) {
 	vni, rowIndex, ok := s.params.splitVerticalNodeIndex(gti)
 	if !ok {
 		return nodeWithWeight{}, false, nil
 	}
-	list, ok := s.lists[vni]
+	list, ok := s.listMap[vni]
 	if !ok {
 		var err error
 		list, err = s.getListFn(vni)
 		if err != nil {
 			return nodeWithWeight{}, false, err
 		}
-		s.lists[vni] = list
+		s.listMap[vni] = list
 
 	}
 	return list.getNode(rowIndex), true, nil
 }
 
-func (s *storedVerticalNodeLists) setNode(gti treeIndex, nw nodeWithWeight) {
+func (s *verticalNodesWriter) setNode(gti treeIndex, nw nodeWithWeight) {
 	vni, rowIndex, ok := s.params.splitVerticalNodeIndex(gti)
 	if !ok {
-		return nodeWithWeight{}, false, nil
+		return
 	}
-	if list, ok := s.lists[vni]; ok {
+	if list, ok := s.listMap[vni]; ok {
 		list.setNode(rowIndex, nw)
 	}
 }
 
-func (s *storedVerticalNodeLists) isComplete() bool {
+func (s *verticalNodesWriter) isComplete() bool {
 	for _, list := range s.lists {
 		for rowIndex := range s.params.mapHeight {
 			if !list.hasNode(rowIndex) {

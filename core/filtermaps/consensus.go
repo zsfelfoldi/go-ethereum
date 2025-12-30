@@ -189,28 +189,28 @@ func (p *Params) subtreeLvRange(gti treeIndex) common.Range[uint64] {
 
 func (p *Params) splitVerticalNodeIndex(gti treeIndex) (verticalNodeIndex, uint32, bool) {
 	if !gti.matchRoot(rtiEpochs) {
-		return
+		return verticalNodeIndex{}, 0, false
 	}
 	epochRange := gti.splitRoot(p.logEpochHistory)
 	if epochRange.Count() > 1 {
-		return
+		return verticalNodeIndex{}, 0, false
 	}
 	epoch := uint32(epochRange.First())
 	if !gti.matchRoot(rtiFilterMaps) {
-		return
+		return verticalNodeIndex{}, 0, false
 	}
 	rowRange := gti.splitRoot(p.logMapHeight)
 	if rowRange.Count() > 1 {
-		return
+		return verticalNodeIndex{}, 0, false
 	}
 	rowIndex := uint32(rowRange.First())
 	height := gti.level()
 	if height > p.logMapsPerEpoch-p.verticalNodesMinDepth {
-		return
+		return verticalNodeIndex{}, 0, false
 	}
 	mapSubRange := gti.splitRoot(p.logMapsPerEpoch)
-	mapIndex := epoch*p.mapsPerEpoch + mapSubRange.Last()
-	return verticalNodeIndex{mapIndex, p.logMapsPerEpoch - height}, rowIndex, true
+	mapIndex := epoch*p.mapsPerEpoch + uint32(mapSubRange.Last())
+	return verticalNodeIndex{mapIndex, uint8(p.logMapsPerEpoch - height)}, rowIndex, true
 }
 
 type filterRowReader func(mapIndex, rowIndex uint32) (FilterRow, error)
