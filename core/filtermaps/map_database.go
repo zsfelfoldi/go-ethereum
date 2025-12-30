@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	databaseVersion   = 4    // reindexed if database version does not match
+	databaseVersion   = 5    // reindexed if database version does not match
 	cachedLastBlocks  = 1000 // last block of map pointers
 	cachedLvPointers  = 1000 // first log value pointer of block pointers
 	cachedSubtrees    = 5000
@@ -711,4 +711,12 @@ func (m *mapDatabase) getSubtree(gti treeIndex) (serializedSubtree, error) {
 	subtree := serializedSubtree(st)
 	m.subtreeCache.Add(gti, subtree)
 	return subtree, nil
+}
+
+func (m *mapDatabase) getVerticalNodeList(vni verticalNodeIndex) (serializedVerticalNodeList, error) {
+	snl, err := rawdb.ReadFilterMapsVerticalNodeList(m.db, vni.mapIndex, vni.depth)
+	if err != nil {
+		return nil, err
+	}
+	return serializedVerticalNodeList(snl), nil
 }

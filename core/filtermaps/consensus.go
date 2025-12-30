@@ -187,7 +187,7 @@ func (p *Params) subtreeLvRange(gti treeIndex) common.Range[uint64] {
 	}
 }
 
-func (p *Params) splitVerticalNodeIndex(gti treeIndex) (epoch uint32, subindex treeIndex, rowIndex uint32, ok bool) {
+func (p *Params) splitVerticalNodeIndex(gti treeIndex) (verticalNodeIndex, uint32, bool) {
 	if !gti.matchRoot(rtiEpochs) {
 		return
 	}
@@ -195,7 +195,7 @@ func (p *Params) splitVerticalNodeIndex(gti treeIndex) (epoch uint32, subindex t
 	if epochRange.Count() > 1 {
 		return
 	}
-	epoch = uint32(epochRange.First())
+	epoch := uint32(epochRange.First())
 	if !gti.matchRoot(rtiFilterMaps) {
 		return
 	}
@@ -203,8 +203,14 @@ func (p *Params) splitVerticalNodeIndex(gti treeIndex) (epoch uint32, subindex t
 	if rowRange.Count() > 1 {
 		return
 	}
-	rowIndex = uint32(rowRange.First())
-	return epoch, gti, rowIndex, true
+	rowIndex := uint32(rowRange.First())
+	height := gti.level()
+	if height > p.logMapsPerEpoch-p.verticalNodesMinDepth {
+		return
+	}
+	mapSubRange := gti.splitRoot(p.logMapsPerEpoch)
+	mapIndex := epoch*p.mapsPerEpoch + mapSubRange.Last()
+	return verticalNodeIndex{mapIndex, p.logMapsPerEpoch - height}, rowIndex, true
 }
 
 type filterRowReader func(mapIndex, rowIndex uint32) (FilterRow, error)

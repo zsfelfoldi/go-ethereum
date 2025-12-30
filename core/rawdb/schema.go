@@ -153,12 +153,12 @@ var (
 	SyncCommitteeKey      = []byte("committee-") // bigEndian64(syncPeriod) -> serialized committee
 
 	// new log index
-	filterMapsPrefix         = "fm*" //TODO fm-
-	filterMapsRangeKey       = []byte(filterMapsPrefix + "R")
-	filterMapRowPrefix       = []byte(filterMapsPrefix + "r") // filterMapRowPrefix + mapRowIndex (uint64 big endian) -> filter row
-	filterMapLastBlockPrefix = []byte(filterMapsPrefix + "b") // filterMapLastBlockPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
-	filterMapBlockLVPrefix   = []byte(filterMapsPrefix + "p") // filterMapBlockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
-	filterMapSubtreePrefix   = []byte(filterMapsPrefix + "s")
+	filterMapsPrefix                = "fm*" //TODO fm-
+	filterMapsRangeKey              = []byte(filterMapsPrefix + "R")
+	filterMapRowPrefix              = []byte(filterMapsPrefix + "r") // filterMapRowPrefix + mapRowIndex (uint64 big endian) -> filter row
+	filterMapLastBlockPrefix        = []byte(filterMapsPrefix + "b") // filterMapLastBlockPrefix + mapIndex (uint32 big endian) -> block number (uint64 big endian)
+	filterMapBlockLVPrefix          = []byte(filterMapsPrefix + "p") // filterMapBlockLVPrefix + num (uint64 big endian) -> log value pointer (uint64 big endian)
+	filterMapSubtreePrefix          = []byte(filterMapsPrefix + "s")
 	filterMapVerticalNodeListPrefix = []byte(filterMapsPrefix + "e")
 
 	// old log index
@@ -413,12 +413,13 @@ func filterMapsSubtreeKey(index uint128.Uint128) []byte {
 	return merkleTreeKey(key, index)
 }
 
-func filterMapsVerticalNodeListKey(epoch uint32, mapSubindex uint128.Uint128) []byte {
+func filterMapsVerticalNodeListKey(mapIndex, depth uint32) []byte {
 	l := len(filterMapVerticalNodeListPrefix)
-	key := make([]byte, l+4, l+4+19)
+	key := make([]byte, l+5)
 	copy(key[:l], filterMapVerticalNodeListPrefix)
-	binary.BigEndian.PutUint32(key[l:l+4], epoch)
-	return merkleTreeKey(key, mapSubindex)
+	binary.BigEndian.PutUint32(key[l:l+4], mapIndex)
+	key[l+4] = byte(depth)
+	return key
 }
 
 // accountHistoryIndexKey = StateHistoryAccountMetadataPrefix + addressHash

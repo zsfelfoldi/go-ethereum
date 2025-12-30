@@ -549,18 +549,20 @@ func (s serializedVerticalNodeList) setNode(rowIndex uint32, nw nodeWithWeight) 
 	binary.LittleEndian.PutUint32(s[i+32:i+32+4], math.Float32bits(nw.weight))
 }
 
-type storedVerticalNodeLists struct {
-	params    *Params
-	epoch     uint32
-	lists     map[treeIndex]serializedVerticalNodeList
-	getListFn func(treeIndex) (serializedVerticalNodeList, error)
+type verticalNodeIndex struct {
+	mapIndex, depth uint32
 }
 
-func (p *Params) newVerticalNodesReader(epoch uint32, getListFn func(treeIndex) (serializedVerticalNodeList, error)) *storedVerticalNodeLists {
+type storedVerticalNodeLists struct {
+	params    *Params
+	lists     map[verticalNodeIndex]serializedVerticalNodeList
+	getListFn func(verticalNodeIndex) (serializedVerticalNodeList, error)
+}
+
+func (p *Params) newVerticalNodesReader(getListFn func(verticalNodeIndex) (serializedVerticalNodeList, error)) *storedVerticalNodeLists {
 	return &storedVerticalNodeLists{
 		params:    p,
-		epoch:     epoch,
-		lists:     make(map[treeIndex]serializedVerticalNodeList),
+		lists:     make(map[verticalNodeIndex]serializedVerticalNodeList),
 		getListFn: getListFn,
 	}
 }
@@ -568,50 +570,44 @@ func (p *Params) newVerticalNodesReader(epoch uint32, getListFn func(treeIndex) 
 func (p *Params) newVerticalNodesWriter(mapIndex uint32) *storedVerticalNodeLists {
 	s := &storedVerticalNodeLists{
 		params: p,
-		epoch:  p.mapEpoch(mapIndex),
-		lists:  make(map[treeIndex]serializedVerticalNodeList),
+		lists:  make(map[verticalNodeIndex]serializedVerticalNodeList),
 	}
-	subindex := gtiRoot.arraySub(uint64(mapIndex%p.mapsPerEpoch), p.logMapsPerEpoch)
-	for {
-		if subindex.level() < p.verticalNodesHeight {
-			s.lists[subindex] = p.newSerializedVerticalNodeList()
+	var depth uint32
+	for depth <= p.logMapsPerEpoch {
+		if depth >= p.verticalNodesMinDepth {
+			s.lists[verticalNodeIndex{mapIndex, depth}] = p.newSerializedVerticalNodeList()
 		}
-		if subindex == gtiRoot {
+		if (mapIndex>>depth)&1 == 0 {
 			break
 		}
-		parent := subindex.parent()
-		if subindex != parent.rightChild() {
-			break
-		}
-		subindex = parent
 	}
 	return s
 }
 
 func (s *storedVerticalNodeLists) getNode(gti treeIndex) (nodeWithWeight, bool, error) {
-	epoch, subindex, rowIndex, ok := s.params.splitVerticalNodeIndex(gti)
-	if !ok || epoch != s.epoch {
+	vni, rowIndex, ok := s.params.splitVerticalNodeIndex(gti)
+	if !ok {
 		return nodeWithWeight{}, false, nil
 	}
-	list, ok := s.lists[subindex]
+	list, ok := s.lists[vni]
 	if !ok {
 		var err error
-		list, err = s.getListFn(subindex)
+		list, err = s.getListFn(vni)
 		if err != nil {
 			return nodeWithWeight{}, false, err
 		}
-		s.lists[subindex] = list
+		s.lists[vni] = list
 
 	}
 	return list.getNode(rowIndex), true, nil
 }
 
 func (s *storedVerticalNodeLists) setNode(gti treeIndex, nw nodeWithWeight) {
-	epoch, subindex, rowIndex, ok := s.params.splitVerticalNodeIndex(gti)
-	if !ok || epoch != s.epoch {
-		return
+	vni, rowIndex, ok := s.params.splitVerticalNodeIndex(gti)
+	if !ok {
+		return nodeWithWeight{}, false, nil
 	}
-	if list, ok := s.lists[subindex]; ok {
+	if list, ok := s.lists[vni]; ok {
 		list.setNode(rowIndex, nw)
 	}
 }

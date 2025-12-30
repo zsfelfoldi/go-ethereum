@@ -759,11 +759,30 @@ func (m *mapStorage) getSubtree(gti treeIndex) (serializedSubtree, error) {
 	return nil, nil
 }
 
+func (m *mapStorage) getVerticalNodeList(vni verticalNodeIndex) (serializedVerticalNodeList, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	if m.overlay.includes(vni.mapIndex) {
+		fm := m.overlayMaps[vni.mapIndex]
+		if fm == nil {
+			return nil, errors.New("memory overlay map not found")
+		}
+		return fm.verticalNodes[vni.depth], nil
+	}
+	if m.valid.includes(mapIndex) {
+		return m.mapDb.getVerticalNodeList(vni)
+	}
+	return nil, nil
+}
+
 func (m *mapStorage) initTree(mapRange common.Range[uint32]) (*merkleTree, error) {
 	nextEntry := uint64(mapRange.First()) * m.params.valuesPerMap
+	epoch := m.params.mapEpoch(mapRange.First())
 	boundary := m.params.newLogIndexBoundaryReader(nextEntry) //TODO
 	nodeReader := mergedNodeReader{
 		m.params.newFilterRowNodeReader(m.getFilterMapRow).getNode,
+		m.params.newVerticalNodesReader(epoch, m.getVerticalNodeList),
 		newSubtreeNodeReader(m.getSubtree).getNode,
 		boundary.getNode,
 	}.getNode

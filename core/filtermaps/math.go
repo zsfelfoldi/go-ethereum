@@ -64,7 +64,7 @@ type Params struct {
 	logEntryWeightFactor  uint32
 	logWeightFirstLevel   uint
 	logWeightPerLevel     uint
-	verticalNodesHeight   uint
+	verticalNodesMinDepth uint
 }
 
 // DefaultParams is the set of parameters used on mainnet.
@@ -85,7 +85,7 @@ var DefaultParams = Params{
 	logEntryWeightFactor:  1,
 	logWeightFirstLevel:   12,
 	logWeightPerLevel:     4,
-	verticalNodesHeight:   7,
+	verticalNodesMinDepth: 3,
 }
 
 // RangeTestParams puts one log value per epoch, ensuring block exact tail unindexing for testing

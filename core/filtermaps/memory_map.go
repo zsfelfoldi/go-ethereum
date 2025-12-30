@@ -104,7 +104,7 @@ type completedMap struct {
 	blockPtrs     []uint64
 	lastBlock     lastBlockOfMap
 	subtrees      storedSubtrees
-	verticalNodes *storedVerticalNodeLists
+	verticalNodes []serializedVerticalNodeList
 }
 
 // completed creates a new completedMap from a memoryMap. Note that Merkle
