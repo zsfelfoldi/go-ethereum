@@ -326,11 +326,11 @@ func (mt *merkleTree) setComplete(node mtNode) {
 		panic("finalized node with unknown value")
 	}
 	n.setComplete(true)
-	if mt.verticalNodes != nil {
-		mt.verticalNodes.setNode(node.gti, nodeWithWeight{value: n.value, weight: n.weight})
-	}
 	// propagate completed state to ancestors and collapse completed subtrees if possible
 	for n.parent() != nullPtr {
+		if mt.verticalNodes != nil {
+			mt.verticalNodes.setNode(node.gti, nodeWithWeight{value: n.value, weight: n.weight})
+		}
 		parent := mt.parent(node)
 		//fmt.Println(" parent", parent)
 		p := &mt.nodes[parent.index]
@@ -579,8 +579,7 @@ func (p *Params) newVerticalNodesWriter(mapIndex uint32) *verticalNodesWriter {
 		params:  p,
 		listMap: make(map[verticalNodeIndex]serializedVerticalNodeList),
 	}
-	var depth uint
-	for depth <= p.logMapsPerEpoch {
+	for depth := range p.logMapsPerEpoch + 1 {
 		if depth >= p.verticalNodesMinDepth {
 			list := p.newSerializedVerticalNodeList()
 			s.listMap[verticalNodeIndex{mapIndex, uint8(depth)}] = list
@@ -613,23 +612,42 @@ func (s *verticalNodesReader) getNode(gti treeIndex) (nodeWithWeight, bool, erro
 
 func (s *verticalNodesWriter) setNode(gti treeIndex, nw nodeWithWeight) {
 	vni, rowIndex, ok := s.params.splitVerticalNodeIndex(gti)
+	//fmt.Println("vnw.setNode", gti, vni, rowIndex, ok)
 	if !ok {
 		return
 	}
 	if list, ok := s.listMap[vni]; ok {
+		//fmt.Println(" list.setNode")
 		list.setNode(rowIndex, nw)
-	}
+	} /* else {
+		fmt.Println(" no list")
+	}*/
 }
 
 func (s *verticalNodesWriter) isComplete() bool {
-	for _, list := range s.lists {
+	fmt.Println("vnw.isComplete")
+	ok := true
+	for depth, list := range s.lists {
+		var a, b int
+		for rowIndex := range s.params.mapHeight {
+			if list.hasNode(rowIndex) {
+				a++
+			} else {
+				b++
+				ok = false
+			}
+		}
+		fmt.Println(" depth", depth, "present", a, "missing", b)
+	}
+	return ok
+	/*for _, list := range s.lists {
 		for rowIndex := range s.params.mapHeight {
 			if !list.hasNode(rowIndex) {
 				return false
 			}
 		}
 	}
-	return true
+	return true*/
 }
 
 // implements nodeReader based on a subtreeReader

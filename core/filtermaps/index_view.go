@@ -509,12 +509,15 @@ func (rs *renderState) advance(count uint64) {
 	fmt.Println(" advanceMapTree", rs.tree != nil)
 	if completeOld {
 		rs.tree.verticalNodes = rs.params.newVerticalNodesWriter(rs.mapIndex - 1) //TODO make this more elegant
+		fmt.Println(" vertical node lists:", len(rs.tree.verticalNodes.lists))
 	}
 	rs.advanceMapTree(completeOld, initNew)
 	fmt.Println(" advanceMapTree done")
 	if completeOld {
+		if !rs.tree.verticalNodes.isComplete() {
+			panic("verticalNodesWriter is not complete after completing map")
+		}
 		fm := rs.currentMap.completed(rs.tree.getStoredSubtrees(), rs.tree.verticalNodes.lists)
-		fmt.Println(" vertical node lists:", len(fm.verticalNodes))
 		rs.tree.clearStoredSubtrees()
 		rs.tree.verticalNodes = nil
 		rs.finishedMaps = append(rs.finishedMaps, fm)

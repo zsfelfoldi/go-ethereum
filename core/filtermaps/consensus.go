@@ -189,25 +189,31 @@ func (p *Params) subtreeLvRange(gti treeIndex) common.Range[uint64] {
 
 func (p *Params) splitVerticalNodeIndex(gti treeIndex) (verticalNodeIndex, uint32, bool) {
 	if !gti.matchRoot(rtiEpochs) {
+		//fmt.Println(" svni 1")
 		return verticalNodeIndex{}, 0, false
 	}
 	epochRange := gti.splitRoot(p.logEpochHistory)
 	if epochRange.Count() > 1 {
+		//fmt.Println(" svni 2")
 		return verticalNodeIndex{}, 0, false
 	}
 	epoch := uint32(epochRange.First())
 	if !gti.matchRoot(rtiFilterMaps) {
+		//fmt.Println(" svni 3")
 		return verticalNodeIndex{}, 0, false
 	}
 	rowRange := gti.splitRoot(p.logMapHeight)
 	if rowRange.Count() > 1 {
+		//fmt.Println(" svni 4")
 		return verticalNodeIndex{}, 0, false
 	}
 	rowIndex := uint32(rowRange.First())
 	height := gti.level()
 	if height > p.logMapsPerEpoch-p.verticalNodesMinDepth {
+		//fmt.Println(" svni 5", height)
 		return verticalNodeIndex{}, 0, false
 	}
+	//fmt.Println(" svni 6")
 	mapSubRange := gti.splitRoot(p.logMapsPerEpoch)
 	mapIndex := epoch*p.mapsPerEpoch + uint32(mapSubRange.Last())
 	return verticalNodeIndex{mapIndex, uint8(p.logMapsPerEpoch - height)}, rowIndex, true
