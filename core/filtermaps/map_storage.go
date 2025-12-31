@@ -29,6 +29,9 @@ import (
 
 var ErrOutOfRange = errors.New("pointer out of indexed range")
 
+// //TODO reduce to 4 and test
+const keepVerticalNodeLists = 8 // max number of maps in unfinished epoch with a vertical node list
+
 // mapStorage implements a filter map storage layer over mapDatabase that ensures
 // efficient database usage while also providing a low latency interface to the
 // indexer. It uses a memory layer over mapDatabase allowing consistently quick
@@ -48,6 +51,7 @@ type mapStorage struct {
 	valid, dirty                      rangeSet[uint32] // valid and dirty maps in database
 	writeInProgress, deleteInProgress rangeSet[uint32] // write cycle in progress
 	overlay                           rangeSet[uint32] // memory maps
+	deleteVNLists                     rangeSet[uint32] // valid maps in database where vertical nodes list should be removed
 	overlayCount                      uint32
 	overlayMaps                       map[uint32]*completedMap
 	validBlocks, overlayBlocks        rangeSet[uint64]
@@ -230,9 +234,33 @@ func (m *mapStorage) addMap(mapIndex uint32, fm *completedMap, forceCommit bool)
 	m.writeInProgress = m.writeInProgress.exclude(mapRs)
 	m.overlayMaps[mapIndex] = fm
 	m.updateOverlayBlocks()
+	if mapIndex >= m.params.firstEpochMap(epoch)+keepVerticalNodeLists {
+		count := uint32(1)
+		if mapIndex == m.params.lastEpochMap(epoch) {
+			count = keepVerticalNodeLists + 1
+		}
+		m.deleteVerticalNodeLists(common.NewRange[uint32](mapIndex-keepVerticalNodeLists, count))
+	}
+
 	if forceCommit || (mapIndex+1)%m.params.rowGroupSize[0] == 0 {
 		m.epochTrigger = m.epochTrigger.union(singleRangeSet[uint32](common.NewRange[uint32](epoch, 1)))
 		m.trigger()
+	}
+}
+
+func (m *mapStorage) deleteVerticalNodeLists(maps common.Range[uint32]) {
+	rs := singleRangeSet[uint32](maps)
+	if overlay := m.overlay.intersection(rs); !overlay.isEmpty() {
+		for mapIndex := range overlay.iter() {
+			fm := m.overlayMaps[mapIndex]
+			if fm == nil {
+				panic("memory overlay map not found")
+			}
+			fm.verticalNodes = nil
+		}
+	}
+	if valid := m.overlay.intersection(rs); !valid.isEmpty() {
+		m.deleteVNLists = m.deleteVNLists.union(valid)
 	}
 }
 
@@ -249,6 +277,7 @@ func (m *mapStorage) deleteMaps(maps common.Range[uint32]) {
 		delete(m.overlayMaps, i)
 	}
 	m.writeInProgress = m.writeInProgress.exclude(dr)
+	m.deleteVNLists = m.deleteVNLists.exclude(dr)
 	knownEpochs := m.knownEpochs
 	if maps.Includes(m.params.firstEpochMap(knownEpochs)) {
 		knownEpochs = m.params.mapEpoch(maps.First())
@@ -618,12 +647,16 @@ func (m *mapStorage) doWriteCycle(stopCallback func() bool) (bool, error) {
 		delete(m.overlayMaps, mapIndex)
 	}
 	knownEpochs := m.knownEpochs
-	if len(writeInProgress) > 0 {
+	if !writeInProgress.isEmpty() {
 		knownEpochs = max(knownEpochs, m.params.mapEpoch(writeInProgress[len(writeInProgress)-1].Last()))
 	}
 	if err := m.updateRange(m.valid.union(writeInProgress), m.dirty.exclude(writeInProgress.union(deleteInProgress)), m.overlay.exclude(writeInProgress), knownEpochs); err != nil {
 		return false, err
 	}
+	for _, r := range m.deleteVNLists {
+		m.deleteVerticalNodeLists(r)
+	}
+	//TODO check/delete vn lists left in db in case of unclean shutdown
 	return true, nil
 }
 

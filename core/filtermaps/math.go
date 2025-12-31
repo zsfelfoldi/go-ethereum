@@ -508,3 +508,7 @@ func (a rangeSet[T]) equal(b rangeSet[T]) bool {
 	}
 	return true
 }
+
+func (a rangeSet[T]) isEmpty() bool {
+	return len(a) == 0
+}
