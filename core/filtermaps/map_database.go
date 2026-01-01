@@ -76,7 +76,7 @@ func newMapDatabase(params *Params, db ethdb.KeyValueStore, hashScheme bool) *ma
 // loadMapRange loads the valid and dirty map ranges and known epoch boundaries
 // from the database.
 func (m *mapDatabase) loadMapRange() (valid, dirty rangeSet[uint32], knownEpochs uint32, found bool) {
-	return //TODO
+	//return //TODO
 	fmr, ok, err := rawdb.ReadFilterMapsRange(m.db)
 	if !ok || err != nil || fmr.Version != databaseVersion {
 		return

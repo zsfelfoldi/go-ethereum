@@ -322,12 +322,12 @@ func (mt *merkleTree) setComplete(node mtNode) {
 		//fmt.Println(" finished children of", node)
 		return
 	}
-	if !n.isValueKnown() {
-		panic("finalized node with unknown value")
-	}
 	n.setComplete(true)
 	// propagate completed state to ancestors and collapse completed subtrees if possible
 	for n.parent() != nullPtr {
+		if !n.isValueKnown() {
+			panic("completed node with unknown value")
+		}
 		if mt.verticalNodes != nil {
 			mt.verticalNodes.setNode(node.gti, nodeWithWeight{value: n.value, weight: n.weight})
 		}
@@ -341,7 +341,7 @@ func (mt *merkleTree) setComplete(node mtNode) {
 			break
 		}
 		p.setComplete(true)
-		p.weight = n.weight + s.weight
+		//p.weight = n.weight + s.weight
 		if !p.isValueKnown() {
 			mt.getValue(parent.index)
 		}
@@ -386,6 +386,9 @@ func (mt *merkleTree) getValue(nodeIndex uint32) nodeWithWeight {
 		rnw := mt.getValue(n.right())
 		n.value = treeHash(lnw.value, rnw.value)
 		n.weight = lnw.weight + rnw.weight
+		if n.weight == 0 {
+			fmt.Println("getValue 0 weight:", nodeIndex, n.left(), lnw, n.right(), rnw)
+		}
 		n.setEmptySubtree(mt.nodes[n.left()].isEmptySubtree() && mt.nodes[n.right()].isEmptySubtree())
 		n.setValueKnown(true)
 	}
@@ -547,6 +550,10 @@ func (s serializedVerticalNodeList) setNode(rowIndex uint32, nw nodeWithWeight) 
 	i := int(rowIndex) * (32 + 4)
 	copy(s[i:i+32], nw.value[:])
 	binary.LittleEndian.PutUint32(s[i+32:i+32+4], math.Float32bits(nw.weight))
+
+	if !s.hasNode(rowIndex) {
+		fmt.Println("svnl.setNode: !hasNode", rowIndex, nw)
+	}
 }
 
 type verticalNodeIndex struct {
@@ -610,6 +617,8 @@ func (s *verticalNodesReader) getNode(gti treeIndex) (nodeWithWeight, bool, erro
 	return list.getNode(rowIndex), true, nil
 }
 
+var xxxParams *Params //TODO
+
 func (s *verticalNodesWriter) setNode(gti treeIndex, nw nodeWithWeight) {
 	vni, rowIndex, ok := s.params.splitVerticalNodeIndex(gti)
 	//fmt.Println("vnw.setNode", gti, vni, rowIndex, ok)
@@ -618,6 +627,9 @@ func (s *verticalNodesWriter) setNode(gti treeIndex, nw nodeWithWeight) {
 	}
 	if list, ok := s.listMap[vni]; ok {
 		//fmt.Println(" list.setNode")
+		if nw.weight == 0 {
+			fmt.Println("vnw.setNode gti", gti, "vni", vni, "row", rowIndex, "nw", nw, "empty", xxxParams.treeRoot.empty.getNode(gti))
+		}
 		list.setNode(rowIndex, nw)
 	} /* else {
 		fmt.Println(" no list")
@@ -634,6 +646,8 @@ func (s *verticalNodesWriter) isComplete() bool {
 				a++
 			} else {
 				b++
+				nw := list.getNode(rowIndex)
+				fmt.Println(" depth", depth, "missing", rowIndex, "nw", nw)
 				ok = false
 			}
 		}

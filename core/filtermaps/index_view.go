@@ -328,9 +328,9 @@ func (rs *renderState) addValue(mapValue common.Hash) {
 				leafPtr++
 				rowLength++
 				rs.tree.setValue(entryNode.index, entryValue, rs.params.filterRowNodeWeight(leafPtr*uint32(rs.params.logMapWidth+7/8)))
-				if leafPtr == 8 {
+				/*if leafPtr == 8 {
 					rs.tree.setComplete(entryNode)
-				}
+				}*/
 				binary.LittleEndian.PutUint32(countValue[:4], rowLength)
 				countBytes := uint32(1)
 				if rowLength >= 256 {
@@ -438,6 +438,7 @@ func (rs *renderState) advanceMapTree(completeOld, initNew bool) {
 		fmt.Println("advanceMapTree (quick)", rs.mapIndex)
 		for i, r := range rs.mapRowRoots {
 			rs.mapRowRoots[i] = rs.tree.getRightNeighbor(r)
+			rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[i], ti64(rtiListCount)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
 			rs.tree.setComplete(r)
 		}
 		return
@@ -508,7 +509,14 @@ func (rs *renderState) advance(count uint64) {
 	fmt.Println(" completeOld", completeOld, "initNew", initNew)
 	fmt.Println(" advanceMapTree", rs.tree != nil)
 	if completeOld {
+		xxxParams = rs.params
 		rs.tree.verticalNodes = rs.params.newVerticalNodesWriter(rs.mapIndex - 1) //TODO make this more elegant
+		for i := range rs.params.mapHeight {
+			l := rs.currentMap.rowLength(i)
+			if l > 8 {
+				fmt.Println(" map", rs.mapIndex-1, "row", i, "len", l)
+			}
+		}
 		fmt.Println(" vertical node lists:", len(rs.tree.verticalNodes.lists))
 	}
 	rs.advanceMapTree(completeOld, initNew)
