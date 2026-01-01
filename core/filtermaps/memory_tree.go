@@ -608,7 +608,8 @@ func (s *verticalNodesReader) getNode(gti treeIndex) (nodeWithWeight, bool, erro
 	if !ok {
 		var err error
 		list, err = s.getListFn(vni)
-		if err != nil {
+		//fmt.Println("getListFn", vni, list != nil, len(list), err)
+		if list == nil {
 			return nodeWithWeight{}, false, err
 		}
 		s.listMap[vni] = list
