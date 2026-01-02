@@ -109,12 +109,8 @@ func (params *Params) newMerkleTree(getNode nodeReader, nodeStatus nodeStatus) (
 		}},
 		firstFree: nullPtr,
 	}
-	nw, avail, err := getNode(gtiRoot)
-	if err != nil {
-		return nil, err
-	}
 	nmtStart = mclock.Now()
-	if err := mt.initTree(getNode, nodeStatus, params.treeRoot, nw, avail); err != nil {
+	if err := mt.initTree(getNode, nodeStatus, params.treeRoot); err != nil {
 		return nil, err
 	}
 	fmt.Println("newMerkleTree", len(mt.nodes))
@@ -127,13 +123,16 @@ var (
 	nmtStart      mclock.AbsTime
 )
 
-func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode, nw nodeWithWeight, avail bool) error {
-	//TODO evaluate getNode here?
+func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode) error {
 	initTreeCount++
 	if node.index > lastIndex+1000 {
 		dt := time.Duration(mclock.Now() - nmtStart)
 		fmt.Println("initTree", node, initTreeCount, initTreeCount/uint64(node.index), dt, dt/time.Duration(initTreeCount))
 		lastIndex = node.index
+	}
+	nw, avail, err := getNode(node.gti)
+	if err != nil {
+		return err
 	}
 	if avail {
 		mt.nodes[node.index].value, mt.nodes[node.index].weight = nw.value, nw.weight
@@ -142,20 +141,12 @@ func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node m
 	status := nodeStatus(node.gti)
 	if !avail { //|| status == mtsPartial {
 		// initialize descendants recursively
-		nwLeft, availLeft, err := getNode(node.gti.leftChild())
-		if err != nil {
-			return err
-		}
-		nwRight, availRight, err := getNode(node.gti.rightChild())
-		if err != nil {
-			return err
-		}
 		mt.nodes[node.index].setLeft(mt.newNode(node.index))
-		if err := mt.initTree(getNode, nodeStatus, mt.leftChild(node), nwLeft, availLeft); err != nil {
+		if err := mt.initTree(getNode, nodeStatus, mt.leftChild(node)); err != nil {
 			return err
 		}
 		mt.nodes[node.index].setRight(mt.newNode(node.index))
-		if err := mt.initTree(getNode, nodeStatus, mt.rightChild(node), nwRight, availRight); err != nil {
+		if err := mt.initTree(getNode, nodeStatus, mt.rightChild(node)); err != nil {
 			return err
 		}
 	}
