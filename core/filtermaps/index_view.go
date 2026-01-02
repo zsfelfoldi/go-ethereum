@@ -452,8 +452,11 @@ func (rs *renderState) advanceMapTree(completeOld, initNew bool) {
 	}
 	rowSubtreeNode := rs.tree.getDescendant(fmRootNode, gtiRoot.arraySub(0, rs.params.logMapHeight))
 	for i, r := range rs.mapRowRoots {
+		//fmt.Println(" rowSubtreeNode", i, rowSubtreeNode)
 		rs.mapRowRoots[i] = rs.tree.getDescendant(rowSubtreeNode, gtiRoot.arraySub(uint64(mapSubIndex), rs.params.logMapsPerEpoch))
-		rowSubtreeNode = rs.tree.getRightNeighbor(rowSubtreeNode)
+		if i < len(rs.mapRowRoots)-1 {
+			rowSubtreeNode = rs.tree.getRightNeighbor(rowSubtreeNode)
+		}
 		//rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[rowIndex], ti64(rtiListTree)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
 		rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[i], ti64(rtiListCount)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
 		if completeOld {
