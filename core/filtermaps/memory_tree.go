@@ -110,7 +110,7 @@ func (params *Params) newMerkleTree(getNode nodeReader, nodeStatus nodeStatus) (
 		firstFree: nullPtr,
 	}
 	nmtStart = mclock.Now()
-	if err := mt.initTree(getNode, nodeStatus, params.treeRoot); err != nil {
+	if err := mt.initTree(getNode, nodeStatus, params.treeRoot, 0); err != nil {
 		return nil, err
 	}
 	fmt.Println("newMerkleTree", len(mt.nodes))
@@ -123,7 +123,8 @@ var (
 	nmtStart      mclock.AbsTime
 )
 
-func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode) error {
+// it is assumed that non-leaf nodes are only available when they are empty or completed.
+func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode, slThreshold uint) error {
 	initTreeCount++
 	if node.index > lastIndex+1000 {
 		dt := time.Duration(mclock.Now() - nmtStart)
@@ -134,24 +135,28 @@ func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node m
 	if err != nil {
 		return err
 	}
+	var sl uint
 	if avail {
 		mt.nodes[node.index].value, mt.nodes[node.index].weight = nw.value, nw.weight
 		mt.nodes[node.index].setValueKnown(true)
+		sl = mt.params.storageLevel(nw.weight)
 	}
-	status := nodeStatus(node.gti)
-	if !avail { //|| status == mtsPartial {
+	if !avail || sl > slThreshold {
+		if avail {
+			slThreshold = sl - 1
+		}
 		// initialize descendants recursively
 		mt.nodes[node.index].setLeft(mt.newNode(node.index))
-		if err := mt.initTree(getNode, nodeStatus, mt.leftChild(node)); err != nil {
+		if err := mt.initTree(getNode, nodeStatus, mt.leftChild(node), slThreshold); err != nil {
 			return err
 		}
 		mt.nodes[node.index].setRight(mt.newNode(node.index))
-		if err := mt.initTree(getNode, nodeStatus, mt.rightChild(node)); err != nil {
+		if err := mt.initTree(getNode, nodeStatus, mt.rightChild(node), slThreshold); err != nil {
 			return err
 		}
 	}
 	mt.getValue(node.index)
-	switch status {
+	switch nodeStatus(node.gti) {
 	case mtsEmpty:
 		mt.nodes[node.index].setEmptySubtree(true)
 	case mtsPartial:

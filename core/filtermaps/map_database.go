@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	databaseVersion   = 4    // reindexed if database version does not match
+	databaseVersion   = 401  //TODO    // reindexed if database version does not match
 	cachedLastBlocks  = 1000 // last block of map pointers
 	cachedLvPointers  = 1000 // first log value pointer of block pointers
 	cachedSubtrees    = 5000

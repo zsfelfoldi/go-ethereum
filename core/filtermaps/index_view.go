@@ -514,12 +514,12 @@ func (rs *renderState) advance(count uint64) {
 	if completeOld {
 		xxxParams = rs.params
 		rs.tree.verticalNodes = rs.params.newVerticalNodesWriter(rs.mapIndex - 1) //TODO make this more elegant
-		for i := range rs.params.mapHeight {
+		/*for i := range rs.params.mapHeight {
 			l := rs.currentMap.rowLength(i)
 			if l > 8 {
 				fmt.Println(" map", rs.mapIndex-1, "row", i, "len", l)
 			}
-		}
+		}*/
 		fmt.Println(" vertical node lists:", len(rs.tree.verticalNodes.lists))
 	}
 	rs.advanceMapTree(completeOld, initNew)
