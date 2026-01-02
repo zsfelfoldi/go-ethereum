@@ -331,6 +331,10 @@ func (mt *merkleTree) setComplete(node mtNode) {
 		if mt.verticalNodes != nil {
 			mt.verticalNodes.setNode(node.gti, nodeWithWeight{value: n.value, weight: n.weight})
 		}
+		nl := mt.params.storageLevel(n.weight)
+		if nl == 0 {
+			mt.collapseSubtree(node)
+		}
 		parent := mt.parent(node)
 		//fmt.Println(" parent", parent)
 		p := &mt.nodes[parent.index]
@@ -345,17 +349,12 @@ func (mt *merkleTree) setComplete(node mtNode) {
 		if !p.isValueKnown() {
 			mt.getValue(parent.index)
 		}
-		nl := mt.params.storageLevel(n.weight)
 		sl := mt.params.storageLevel(s.weight)
 		pl := mt.params.storageLevel(p.weight)
-		if nl == 0 { //TODO do this also when the sibling is not completed yet
-			mt.collapseSubtree(node)
-		} else if nl < pl {
+		if nl > 0 && nl < pl {
 			mt.subtrees = append(mt.subtrees, mt.collapseAndStoreSubtree(node))
 		}
-		if sl == 0 {
-			mt.collapseSubtree(sibling)
-		} else if sl < pl {
+		if sl > 0 && sl < pl {
 			mt.subtrees = append(mt.subtrees, mt.collapseAndStoreSubtree(sibling))
 		}
 		n, node = p, parent
