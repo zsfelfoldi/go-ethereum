@@ -757,16 +757,31 @@ func (m *mapStorage) getFilterMapRow(mapIndex, rowIndex uint32) (FilterRow, erro
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 
+	if rowIndex == 0 {
+		fmt.Println("mapStorage.getFilterMapRow", mapIndex, rowIndex)
+	}
 	if m.overlay.includes(mapIndex) {
+		if rowIndex == 0 {
+			fmt.Println(" overlay")
+		}
 		fm := m.overlayMaps[mapIndex]
 		if fm == nil {
+			if rowIndex == 0 {
+				fmt.Println(" overlay map missing")
+			}
 			return nil, errors.New("memory overlay map not found")
 		}
 		return fm.getRow(rowIndex, math.MaxUint32), nil
 	}
 	if m.valid.includes(mapIndex) {
 		rows, err := m.mapDb.getFilterMapRows([]uint32{mapIndex}, rowIndex, math.MaxUint32)
+		if rowIndex == 0 {
+			fmt.Println(" valid", len(rows), err)
+		}
 		if len(rows) == 1 && err == nil {
+			if rowIndex == 0 {
+				fmt.Println(" valid len", len(rows[0]))
+			}
 			return rows[0], nil
 		}
 		return nil, err

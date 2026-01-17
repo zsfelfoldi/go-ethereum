@@ -410,15 +410,17 @@ func (rs *renderState) advanceMapTree(completeOld, initNew bool) {
 		totalSize += len(s.nodeEnc)
 	}
 	fmt.Println("advanceMapTree", rs.mapIndex, "tree nodes", len(rs.tree.nodes), "subtrees", len(rs.tree.subtrees), "totalSize", totalSize)
-
-	/*fmt.Println(" used", rs.tree.debugCountNodes(rootIndex), "free", rs.tree.debugCountFree())
 	epoch := rs.params.mapEpoch(rs.mapIndex)
-	node := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps).arraySub(0, rs.params.logMapHeight))
-	fmt.Println(" *** row 0:", rs.tree.debugCountNodes(node.index), "used")
-	rs.tree.debugPrint(node.index, 1)
-	node = rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiIndexEntries))
-	fmt.Println(" *** index entries:", rs.tree.debugCountNodes(node.index), "used")
-	rs.tree.debugPrint(node.index, 1)*/
+
+	defer func() {
+		fmt.Println(" used", rs.tree.debugCountNodes(rootIndex), "free", rs.tree.debugCountFree())
+		node := rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiFilterMaps).arraySub(0, rs.params.logMapHeight))
+		fmt.Println(" *** row 0:", rs.tree.debugCountNodes(node.index), "used")
+		rs.tree.debugPrint(node.index, 1)
+		/*node = rs.tree.getDescendant(rs.params.treeRoot, ti64(rtiEpochs).arraySub(uint64(epoch), rs.params.logEpochHistory).gtSub(rtiIndexEntries))
+		fmt.Println(" *** index entries:", rs.tree.debugCountNodes(node.index), "used")
+		rs.tree.debugPrint(node.index, 1)*/
+	}()
 
 	if completeOld != (rs.mapRowRoots != nil) {
 		panic("advanceMapTree: completeOld inconsistent with mapRowRoots")
@@ -433,7 +435,6 @@ func (rs *renderState) advanceMapTree(completeOld, initNew bool) {
 		return
 	}
 
-	epoch := rs.params.mapEpoch(rs.mapIndex)
 	if completeOld && rs.mapIndex > rs.params.firstEpochMap(epoch) {
 		fmt.Println("advanceMapTree (quick)", rs.mapIndex)
 		for i, r := range rs.mapRowRoots {
@@ -441,6 +442,7 @@ func (rs *renderState) advanceMapTree(completeOld, initNew bool) {
 			rs.tree.setValue(rs.tree.getDescendant(rs.mapRowRoots[i], ti64(rtiListCount)).index, merkle.Value{}, rs.params.filterRowNodeWeight(0))
 			rs.tree.setComplete(r)
 		}
+		//rs.tree.debugNodeLevels()
 		return
 	}
 
@@ -463,6 +465,7 @@ func (rs *renderState) advanceMapTree(completeOld, initNew bool) {
 			rs.tree.setComplete(r)
 		}
 	}
+	//rs.tree.debugNodeLevels()
 
 	fmt.Println("TTaddTxAndLogEntries", time.Duration(TTaddTxAndLogEntries+mclock.Now()))
 	fmt.Println("TTaddBlockEntry     ", time.Duration(TTaddBlockEntry))

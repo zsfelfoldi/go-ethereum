@@ -18,6 +18,7 @@ package filtermaps
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
@@ -233,7 +234,7 @@ func (p *Params) newFilterRowNodeReader(reader filterRowReader) *filterRowNodeRe
 	return &filterRowNodeReader{
 		params:          p,
 		getFilterMapRow: reader,
-		cache:           lru.NewCache[mapRowIndex, FilterRow](1000),
+		cache:           lru.NewCache[mapRowIndex, FilterRow](1000), //TODO use cache
 	}
 }
 
@@ -273,19 +274,34 @@ func (r *filterRowNodeReader) getNode(gti treeIndex) (nodeWithWeight, bool, erro
 		//fmt.Println(" err", err)
 		return nodeWithWeight{}, false, err
 	}
-	//fmt.Println(" proglist", gti, "rowLen", len(row))
+	if rowIndex == 0 {
+		fmt.Println("frnr.getNode  map", mapIndex, "row", rowIndex, "proglist", gti, "rowLen", len(row))
+	}
 	switch {
 	case gti.matchRoot(rtiListTree):
-		return r.params.getProgListNode(row, 0, gti)
+		//return r.params.getProgListNode(row, 0, gti)
+		nw, ok, err := r.params.getProgListNode(row, 0, gti)
+		if rowIndex == 0 {
+			fmt.Println(" nw", nw, "ok", ok, "err", err)
+		}
+		return nw, ok, err
 	case gti.matchRoot(rtiListCount):
 		if gti != gtiRoot {
 			return nodeWithWeight{}, false, nil
 		}
-		countBytes := uint32(1)
+		var countBytes uint32
+		if len(row) > 0 {
+			countBytes = 1
+		}
 		if len(row) >= 256 {
 			countBytes = 2
 		}
-		return nodeWithWeight{value: uint64ToValue(uint64(len(row))), weight: r.params.filterRowNodeWeight(countBytes)}, true, nil
+		//return nodeWithWeight{value: uint64ToValue(uint64(len(row))), weight: r.params.filterRowNodeWeight(countBytes)}, true, nil
+		nw := nodeWithWeight{value: uint64ToValue(uint64(len(row))), weight: r.params.filterRowNodeWeight(countBytes)}
+		if rowIndex == 0 {
+			fmt.Println(" nw", nw)
+		}
+		return nw, true, nil
 	default:
 		return nodeWithWeight{}, false, nil
 	}

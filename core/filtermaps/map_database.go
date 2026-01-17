@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	databaseVersion   = 401  //TODO    // reindexed if database version does not match
+	databaseVersion   = 406  //TODO    // reindexed if database version does not match
 	cachedLastBlocks  = 1000 // last block of map pointers
 	cachedLvPointers  = 1000 // first log value pointer of block pointers
 	cachedSubtrees    = 5000
@@ -304,7 +304,7 @@ func (m *mapDatabase) getFilterMapRows(mapIndices []uint32, rowIndex, layerIndex
 	for i := range rows {
 		readRows[i] = &rows[i]
 	}
-	for dbLayer := range min(layerIndex+1, uint32(len(m.params.rowGroupSize))) {
+	for dbLayer := range min(layerIndex+1 xxxx overflow!, uint32(len(m.params.rowGroupSize))) {
 		if err := m.getFilterMapRowsOfDbLayer(mapIndices, rowIndex, dbLayer, readRows); err != nil {
 			return nil, err
 		}

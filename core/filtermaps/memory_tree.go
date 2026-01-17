@@ -22,7 +22,8 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"time"
+
+	//"time"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common/lru"
@@ -126,11 +127,11 @@ var (
 // it is assumed that non-leaf nodes are only available when they are empty or completed.
 func (mt *merkleTree) initTree(getNode nodeReader, nodeStatus nodeStatus, node mtNode, slThreshold uint) error {
 	initTreeCount++
-	if node.index > lastIndex+1000 {
+	/*if node.index > lastIndex+1000 {
 		dt := time.Duration(mclock.Now() - nmtStart)
 		fmt.Println("initTree", node, initTreeCount, initTreeCount/uint64(node.index), dt, dt/time.Duration(initTreeCount))
 		lastIndex = node.index
-	}
+	}*/
 	nw, avail, err := getNode(node.gti)
 	if err != nil {
 		return err
@@ -204,7 +205,11 @@ func (mt *merkleTree) debugPrint(nodeIndex uint32, rti uint64) {
 		return
 	}
 	n := &mt.nodes[nodeIndex]
-	fmt.Printf(" %b: %064x %f %v %v %v\n", rti, n.value, n.weight, n.isValueKnown(), n.isComplete(), n.isEmptySubtree())
+	if n.isValueKnown() {
+		fmt.Printf(" %b: value %064x  weight %f  level %d  complete %v  empty %v\n", rti, n.value, n.weight, mt.params.storageLevel(n.weight), n.isComplete(), n.isEmptySubtree())
+	} else {
+		fmt.Printf(" %b: unknown\n", rti)
+	}
 	mt.debugPrint(n.left(), rti*2)
 	mt.debugPrint(n.right(), rti*2+1)
 }
@@ -225,6 +230,25 @@ func (mt *merkleTree) debugCountFree() int {
 		nodeIndex = mt.nodes[nodeIndex].right()
 	}
 	return count
+}
+
+func (mt *merkleTree) debugNodeLevels() {
+	var nodeCount [256]int
+	var traverse func(index, level uint32)
+	traverse = func(index, level uint32) {
+		if index == nullPtr {
+			return
+		}
+		nodeCount[level]++
+		traverse(mt.nodes[index].left(), level+1)
+		traverse(mt.nodes[index].right(), level+1)
+	}
+	traverse(rootIndex, 0)
+	for i, v := range nodeCount {
+		if v > 0 {
+			fmt.Println(" node count @ level", i, ":", v)
+		}
+	}
 }
 
 func (mt *merkleTree) getDescendant(node mtNode, rti treeIndex) mtNode {
