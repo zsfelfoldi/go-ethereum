@@ -669,7 +669,7 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 		header.Root,
 		header.TxHash,
 		header.ReceiptHash,
-		header.Bloom,
+		header.BloomOrIndex,
 		header.Difficulty,
 		header.Number,
 		header.GasLimit,

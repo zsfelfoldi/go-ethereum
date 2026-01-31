@@ -905,7 +905,7 @@ func RPCMarshalHeader(head *types.Header) map[string]interface{} {
 		"nonce":            head.Nonce,
 		"mixHash":          head.MixDigest,
 		"sha3Uncles":       head.UncleHash,
-		"logsBloom":        head.Bloom,
+		"logsBloom":        head.BloomOrIndex,
 		"stateRoot":        head.Root,
 		"miner":            head.Coinbase,
 		"difficulty":       (*hexutil.Big)(head.Difficulty),

@@ -299,7 +299,7 @@ func ExecutableDataToBlockNoHash(data ExecutableData, versionedHashes []common.H
 		Root:             data.StateRoot,
 		TxHash:           types.DeriveSha(types.Transactions(txs), trie.NewStackTrie(nil)),
 		ReceiptHash:      data.ReceiptsRoot,
-		Bloom:            types.BytesToBloom(data.LogsBloom),
+		BloomOrIndex:     data.LogsBloom,
 		Difficulty:       common.Big0,
 		Number:           new(big.Int).SetUint64(data.Number),
 		GasLimit:         data.GasLimit,

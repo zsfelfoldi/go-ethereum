@@ -17,6 +17,7 @@
 package core
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
@@ -138,8 +139,8 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 	// already. Merge the receipt's bloom together instead of recalculating
 	// everything.
 	rbloom := types.MergeBloom(res.Receipts)
-	if rbloom != header.Bloom {
-		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
+	if !bytes.Equal(rbloom.Bytes(), header.BloomOrIndex) {
+		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.BloomOrIndex, rbloom)
 	}
 	// In stateless mode, return early because the receipt and state root are not
 	// provided through the witness, rather the cross validator needs to return it.

@@ -781,21 +781,21 @@ func setBlockhash(data *engine.ExecutableData) *engine.ExecutableData {
 	number := big.NewInt(0)
 	number.SetUint64(data.Number)
 	header := &types.Header{
-		ParentHash:  data.ParentHash,
-		UncleHash:   types.EmptyUncleHash,
-		Coinbase:    data.FeeRecipient,
-		Root:        data.StateRoot,
-		TxHash:      types.DeriveSha(types.Transactions(txs), trie.NewStackTrie(nil)),
-		ReceiptHash: data.ReceiptsRoot,
-		Bloom:       types.BytesToBloom(data.LogsBloom),
-		Difficulty:  common.Big0,
-		Number:      number,
-		GasLimit:    data.GasLimit,
-		GasUsed:     data.GasUsed,
-		Time:        data.Timestamp,
-		BaseFee:     data.BaseFeePerGas,
-		Extra:       data.ExtraData,
-		MixDigest:   data.Random,
+		ParentHash:   data.ParentHash,
+		UncleHash:    types.EmptyUncleHash,
+		Coinbase:     data.FeeRecipient,
+		Root:         data.StateRoot,
+		TxHash:       types.DeriveSha(types.Transactions(txs), trie.NewStackTrie(nil)),
+		ReceiptHash:  data.ReceiptsRoot,
+		BloomOrIndex: data.LogsBloom,
+		Difficulty:   common.Big0,
+		Number:       number,
+		GasLimit:     data.GasLimit,
+		GasUsed:      data.GasUsed,
+		Time:         data.Timestamp,
+		BaseFee:      data.BaseFeePerGas,
+		Extra:        data.ExtraData,
+		MixDigest:    data.Random,
 	}
 	block := types.NewBlockWithHeader(header).WithBody(types.Body{Transactions: txs})
 	data.BlockHash = block.Hash()
@@ -1515,7 +1515,7 @@ func checkEqualBody(a *types.Body, b *engine.ExecutionPayloadBody) error {
 }
 
 func TestBlockToPayloadWithBlobs(t *testing.T) {
-	header := types.Header{}
+	header := types.Header{BloomOrIndex: types.Bloom{}.Bytes()}
 	var txs []*types.Transaction
 
 	inner := types.BlobTx{

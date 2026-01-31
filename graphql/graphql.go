@@ -916,7 +916,7 @@ func (b *Block) LogsBloom(ctx context.Context) (hexutil.Bytes, error) {
 	if err != nil {
 		return hexutil.Bytes{}, err
 	}
-	return header.Bloom.Bytes(), nil
+	return header.BloomOrIndex, nil
 }
 
 func (b *Block) RawHeader(ctx context.Context) (hexutil.Bytes, error) {

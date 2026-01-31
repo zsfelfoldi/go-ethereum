@@ -214,11 +214,12 @@ func (miner *Miner) prepareWork(genParams *generateParams, witness bool) (*envir
 	}
 	// Construct the sealing block header.
 	header := &types.Header{
-		ParentHash: parent.Hash(),
-		Number:     new(big.Int).Add(parent.Number, common.Big1),
-		GasLimit:   core.CalcGasLimit(parent.GasLimit, miner.config.GasCeil),
-		Time:       timestamp,
-		Coinbase:   genParams.coinbase,
+		ParentHash:   parent.Hash(),
+		Number:       new(big.Int).Add(parent.Number, common.Big1),
+		GasLimit:     core.CalcGasLimit(parent.GasLimit, miner.config.GasCeil),
+		Time:         timestamp,
+		Coinbase:     genParams.coinbase,
+		BloomOrIndex: types.Bloom{}.Bytes(),
 	}
 	// Set the extra field.
 	if len(miner.config.ExtraData) != 0 {
