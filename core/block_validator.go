@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/consensus"
+	"github.com/ethereum/go-ethereum/core/logindex"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
@@ -33,15 +34,17 @@ import (
 //
 // BlockValidator implements Validator.
 type BlockValidator struct {
-	config *params.ChainConfig // Chain configuration options
-	bc     *BlockChain         // Canonical block chain
+	config   *params.ChainConfig // Chain configuration options
+	bc       *BlockChain         // Canonical block chain
+	logIndex *logindex.Indexer
 }
 
 // NewBlockValidator returns a new block validator which is safe for re-use
-func NewBlockValidator(config *params.ChainConfig, blockchain *BlockChain) *BlockValidator {
+func NewBlockValidator(config *params.ChainConfig, blockchain *BlockChain, logIndex *logindex.Indexer) *BlockValidator {
 	validator := &BlockValidator{
-		config: config,
-		bc:     blockchain,
+		config:   config,
+		bc:       blockchain,
+		logIndex: logIndex,
 	}
 	return validator
 }
@@ -132,15 +135,22 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 	if block.GasUsed() != res.GasUsed {
 		return fmt.Errorf("invalid gas used (remote: %d local: %d)", block.GasUsed(), res.GasUsed)
 	}
-	// Validate the received block's bloom with the one derived from the generated receipts.
-	// For valid blocks this should always validate to true.
-	//
-	// Receipts must go through MakeReceipt to calculate the receipt's bloom
-	// already. Merge the receipt's bloom together instead of recalculating
-	// everything.
-	rbloom := types.MergeBloom(res.Receipts)
-	if !bytes.Equal(rbloom.Bytes(), header.BloomOrIndex) {
-		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.BloomOrIndex, rbloom)
+	if v.config.IsEIP7745(header.Number, header.Time) {
+		logIndexRoots := v.logIndex.GetIndexRoots(header.ParentHash, block.Transactions(), res.Receipts)
+		if !bytes.Equal(logIndexRoots, header.BloomOrIndex) {
+			return fmt.Errorf("invalid log index roots (remote: %x  local: %x)", header.BloomOrIndex, logIndexRoots)
+		}
+	} else {
+		// Validate the received block's bloom with the one derived from the generated receipts.
+		// For valid blocks this should always validate to true.
+		//
+		// Receipts must go through MakeReceipt to calculate the receipt's bloom
+		// already. Merge the receipt's bloom together instead of recalculating
+		// everything.
+		rbloom := types.MergeBloom(res.Receipts)
+		if !bytes.Equal(rbloom.Bytes(), header.BloomOrIndex) {
+			return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.BloomOrIndex, rbloom)
+		}
 	}
 	// In stateless mode, return early because the receipt and state root are not
 	// provided through the witness, rather the cross validator needs to return it.

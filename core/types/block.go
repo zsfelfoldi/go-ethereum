@@ -254,7 +254,10 @@ func NewBlock(header *Header, body *Body, receipts []*Receipt, hasher ListHasher
 		// Receipts must go through MakeReceipt to calculate the receipt's bloom
 		// already. Merge the receipt's bloom together instead of recalculating
 		// everything.
-		b.header.BloomOrIndex = MergeBloom(receipts).Bytes()
+		if b.header.BloomOrIndex != nil {
+			// After EIP-7745 BloomOrIndex is initialized during block sealing
+			b.header.BloomOrIndex = MergeBloom(receipts).Bytes()
+		}
 	}
 
 	if len(uncles) == 0 {

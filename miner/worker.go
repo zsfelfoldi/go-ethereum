@@ -172,7 +172,7 @@ func (miner *Miner) generateWork(genParam *generateParams, witness bool) *newPay
 		work.header.RequestsHash = &reqHash
 	}
 
-	block, err := miner.engine.FinalizeAndAssemble(miner.chain, work.header, work.state, &body, work.receipts)
+	block, err := miner.engine.FinalizeAndAssemble(miner.chain, work.header, work.state, miner.logIndex, &body, work.receipts)
 	if err != nil {
 		return &newPayloadResult{err: err}
 	}
@@ -214,12 +214,14 @@ func (miner *Miner) prepareWork(genParams *generateParams, witness bool) (*envir
 	}
 	// Construct the sealing block header.
 	header := &types.Header{
-		ParentHash:   parent.Hash(),
-		Number:       new(big.Int).Add(parent.Number, common.Big1),
-		GasLimit:     core.CalcGasLimit(parent.GasLimit, miner.config.GasCeil),
-		Time:         timestamp,
-		Coinbase:     genParams.coinbase,
-		BloomOrIndex: types.Bloom{}.Bytes(),
+		ParentHash: parent.Hash(),
+		Number:     new(big.Int).Add(parent.Number, common.Big1),
+		GasLimit:   core.CalcGasLimit(parent.GasLimit, miner.config.GasCeil),
+		Time:       timestamp,
+		Coinbase:   genParams.coinbase,
+	}
+	if !miner.chainConfig.IsEIP7745(header.Number, header.Time) {
+		header.BloomOrIndex = types.Bloom{}.Bytes()
 	}
 	// Set the extra field.
 	if len(miner.config.ExtraData) != 0 {
