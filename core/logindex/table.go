@@ -21,10 +21,35 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"io"
+	"math/bits"
 	"os"
 
 	"github.com/ethereum/go-ethereum/common/lru"
 )
+
+const (
+	entryChunkSize      = 128
+	logEntryChunkSize   = 7 //TODO params
+	subtreeChunkSize    = 64
+	logSubtreeChunkSize = 6
+	entryCacheSize      = 100
+	subtreeCacheSize    = 100
+)
+
+func chunkHeights(entryCount uint64) []uint {
+	totalHeight := 64 - bits.LeadingZeros64(max(entryCount, 1)-1)
+	if totalHeight <= logEntryChunkSize {
+		return []uint64{0, totalHeight}
+	}
+	subtreesHeight := totalHeight - logEntryChunkSize
+	subtreeLevels := (subtreesHeight + logSubtreeChunkSize - 1) / logSubtreeChunkSize
+	heights := make([]uint64, subtreeLevels+2)
+	for i := range subtreeLevels + 1 {
+		heights[i] = subtreesHeight - (subtreeLevels-i)*logSubtreeChunkSize
+	}
+	heights[subtreeLevels+1] = totalHeight
+	return heights
+}
 
 type indexEntry struct {
 	indexValue                   [32]byte
@@ -275,13 +300,14 @@ func (sc *subtreeChunk) getHash(gti uint64) (result merkle.Value) {
 }
 
 type tableReader struct {
-	reader            io.ReadSeeker
-	entryChunkCache   *lru.Cache[uint64, indexEntries]
-	subtreeChunkCache *lru.Cache[subtreePos, *subtreeChunk]
-	count, filePos    uint64
-	levelPointers     []uint64
-	topLevel          uint
-	tableRoot         merkle.Value
+	reader              io.ReadSeeker
+	entryChunkCache     *lru.Cache[uint64, indexEntries]
+	subtreeChunkCache   *lru.Cache[subtreePos, *subtreeChunk]
+	entryCount, filePos uint64
+	levelPointers       []uint64
+	chunkHeights        []uint
+	topLevel            uint
+	tableRoot           merkle.Value
 }
 
 type subtreePos struct {
@@ -289,19 +315,12 @@ type subtreePos struct {
 	index uint64
 }
 
-const (
-	entryChunkSize   = 128
-	subtreeChunkSize = 64
-	entryCacheSize   = 100
-	subtreeCacheSize = 100
-)
-
 func (tr *tableReader) newTableReader(reader io.ReadSeeker) (*tableReader, error) {
 	pos, err := reader.Seek(-1, io.SeekEnd)
 	if err != nil {
 		return nil, err
 	}
-	var headerSize [1]byte
+	var headerSizeByte [1]byte
 	br, err := reader.Read(headerSize[:])
 	if err != nil {
 		return nil, err
@@ -309,23 +328,34 @@ func (tr *tableReader) newTableReader(reader io.ReadSeeker) (*tableReader, error
 	if br != 1 {
 		return nil, errors.New("unexpected end of file")
 	}
-	pos, err := reader.Seek(-1-int64(headerSize[0]), io.SeekEnd)
-
+	headerSize := int64(headerSize[0])
+	_, err = reader.Seek(-1-headerSize, io.SeekEnd)
+	if err != nil {
+		return nil, err
+	}
+	headerEnc := make([]byte, headerSize)
+	br, err = reader.Read(enc)
+	if err != nil {
+		return nil, err
+	}
+	if br != headerSize {
+		return nil, errors.New("could not read table header")
+	}
+	var header tableHeader
+	if err := rlp.DecodeBytes(headerEnc, &header); err != nil {
+		return nil, err
+	}
 	tr := &tableReader{
 		reader:            reader,
 		entryChunkCache:   lru.NewCache[uint64, indexEntries](entryCacheSize),
 		subtreeChunkCache: lru.NewCache[subtreePos, *subtreeChunk](subtreeCacheSize),
-		count:             binary.LittleEndian.Uint64(end[8:]),
-		rootStart:         binary.LittleEndian.Uint64(end[:8]),
-		rootStop:          pos,
-		filePos:           pos + 16,
+		chunkHeights:      chunkHeights(entryCount),
+		entryCount:        header.EntryCount,
+		filePos:           pos,
+		levelPointers:     header.LevelPointers,
+		tableRoot:         header.TableRoot,
 	}
-	c := (tr.count + entryChunkSize - 1) / entryChunkSize
-	tr.topLevel = 1
-	for c > 0 {
-		c = (c + subtreeChunkSize - 1) / subtreeChunkSize
-		tr.topLevel++
-	}
+	tr.topLevel = len(tr.chunkHeights) - 2
 	return tr
 }
 
@@ -432,23 +462,19 @@ func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
 }
 
 type tableWriter struct {
-	lastEntryChunk    *entryChunkS
-	lastSubtreeChunks []*subtreeChunk
-	files             []*os.File
-	writers           []io.Writer
-	writePointers     []uint64
-	fileName          string
-	topLevel          uint
-	count, nextEntry  uint64
+	lastEntryChunk        *entryChunkS
+	lastSubtreeChunks     []*subtreeChunk
+	files                 []*os.File
+	writers               []io.Writer
+	writePointers         []uint64
+	fileName              string
+	chunkHeights          []uint
+	topLevel              uint
+	entryCount, nextEntry uint64
 }
 
-func newTableWriter(fileName string, count uint64) (*tableWriter, error) {
-	c := (count + entryChunkSize - 1) / entryChunkSize
-	topLevel := uint(1)
-	for c > 0 {
-		c = (c + subtreeChunkSize - 1) / subtreeChunkSize
-		topLevel++
-	}
+func newTableWriter(fileName string, entryCount uint64) (*tableWriter, error) {
+	c := chunkHeights(entryCount)
 	tw := &tableWriter{
 		lastEntryChunk:    &entryChunk{},
 		lastSubtreeChunks: make([]*subtreeChunk, topLevel),
@@ -456,8 +482,9 @@ func newTableWriter(fileName string, count uint64) (*tableWriter, error) {
 		writers:           make([]io.Writer, topLevel+1),
 		writePointers:     make([]uint64, topLevel+1),
 		fileName:          fileName,
-		topLevel:          topLevel,
-		count:             count,
+		entryCount:        entryCount,
+		chunkHeights:      c,
+		topLevel:          len(c) - 2,
 	}
 	for i := range tw.lastSubtreeChunks {
 		tw.lastSubtreeChunks[i] = tw.newSubtreeChunk(i)
@@ -553,7 +580,7 @@ func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, be
 
 type tableHeader struct {
 	LevelPointers []uint64
-	Count         uint64
+	EntryCount    uint64
 	TableRoot     merkle.Value
 }
 
