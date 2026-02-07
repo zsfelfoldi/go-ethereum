@@ -17,14 +17,21 @@
 package logindex
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
+	"math"
 	"math/bits"
 	"os"
+	"slices"
 
+	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common/lru"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 const (
@@ -37,13 +44,13 @@ const (
 )
 
 func chunkHeights(entryCount uint64) []uint {
-	totalHeight := 64 - bits.LeadingZeros64(max(entryCount, 1)-1)
+	totalHeight := uint(64 - bits.LeadingZeros64(max(entryCount, 1)-1))
 	if totalHeight <= logEntryChunkSize {
-		return []uint64{0, totalHeight}
+		return []uint{0, totalHeight}
 	}
 	subtreesHeight := totalHeight - logEntryChunkSize
 	subtreeLevels := (subtreesHeight + logSubtreeChunkSize - 1) / logSubtreeChunkSize
-	heights := make([]uint64, subtreeLevels+2)
+	heights := make([]uint, subtreeLevels+2)
 	for i := range subtreeLevels + 1 {
 		heights[i] = subtreesHeight - (subtreeLevels-i)*logSubtreeChunkSize
 	}
@@ -74,7 +81,7 @@ func (ie *indexEntry) hash() (result merkle.Value) {
 
 func (ie *indexEntry) compare(i2 *indexEntry) int {
 	if ie.entryType != i2.entryType {
-		if i.entryType < i2.entryType {
+		if ie.entryType < i2.entryType {
 			return -1
 		}
 		return 1
@@ -135,7 +142,7 @@ func (ies indexEntries) toStorage() entriesForStorage {
 		lastBlockNumber                uint64
 		lastTxIndex, lastLogIndex      uint32
 	)
-	for i, ie := range ies {
+	for _, ie := range ies {
 		binary.BigEndian.PutUint32(typeAndValue[0:4], ie.entryType)
 		copy(typeAndValue[4:], ie.indexValue[:])
 		var es entryForStorage
@@ -182,7 +189,7 @@ func (ec *entryChunk) getHash(gti uint64) (result merkle.Value) {
 	if ec.hasHash[gti] {
 		return ec.hashes[gti]
 	}
-	gtiHeight := 63 - bits.LeadingZeros64(gti)
+	gtiHeight := uint(63 - bits.LeadingZeros64(gti))
 	if gtiHeight > ec.height {
 		panic("invalid entry tree index")
 	}
@@ -210,7 +217,7 @@ func (ess entriesForStorage) toEntries() indexEntries {
 		lastBlockNumber           uint64
 		lastTxIndex, lastLogIndex uint32
 	)
-	for i, es := range ess {
+	for _, es := range ess {
 		if len(es.TypeAndValueDiff) != 0 {
 			copy(lastTypeAndValue[36-len(es.TypeAndValueDiff):], es.TypeAndValueDiff)
 			lastBlockNumber, lastTxIndex, lastLogIndex = 0, 0, 0
@@ -256,7 +263,7 @@ func (ss *subtreesForStorage) toSubtreeChunk(height, above uint) *subtreeChunk {
 		boundaryFilePos: ss.BoundaryFilePos,
 		height:          height,
 		above:           above,
-		branches:        len(ss.Hashes),
+		branches:        uint(len(ss.Hashes)),
 		hashes:          make([]merkle.Value, 2<<height),
 		hasHash:         make([]bool, 2<<height),
 	}
@@ -268,7 +275,7 @@ func (ss *subtreesForStorage) toSubtreeChunk(height, above uint) *subtreeChunk {
 	return sc
 }
 
-func (sc *subtreeChunk) toStorage() subtreeForStorage {
+func (sc *subtreeChunk) toStorage() subtreesForStorage {
 	return subtreesForStorage{
 		BoundaryEntries: sc.boundaryEntries.toStorage(),
 		BoundaryFilePos: sc.boundaryFilePos,
@@ -280,11 +287,11 @@ func (sc *subtreeChunk) getHash(gti uint64) (result merkle.Value) {
 	if sc.hasHash[gti] {
 		return sc.hashes[gti]
 	}
-	gtiHeight := 63 - bits.LeadingZeros64(gti)
+	gtiHeight := uint(63 - bits.LeadingZeros64(gti))
 	if gtiHeight > sc.height {
 		panic("invalid subtree index")
 	}
-	if gti<<(sc.height-gtiHeight) >= uint64(1)<<sc.height+sc.branches {
+	if gti<<(sc.height-gtiHeight) >= uint64(1)<<sc.height+uint64(sc.branches) {
 		result = zeroValues[sc.above+sc.height-gtiHeight]
 	} else {
 		left := sc.getHash(gti * 2)
@@ -315,26 +322,26 @@ type subtreePos struct {
 	index uint64
 }
 
-func (tr *tableReader) newTableReader(reader io.ReadSeeker) (*tableReader, error) {
+func newTableReader(reader io.ReadSeeker) (*tableReader, error) {
 	pos, err := reader.Seek(-1, io.SeekEnd)
 	if err != nil {
 		return nil, err
 	}
 	var headerSizeByte [1]byte
-	br, err := reader.Read(headerSize[:])
+	br, err := reader.Read(headerSizeByte[:])
 	if err != nil {
 		return nil, err
 	}
 	if br != 1 {
 		return nil, errors.New("unexpected end of file")
 	}
-	headerSize := int64(headerSize[0])
-	_, err = reader.Seek(-1-headerSize, io.SeekEnd)
+	headerSize := int(headerSizeByte[0])
+	_, err = reader.Seek(-1-int64(headerSize), io.SeekEnd)
 	if err != nil {
 		return nil, err
 	}
 	headerEnc := make([]byte, headerSize)
-	br, err = reader.Read(enc)
+	br, err = reader.Read(headerEnc)
 	if err != nil {
 		return nil, err
 	}
@@ -349,14 +356,14 @@ func (tr *tableReader) newTableReader(reader io.ReadSeeker) (*tableReader, error
 		reader:            reader,
 		entryChunkCache:   lru.NewCache[uint64, indexEntries](entryCacheSize),
 		subtreeChunkCache: lru.NewCache[subtreePos, *subtreeChunk](subtreeCacheSize),
-		chunkHeights:      chunkHeights(entryCount),
+		chunkHeights:      chunkHeights(header.EntryCount),
 		entryCount:        header.EntryCount,
-		filePos:           pos,
+		filePos:           uint64(pos),
 		levelPointers:     header.LevelPointers,
 		tableRoot:         header.TableRoot,
 	}
-	tr.topLevel = len(tr.chunkHeights) - 2
-	return tr
+	tr.topLevel = uint(len(tr.chunkHeights) - 2)
+	return tr, nil
 }
 
 func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk, error) {
@@ -366,20 +373,20 @@ func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 	}
 	var start, stop uint64
 	if level == 0 {
-		start, stop = tr.rootStart, tr.rootStop
+		start, stop = tr.levelPointers[1], tr.levelPointers[0]
 	} else {
 		sc, err := tr.getSubtreeChunk(level-1, index/subtreeChunkSize)
 		if err != nil {
 			return nil, err
 		}
 		i := index & subtreeChunkSize
-		start, stop = sc.boundaryFilePos[i], sc.boundaryFilePos[i+1]
+		start, stop = tr.levelPointers[level+1]+sc.boundaryFilePos[i], tr.levelPointers[level+1]+sc.boundaryFilePos[i+1]
 	}
 	if tr.filePos != start {
 		tr.reader.Seek(int64(start), io.SeekStart)
 	}
 	enc := make([]byte, stop-start)
-	br, err := reader.Read(enc)
+	br, err := tr.reader.Read(enc)
 	if err != nil {
 		tr.filePos = math.MaxUint64
 		return nil, err
@@ -393,7 +400,7 @@ func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 	if err := rlp.DecodeBytes(enc, &ss); err != nil {
 		return nil, err
 	}
-	sc := ss.toSubtreeChunk()
+	sc := ss.toSubtreeChunk(tr.chunkHeights[level+1]-tr.chunkHeights[level], tr.chunkHeights[tr.topLevel+1]-tr.chunkHeights[level+1])
 	tr.subtreeChunkCache.Add(sp, sc)
 	return sc, nil
 }
@@ -412,7 +419,7 @@ func (tr *tableReader) getEntryChunk(index uint64) (indexEntries, error) {
 		tr.reader.Seek(int64(start), io.SeekStart)
 	}
 	enc := make([]byte, stop-start)
-	br, err := reader.Read(enc)
+	br, err := tr.reader.Read(enc)
 	if err != nil {
 		tr.filePos = math.MaxUint64
 		return nil, err
@@ -436,7 +443,7 @@ func (tr *tableReader) getEntry(index uint64) (*indexEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ec[index%entryChunkSize], nil
+	return &ec[index%entryChunkSize], nil
 }
 
 func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
@@ -447,25 +454,25 @@ func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
 	for chunkLevel < tr.topLevel {
 		sc, err := tr.getSubtreeChunk(chunkLevel, chunkIndex)
 		if err != nil {
-			return false, err
+			return 0, false, err
 		}
 		subIndex, _ := sc.boundaryEntries.find(target)
 		chunkLevel++
-		chunkIndex = chunkIndex*subtreeChunkSize + subIndex
+		chunkIndex = chunkIndex*subtreeChunkSize + uint64(subIndex)
 	}
 	ec, err := tr.getEntryChunk(chunkIndex)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 	subIndex, found := ec.find(target)
-	return chunkIndex*entryChunkSize + subIndex, found
+	return chunkIndex*entryChunkSize + uint64(subIndex), found, nil
 }
 
 type tableWriter struct {
-	lastEntryChunk        *entryChunkS
+	lastEntryChunk        *entryChunk
 	lastSubtreeChunks     []*subtreeChunk
 	files                 []*os.File
-	writers               []io.Writer
+	writers               []*bufio.Writer
 	writePointers         []uint64
 	fileName              string
 	chunkHeights          []uint
@@ -475,34 +482,37 @@ type tableWriter struct {
 
 func newTableWriter(fileName string, entryCount uint64) (*tableWriter, error) {
 	c := chunkHeights(entryCount)
+	topLevel := uint(len(c) - 2)
 	tw := &tableWriter{
 		lastEntryChunk:    &entryChunk{},
 		lastSubtreeChunks: make([]*subtreeChunk, topLevel),
 		files:             make([]*os.File, topLevel+1),
-		writers:           make([]io.Writer, topLevel+1),
+		writers:           make([]*bufio.Writer, topLevel+1),
 		writePointers:     make([]uint64, topLevel+1),
 		fileName:          fileName,
 		entryCount:        entryCount,
 		chunkHeights:      c,
-		topLevel:          len(c) - 2,
+		topLevel:          topLevel,
 	}
 	for i := range tw.lastSubtreeChunks {
-		tw.lastSubtreeChunks[i] = tw.newSubtreeChunk(i)
+		tw.lastSubtreeChunks[i] = tw.newSubtreeChunk(uint(i))
 	}
 	for i := range tw.files {
-		f, err := os.Create(tw.getFileName(i))
+		f, err := os.Create(tw.getFileName(uint(i)))
 		if err != nil {
 			return nil, err
 		}
 		tw.files[i] = f
 		tw.writers[i] = bufio.NewWriter(f)
 	}
+	return tw, nil
 }
 
 func (tw *tableWriter) newSubtreeChunk(level uint) *subtreeChunk {
+	height := tw.chunkHeights[level+1] - tw.chunkHeights[level]
 	return &subtreeChunk{
-		height:  xxx,
-		above:   xxx,
+		height:  height,
+		above:   tw.chunkHeights[tw.topLevel+1] - tw.chunkHeights[level+1],
 		hashes:  make([]merkle.Value, 2<<height),
 		hasHash: make([]bool, 2<<height),
 	}
@@ -516,31 +526,32 @@ func (tw *tableWriter) getFileName(level uint) string {
 }
 
 func (tw *tableWriter) addEntry(ie *indexEntry) error {
-	if tw.nextEntry >= tw.count {
+	if tw.nextEntry >= tw.entryCount {
 		panic("too many entries")
 	}
-	tw.lastEntryChunk = append(tw.lastEntryChunk, *ie)
+	tw.lastEntryChunk.entries = append(tw.lastEntryChunk.entries, *ie)
 	tw.nextEntry++
-	if len(tw.lastEntryChunk) == entryChunkSize || tw.nextEntry == tw.count {
-		ess := tw.lastEntryChunk.toStorage()
+	if len(tw.lastEntryChunk.entries) == entryChunkSize || tw.nextEntry == tw.entryCount {
+		ess := tw.lastEntryChunk.entries.toStorage()
 		enc, err := rlp.EncodeToBytes(&ess)
 		if err != nil {
 			return err
 		}
-		bw, err := tw.tableWriter.Write(enc)
+		bw, err := tw.writers[tw.topLevel].Write(enc)
 		if err != nil {
 			return err
 		}
 		if bw != len(enc) {
 			return errors.New("error writing table chunk")
 		}
-		beforePos := tw.twPosition
-		tw.twPosition += uint64(bw)
-		if err := tw.addSubtreeEntry(tw.topLevel-1, ie, beforePos, tw.twPosition, tw.lastEntryChunk.getHash(1)); err != nil {
+		beforePos := tw.writePointers[tw.topLevel]
+		tw.writePointers[tw.topLevel] += uint64(bw)
+		if err := tw.addSubtreeEntry(tw.topLevel-1, ie, beforePos, tw.writePointers[tw.topLevel], tw.lastEntryChunk.getHash(1)); err != nil {
 			return err
 		}
 		tw.lastEntryChunk = &entryChunk{}
 	}
+	return nil
 }
 
 func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, beforePos, afterPos uint64, hash merkle.Value) error {
@@ -554,28 +565,29 @@ func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, be
 	sc.boundaryFilePos = append(sc.boundaryFilePos, afterPos)
 	sc.hashes[1<<sc.height+sc.branches] = hash
 	sc.branches++
-	if sc.branches == subtreeChunkSize || tw.nextEntry == tw.count {
+	if sc.branches == subtreeChunkSize || tw.nextEntry == tw.entryCount {
 		ss := sc.toStorage()
 		enc, err := rlp.EncodeToBytes(&ss)
 		if err != nil {
 			return err
 		}
-		bw, err := tw.subtreeWriters[level].Write(enc)
+		bw, err := tw.writers[level].Write(enc)
 		if err != nil {
 			return err
 		}
 		if bw != len(enc) {
 			return errors.New("error writing subtree chunk")
 		}
-		beforePos := tw.swPositions[level]
-		tw.swPositions[level] += uint64(bw)
+		beforePos := tw.writePointers[level]
+		tw.writePointers[level] += uint64(bw)
 		if level > 0 {
-			if err := tw.addSubtreeEntry(level-1, ie, beforePos, tw.swPositions[level], sc.getHash(1)); err != nil {
+			if err := tw.addSubtreeEntry(level-1, boundaryEntry, beforePos, tw.writePointers[level], sc.getHash(1)); err != nil {
 				return err
 			}
 		}
 		tw.lastSubtreeChunks[level] = tw.newSubtreeChunk(level)
 	}
+	return nil
 }
 
 type tableHeader struct {
@@ -585,7 +597,7 @@ type tableHeader struct {
 }
 
 func (tw *tableWriter) finished() error {
-	if tw.nextEntry != tw.count {
+	if tw.nextEntry != tw.entryCount {
 		panic("not enough entries")
 	}
 	header := tableHeader{
@@ -605,7 +617,7 @@ func (tw *tableWriter) finished() error {
 		wp += uint64(bw)
 		header.LevelPointers[i] = wp
 		tw.files[i].Close()
-		if err := os.Remove(tw.getFileName(i)); err != nil {
+		if err := os.Remove(tw.getFileName(uint(i))); err != nil {
 			return err
 		}
 	}
