@@ -75,7 +75,7 @@ type Miner struct {
 	txpool      *txpool.TxPool
 	prio        []common.Address // A list of senders to prioritize
 	chain       *core.BlockChain
-	chain       *logindex.Indexer
+	logIndex    *logindex.Indexer
 	pending     *pending
 	pendingMu   sync.Mutex // Lock protects the pending block
 }
