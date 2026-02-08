@@ -19,7 +19,7 @@ package logindex
 import (
 	"crypto/sha256"
 	"encoding/binary"
-	"fmt"
+	"math/rand"
 	"os"
 	"sort"
 	"testing"
@@ -57,7 +57,7 @@ func TestIndexTable(t *testing.T) {
 	sort.Slice(ies, func(i, j int) bool {
 		return ies[i].compare(&ies[j]) < 0
 	})
-	tw, _ := newTableWriter("testTable", 1000000)
+	tw, _ := newTableWriter("testTable", uint64(len(ies)))
 	for i := range ies {
 		tw.addEntry(&ies[i])
 	}
@@ -68,15 +68,25 @@ func TestIndexTable(t *testing.T) {
 		ie, _ := tr.getEntry(pos * 100)
 		fmt.Println(pos*100, *ie)
 	}*/
-	target := &indexEntry{
-		entryType:   2,
-		indexValue:  testValue(512, 8, 4, 2),
-		blockNumber: 512,
-		txIndex:     8,
-		logIndex:    4,
+	for range 10000 {
+		blockNumber := uint64(rand.Intn(1000))
+		txIndex := uint32(rand.Intn(10))
+		logIndex := uint32(rand.Intn(10))
+		entryType := uint32(rand.Intn(10))
+		target := &indexEntry{
+			entryType:  entryType,
+			indexValue: testValue(blockNumber, txIndex, logIndex, entryType),
+		}
+		pos, _, _ := tr.seekEntry(target)
+		ie, _ := tr.getEntry(pos)
+		if ie.blockNumber != blockNumber || ie.txIndex != txIndex || ie.logIndex != logIndex {
+			t.Fatalf("Could not find entry position by type/value (expected: %d %d %d, got: %d %d %d)", blockNumber, txIndex, logIndex, ie.blockNumber, ie.txIndex, ie.logIndex)
+		}
+		_, found, _ := tr.seekEntry(ie)
+		if !found {
+			t.Fatalf("Could not find exact entry by type/value/position (%d %d %d)", ie.blockNumber, ie.txIndex, ie.logIndex)
+		}
 	}
-	pos, found, _ := tr.seekEntry(target)
-	ie, _ := tr.getEntry(pos)
-	fmt.Println("target", *target)
-	fmt.Println(pos, found, *ie)
+	//fmt.Println("target", *target)
+	//fmt.Println(pos, found, *ie)
 }
