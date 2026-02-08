@@ -284,6 +284,7 @@ func (sc *subtreeChunk) toStorage() subtreesForStorage {
 }
 
 func (sc *subtreeChunk) getHash(gti uint64) (result merkle.Value) {
+	//fmt.Println("getHash gti", gti, "height", sc.height, "branches", sc.branches, "hasHash", sc.hasHash)
 	if sc.hasHash[gti] {
 		return sc.hashes[gti]
 	}
@@ -379,7 +380,7 @@ func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 		if err != nil {
 			return nil, err
 		}
-		i := index & subtreeChunkSize
+		i := index % subtreeChunkSize
 		start, stop = tr.levelPointers[level+1]+sc.boundaryFilePos[i], tr.levelPointers[level+1]+sc.boundaryFilePos[i+1]
 	}
 	if tr.filePos != start {
@@ -409,11 +410,11 @@ func (tr *tableReader) getEntryChunk(index uint64) (indexEntries, error) {
 	if ec, ok := tr.entryChunkCache.Get(index); ok {
 		return ec, nil
 	}
-	sc, err := tr.getSubtreeChunk(tr.topLevel-1, index/entryChunkSize)
+	sc, err := tr.getSubtreeChunk(tr.topLevel-1, index/subtreeChunkSize)
 	if err != nil {
 		return nil, err
 	}
-	i := index & entryChunkSize
+	i := index % subtreeChunkSize
 	start, stop := sc.boundaryFilePos[i], sc.boundaryFilePos[i+1]
 	if tr.filePos != start {
 		tr.reader.Seek(int64(start), io.SeekStart)
@@ -457,6 +458,7 @@ func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
 			return 0, false, err
 		}
 		subIndex, _ := sc.boundaryEntries.find(target)
+		//fmt.Println("seek s", chunkLevel, chunkIndex, subIndex, sc.boundaryEntries[max(subIndex, 1)-1], sc.boundaryEntries[min(subIndex, len(sc.boundaryEntries)-1)])
 		chunkLevel++
 		chunkIndex = chunkIndex*subtreeChunkSize + uint64(subIndex)
 	}
@@ -465,6 +467,7 @@ func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
 		return 0, false, err
 	}
 	subIndex, found := ec.find(target)
+	//fmt.Println("seek e", chunkLevel, chunkIndex, subIndex)
 	return chunkIndex*entryChunkSize + uint64(subIndex), found, nil
 }
 
@@ -556,7 +559,7 @@ func (tw *tableWriter) addEntry(ie *indexEntry) error {
 
 func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, beforePos, afterPos uint64, hash merkle.Value) error {
 	sc := tw.lastSubtreeChunks[level]
-	if sc.branches > 0 {
+	if sc.branches < subtreeChunkSize-1 {
 		sc.boundaryEntries = append(sc.boundaryEntries, *boundaryEntry)
 	}
 	if sc.branches == 0 {
@@ -564,6 +567,7 @@ func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, be
 	}
 	sc.boundaryFilePos = append(sc.boundaryFilePos, afterPos)
 	sc.hashes[1<<sc.height+sc.branches] = hash
+	sc.hasHash[1<<sc.height+sc.branches] = true
 	sc.branches++
 	if sc.branches == subtreeChunkSize || tw.nextEntry == tw.entryCount {
 		ss := sc.toStorage()
