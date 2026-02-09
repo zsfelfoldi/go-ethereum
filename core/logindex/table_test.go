@@ -19,6 +19,7 @@ package logindex
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"math/rand"
 	"os"
 	"sort"
@@ -39,7 +40,7 @@ func testValue(blockNumber uint64, txIndex, logIndex, entryType uint32) (result 
 
 func TestIndexTable(t *testing.T) {
 	var ies indexEntries
-	for blockNumber := range uint64(1000) {
+	for blockNumber := range uint64(1024) {
 		for txIndex := range uint32(10) {
 			for logIndex := range uint32(10) {
 				for entryType := range uint32(10) {
@@ -69,7 +70,74 @@ func TestIndexTable(t *testing.T) {
 		fmt.Println(pos*100, *ie)
 	}*/
 	for range 10000 {
-		blockNumber := uint64(rand.Intn(1000))
+		blockNumber := uint64(rand.Intn(1024))
+		txIndex := uint32(rand.Intn(10))
+		logIndex := uint32(rand.Intn(10))
+		entryType := uint32(rand.Intn(10))
+		target := &indexEntry{
+			entryType:  entryType,
+			indexValue: testValue(blockNumber, txIndex, logIndex, entryType),
+		}
+		pos, _, _ := tr.seekEntry(target)
+		ie, _ := tr.getEntry(pos)
+		if ie.blockNumber != blockNumber || ie.txIndex != txIndex || ie.logIndex != logIndex {
+			t.Fatalf("Could not find entry position by type/value (expected: %d %d %d, got: %d %d %d)", blockNumber, txIndex, logIndex, ie.blockNumber, ie.txIndex, ie.logIndex)
+		}
+		_, found, _ := tr.seekEntry(ie)
+		if !found {
+			t.Fatalf("Could not find exact entry by type/value/position (%d %d %d)", ie.blockNumber, ie.txIndex, ie.logIndex)
+		}
+	}
+	//fmt.Println("target", *target)
+	//fmt.Println(pos, found, *ie)
+}
+
+func TestIndexMergedTable(t *testing.T) {
+	for blockNumber := range uint64(1024) {
+		var ies indexEntries
+		for txIndex := range uint32(10) {
+			for logIndex := range uint32(10) {
+				for entryType := range uint32(10) {
+					ies = append(ies, indexEntry{
+						entryType:   entryType,
+						indexValue:  testValue(blockNumber, txIndex, logIndex, entryType),
+						blockNumber: blockNumber,
+						txIndex:     txIndex,
+						logIndex:    logIndex,
+					})
+				}
+			}
+		}
+		sort.Slice(ies, func(i, j int) bool {
+			return ies[i].compare(&ies[j]) < 0
+		})
+		tw, _ := newTableWriter(fmt.Sprintf("testTable_0_%d", blockNumber), uint64(len(ies)))
+		for i := range ies {
+			tw.addEntry(&ies[i])
+		}
+		tw.finished()
+		table, mergeLevel := blockNumber, 0
+		for table&1 == 1 {
+			f1, _ := os.Open(fmt.Sprintf("testTable_%d_%d", mergeLevel, table-1))
+			f2, _ := os.Open(fmt.Sprintf("testTable_%d_%d", mergeLevel, table))
+			tr1, _ := newTableReader(f1)
+			tr2, _ := newTableReader(f2)
+			table /= 2
+			mergeLevel++
+			mergeTables(fmt.Sprintf("testTable_%d_%d", mergeLevel, table), []*tableReader{tr1, tr2})
+			f1.Close()
+			f2.Close()
+		}
+	}
+
+	f, _ := os.Open("testTable_10_0")
+	tr, _ := newTableReader(f)
+	/*for pos := range uint64(10000) {
+		ie, _ := tr.getEntry(pos * 100)
+		fmt.Println(pos*100, *ie)
+	}*/
+	for range 10000 {
+		blockNumber := uint64(rand.Intn(1024))
 		txIndex := uint32(rand.Intn(10))
 		logIndex := uint32(rand.Intn(10))
 		entryType := uint32(rand.Intn(10))

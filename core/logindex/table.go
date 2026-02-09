@@ -642,6 +642,43 @@ func (tw *tableWriter) finished() error {
 	return nil
 }
 
+func mergeTables(fileName string, readers []*tableReader) error {
+	var entryCount uint64
+	for _, tr := range readers {
+		entryCount += tr.entryCount
+	}
+	tw, err := newTableWriter(fileName, entryCount)
+	if err != nil {
+		return err
+	}
+	pointers := make([]uint64, len(readers))
+	for {
+		var (
+			bestEntry  *indexEntry
+			bestReader int
+		)
+		for i, tr := range readers {
+			if pointers[i] < tr.entryCount {
+				ie, err := tr.getEntry(pointers[i])
+				if err != nil {
+					return err
+				}
+				if bestEntry == nil || ie.compare(bestEntry) < 0 {
+					bestEntry, bestReader = ie, i
+				}
+			}
+		}
+		if bestEntry == nil {
+			break
+		}
+		if err := tw.addEntry(bestEntry); err != nil {
+			return err
+		}
+		pointers[bestReader]++
+	}
+	return tw.finished()
+}
+
 var zeroValues = func() []merkle.Value {
 	zv := make([]merkle.Value, 256)
 	for i := 1; i < 256; i++ {
