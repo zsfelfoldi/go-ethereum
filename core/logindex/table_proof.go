@@ -17,7 +17,12 @@
 package logindex
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"math/bits"
+	"reflect"
+	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -28,27 +33,25 @@ type tableProof struct {
 }
 
 type tableProofPublic struct {
-	tableChains   []tableChainHead // ordered by tableSize
+	tableChains   []tableChainHead // ordered by blockCount
 	partialTables []partialTable
 }
 
 type tableChainHead struct {
-	tableSize uint64
-	lastBlock uint64
-	headHash  common.Hash
+	blockCount, lastBlock uint64
+	headHash              common.Hash
 }
 
 type partialTable struct {
-	tableSize    uint64
-	lastBlock    uint64
-	tableRoot    common.Hash
-	entryCount   uint64
-	provenRanges []common.Range[uint64]
+	blockCount, lastBlock uint64
+	tableRoot             common.Hash
+	entryCount            uint64
+	provenRanges          rangeSet[uint64]
 }
 
 type tableProofPrivate struct {
 	recursiveProofs []recursiveProof
-	tableRoots      [][]common.Hash // same length as tableProofPublic.tableChains
+	tableRootProofs [][]common.Hash // same length as tableProofPublic.tableChains
 	mergeProofs     []tableMergeProof
 }
 
@@ -63,11 +66,30 @@ type tableMergeProof struct {
 }
 
 type tableRangeProof struct {
-	firstEntry  uint64
-	entries     [][64]byte
-	entryCount  uint64
-	leftBranch  []common.Hash
-	rightBranch []common.Hash
+	firstEntry, entryCount  uint64
+	entries                 []provenEntry
+	leftBranch, rightBranch []common.Hash
+}
+
+type provenEntry [64]byte
+
+func (a *provenEntry) compare(b *provenEntry) int {
+	return bytes.Compare((*a)[:], (*b)[:])
+}
+
+func (a *provenEntry) hash() (result common.Hash) {
+	hasher := sha256.New()
+	hasher.Write((*a)[:])
+	hasher.Sum(result[:0])
+	return
+}
+
+func binaryHash(left, right common.Hash) (result common.Hash) {
+	hasher := sha256.New()
+	hasher.Write(left[:])
+	hasher.Write(right[:])
+	hasher.Sum(result[:0])
+	return
 }
 
 /*
@@ -90,108 +112,265 @@ type tableRangeProof struct {
 	- feldolgozas input szint alapjan lentrol folfele
 */
 
-type tableChainState struct {
-	lastProven uint64
-	recent     []common.Hash
+type tableChainVerifier struct {
+	blockCount, lastBlock, lastProven uint64
+	chainHashes, tableRoots           []common.Hash
 }
 
-type partialTableState struct {
-	entryCount       uint64
-	expected, proven []common.Range[uint64]
-}
-
-type verifyProofState struct {
-	tableChains   []*tableChainState
-	partialTables map[common.Hash]*verifyTableState
+type tableProofVerifier struct {
+	tableChains   []*tableChainVerifier
+	partialTables map[common.Hash]*partialTable
 }
 
 func (t *tableProof) verify() bool {
-	if len(t.private.tableRoots) != len(t.public.tableChains) {
+	if len(t.private.tableRootProofs) != len(t.public.tableChains) {
 		return false
 	}
 	for i := 0; i < len(t.public.tableChains)-1; i++ {
-		if t.public.tableChains[i].tableSize >= t.public.tableChains[i+1].tableSize {
+		if t.public.tableChains[i].blockCount >= t.public.tableChains[i+1].blockCount {
 			return false
 		}
 	}
-	state := &verifyProofState{
-		tableChains:   make([]*tableChainState, len(t.public.tableChains)),
-		partialTables: make(map[common.Hash]*verifyTableState),
+	verifier := tableProofVerifier{
+		tableChains:   make([]*tableChainVerifier, len(t.public.tableChains)),
+		partialTables: make(map[common.Hash]*partialTable),
 	}
-	for i, tr := range t.private.tableRoots {
-		if len(tr) != 0 {
-			state.tableChains[i] = &tableChainState{
-				recent: make([]common.Hash, len(tr)),
-			}
+	for i, tc := range t.public.tableChains {
+		tr := t.private.tableRootProofs[i]
+		tcv := &tableChainVerifier{
+			blockCount: tc.blockCount,
+			lastBlock:  tc.lastBlock,
+		}
+		if len(tr) > 0 {
+			tcv.chainHashes = make([]common.Hash, len(tr))
+			tcv.tableRoots = make([]common.Hash, len(tr)-1)
 			lastHash := tr[0]
-			state.tableChains[i].recent[0] = lastHash
-			for j := 1; j < len(tr); j++ {
-				lastHash = binaryHash(lastHash, tr[j])
-				state.tableChains[i].recent[j] = lastHash
+			tcv.chainHashes[0] = lastHash
+			for j := range tcv.tableRoots {
+				tcv.tableRoots[j] = tr[j+1]
+				lastHash = binaryHash(lastHash, tr[j+1])
+				tcv.chainHashes[j+1] = lastHash
 			}
-			if lastHash != t.public.tableChains[i].headHash {
+			if lastHash != tc.headHash {
 				return false
+			}
+		} else {
+			tcv.chainHashes = []common.Hash{tc.headHash}
+		}
+		verifier.tableChains[i] = tcv
+	}
+	verifier.tableChains[0].lastProven = verifier.tableChains[0].lastBlock
+	for _, rp := range t.private.recursiveProofs {
+		//TODO verify ZKP
+		if !verifier.applyRecursiveProof(rp.public) {
+			return false
+		}
+	}
+	for _, mp := range t.private.mergeProofs {
+		if !verifier.applyMergeProof(&mp) {
+			return false
+		}
+	}
+	for _, tcv := range verifier.tableChains {
+		if tcv.lastProven != tcv.lastBlock {
+			return false
+		}
+	}
+	for _, pt := range t.public.partialTables {
+		if ptv, ok := verifier.partialTables[pt.tableRoot]; !ok || !reflect.DeepEqual(ptv, pt) {
+			return false
+		}
+		delete(verifier.partialTables, pt.tableRoot)
+	}
+	if len(verifier.partialTables) != 0 {
+		return false
+	}
+	return true
+}
+
+func (tv *tableProofVerifier) getTableChainIndex(blockCount uint64) (int, bool) {
+	for i, tcv := range tv.tableChains {
+		if tcv.blockCount == blockCount {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func (tcv *tableChainVerifier) getChainHashAt(lastBlock uint64) (common.Hash, bool) {
+	if lastBlock > tcv.lastBlock {
+		return common.Hash{}, false
+	}
+	blockAge := (tcv.lastBlock) - lastBlock
+	tableAge := blockAge / tcv.blockCount
+	if blockAge != tableAge*tcv.blockCount || tableAge >= uint64(len(tcv.chainHashes)) {
+		return common.Hash{}, false
+	}
+	return tcv.chainHashes[uint64(len(tcv.chainHashes))-1-tableAge], true
+}
+
+func (tv *tableProofVerifier) applyRecursiveProof(public tableProofPublic) bool {
+	if len(public.tableChains) < 2 {
+		return false
+	}
+	baseIndex, ok := tv.getTableChainIndex(public.tableChains[0].blockCount)
+	if !ok {
+		return false
+	}
+	if tv.tableChains[baseIndex].lastProven < public.tableChains[0].lastBlock {
+		return false
+	}
+	matchHeadHash, ok := tv.tableChains[baseIndex].getChainHashAt(public.tableChains[0].lastBlock)
+	if !ok || public.tableChains[0].headHash != matchHeadHash {
+		return false
+	}
+	// base table chain of recursive proof matches existing proven chain, higher level chains can be considered proven too
+	for i := 1; i < len(public.tableChains); i++ {
+		tc := public.tableChains[i]
+		chainIndex, ok := tv.getTableChainIndex(tc.blockCount)
+		if !ok {
+			continue // it is ok to not list some table chains proven by the recursive proof
+		}
+		tcv := tv.tableChains[chainIndex]
+		tcv.lastProven = min(max(tcv.lastProven, tc.lastBlock), tcv.lastBlock)
+	}
+	for _, pt := range public.partialTables {
+		chainIndex, ok := tv.getTableChainIndex(pt.blockCount)
+		if !ok {
+			continue
+		}
+		tcv := tv.tableChains[chainIndex]
+		if tcv.lastProven+pt.blockCount != pt.lastBlock {
+			continue
+		}
+		if ptv, ok := tv.partialTables[pt.tableRoot]; ok {
+			ptv.provenRanges = ptv.provenRanges.merge(pt.provenRanges)
+			if ptv.isComplete() {
+				tcv.lastProven = pt.lastBlock
+				delete(tv.partialTables, pt.tableRoot)
+			}
+		} else {
+			tv.partialTables[pt.tableRoot] = &pt
+		}
+	}
+	return true
+}
+
+func (tv *tableProofVerifier) findProvenTableRoot(tableRoot common.Hash) (uint64, uint64, bool) {
+	for _, tcv := range tv.tableChains {
+		for i, root := range tcv.tableRoots {
+			if root == tableRoot {
+				return tcv.blockCount, tcv.lastBlock - uint64(len(tcv.tableRoots)-1-i)*tcv.blockCount, true
 			}
 		}
 	}
-	state.tableChains[0].lastProven = t.public.tableChains[0].lastBlock
-	for _, proof := range t.private.recursiveProofs {
-		t.applyRecursiveProof(state, proof)
+	return 0, 0, false
+}
+
+func (tv *tableProofVerifier) applyMergeProof(mp *tableMergeProof) bool {
+	if !mp.verifyMerge() {
+		return false
 	}
-	for _, mp := range t.private.mergeProofs {
-		if !t.verifyMergeProof(mp) {
+	var rangeFirst, rangeLast uint64
+	for i, tr := range mp.inputs {
+		blockCount, lastBlock, ok := tv.findProvenTableRoot(tr.rootHash())
+		if !ok {
+			return false
+		}
+		if i == 0 {
+			rangeFirst = lastBlock + 1 - blockCount
+		} else if rangeLast+blockCount != lastBlock {
+			return false
+		}
+		rangeLast = lastBlock
+	}
+	mergedRoot := mp.output.rootHash()
+	provenRange := rangeSet[uint64]{common.NewRange[uint64](mp.output.firstEntry, uint64(len(mp.output.entries)))}
+	if ptv, ok := tv.partialTables[mergedRoot]; ok {
+		if ptv.blockCount != rangeLast+1-rangeFirst || ptv.lastBlock != rangeLast {
+			return false
+		}
+		ptv.provenRanges = ptv.provenRanges.merge(provenRange)
+	} else {
+		tv.partialTables[mergedRoot] = &partialTable{
+			blockCount:   rangeLast + 1 - rangeFirst,
+			lastBlock:    rangeLast,
+			tableRoot:    mergedRoot,
+			provenRanges: provenRange,
+		}
+	}
+	return true
+}
+
+func (pt *partialTable) isComplete() bool {
+	return pt.entryCount == 0 || (len(pt.provenRanges) == 1 && pt.provenRanges[0] == common.NewRange[uint64](0, pt.entryCount))
+}
+
+func (mp *tableMergeProof) verifyMerge() bool {
+	if len(mp.inputs) < 2 || len(mp.output.entries) == 0 {
+		return false
+	}
+	inputIndices := make([]int, len(mp.inputs))
+	lastEqual := -1
+	var expFirstEntry uint64
+	for i, input := range mp.inputs {
+		if len(input.entries) == 0 {
+			return false
+		}
+		expFirstEntry += input.firstEntry
+		switch input.entries[0].compare(&mp.output.entries[0]) {
+		case -1:
+			if len(input.entries) < 1 || input.entries[1].compare(&mp.output.entries[0]) != 1 {
+				return false
+			}
+			inputIndices[i] = 1
+			expFirstEntry++
+		case 0:
+			if lastEqual != -1 {
+				return false
+			}
+			lastEqual = i
+		case 1:
+			return false
+		}
+	}
+	if lastEqual == -1 || expFirstEntry != mp.output.firstEntry {
+		return false
+	}
+	for outputIndex := 1; outputIndex < len(mp.output.entries); outputIndex++ {
+		inputIndices[lastEqual]++
+		lastEqual = -1
+		for i, input := range mp.inputs {
+			if len(input.entries) <= inputIndices[i] {
+				return false
+			}
+			switch input.entries[inputIndices[i]].compare(&mp.output.entries[outputIndex]) {
+			case -1:
+				return false
+			case 0:
+				if lastEqual != -1 {
+					return false
+				}
+				lastEqual = i
+			case 1:
+			}
+		}
+		if lastEqual == -1 {
+			return false
+		}
+	}
+	for i, input := range mp.inputs {
+		if len(input.entries) != inputIndices[i]+1 {
 			return false
 		}
 	}
 	return true
 }
 
-func (t *tableProof) applyRecursiveProof(state *verifyProofState, proof recursiveProof) bool {
-	//TODO verify ZKP
-	for _, tc := range proof.public.tableChains {
-		index := -1
-		for i, ptc := range t.public.tableChains {
-			if ptc.tableSize >= tc.tableSize {
-				if ptc.tableSize == tc.tableSize {
-					index = i
-				}
-				break
-			}
-		}
-
-		t.public.tableChains[index].lastBlock
-	}
-}
-
-func (t *tableProof) verifyMergeProof(mp *tableMergeProof) bool {
-	if len(mp.inputs) == 0 {
-		return false
-	}
-	var rangeFirst, rangeLast uint64
-	for i, tr := range mp.inputs {
-		tableSize, lastBlock, ok := t.findTableRoot(tr.rootHash(), tr.firstEntry, tr.firstEntry+uint64(len(tr.entries)))
-		if !ok {
-			return false
-		}
-		if i == 0 {
-			rangeFirst = lastBlock + 1 - tableSize
-		} else if rangeLast+tableSize != lastBlock {
-			return false
-		}
-		rangeLast = lastBlock
-	}
-	tableSize, lastBlock, ok := t.findTableRoot(mp.output.rootHash(), tr.firstEntry, tr.firstEntry+uint64(len(tr.entries)))
-
-}
-
-func (t *tableProof) findTableRoot(rootHash common.Hash, firstEntry, afterLastEntry uint64) (tableSize, lastBlock uint64, ok bool) {
-
-}
-
 func (tr *tableRangeProof) rootHash() common.Hash {
 	var listTreeRoot, countNode common.Hash
 	if tr.entryCount > 0 {
-		listTreeRoot = tr.listTreeHash(0, 64-bits.LeadingZeros64(tr.entryCount-1))
+		listTreeRoot = tr.listTreeHash(0, uint(64-bits.LeadingZeros64(tr.entryCount-1)))
 		binary.LittleEndian.PutUint64(countNode[0:8], tr.entryCount)
 	}
 	return binaryHash(listTreeRoot, countNode)
@@ -205,7 +384,36 @@ func (tr *tableRangeProof) listTreeHash(index uint64, height uint) common.Hash {
 		return tr.rightBranch[height]
 	}
 	if height == 0 {
-		return entryHash(&tr.entries[index-tr.firstEntry])
+		return tr.entries[index-tr.firstEntry].hash()
 	}
 	return binaryHash(tr.listTreeHash(index*2, height+1), tr.listTreeHash(index*2+1, height+1))
+}
+
+type rangeSet[T uint32 | uint64] []common.Range[T]
+
+func (a rangeSet[T]) merge(b rangeSet[T]) rangeSet[T] {
+	m := make(rangeSet[T], len(a)+len(b))
+	copy(m[:len(a)], a)
+	copy(m[len(a):], b)
+	m.normalize()
+	return m
+}
+
+func (a *rangeSet[T]) normalize() {
+	sort.Slice(*a, func(i, j int) bool { return (*a)[i].First() < (*a)[j].First() })
+	// merge connecting/overlapping ranges
+	var j int
+	for i, next := range *a {
+		if j == 0 || (*a)[j-1].AfterLast() < next.First() {
+			// disjoint ranges, keep next range separate
+			if j != i {
+				(*a)[j] = next
+			}
+			j++
+		} else {
+			// connecting/overlapping ranges, merge with previous one
+			(*a)[j-1] = (*a)[j-1].Union(next)
+		}
+	}
+	*a = (*a)[:j]
 }
