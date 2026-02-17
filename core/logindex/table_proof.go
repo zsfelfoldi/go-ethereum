@@ -27,21 +27,51 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// tableProof represents the zero-knowledge prover input for recursive proofs
+// of the validity of higher order index table chains based on the in-protocol
+// table chains of a certain blockchain.
 type tableProof struct {
 	public  tableProofPublic
 	private tableProofPrivate
 }
 
+// tableProofPublic is the public prover input and represents the facts that the
+// proof is actually intended to prove:
+//
+// - tableChains[0] is the reference table chain that is assumed to be consistent
+//   with the source blockchain
+// - the proof proves that every tableChains[i] for i > 0 is consistent with the
+//   reference table chain
+// - also proves that the partially proven tables listed in partialTables are
+//   consistent with the reference chain in the specified index entry ranges.
+//
+// Table chains are listed in an ascending order of the blockCount parameter and
+// there can be only one chain with any given blockCount.
 type tableProofPublic struct {
-	tableChains   []tableChainHead // ordered by blockCount
+	tableChains   []tableChainHead
 	partialTables []partialTable
 }
 
+// tableChainHead represents a single table chain. Each chain head hash is
+// calculated as the hash of the previous chain head hash and the latest index
+// table root. blockCount is the number of blocks indexed in each table and it
+// is a constant for each table chain, while lastBlock is the last block number
+// indexed, and it is increased by blockCount each time a new table is added.
+//
+// Note that a table chain is only listed in the proof if it has at least one
+// table (in this case the head hash is a hash of a zero parent hash and the
+// first table root).
 type tableChainHead struct {
 	blockCount, lastBlock uint64
 	headHash              common.Hash
 }
 
+// partialTable represents a single, partially proven table that has not been
+// appended to a table chain yet. provenRanges is a non-empty subset of the
+// range [0; entryCount). Note that a table with a fully proven range can still
+// be represented as a partialTable if there is not table chain listed in the
+// same proof it could be appended to, and also it is not the first table of
+// the indexed range of the reference table chain.
 type partialTable struct {
 	blockCount, lastBlock uint64
 	tableRoot             common.Hash
@@ -49,34 +79,60 @@ type partialTable struct {
 	provenRanges          rangeSet[uint64]
 }
 
+// tableProofPrivate is the private prover input and provides the necessary
+// proofs to verify the claims represented by the private input:
+//
+// - recursiveProofs lists recursive index table proofs of the same type; these
+//   proofs can either prove a list of already fully proven table chains and/or
+//   prove individual partial tables recursively.
+// - tableRootProofs optionally proves the most recent table roots of certain
+//   table chais. The outer slice is the same length as tableChains (one for
+//   each chain); if the inner slice is not empty then it consists of one past
+//   table chain hash and a number of subsequent index table roots, ending with
+//   the root of the latest table.
+// - mergeProofs lists full or partial proofs of index tables being merged into
+//   bigger index tables.
 type tableProofPrivate struct {
 	recursiveProofs []recursiveProof
-	tableRootProofs [][]common.Hash // same length as tableProofPublic.tableChains
+	tableRootProofs [][]common.Hash
 	mergeProofs     []tableMergeProof
 }
 
+// recursiveProof represents an index table proof used as a recursive proof
+// verified by the current one.
 type recursiveProof struct {
 	public tableProofPublic
 	proof  []byte
 }
 
+// tableMergeProof proves a continuous section of index entries of the "output"
+// table being correctly merged based on continuous sections of index entries
+// from each of the "input" tables.
 type tableMergeProof struct {
 	inputs []tableRangeProof
 	output tableRangeProof
 }
 
+// tableRangeProof proves a continuous section of entries of an index table.
 type tableRangeProof struct {
 	firstEntry, entryCount  uint64
 	entries                 []provenEntry
 	leftBranch, rightBranch []common.Hash
 }
 
+// provenEntry is the representation of an index entry used for tree hashing and
+// Merkle proofs.
 type provenEntry [64]byte
 
+// compare compares two index entries according to the specified lexicographical
+// ordering of index tables.
 func (a *provenEntry) compare(b *provenEntry) int {
 	return bytes.Compare((*a)[:], (*b)[:])
 }
 
+// hash calculates the binary Merkle tree node hash of an index entry leaf.
+// Note that SHA256 is used here but the final specification might use a
+// different hash function.
 func (a *provenEntry) hash() (result common.Hash) {
 	hasher := sha256.New()
 	hasher.Write((*a)[:])
@@ -84,6 +140,10 @@ func (a *provenEntry) hash() (result common.Hash) {
 	return
 }
 
+// binaryHash calculates the binary Merkle tree node hash of an inner tree node
+// based on the two child node hashes.
+// Note that SHA256 is used here but the final specification might use a
+// different hash function.
 func binaryHash(left, right common.Hash) (result common.Hash) {
 	hasher := sha256.New()
 	hasher.Write(left[:])
@@ -92,37 +152,9 @@ func binaryHash(left, right common.Hash) (result common.Hash) {
 	return
 }
 
-/*
-- public TCL:
-	- legalso TC a "feltetelezett"
-	- bizonyitando TC parent-ek
-	- bizonyitando teljes vagy reszleges table root-ok (ismert entry count, block range)
-	!!! merge state a bizonyitando table root-okhoz rendel bizonyitott tartomanyt, majd vegul osszehasonlit
-- recursive TCL:
-	- akkor ervenyes az egesz, ha a public TCL legalso TC-je megtalalhato benne, azonos vagy korabbi head-del (a bizonyitott tartomanyban, parent es head kozott)
-	- alsobb TC-k nem hasznalhatok
-	- felsobbek bizonyitottnak tekinthetok
-		- rTCL head a pTCL, bizonyitott tartomanyban, parent es head kozott
-		- PT-kre is igaz, ha rTCL PT table root a pTCL bizonyitando rootok kozott van
-- merge proof-ok:
-	- a merge state-en operal
-	- input-ok a legalso, "feltetelezett" TC bizonyitott table root-jai vagy a merge state mar (legalabb reszben) bizonyitott table root-jai
-	- output a merge state egy bizonyitando table root-ja
-	- output mindig foljebb, mint az input
-	- feldolgozas input szint alapjan lentrol folfele
-*/
-
-type tableChainVerifier struct {
-	blockCount, lastBlock, lastProven uint64
-	chainHashes, tableRoots           []common.Hash
-}
-
-type tableProofVerifier struct {
-	tableChains   []*tableChainVerifier
-	partialTables map[common.Hash]*partialTable
-}
-
+// verify verifies the index table proofs and returns true if it is valid.
 func (t *tableProof) verify() bool {
+	// do basic sanity checks
 	if len(t.private.tableRootProofs) != len(t.public.tableChains) {
 		return false
 	}
@@ -131,17 +163,20 @@ func (t *tableProof) verify() bool {
 			return false
 		}
 	}
+	// initialize the verifier state
 	verifier := tableProofVerifier{
 		tableChains:   make([]*tableChainVerifier, len(t.public.tableChains)),
 		partialTables: make(map[common.Hash]*partialTable),
 	}
 	for i, tc := range t.public.tableChains {
 		tr := t.private.tableRootProofs[i]
+		// initialize table chains as not proven yet (lastProven == 0)
 		tcv := &tableChainVerifier{
 			blockCount: tc.blockCount,
 			lastBlock:  tc.lastBlock,
 		}
 		if len(tr) > 0 {
+			// reconstruct and verify proven table roots and table chain hashes
 			tcv.chainHashes = make([]common.Hash, len(tr))
 			tcv.tableRoots = make([]common.Hash, len(tr)-1)
 			lastHash := tr[0]
@@ -159,6 +194,8 @@ func (t *tableProof) verify() bool {
 		}
 		verifier.tableChains[i] = tcv
 	}
+	// reconstruct the proven table chains and partial tables in the verifier
+	// state according to the provided proofs
 	verifier.tableChains[0].lastProven = verifier.tableChains[0].lastBlock
 	for _, rp := range t.private.recursiveProofs {
 		//TODO verify ZKP
@@ -171,6 +208,8 @@ func (t *tableProof) verify() bool {
 			return false
 		}
 	}
+	// check if all table chains and partial tables announced in the public
+	// input are actually proven
 	for _, tcv := range verifier.tableChains {
 		if tcv.lastProven != tcv.lastBlock {
 			return false
@@ -186,6 +225,18 @@ func (t *tableProof) verify() bool {
 		return false
 	}
 	return true
+}
+
+// tableProofVerifier is a mutable structure that mirrors the public proof input
+// structure but it initialized in unproven
+type tableProofVerifier struct {
+	tableChains   []*tableChainVerifier
+	partialTables map[common.Hash]*partialTable
+}
+
+type tableChainVerifier struct {
+	blockCount, lastBlock, lastProven uint64
+	chainHashes, tableRoots           []common.Hash
 }
 
 func (tv *tableProofVerifier) getTableChainIndex(blockCount uint64) (int, bool) {
