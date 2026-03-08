@@ -308,7 +308,7 @@ func (sc *subtreeChunk) getHash(gti uint64) (result merkle.Value) {
 }
 
 type tableReader struct {
-	reader              io.ReadSeeker
+	reader              io.ReadSeekCloser
 	entryChunkCache     *lru.Cache[uint64, indexEntries]
 	subtreeChunkCache   *lru.Cache[subtreePos, *subtreeChunk]
 	entryCount, filePos uint64
@@ -316,6 +316,7 @@ type tableReader struct {
 	chunkHeights        []uint
 	topLevel            uint
 	tableRoot           merkle.Value
+	meta                tableMeta
 }
 
 type subtreePos struct {
@@ -323,7 +324,20 @@ type subtreePos struct {
 	index uint64
 }
 
-func newTableReader(reader io.ReadSeeker) (*tableReader, error) {
+func newTableReader(fileName string) (*tableReader, error) {
+	reader, err := os.Open(fileName)
+	if err != nil {
+		return nil, err
+	}
+	tr, err := newTableReaderFromIoReader(reader)
+	if err != nil {
+		reader.Close()
+		return nil, err
+	}
+	return tr, nil
+}
+
+func newTableReaderFromIoReader(reader io.ReadSeekCloser) (*tableReader, error) {
 	pos, err := reader.Seek(-1, io.SeekEnd)
 	if err != nil {
 		return nil, err
@@ -362,9 +376,14 @@ func newTableReader(reader io.ReadSeeker) (*tableReader, error) {
 		filePos:           uint64(pos),
 		levelPointers:     header.LevelPointers,
 		tableRoot:         header.TableRoot,
+		meta:              header.tableMeta,
 	}
 	tr.topLevel = uint(len(tr.chunkHeights) - 2)
 	return tr, nil
+}
+
+func (tr *tableReader) close() error {
+	return tr.reader.Close()
 }
 
 func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk, error) {
@@ -598,9 +617,15 @@ type tableHeader struct {
 	LevelPointers []uint64
 	EntryCount    uint64
 	TableRoot     merkle.Value
+	tableMeta
 }
 
-func (tw *tableWriter) finished() error {
+type tableMeta struct {
+	LastBlockNumber, BlockCount uint64
+	LastBlockHash, ParentHash   common.Hash
+}
+
+func (tw *tableWriter) finished(meta tableMeta) error {
 	if tw.nextEntry != tw.entryCount {
 		panic("not enough entries")
 	}
@@ -608,6 +633,7 @@ func (tw *tableWriter) finished() error {
 		LevelPointers: make([]uint64, tw.topLevel+1),
 		EntryCount:    tw.entryCount,
 		TableRoot:     tw.lastSubtreeChunks[0].getHash(1),
+		tableMeta:     meta,
 	}
 	wp := tw.writePointers[tw.topLevel]
 	header.LevelPointers[tw.topLevel] = wp

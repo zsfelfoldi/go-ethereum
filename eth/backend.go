@@ -277,8 +277,9 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	}
 	options.Overrides = &overrides
 
-	eth.logIndex = logindex.NewIndexer()
+	eth.logIndex = logindex.NewIndexer(stack.ResolvePath("logindex"))
 	eth.blockchain, err = core.NewBlockChain(chainDb, config.Genesis, eth.engine, eth.logIndex, options)
+	eth.blockchain.RegisterIndexer(eth.logIndex, "log index", true, true)
 	if err != nil {
 		return nil, err
 	}
