@@ -111,6 +111,43 @@ func (ie *indexEntry) compare(i2 *indexEntry) int {
 	return 0
 }
 
+func txAndLogEntries(blockNumber uint64, txs types.Transactions, receipts types.Receipts) indexEntries {
+	var entries indexEntries
+	for txi, tx := range txs {
+		entries = append(entries, indexEntry{
+			indexValue: ([32]byte)(tx.Hash()),
+			txIndex:    uint32(txi),
+			entryType:  ieTransaction,
+		})
+	}
+	for txi, receipt := range receipts {
+		for li, log := range receipt.Logs {
+			var addr32 [32]byte
+			copy(addr32[xx:xx], log.Address[:])
+			entries = append(entries, indexEntry{
+				indexValue:  addr32,
+				blockNumber: blockNumber,
+				txIndex:     uint32(txi),
+				logIndex:    uint32(li),
+				entryType:   ieAddress,
+			})
+			for ti, topic := range log.Topics {
+				entries = append(entries, indexEntry{
+					indexValue:  ([32]byte)(topic),
+					blockNumber: blockNumber,
+					txIndex:     uint32(txi),
+					logIndex:    uint32(li),
+					entryType:   ieTopic0 + uint32(ti),
+				})
+			}
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].compare(&entries[j]) < 0
+	})
+	return entries
+}
+
 type entriesForStorage []entryForStorage
 
 type entryForStorage struct {
@@ -324,26 +361,13 @@ type subtreePos struct {
 	index uint64
 }
 
-func newTableReader(fileName string) (*tableReader, error) {
-	reader, err := os.Open(fileName)
-	if err != nil {
-		return nil, err
-	}
-	tr, err := newTableReaderFromIoReader(reader)
-	if err != nil {
-		reader.Close()
-		return nil, err
-	}
-	return tr, nil
-}
-
-func newTableReaderFromIoReader(reader io.ReadSeekCloser) (*tableReader, error) {
-	pos, err := reader.Seek(-1, io.SeekEnd)
+func newTableReader(ioReader io.ReadSeekCloser) (*tableReader, error) {
+	pos, err := ioReader.Seek(-1, io.SeekEnd)
 	if err != nil {
 		return nil, err
 	}
 	var headerSizeByte [1]byte
-	br, err := reader.Read(headerSizeByte[:])
+	br, err := ioReader.Read(headerSizeByte[:])
 	if err != nil {
 		return nil, err
 	}
@@ -351,12 +375,12 @@ func newTableReaderFromIoReader(reader io.ReadSeekCloser) (*tableReader, error) 
 		return nil, errors.New("unexpected end of file")
 	}
 	headerSize := int(headerSizeByte[0])
-	_, err = reader.Seek(-1-int64(headerSize), io.SeekEnd)
+	_, err = ioReader.Seek(-1-int64(headerSize), io.SeekEnd)
 	if err != nil {
 		return nil, err
 	}
 	headerEnc := make([]byte, headerSize)
-	br, err = reader.Read(headerEnc)
+	br, err = ioReader.Read(headerEnc)
 	if err != nil {
 		return nil, err
 	}
