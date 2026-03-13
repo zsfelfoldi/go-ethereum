@@ -51,7 +51,7 @@ func chunkHeights(entryCount uint64) []uint {
 	subtreesHeight := totalHeight - logEntryChunkSize
 	subtreeLevels := (subtreesHeight + logSubtreeChunkSize - 1) / logSubtreeChunkSize
 	heights := make([]uint, subtreeLevels+2)
-	for i := range subtreeLevels + 1 {
+	for i := 1; i <= subtreeLevels; i++ {
 		heights[i] = subtreesHeight - (subtreeLevels-i)*logSubtreeChunkSize
 	}
 	heights[subtreeLevels+1] = totalHeight
