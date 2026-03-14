@@ -62,6 +62,80 @@ func (it *indexTable) release() {
 	}
 }
 
+type tableWriterStorage struct {
+	format        tableFormat
+	memoryStorage []*bytes.Buffer
+	fileStorage   []*os.File
+}
+
+type tableWriterPartialState struct {
+	EntryCount            uint64
+	FinalizePhase         bool
+	LastMergedEntry       entryForStorage
+	LastFinalizedLevel    uint
+	LastFinalizedPosition uint64
+	MemoryStorage         [][]byte
+}
+
+func newTableWriterStorage(format tableFormat, partial bool) (*tableWriterStorage, error) {
+	tws := &tableWriterStorage{
+		format:        format,
+		memoryStorage: make([]*bytes.Buffer, format.memoryStorage),
+		fileStorage:   make([]*os.File, format.fileStorage),
+	}
+	if partial {
+		pmFile, err := os.Open(format.partialMergeName())
+		if err != nil {
+			return nil, err
+		}
+		var pmState tableWriterPartialState
+		err := rlp.Decode(pmFile, &pmState)
+		pmFile.Close()
+		if err != nil {
+			return nil, err
+		}
+		os.Remove(format.partialMergeName()) //TODO here?
+		if pmState.EntryCount != format.entryCount || len(pmState.MemoryStorage) != format.memoryStorage {
+			return nil, errors.New("invalid partial merge file")
+		}
+		for i := range format.memoryStorage {
+			if i >= pmState.LastFinalizedLevel {
+				tws.memoryStorage[i] = bytes.NewBuffer(pmState.MemoryStorage[i])
+			}
+		}
+		for i := range format.fileStorage {
+			if level := format.memoryStorage + i; level >= pmState.LastFinalizedLevel {
+				tws.fileStorage[i], err = os.Open(format.tempFileName(level))
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+	} else {
+		for i := range format.memoryStorage {
+			tws.memoryStorage[i] = bytes.NewBuffer(nil)
+		}
+		for i := range format.fileStorage {
+			tws.fileStorage[i], err = os.Create(format.tempFileName(level))
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+}
+
+func (tf tableFormat) tableFileName() string {
+	return tf.tablePath + ".table"
+}
+
+func (tf tableFormat) tempFileName(level uint) string {
+	return tf.tablePath + "." + strconv.FormatUint(uint64(level), 16) + ".temp"
+}
+
+func (tf tableFormat) partialMergeName() string {
+	return tf.tablePath + ".merge"
+}
+
 type tableStorage struct {
 	path string
 }

@@ -43,19 +43,33 @@ const (
 	subtreeCacheSize    = 100
 )
 
-func chunkHeights(entryCount uint64) []uint {
-	totalHeight := uint(64 - bits.LeadingZeros64(max(entryCount, 1)-1))
+type tableFormat struct {
+	tablePath                                   string
+	entryCount                                  uint64
+	firstSubtreeLevel, subtreeLevels, leafLevel uint
+	// memoryStorage + fileStorage = subtreeLevels + 1
+	memoryStorage, fileStorage uint
+}
+
+func getTableFormat(tablePath string, entryCount uint64) (tf tableFormat) {
+	tf.tablePath = tablePath
+	tf.entryCount = entryCount
+	tf.leafLevel = uint(64 - bits.LeadingZeros64(max(entryCount, 1)-1))
 	if totalHeight <= logEntryChunkSize {
-		return []uint{0, totalHeight}
+		tf.subtreeLevels = 1
+	} else {
+		tf.subtreeLevels = (tf.leafLevel - logEntryChunkSize + logSubtreeChunkSize - 1) / logSubtreeChunkSize
+		tf.firstSubtreeLevel = tf.leafLevel - logEntryChunkSize - tf.subtreeLevels*logSubtreeChunkSize
 	}
-	subtreesHeight := totalHeight - logEntryChunkSize
-	subtreeLevels := (subtreesHeight + logSubtreeChunkSize - 1) / logSubtreeChunkSize
-	heights := make([]uint, subtreeLevels+2)
-	for i := 1; i <= subtreeLevels; i++ {
-		heights[i] = subtreesHeight - (subtreeLevels-i)*logSubtreeChunkSize
+	if tf.firstSubtreeLevel < fileStorageThreshold {
+		if tf.leafLevel < fileStorageThreshold {
+			tf.memoryStorage = tf.subtreeLevels + 1
+		} else {
+			tf.memoryStorage = (fileStorageThreshold-tf.firstSubtreeLevel)/logSubtreeChunkSize + 1
+		}
 	}
-	heights[subtreeLevels+1] = totalHeight
-	return heights
+	tf.fileStorage = tf.subtreeLevels + 1 - tf.memoryStorage
+	return
 }
 
 type indexEntry struct {
