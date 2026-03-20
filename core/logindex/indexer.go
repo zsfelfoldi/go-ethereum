@@ -41,93 +41,83 @@ type Config struct {
 }
 
 type Indexer struct {
-	path       string
-	initTables bool
-	tables     []tableInfo
+	storage                   *tableStorage
+	lock                      sync.RWMutex
+	unknown, valid, mergeable tableSet
+	requestBlocks             common.Range[uint64]
+	currentMerge              tableID
+	updateMergeCh             chan struct{}
+	closeMergeCh              chan chan struct{}
 }
 
 func NewIndexer(path string) *Indexer {
 	fmt.Println("*** PATH", path)
-	i := &Indexer{
-		path: path,
+	storage, allTables, err := newTableStorage(path)
+	if err != nil {
+		log.Crit("Could not open index table storage", "error", err)
 	}
-	i.readTableList()
+	i := &Indexer{
+		storage:       storage,
+		unknown:       allTables,
+		updateMergeCh: make(chan struct{}, 1),
+		closeMergeCh:  make(chan chan struct{}, 1),
+	}
+	i
+	go i.mergeLoop()
 	return i
 }
 
-type tableInfo struct {
-	fileName string
-	meta     tableMeta
-}
-
-func (ix *Indexer) readTableList() {
-	entries, err := os.ReadDir(ix.path)
-	if err != nil {
-		log.Error("Failed to scan log index directory", "error", err)
-		return
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, parentRoots []byte, transactions types.Transactions, receipts types.Receipts) []byte {
+	ix.deleteTablesFromBlock(blockNumber)
+	roots := make([]byte, common.HashLength*len(ix.params.consensusLevels))
+	for i := 1; i < len(ix.params.consensusLevels); i++ {
+		level := ix.params.consensusLevels[i]
+		if blockNumber >= ix.params.consensusBlockAges[i] { //TODO fork block
+			id := tableID{level: level, index: (blockNumber - ix.params.consensusBlockAges[i]) >> level}
+			for {
+			tr, err := tr.ix.storage.getTableReader(id)
+			if err != nil {
+				log.Error("")
+				return nil
+			}
+			if tr == nil {
+				if ch := 
+				return nil //
+			}
+			}
 		}
-		fileName := filepath.Join(ix.path, entry.Name())
-		tr, err := newTableReader(fileName)
-		if err != nil {
-			log.Error("Failed to open index table (removed)", "file", fileName, "error", err)
-			os.Remove(fileName)
-			continue
-		}
-		ix.tables = append(ix.tables, tableInfo{
-			fileName: fileName,
-			meta:     tr.meta,
-		})
-		tr.close()
 	}
-	if len(ix.tables) == 0 {
-		return
-	}
-	sort.Slice(ix.tables, func(i, j int) bool {
-		return ix.tables[i].meta.LastBlockNumber < ix.tables[j].meta.LastBlockNumber
-	})
-	ix.initTables = true
-}
 
-func (ix *Indexer) lastTableConfirmed() {
+	entries := txAndLogEntries(blockNumber, transactions, receipts)
 
-}
-
-func (ix *Indexer) GetIndexRoots(parentHash common.Hash, transactions types.Transactions, receipts types.Receipts) []byte {
 	return nil
 }
 
 func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts types.Receipts) (ready bool, needBlocks common.Range[uint64]) {
-	if ix.initTables {
-		lastTable := ix.tables[len(ix.tables)-1]
-		if header.Number.Uint64() == lastTable.meta.LastBlockNumber {
-			if header.Hash() == lastTable.meta.LastBlockHash {
-				ix.lastTableConfirmed()
-			} else {
-				log.Warn("Last index table not canonical (removed)", "lastBlockNumber", lastTable.meta.LastBlockNumber, "lastBlockHash", lastTable.meta.LastBlockHash)
-				os.Remove(lastTable.fileName)
-				ix.tables = ix.tables[:len(ix.tables)-1]
-				ix.initTables = len(ix.tables) != 0
-			}
-		}
-		return ix.Status()
-	}
 	return ix.Status()
 }
 
 func (ix *Indexer) Revert(blockNumber uint64) {}
 
 func (ix *Indexer) Status() (ready bool, needBlocks common.Range[uint64]) {
-	if ix.initTables {
-		return true, common.NewRange[uint64](ix.tables[len(ix.tables)-1].meta.LastBlockNumber, 1)
-	}
-	return false, common.Range[uint64]{}
+	i.lock.RLock()
+	defer i.lock.RUnlock()
+
+	return !i.requestBlocks.IsEmpty(), i.requestBlocks
 }
 
 func (ix *Indexer) SetHistoryCutoff(blockNumber uint64) {}
 func (ix *Indexer) SetFinalized(blockNumber uint64)     {}
 func (ix *Indexer) Suspended()                          {}
 func (ix *Indexer) Stop()                               {}
+
+func (ix *Indexer) updateMerge() {
+	select {
+	case ix.updateMergeCh <- struct{}{}:
+	default:
+	}
+}
+
+func (ix *Indexer) mergeLoop() {
+
+}

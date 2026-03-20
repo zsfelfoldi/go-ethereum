@@ -34,131 +34,129 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+type tableStorage struct {
+	lock    sync.Mutex
+	path    string
+	tables  map[tableID]*indexTable
+	partial map[tableID]*partialTable
+}
+
+type tableID struct {
+	level uint32
+	index uint64
+}
+
 type indexTable struct {
-	tablePath              string
-	memTable               []byte
-	firstBlock, blockCount uint64
-	refCount               int
+	persistent bool
+	refCount   int
+	file       *os.File
+	memTable   []byte
+	reader     *tableReader
 }
 
-func (it *indexTable) getReader() (*tableReader, error) {
-	var ioReader io.ReadSeekCloser
-	if it.memTable != nil {
-		ioReader = bytes.NewReader(it.memTable)
-	} else {
-		var err error
-		ioReader, err = os.Open(it.tablePath + ".table")
-		if err != nil {
-			return nil, err
-		}
+type partialTable struct {
+	format     tableFormat
+	open       bool
+	files      []*os.File
+	memLevels  [][]byte
+	buffers    []*bytes.Buffer
+	writeState []byte
+}
+
+func newTableStorage(path string) (*tableStorage, tableSet, error) {
+
+}
+
+func (ts *tableStorage) getReader(id tableID) (*tableReader, error) {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
+
+	it := ts.tables[id]
+	if it == nil {
+		return nil, errors.New("table not found")
 	}
-	return newTableReader(ioReader)
-}
-
-func (it *indexTable) release() {
-	it.refCount--
-	if it.refCount == 0 && it.memTable == nil {
-		os.Remove(it.tablePath + ".table")
-	}
-}
-
-type tableWriterStorage struct {
-	format        tableFormat
-	memoryStorage []*bytes.Buffer
-	fileStorage   []*os.File
-}
-
-type tableWriterPartialState struct {
-	EntryCount            uint64
-	FinalizePhase         bool
-	LastMergedEntry       entryForStorage
-	LastFinalizedLevel    uint
-	LastFinalizedPosition uint64
-	MemoryStorage         [][]byte
-}
-
-func newTableWriterStorage(format tableFormat, partial bool) (*tableWriterStorage, error) {
-	tws := &tableWriterStorage{
-		format:        format,
-		memoryStorage: make([]*bytes.Buffer, format.memoryStorage),
-		fileStorage:   make([]*os.File, format.fileStorage),
-	}
-	if partial {
-		pmFile, err := os.Open(format.partialMergeName())
-		if err != nil {
-			return nil, err
-		}
-		var pmState tableWriterPartialState
-		err := rlp.Decode(pmFile, &pmState)
-		pmFile.Close()
-		if err != nil {
-			return nil, err
-		}
-		os.Remove(format.partialMergeName()) //TODO here?
-		if pmState.EntryCount != format.entryCount || len(pmState.MemoryStorage) != format.memoryStorage {
-			return nil, errors.New("invalid partial merge file")
-		}
-		for i := range format.memoryStorage {
-			if i >= pmState.LastFinalizedLevel {
-				tws.memoryStorage[i] = bytes.NewBuffer(pmState.MemoryStorage[i])
-			}
-		}
-		for i := range format.fileStorage {
-			if level := format.memoryStorage + i; level >= pmState.LastFinalizedLevel {
-				tws.fileStorage[i], err = os.Open(format.tempFileName(level))
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-	} else {
-		for i := range format.memoryStorage {
-			tws.memoryStorage[i] = bytes.NewBuffer(nil)
-		}
-		for i := range format.fileStorage {
-			tws.fileStorage[i], err = os.Create(format.tempFileName(level))
+	if it.refCount == 0 {
+		if it.persistent {
+			f, err := os.Open(ts.tableFileName(id))
 			if err != nil {
 				return nil, err
 			}
+			fi, err := f.Stat()
+			if err != nil {
+				return nil, err
+			}
+			reader, err := newTableReader(f, fi.Size())
+			if err != nil {
+				return nil, err
+			}
+			it.file, it.reader = f, reader
+		} else {
+			tr, err := bytes.NewReader(it.memTable, len(it.memTable))
+			if err != nil {
+				return nil, err
+			}
+			it.reader = tr
 		}
 	}
+	it.refCount++
+	return it.reader
 }
 
-func (tf tableFormat) tableFileName() string {
-	return tf.tablePath + ".table"
-}
+func (ts *tableStorage) releaseReader(id tableID) {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
 
-func (tf tableFormat) tempFileName(level uint) string {
-	return tf.tablePath + "." + strconv.FormatUint(uint64(level), 16) + ".temp"
-}
-
-func (tf tableFormat) partialMergeName() string {
-	return tf.tablePath + ".merge"
-}
-
-type tableStorage struct {
-	path string
-}
-
-func (ts *tableStorage) newIndexTableFromBlock(block *types.Block) (*indexTable, error) {
-	it, err := ts.newIndexTableFromTxReceipts(block.NumberU64(), block.Transactions(), block.Receipts())
-	if err != nil {
-		return nil, err
+	it := ts.tables[id]
+	if it.refCount <= 0 {
+		panic("table reader refCount <= 0")
 	}
-	it.setBlockHash(block.Hash())
+	it.refCount--
+	if it.refCount == 0 {
+		if it.file != nil {
+			it.file.Close()
+		}
+		it.file, it.reader = nil, nil
+	}
 }
 
-func (ts *tableStorage) newIndexTableFromTxReceipts(blockNumber uint64, txs types.Transactions, receipts types.Receipts) *indexTable {
-	entries := txAndLogEntries(blockNumber, txs, receipts)
-	entryCount := uint64(len(entries))
-	ch := chunkHeights(entryCount)
-	fileCount := len(ch)
-	for fileCount > 0 && ch[fileCount-1] <= memoryTableLimit {
-		fileCount--
-	}
-	files := make([]os.File, fileCount)
-	memTableCount := len(ch) - fileCount
-	writers := make([]io.Writer, len(ch))
+func (ts *tableStorage) getWriter(id tableID, format tableFormat) (*tableWriter, []byte, error) {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
 
-	tw := newTableWriter(ch, entryCount)
+	if it := ts.tables[id]; it != nil {
+		return nil, nil, errors.New("finalized table already exists")
+	}
+	pt := ts.partial[id]
+	if pt == nil {
+		pt = &partialTable{
+			format:    format,
+			files:     make([]*os.File, format.fileStorage),
+			memLevels: make([][]byte, format.memoryStorage),
+			buffers:   make([]*bytes.Buffer, format.memoryStorage),
+		}
+		ts.partial[id] = pt
+	}
+	for i := range pt.files {
+		f, err := os.OpenFile(ts.tempFileName(id, format.memoryStorage+i), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			for j := range i {
+				pt.files[j].Close()
+			}
+			return nil, nil, err
+		}
+		pt.files[i] = f
+	}
+	for i, ml := range pt.memLevels {
+		pt.buffers[i] = bytes.NewBuffer(ml)
+	}
+	pt.open = true
+	writers := make([]io.Writer, format.fileStorage+format.memoryStorage)
+	for i, buf := range pt.buffers {
+		writers[i] = buf
+	}
+	for i, file := range pt.files {
+		writers[format.memoryStorage+i] = file
+	}
+	tw := newTableWriter(writers, format)
+	return tw, pt.writeState, nil
 }

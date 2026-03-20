@@ -44,7 +44,6 @@ const (
 )
 
 type tableFormat struct {
-	tablePath                                   string
 	entryCount                                  uint64
 	firstSubtreeLevel, subtreeLevels, leafLevel uint
 	// memoryStorage + fileStorage = subtreeLevels + 1
@@ -359,15 +358,16 @@ func (sc *subtreeChunk) getHash(gti uint64) (result merkle.Value) {
 }
 
 type tableReader struct {
-	reader              io.ReadSeekCloser
-	entryChunkCache     *lru.Cache[uint64, indexEntries]
-	subtreeChunkCache   *lru.Cache[subtreePos, *subtreeChunk]
-	entryCount, filePos uint64
-	levelPointers       []uint64
-	chunkHeights        []uint
-	topLevel            uint
-	tableRoot           merkle.Value
-	meta                tableMeta
+	reader            io.ReaderAt
+	fileSize          int64
+	entryChunkCache   *lru.Cache[uint64, indexEntries]
+	subtreeChunkCache *lru.Cache[subtreePos, *subtreeChunk]
+	entryCount        uint64
+	levelPointers     []uint64
+	chunkHeights      []uint
+	topLevel          uint
+	tableRoot         merkle.Value
+	meta              tableMeta
 }
 
 type subtreePos struct {
@@ -375,31 +375,16 @@ type subtreePos struct {
 	index uint64
 }
 
-func newTableReader(ioReader io.ReadSeekCloser) (*tableReader, error) {
-	pos, err := ioReader.Seek(-1, io.SeekEnd)
-	if err != nil {
-		return nil, err
-	}
+func newTableReader(ioReader io.ReaderAt, fileSize int64) (*tableReader, error) {
 	var headerSizeByte [1]byte
-	br, err := ioReader.Read(headerSizeByte[:])
+	_, err := ioReader.ReadAt(headerSizeByte[:], fileSize-1)
 	if err != nil {
 		return nil, err
 	}
-	if br != 1 {
-		return nil, errors.New("unexpected end of file")
-	}
-	headerSize := int(headerSizeByte[0])
-	_, err = ioReader.Seek(-1-int64(headerSize), io.SeekEnd)
+	headerEnc := make([]byte, headerSizeByte[0])
+	_, err = ioReader.ReadAt(headerEnc, fileSize-1-int64(headerSizeByte[0]))
 	if err != nil {
 		return nil, err
-	}
-	headerEnc := make([]byte, headerSize)
-	br, err = ioReader.Read(headerEnc)
-	if err != nil {
-		return nil, err
-	}
-	if br != headerSize {
-		return nil, errors.New("could not read table header")
 	}
 	var header tableHeader
 	if err := rlp.DecodeBytes(headerEnc, &header); err != nil {
@@ -407,21 +392,17 @@ func newTableReader(ioReader io.ReadSeekCloser) (*tableReader, error) {
 	}
 	tr := &tableReader{
 		reader:            reader,
+		fileSize:          fileSize,
 		entryChunkCache:   lru.NewCache[uint64, indexEntries](entryCacheSize),
 		subtreeChunkCache: lru.NewCache[subtreePos, *subtreeChunk](subtreeCacheSize),
 		chunkHeights:      chunkHeights(header.EntryCount),
 		entryCount:        header.EntryCount,
-		filePos:           uint64(pos),
 		levelPointers:     header.LevelPointers,
 		tableRoot:         header.TableRoot,
 		meta:              header.tableMeta,
 	}
 	tr.topLevel = uint(len(tr.chunkHeights) - 2)
 	return tr, nil
-}
-
-func (tr *tableReader) close() error {
-	return tr.reader.Close()
 }
 
 func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk, error) {
@@ -440,20 +421,11 @@ func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 		i := index % subtreeChunkSize
 		start, stop = tr.levelPointers[level+1]+sc.boundaryFilePos[i], tr.levelPointers[level+1]+sc.boundaryFilePos[i+1]
 	}
-	if tr.filePos != start {
-		tr.reader.Seek(int64(start), io.SeekStart)
-	}
 	enc := make([]byte, stop-start)
-	br, err := tr.reader.Read(enc)
+	_, err := tr.reader.ReadAt(enc, start)
 	if err != nil {
-		tr.filePos = math.MaxUint64
 		return nil, err
 	}
-	if br != len(enc) {
-		tr.filePos = math.MaxUint64
-		return nil, errors.New("unexpected end of file")
-	}
-	tr.filePos = stop
 	var ss subtreesForStorage
 	if err := rlp.DecodeBytes(enc, &ss); err != nil {
 		return nil, err
@@ -477,16 +449,10 @@ func (tr *tableReader) getEntryChunk(index uint64) (indexEntries, error) {
 		tr.reader.Seek(int64(start), io.SeekStart)
 	}
 	enc := make([]byte, stop-start)
-	br, err := tr.reader.Read(enc)
+	_, err := tr.reader.ReadAt(enc, start)
 	if err != nil {
-		tr.filePos = math.MaxUint64
 		return nil, err
 	}
-	if br != len(enc) {
-		tr.filePos = math.MaxUint64
-		return nil, errors.New("unexpected end of file")
-	}
-	tr.filePos = stop
 	var ess entriesForStorage
 	if err := rlp.DecodeBytes(enc, &ess); err != nil {
 		return nil, err
@@ -704,43 +670,6 @@ func (tw *tableWriter) finished(meta tableMeta) error {
 	tw.writers[tw.topLevel].Flush()
 	tw.files[tw.topLevel].Close()
 	return nil
-}
-
-func mergeTables(fileName string, readers []*tableReader) error {
-	var entryCount uint64
-	for _, tr := range readers {
-		entryCount += tr.entryCount
-	}
-	tw, err := newTableWriter(fileName, entryCount)
-	if err != nil {
-		return err
-	}
-	pointers := make([]uint64, len(readers))
-	for {
-		var (
-			bestEntry  *indexEntry
-			bestReader int
-		)
-		for i, tr := range readers {
-			if pointers[i] < tr.entryCount {
-				ie, err := tr.getEntry(pointers[i])
-				if err != nil {
-					return err
-				}
-				if bestEntry == nil || ie.compare(bestEntry) < 0 {
-					bestEntry, bestReader = ie, i
-				}
-			}
-		}
-		if bestEntry == nil {
-			break
-		}
-		if err := tw.addEntry(bestEntry); err != nil {
-			return err
-		}
-		pointers[bestReader]++
-	}
-	return tw.finished()
 }
 
 var zeroValues = func() []merkle.Value {
