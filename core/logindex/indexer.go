@@ -45,9 +45,10 @@ type Indexer struct {
 	lock                      sync.RWMutex
 	unknown, valid, mergeable tableSet
 	requestBlocks             common.Range[uint64]
-	currentMerge              tableID
+	mergeTarget               tableID
 	updateMergeCh             chan struct{}
 	closeMergeCh              chan chan struct{}
+	mergeWg                   sync.WaitGroup
 }
 
 func NewIndexer(path string) *Indexer {
@@ -60,9 +61,9 @@ func NewIndexer(path string) *Indexer {
 		storage:       storage,
 		unknown:       allTables,
 		updateMergeCh: make(chan struct{}, 1),
-		closeMergeCh:  make(chan chan struct{}, 1),
+		closeMergeCh:  make(chan struct{}),
 	}
-	i
+	ix.mergeWg.Add(1)
 	go i.mergeLoop()
 	return i
 }
@@ -75,15 +76,15 @@ func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, par
 		if blockNumber >= ix.params.consensusBlockAges[i] { //TODO fork block
 			id := tableID{level: level, index: (blockNumber - ix.params.consensusBlockAges[i]) >> level}
 			for {
-			tr, err := tr.ix.storage.getTableReader(id)
-			if err != nil {
-				log.Error("")
-				return nil
-			}
-			if tr == nil {
-				if ch := 
-				return nil //
-			}
+				tr, err := tr.ix.storage.getTableReader(id)
+				if err != nil {
+					log.Error("")
+					return nil
+				}
+				if tr == nil {
+					//				if ch :=
+					return nil //
+				}
 			}
 		}
 	}
@@ -109,15 +110,16 @@ func (ix *Indexer) Status() (ready bool, needBlocks common.Range[uint64]) {
 func (ix *Indexer) SetHistoryCutoff(blockNumber uint64) {}
 func (ix *Indexer) SetFinalized(blockNumber uint64)     {}
 func (ix *Indexer) Suspended()                          {}
-func (ix *Indexer) Stop()                               {}
+
+func (ix *Indexer) Stop() {
+	close(ix.closeMergeCh)
+	ix.mergeWg.Wait()
+	ix.storage.close()
+}
 
 func (ix *Indexer) updateMerge() {
 	select {
 	case ix.updateMergeCh <- struct{}{}:
 	default:
 	}
-}
-
-func (ix *Indexer) mergeLoop() {
-
 }

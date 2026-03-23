@@ -50,8 +50,7 @@ type tableFormat struct {
 	memoryStorage, fileStorage uint
 }
 
-func getTableFormat(tablePath string, entryCount uint64) (tf tableFormat) {
-	tf.tablePath = tablePath
+func newTableFormat(entryCount uint64) (tf tableFormat) {
 	tf.entryCount = entryCount
 	tf.leafLevel = uint(64 - bits.LeadingZeros64(max(entryCount, 1)-1))
 	if totalHeight <= logEntryChunkSize {
