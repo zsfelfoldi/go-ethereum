@@ -52,7 +52,7 @@ func (ix *Indexer) mergeLoop() {
 				if source == nil {
 					break mergeLoop
 				}
-				ix.mergeTable(source, target, func() bool {
+				done, err := ix.mergeTable(source, target, func() bool {
 					select {
 					case <-ix.updateMergeCh:
 						ix.lock.Lock()
@@ -66,6 +66,7 @@ func (ix *Indexer) mergeLoop() {
 						return false
 					}
 				})
+				//TODO delete source/target on err, handle next target on done / target update
 			}
 		case <-ix.closeMergeCh:
 			ix.mergeWg.Done()
@@ -96,14 +97,13 @@ func (ix *Indexer) mergeTable(source []tableID, target tableID, stopFn func() bo
 	if ix.storage.exists(tsID) {
 		tsReader, err := ix.storage.getReadSeeker(tsID)
 		if err != nil {
-			log.Error("Could not open reader for index table temp state", "error", err)
+			return false, fmt.Errorf("could not open reader for index table temp state: %v", err)
 		} else {
 			if err := rlp.Decode(tsReader, &mergeState); err != nil {
-				log.Error("Could not decode index table temp state", "error", err)
-				ms = mergeState{}
+				return false, fmt.Errorf("could not decode index table temp state: %v", err)
 			}
 			if err := ix.storage.release(tsID); err != nil {
-				log.Error("Could not release index table temp state reader", "error", err)
+				return false, fmt.Errorf("could not release index table temp state reader: %v", err)
 			}
 		}
 	}
@@ -115,10 +115,7 @@ func (ix *Indexer) mergeTable(source []tableID, target tableID, stopFn func() bo
 	// start/resume writing merged entries if not finished yet
 	if ms.Phase == mpWriteEntries {
 		if len(ms.SourcePtrs) != len(source) {
-			ix.cleanupTable(target)
-			log.Warn("Partial index table merge with incorrect source count found")
-			ms.SourcePtrs = make([]uint64, len(source))
-			ms = mergeState{}
+			return false, fmt.Errorf("partial index table merge with incorrect source count found")
 		}
 		if done, err := mergeWritePhase(ms, source, target, stopFn); !done {
 			return done, err
@@ -133,9 +130,10 @@ func (ix *Indexer) mergeTable(source []tableID, target tableID, stopFn func() bo
 	if ms.Phase == mpTempCopy {
 
 	}
-	if ms.Phase == mpFinalize {
-		ix.storage.move(tablePartID{tableID: target, state: tsTempLevel, tempLevel: ms.TempLevels - 1}, tablePartID{tableID: target, state: tsFinal})
+	if err := ix.storage.move(tablePartID{tableID: target, state: tsTempLevel, tempLevel: ms.TempLevels - 1}, tablePartID{tableID: target, state: tsFinal}); err != nil {
+		return false, fmt.Errorf("could not rename finalized index table: %v", err)
 	}
+	return true, nil
 }
 
 func (ix *Indexer) mergeWritePhase(ms *mergeState, source []tableID, target tableID, stopFn func() bool) (done bool, finalErr error) {
@@ -145,12 +143,12 @@ func (ix *Indexer) mergeWritePhase(ms *mergeState, source []tableID, target tabl
 	defer func() {
 		for i := range openReaders {
 			if err := ix.storage.release(tablePartID{tableID: source[i], state: tsFinal}); err != nil {
-				log.Error("Could not release merge source index table reader", "error", err)
+				done, finalErr = false, fmt.Errorf("could not release merge source index table reader: %v", err)
 			}
 		}
 		for i := range openWriters {
 			if err := ix.storage.release(tablePartID{tableID: target, state: tsTempLevel, tempLevel: i}); err != nil {
-				log.Error("Could not release merge targer index table writer", "error", err)
+				done, finalErr = false, fmt.Errorf("could not release merge targer index table writer: %v", err)
 			}
 		}
 	}()
@@ -161,9 +159,7 @@ func (ix *Indexer) mergeWritePhase(ms *mergeState, source []tableID, target tabl
 			sourceReaders[i], err = newTableReader(sr, size)
 		}
 		if err != nil {
-			log.Error("Could not open reader for merge source index table", "error", err)
-			ix.cleanupTable(sourceID)
-			return
+			return false, fmt.Errorf("could not open reader for merge source index table: %v", err)
 		}
 		openReaders++
 		ms.EntryCount += sourceReaders[i].entryCount
@@ -174,16 +170,14 @@ func (ix *Indexer) mergeWritePhase(ms *mergeState, source []tableID, target tabl
 	for i := range tw {
 		w, err := ix.storage.getAppendWriter(tablePartID{tableID: target, state: tsTempLevel, tempLevel: i}, i >= targetFormat.memoryStorage)
 		if err != nil {
-			log.Error("Could not create merge target index table writer", "error", err)
-			return
+			return false, fmt.Errorf("could not create merge target index table writer: %v", err)
 		}
 		tw[i] = bufio.NewWriter(w)
 		openWriters++
 	}
 	targetWriter, err := newTableWriter(tw, ms.EntryCount)
 	if err != nil {
-		log.Error("Could not create merge target index table writer", "error", err)
-		return
+		return false, fmt.Errorf("could not create merge target index table writer: %v", err)
 	}
 	var cbCounter int
 	for {
