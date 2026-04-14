@@ -57,15 +57,15 @@ func NewIndexer(path string) *Indexer {
 	if err != nil {
 		log.Crit("Could not open index table storage", "error", err)
 	}
-	i := &Indexer{
+	ix := &Indexer{
 		storage:       storage,
 		unknown:       allTables,
 		updateMergeCh: make(chan struct{}, 1),
 		closeMergeCh:  make(chan struct{}),
 	}
 	ix.mergeWg.Add(1)
-	go i.mergeLoop()
-	return i
+	go ix.mergeLoop()
+	return ix
 }
 
 func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, parentRoots []byte, transactions types.Transactions, receipts types.Receipts) []byte {
