@@ -35,10 +35,13 @@ import (
 )
 
 type tableStorage struct {
-	lock       sync.Mutex
-	path       string
-	closed     bool
-	tableParts map[tablePartID]*tablePart
+	lock            sync.Mutex
+	path            string
+	closed          bool
+	maxFiles        int
+	lastUsedCounter uint64
+	tableFiles      map[tableFileID]fileReader
+	tableParts      map[tablePartID]*tablePart
 }
 
 const (
@@ -57,25 +60,39 @@ type tablePartID struct {
 	state, tempLevel int
 }
 
-func (id *tablePartID) fileName() string {
+type tableFileID struct {
+	tablePartID
+	fileIndex int
+}
+
+type fileReader struct {
+	file     *os.File
+	lastUsed uint64
+}
+
+func (id *tableFileID) fileName() string {
 	switch id.state {
 	case tsFinal:
-		return fmt.Sprintf("table_%016x_%016x.table", firstBlock, blockCount)
+		return fmt.Sprintf("table_%016x_%016x.table-%04x", firstBlock, blockCount, id.fileIndex)
 	case tsTempLevel:
-		return fmt.Sprintf("table_%016x_%016x.temp_level_%02x", firstBlock, blockCount, id.tempLevel)
+		return fmt.Sprintf("table_%016x_%016x.temp_level_%02x-%04x", firstBlock, blockCount, id.tempLevel, id.fileIndex)
 	case tsTempState:
-		return fmt.Sprintf("table_%016x_%016x.temp_state", firstBlock, blockCount)
+		return fmt.Sprintf("table_%016x_%016x.temp_state-%04x", firstBlock, blockCount, id.fileIndex)
 	default:
-		panic("invalid table state")
+		panic("invalid table file ID")
 	}
 }
 
-func (id *tablePartID) parseName(name string) bool {
+func (id *tableFileID) parseName(name string) bool {
 	var (
 		firstBlock, blockCount uint64
-		ext                    string
+		partID, ext            string
 	)
-	n, err := fmt.Sscanf(name, "table_%016x_%016x.%s", &firstBlock, &blockCount, &ext)
+	n, err := fmt.Sscanf(name, "%s-%04x", &partID, &id.fileIndex)
+	if n != 2 || err != nil {
+		return false
+	}
+	n, err := fmt.Sscanf(partID, "table_%016x_%016x.%s", &firstBlock, &blockCount, &ext)
 	if n != 3 || err != nil {
 		return false
 	}
@@ -101,11 +118,39 @@ func (id *tablePartID) parseName(name string) bool {
 	return name == id.fileName()
 }
 
+func (ts *tableStorage) getFileReader(id tableFileID) (*os.File, error) {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
+
+	ts.lastUsedCounter++
+	if fr, ok := ts.tableFiles[id]; ok {
+		fr.lastUsed = ts.lastUsedCounter
+		ts.tableFiles[id] = fr
+		return fr.file, nil
+	}
+	for len(ts.tableFiles) >= maxFiles {
+		oldestLu := math.MaxUint64
+		var oldestId tableFileID
+		for id, fr := range ts.tableFiles {
+			if fr.lastUsed < oldestLu {
+				oldestId, oldestLu = id, fr.lastUsed
+			}
+		}
+		ts.tableFiles[oldestId].file.Close()
+		delete(ts.tableFiles, oldestId)
+	}
+	file, err := os.Open(ts.getFileName(id))
+	if err != nil {
+		return nil, err
+	}
+	ts.tableFiles[oldestId] = fileReader{file: file, lastUsed: ts.lastUsedCounter}
+	return file, nil
+}
+
 type tablePart struct {
 	fileStorage bool // stored in individual file
 	locked      bool // used by exclusive reader/writer
 	readerCount int  // used by one or more concurrent readers
-	file        *os.File
 	memData     []byte
 	memWriter   *bytes.Buffer
 }
@@ -115,9 +160,14 @@ type memoryTablePart struct {
 	Data []byte
 }
 
-func newTableStorage(path string) (*tableStorage, error) {
+func newTableStorage(path string, maxFiles int) (*tableStorage, error) {
+	if maxFiles < 1 {
+		return nil, errors.New("invalid maxFiles parameter")
+	}
 	ts := &tableStorage{
 		path:       path,
+		maxFiles:   maxFiles,
+		tableFiles: make(map[tableFileID]fileReader),
 		tableParts: make(map[tablePartID]*tablePart),
 	}
 	var memTables []memoryTablePart
@@ -152,17 +202,20 @@ func newTableStorage(path string) (*tableStorage, error) {
 		if entry.IsDir() {
 			continue
 		}
-		var id tablePartID
+		var id tableFileID
 		if !id.parseName(entry.Name()) {
 			log.Warn("Invalid index table file name", "name", entry.Name())
 			continue
 		}
-		ts.tableParts[id] = &tablePart{fileStorage: true}
+		ts.tableParts[id.tablePartID] = &tablePart{fileStorage: true}
 	}
 	return ts, nil
 }
 
 func (ts *tableStorage) close() {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
+
 	var memTables []memoryTablePart
 	for id, tp := range ts.tableParts {
 		if tp.locked {
