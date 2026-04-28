@@ -120,6 +120,11 @@ func newTableFiles(path string, maxFileSize int64, maxOpenFiles int) (*tableFile
 		}
 		fi.fileCount++
 		fi.maxFileIndex = max(fi.maxFileIndex, fileIndex)
+		if fileInfo, err := entry.Info(); err == nil {
+			fi.size += fileInfo.Size()
+		} else {
+			return nil, err
+		}
 	}
 	for name, fi := range tf.tableFiles {
 		if fi.fileCount != 0 && fi.fileCount != fi.maxFileIndex+1 {
@@ -164,6 +169,7 @@ func (tf *tableFiles) loadMemTables() {
 			tf:      tf,
 			name:    mt.Name,
 			memData: mt.Data,
+			size:    len(mt.Data),
 		}
 	}
 }
@@ -199,10 +205,10 @@ func (tf *tableFiles) getReaderAt(name string) (io.ReaderAt, int64, error) {
 
 	fi, ok := tf.tableFiles[name]
 	if !ok {
-		return nil, 0, errors.New("deleted table file does not exist")
+		return nil, 0, errors.New("table file does not exist")
 	}
 	if fi.locked {
-		return nil, 0, errors.New("renamed table file is currently locked")
+		return nil, 0, errors.New("table file is currently locked")
 	}
 	return fi, fi.size, nil
 }

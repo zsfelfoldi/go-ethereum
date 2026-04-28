@@ -45,25 +45,25 @@ const (
 
 type tableFormat struct {
 	entryCount                                  uint64
-	firstSubtreeLevel, subtreeLevels, leafLevel uint
+	firstSubtreeHeight, subtreeLevels, leafHeight uint
 	// memoryStorage + fileStorage = subtreeLevels + 1
 	memoryStorage, fileStorage uint
 }
 
 func newTableFormat(entryCount uint64) (tf tableFormat) {
 	tf.entryCount = entryCount
-	tf.leafLevel = uint(64 - bits.LeadingZeros64(max(entryCount, 1)-1))
+	tf.leafHeight = uint(64 - bits.LeadingZeros64(max(entryCount, 1)-1))
 	if totalHeight <= logEntryChunkSize {
 		tf.subtreeLevels = 1
 	} else {
-		tf.subtreeLevels = (tf.leafLevel - logEntryChunkSize + logSubtreeChunkSize - 1) / logSubtreeChunkSize
-		tf.firstSubtreeLevel = tf.leafLevel - logEntryChunkSize - tf.subtreeLevels*logSubtreeChunkSize
+		tf.subtreeLevels = (tf.leafHeight - logEntryChunkSize + logSubtreeChunkSize - 1) / logSubtreeChunkSize
+		tf.firstSubtreeHeight = tf.leafHeight - logEntryChunkSize - tf.subtreeLevels*logSubtreeChunkSize
 	}
-	if tf.firstSubtreeLevel < fileStorageThreshold {
-		if tf.leafLevel < fileStorageThreshold {
+	if tf.firstSubtreeHeight < fileStorageThreshold {
+		if tf.leafHeight < fileStorageThreshold {
 			tf.memoryStorage = tf.subtreeLevels + 1
 		} else {
-			tf.memoryStorage = (fileStorageThreshold-tf.firstSubtreeLevel)/logSubtreeChunkSize + 1
+			tf.memoryStorage = (fileStorageThreshold-tf.firstSubtreeHeight)/logSubtreeChunkSize + 1
 		}
 	}
 	tf.fileStorage = tf.subtreeLevels + 1 - tf.memoryStorage
