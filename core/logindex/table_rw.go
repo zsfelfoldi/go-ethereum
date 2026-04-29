@@ -522,8 +522,8 @@ func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
 }
 
 type tableWriter struct {
-	ts                     *tableStorage
-	id                     tableID
+	tf                     *tableFiles
+	name                   string
 	entryCount             uint64
 	format                 tableFormat
 	meta                   tableMeta
@@ -560,29 +560,29 @@ type writeState struct {
 	Meta              tableMeta
 }
 
-func (ts *tableStorage) newTableWriter(id tableID, storedState bool, entryCount uint64) (*tableWriter, error) {
+func newTableWriter(tf *tableFiles, name string, storedState bool, entryCount uint64) (*tableWriter, error) {
 	var state writeState
 	if storedState {
-		r, l, err := ts.tf.getReaderAt(ts.getTableWriteStateName(id))
+		r, l, err := tf.getReaderAt(name + writeStateSuffix)
 		if err != nil {
-			ts.tf.deleteFile(tw.ts.getTableWriteStateName(tw.id))
+			tf.deleteFile(name + writeStateSuffix)
 			return nil, err
 		}
 		enc := make([]byte, l)
 		if _, err := r.ReadAt(enc, 0); err != nil {
-			ts.tf.deleteFile(tw.ts.getTableWriteStateName(tw.id))
+			tf.deleteFile(name + writeStateSuffix)
 			return nil, err
 		}
 		if err := rlp.DecodeBytes(enc, &state); err != nil {
-			ts.tf.deleteFile(tw.ts.getTableWriteStateName(tw.id))
+			tf.deleteFile(name + writeStateSuffix)
 			return nil, err
 		}
 		entryCount = state.EntryCount
 	}
 	format := newTableFormat(entryCount)
 	tw := &tableWriter{
-		ts:                ts,
-		id:                id,
+		tf:                tf,
+		name:              name,
 		hasStoredState:    storedState,
 		lastEntryChunk:    tw.newEntryChunk(),
 		lastSubtreeChunks: make([]*subtreeChunk, format.subtreeLevels),
@@ -604,7 +604,7 @@ func (ts *tableStorage) newTableWriter(id tableID, storedState bool, entryCount 
 			tw.lastSubtreeChunks[i] = state.LastSubtreeChunks[i].toSubtreeChunk(tw.format.subtreeChunkHeight(i), tw.format.leafHeight-tw.format.baseHeight(i+1))
 		}
 		for i := range tw.format.subtreeLevels + 1 {
-			_, l, err := ts.tf.getReaderAt(ts.getTableWriteTempName(id, i))
+			_, l, err := tf.getReaderAt(name + writeTempSuffix(i))
 			if err != nil {
 				tw.deleteOnError()
 				return nil, err
@@ -615,12 +615,12 @@ func (ts *tableStorage) newTableWriter(id tableID, storedState bool, entryCount 
 		tw.copyLevel = state.CopyLevel
 		tw.copyReadPointer = state.CopyReadPointer
 		var err error
-		tw.copyReader, tw.copyReadSize, err = ts.tf.getReaderAt(ts.getTableWriteTempName(id, tw.copyLevel))
+		tw.copyReader, tw.copyReadSize, err = tf.getReaderAt(name + writeTempSuffix(tw.copyLevel))
 		if err != nil {
 			tw.deleteOnError()
 			return nil, err
 		}
-		_, tw.copyWritePointer, err = ts.tf.getReaderAt(ts.getTableWriteTempName(id, i))
+		_, tw.copyWritePointer, err = tf.getReaderAt(name + writeTempSuffix(tw.format.subtreeLevels))
 		if err != nil {
 			tw.deleteOnError()
 			return nil, err
@@ -641,11 +641,11 @@ func (tw *tableWriter) deleteOnError() {
 	if tw.copyWriter != nil {
 		tw.copyWriter.Close()
 	}
-	tw.ts.tf.deleteFile(tw.ts.getTableWriteStateName(tw.id))
+	tw.tf.deleteFile(tw.name + writeStateSuffix)
 	for i := range tw.format.subtreeLevels + 1 {
-		tw.ts.tf.deleteFile(tw.ts.getTableWriteTempName(tw.id, i))
+		tw.tf.deleteFile(tw.name + writeTempSuffix(i))
 	}
-	tw.ts.tf.deleteFile(tw.ts.getTableName(tw.id))
+	tw.tf.deleteFile(tw.name)
 }
 
 func (tw *tableWriter) open() error {
@@ -653,7 +653,7 @@ func (tw *tableWriter) open() error {
 		panic("table writer is already open")
 	}
 	if tw.hasStoredState {
-		if err := tw.ts.tf.deleteFile(tw.ts.getTableWriteStateName(tw.id)); err != nil {
+		if err := tw.tf.deleteFile(tw.name + writeStateSuffix); err != nil {
 			return err
 		}
 		tw.hasStoredState = false
@@ -662,13 +662,13 @@ func (tw *tableWriter) open() error {
 	switch tw.phase {
 	case wpWriteEntries:
 		for i := range tw.format.subtreeLevels + 1 {
-			tw.writers[i], err = tw.ts.tf.getAppendWriter(tw.ts.getTableWriteTempName(id, i), i < tw.format.memoryStorage)
+			tw.writers[i], err = tw.tf.getAppendWriter(tw.name+writeTempSuffix(i), i < tw.format.memoryStorage)
 			if err != nil {
 				return err
 			}
 		}
 	case wpTempCopy:
-		tw.copyWriter, err = tw.ts.tf.getAppendWriter(tw.ts.getTableWriteTempName(id, tw.format.subtreeLevels), tw.format.subtreeLevels < tw.format.memoryStorage)
+		tw.copyWriter, err = tw.tf.getAppendWriter(tw.name+writeTempSuffix(tw.format.subtreeLevels), tw.format.subtreeLevels < tw.format.memoryStorage)
 		if err != nil {
 			return err
 		}
@@ -701,7 +701,7 @@ func (tw *tableWriter) close() error {
 	default:
 		panic("invalid table write phase")
 	}
-	sw, err := tw.ts.tf.getAppendWriter(tw, ts.getTableWriteStateName(id), true)
+	sw, err := tw.tf.getAppendWriter(tw.name+writeNameSuffix, true)
 	if err != nil {
 		return err
 	}
@@ -733,6 +733,9 @@ func (tw *tableWriter) newSubtreeChunk(level uint) *subtreeChunk {
 }
 
 func (tw *tableWriter) addEntry(ie *indexEntry) error {
+	if tw.phase != wpWriteEntries {
+		panic("invalid table write phase")
+	}
 	if tw.nextEntry >= tw.entryCount {
 		panic("too many entries")
 	}
@@ -823,7 +826,7 @@ func (tw *tableWriter) finalize() (bool, error) {
 			if err := tw.copyWriter.Close(); err != nil {
 				return false, err
 			}
-			if err := tw.ts.tf.renameFile(ts.getTableWriteTempName(tw.id, i), ts.getTableName(tw.id)); err != nil {
+			if err := tw.tf.renameFile(tw.name+writeTempSuffix(i), tw.name); err != nil {
 				return false, err
 			}
 			tw.phase = wpFinished
@@ -832,7 +835,7 @@ func (tw *tableWriter) finalize() (bool, error) {
 		tw.copyLevel--
 		tw.copyReadPointer = 0
 		var err error
-		if tw.copyReader, tw.copyReadSize, err = tw.ts.tf.getReaderAt(ts.getTableWriteTempName(tw.id, tw.copyLevel)); err != nil {
+		if tw.copyReader, tw.copyReadSize, err = tw.tf.getReaderAt(tw.name + writeTempSuffix(tw.copyLevel)); err != nil {
 			return false, err
 		}
 	}

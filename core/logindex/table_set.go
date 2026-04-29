@@ -28,6 +28,27 @@ type tableLevel struct {
 	blockCount uint64
 }
 
+type tableID struct {
+	level int
+	index uint64
+}
+
+func (p *Params) blockRange(id tableID) common.Range[uint64] {
+	return common.NewRange[uint64](p.tableLevels[id.level].blockCount*id.index, p.tableLevels[id.level].blockCount)
+}
+
+func (p *Params) rangeID(r common.Range[uint64]) (tableID, bool) {
+	for i, tl := range p.tableLevels {
+		if tl.blockCount == r.Count() {
+			if r.First()%tl.blockCount != 0 {
+				return tableID{}, false
+			}
+			return tableID{level: i, index: r.First() / tl.blockCount}, true
+		}
+	}
+	return tableID{}, false
+}
+
 type protocolLevel struct {
 	tailAge, headAge uint64
 }

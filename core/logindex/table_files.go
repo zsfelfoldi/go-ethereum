@@ -127,12 +127,17 @@ func newTableFiles(path string, maxFileSize int64, maxOpenFiles int) (*tableFile
 		}
 	}
 	for name, fi := range tf.tableFiles {
-		if fi.fileCount != 0 && fi.fileCount != fi.maxFileIndex+1 {
+		if fi.fileCount == 0 {
+			continue
+		}
+		if fi.fileCount != fi.maxFileIndex+1 {
 			log.Warn("Removing incomplete table file", "name", name)
 		}
+		delete(tf.tableFiles, name)
 		for i := range fi.maxFileIndex + 1 {
 			os.Remove(tf.osFileName(name, i))
 		}
+
 	}
 	return tf, nil
 }
