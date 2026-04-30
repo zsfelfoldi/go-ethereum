@@ -60,8 +60,8 @@ const (
 )
 
 type tableOperation struct {
-	operation, tableLevel int
-	tableIndex            uint64
+	operation int
+	id        tableID
 }
 
 func (p *Params) compareOps(a, b tableOperation) int {
@@ -71,8 +71,8 @@ func (p *Params) compareOps(a, b tableOperation) int {
 	case a.operation < b.operation:
 		return -1
 	}
-	aa := a.tableIndex * p.tableLevels[a.tableLevel]
-	bb := b.tableIndex * p.tableLevels[b.tableLevel]
+	aa := a.id.index * p.tableLevels[a.id.level]
+	bb := b.id.index * p.tableLevels[b.id.level]
 	switch {
 	case aa > bb:
 		return 1
@@ -93,9 +93,11 @@ func (p *Params) nextAction(avail, target tableSet) (tableOperation, common.Rang
 		required = required.or(target[i])
 		if remove := avail[i].andNot(required); !remove.isEmpty {
 			op := tableOperation{
-				operation:  opDelete,
-				tableLevel: i,
-				tableIndex: remove.last(),
+				operation: opDelete,
+				id: tableID{
+					level: i,
+					index: remove.last(),
+				},
 			}
 			if p.compareOps(op, bestOp) > 0 {
 				bestOp = op
@@ -106,9 +108,11 @@ func (p *Params) nextAction(avail, target tableSet) (tableOperation, common.Rang
 			merge := required.and(shiftTableLevel(avail[i-1], p.tableLevels[i-1], p.tableLevels[i], false))
 			if !merge.isEmpty {
 				op := tableOperation{
-					operation:  opMerge,
-					tableLevel: i,
-					tableIndex: merge.last(),
+					operation: opMerge,
+					id: tableID{
+						level: i,
+						index: merge.last(),
+					},
 				}
 				if p.compareOps(op, bestOp) > 0 {
 					bestOp = op
@@ -142,18 +146,8 @@ func shiftTableLevel(rs rangeSet, from, to tableLevel, partial bool) rangeSet {
 	return rs
 }
 
-func (ix *Indexer) makeTargetSet() tableSet {
-	target := ix.tableLevels.rangeTarget(ix.valid, rangeSet{common.NewRange[uint64](ix.tailBlock, ix.headBlock+1-ix.tailBlock)})
-	for i, pl := range protocolLevels {
-		first := max(ix.headBlock, pl.tailAge) - pl.tailAge
-		afterLast := max(ix.headBlock+1, pl.headAge) - pl.headAge
-		target[i] = target[i].or(rangeSet{common.NewRange[uint64](first, afterLast-first)})
-	}
-	return target
-}
-
 func (p *Params) rangeTarget(avail tableSet, blockRange rangeSet) tableSet {
-	target := p.tableLevels.newTableSet()
+	target := p.newTableSet()
 	for i := len(p.tableLevels) - 1; i >= 0; i-- {
 		fullTables := shiftTableLevel(blockRange, p.tableLevels[0], p.tableLevels[i], false)
 		partialTables := shiftTableLevel(blockRange, p.tableLevels[0], p.tableLevels[i], true)

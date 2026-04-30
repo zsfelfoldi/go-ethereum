@@ -34,12 +34,15 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+var errDeleted = errors.New("table already deleted")
+
 type tableStorage struct {
 	lock                    sync.Mutex
 	params                  *Params
 	tf                      *tableFiles
 	readers, unknownReaders map[tableID]*tableReader
 	writers, unknownWriters map[tableID]*tableWriter
+	complete, partial       tableSet
 	initRequest             bool
 	initNumber              uint64
 }
@@ -58,6 +61,8 @@ func newTableStorage(p *Params, tf *tableFiles) (*tableStorage, error) {
 		unknownReaders: make(map[tableID]*tableReader),
 		writers:        make(map[tableID]*tableWriter),
 		unknownWriters: make(map[tableID]*tableWriter),
+		complete:       p.newTableSet(),
+		partial:        p.newTableSet(),
 	}
 loop:
 	allFiles := tf.allFiles()
@@ -102,6 +107,18 @@ loop:
 		}
 	}
 	return ts
+}
+
+func (ts *tableStorage) getTableReader(id tableID) (*tableReader, error) {
+
+}
+
+func (ts *tableStorage) getTableWriter(id tableID) (*tableReader, error) {
+
+}
+
+func (ts *tableStorage) deleteTable(id tableID) error {
+
 }
 
 func (ts *tableStorage) requestInitBlockHash() (number uint64, request bool) {

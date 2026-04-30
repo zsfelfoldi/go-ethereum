@@ -41,14 +41,16 @@ type Config struct {
 }
 
 type Indexer struct {
-	storage                   *tableStorage
-	lock                      sync.RWMutex
-	unknown, valid, mergeable tableSet
-	requestBlocks             common.Range[uint64]
-	mergeTarget               tableID
-	updateMergeCh             chan struct{}
-	closeMergeCh              chan chan struct{}
-	mergeWg                   sync.WaitGroup
+	lock          sync.RWMutex
+	params        *Params
+	storage       *tableStorage
+	requestBlocks common.Range[uint64]
+	currentOp     tableOperation
+	close         bool
+
+	updateMergeCh chan struct{}
+	closeMergeCh  chan chan struct{}
+	mergeWg       sync.WaitGroup
 }
 
 func NewIndexer(path string) *Indexer {
@@ -61,11 +63,33 @@ func NewIndexer(path string) *Indexer {
 		storage:       storage,
 		unknown:       allTables,
 		updateMergeCh: make(chan struct{}, 1),
-		closeMergeCh:  make(chan struct{}),
 	}
 	ix.mergeWg.Add(1)
 	go ix.mergeLoop()
 	return ix
+}
+
+func (ix *Indexer) updateActions() {
+	completeSet, partialSet := ix.storage.tableSet()
+	currentOp, requestBlocks := ix.params.nextAction(completeSet, partialSet, ix.makeTargetSet(completeSet))
+	if currentOp != ix.currentOp {
+		ix.currentOp = currentOp
+		select {
+		case ix.updateMergeCh <- struct{}{}:
+		default:
+		}
+	}
+	ix.requestBlocks = requestBlocks
+}
+
+func (ix *Indexer) makeTargetSet() tableSet {
+	target := ix.params.rangeTarget(ix.valid, rangeSet{common.NewRange[uint64](ix.tailBlock, ix.headBlock+1-ix.tailBlock)})
+	for i, pl := range protocolLevels {
+		first := max(ix.headBlock, pl.tailAge) - pl.tailAge
+		afterLast := max(ix.headBlock+1, pl.headAge) - pl.headAge
+		target[i] = target[i].or(rangeSet{common.NewRange[uint64](first, afterLast-first)})
+	}
+	return target
 }
 
 func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, parentRoots []byte, transactions types.Transactions, receipts types.Receipts) []byte {
