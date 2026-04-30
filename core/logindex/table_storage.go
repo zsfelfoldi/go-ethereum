@@ -35,10 +35,13 @@ import (
 )
 
 type tableStorage struct {
-	p       *Params
-	tf      *tableFiles
-	readers map[tableID]*tableReader
-	writers map[tableID]*tableWriter
+	lock                    sync.Mutex
+	params                  *Params
+	tf                      *tableFiles
+	readers, unknownReaders map[tableID]*tableReader
+	writers, unknownWriters map[tableID]*tableWriter
+	initRequest             bool
+	initNumber              uint64
 }
 
 const writeStateSuffix = ".state"
@@ -49,10 +52,12 @@ func writeTempSuffix(level int) string {
 
 func newTableStorage(p *Params, tf *tableFiles) (*tableStorage, error) {
 	ts := &tableStorage{
-		p:       p,
-		tf:      tf,
-		readers: make(map[tableID]*tableReader),
-		writers: make(map[tableID]*tableWriter),
+		params:         p,
+		tf:             tf,
+		readers:        make(map[tableID]*tableReader),
+		unknownReaders: make(map[tableID]*tableReader),
+		writers:        make(map[tableID]*tableWriter),
+		unknownWriters: make(map[tableID]*tableWriter),
 	}
 loop:
 	allFiles := tf.allFiles()
@@ -60,36 +65,105 @@ loop:
 		ftype, id, _ := p.parseFileName(name)
 		switch ftype {
 		case fnUnknown:
-			log.Warn("Unexpected table file", "name", name)
+			log.Warn("Unexpected index table file", "name", name)
 			tf.deleteFile(name)
 		case fnTable:
 			reader, err := newTableReader(tf, p.tableName(id))
 			if err != nil {
-				log.Error("Invalid table file", "name", p.tableName(id), "error", err)
+				log.Error("Invalid index table file", "name", p.tableName(id), "error", err)
 				tf.deleteFile(name)
 				continue loop
 			}
-			ts.readers[id] = reader
+			ts.unknownReaders[id] = reader
 		case fnWriteState:
 			writer, err := newTableWriter(tf, p.tableName(id), true, 0)
 			if err != nil {
-				log.Error("Invalid partial table file", "name", p.tableName(id), "error", err)
+				log.Error("Invalid partial index table file", "name", p.tableName(id), "error", err)
 				tf.deleteFile(name)
 				continue loop
 			}
-			ts.writers[i] = writer
+			ts.unknownWriters[i] = writer
+		}
+	}
+	for id := range ts.unknownWriters {
+		if _, ok := ts.unknownReaders[id]; ok {
+			log.Warn("Both complete and partial index table found", "name", p.tableName(id))
+			delete(ts.unknownWriters, id)
+			tf.deleteFile(p.tableName(id) + writeStateSuffix)
 		}
 	}
 	for name := range allFiles {
 		ftype, id, tempLevel := p.parseFileName(name)
 		if ftype == fnWriteTemp {
-			if w, ok := ts.writers[id]; !ok || tempLevel > w.format.subtreeLevels {
-				log.Warn("Unexpected table writer temp file", "name", name)
+			if w, ok := ts.unknownWriters[id]; !ok || tempLevel > w.format.subtreeLevels {
+				log.Warn("Unexpected index table writer temp file", "name", name)
 				tf.deleteFile(name)
 			}
 		}
 	}
 	return ts
+}
+
+func (ts *tableStorage) requestInitBlockHash() (number uint64, request bool) {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
+
+	for _, tr := range ts.unknownReaders {
+		if !request || tr.meta.LastBlockNumber > number {
+			request, number = true, tr.meta.LastBlockNumber
+		}
+	}
+	for _, tw := range ts.unknownWriters {
+		if !request || tw.meta.LastBlockNumber > number {
+			request, number = true, tw.meta.LastBlockNumber
+		}
+	}
+	ts.initRequest, ts.initNumber = request, number
+	return
+}
+
+func (ts *tableStorage) deliverInitBlockHash(number uint64, hash common.Hash) {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
+
+	if !ts.initRequest || number != ts.initNumber {
+		return
+	}
+	ts.initRequest = false
+	hashes := make(map[uint64]common.Hash)
+	hashes[number] = hash
+	for len(hashes) > 0 {
+		for number, hash := range hashes {
+			for id, tr := range ts.unknownReaders {
+				if tr.meta.LastBlockNumber != number {
+					continue
+				}
+				if tr.meta.LastBlockHash == hash {
+					ts.readers[id] = tr
+					if tr.meta.LastBlockNumber >= tr.meta.BlockCount {
+						hashes[tr.meta.LastBlockNumber-tr.meta.BlockCount] = tr.meta.ParentHash
+					}
+				} else {
+					ts.tf.deleteFile(ts.p.tableName(id))
+				}
+				delete(ts.unknownReaders, id)
+			}
+			for id, tw := range ts.unknownWriters {
+				if tw.meta.LastBlockNumber != number {
+					continue
+				}
+				if tw.meta.LastBlockHash == hash {
+					ts.writers[id] = tw
+					if tw.meta.LastBlockNumber >= tw.meta.BlockCount {
+						hashes[tw.meta.LastBlockNumber-tw.meta.BlockCount] = tw.meta.ParentHash
+					}
+				} else {
+					tw.delete()
+				}
+				delete(ts.unknownWriters, id)
+			}
+		}
+	}
 }
 
 func (ts *tableStorage) close() {

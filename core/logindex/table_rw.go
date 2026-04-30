@@ -556,14 +556,13 @@ const (
 )
 
 type writeState struct {
-	Phase                 uint
-	NextEntry, EntryCount uint64
-	LastEntryChunk        entriesForStorage
-	LastSubtreeChunks     []subtreesForStorage
-	CopyLevel             uint
-	CopyReadPointer       uint64
-	TableRoot             common.Hash
-	Meta                  tableMeta
+	Phase             uint
+	NextEntry         uint64
+	LastEntryChunk    entriesForStorage
+	LastSubtreeChunks []subtreesForStorage
+	CopyLevel         uint
+	CopyReadPointer   uint64
+	tableHeader
 }
 
 func newTableWriter(tf *tableFiles, name string, storedState bool, entryCount uint64) (*tableWriter, error) {
