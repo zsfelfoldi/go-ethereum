@@ -61,7 +61,7 @@ loop:
 		switch ftype {
 		case fnUnknown:
 			log.Warn("Unexpected table file", "name", name)
-				tf.deleteFile(name)
+			tf.deleteFile(name)
 		case fnTable:
 			reader, err := newTableReader(tf, p.tableName(id))
 			if err != nil {
@@ -78,6 +78,7 @@ loop:
 				continue loop
 			}
 			ts.writers[i] = writer
+		}
 	}
 	for name := range allFiles {
 		ftype, id, tempLevel := p.parseFileName(name)

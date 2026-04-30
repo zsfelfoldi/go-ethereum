@@ -402,7 +402,11 @@ type subtreePos struct {
 	index uint64
 }
 
-func newTableReader(ioReader io.ReaderAt, fileSize int64) (*tableReader, error) {
+func newTableReader(tf *tableFiles, name string) (*tableReader, error) {
+	ioReader, fileSize, err := tf.getReaderAt(name)
+	if err != nil {
+		return nil, err
+	}
 	var headerSizeByte [1]byte
 	_, err := ioReader.ReadAt(headerSizeByte[:], fileSize-1)
 	if err != nil {
@@ -522,13 +526,14 @@ func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
 }
 
 type tableWriter struct {
-	tf                     *tableFiles
-	name                   string
-	entryCount             uint64
-	format                 tableFormat
-	meta                   tableMeta
-	isOpen, hasStoredState bool
-	phase                  uint
+	tf                              *tableFiles
+	name                            string
+	entryCount                      uint64
+	format                          tableFormat
+	meta                            tableMeta
+	isOpen, hasStoredState, hasMeta bool
+	phase                           uint
+	tableRoot                       common.Hash // after all entries added
 	// phase == wpWriteEntries
 	lastEntryChunk    *entryChunk
 	lastSubtreeChunks []*subtreeChunk
@@ -551,13 +556,14 @@ const (
 )
 
 type writeState struct {
-	Phase             uint
-	EntryCount        uint64
-	LastEntryChunk    entriesForStorage
-	LastSubtreeChunks []subtreesForStorage
-	CopyLevel         uint
-	CopyReadPointer   uint64
-	Meta              tableMeta
+	Phase                 uint
+	NextEntry, EntryCount uint64
+	LastEntryChunk        entriesForStorage
+	LastSubtreeChunks     []subtreesForStorage
+	CopyLevel             uint
+	CopyReadPointer       uint64
+	TableRoot             common.Hash
+	Meta                  tableMeta
 }
 
 func newTableWriter(tf *tableFiles, name string, storedState bool, entryCount uint64) (*tableWriter, error) {
@@ -584,6 +590,8 @@ func newTableWriter(tf *tableFiles, name string, storedState bool, entryCount ui
 		tf:                tf,
 		name:              name,
 		hasStoredState:    storedState,
+		hasMeta:           storedState,
+		meta:              state.Meta,
 		lastEntryChunk:    tw.newEntryChunk(),
 		lastSubtreeChunks: make([]*subtreeChunk, format.subtreeLevels),
 		writers:           make([]io.WriteCloser, format.subtreeLevels+1),
@@ -592,6 +600,8 @@ func newTableWriter(tf *tableFiles, name string, storedState bool, entryCount ui
 		format:            format,
 	}
 	tw.phase = state.Phase
+	tw.nextEntry = state.NextEntry
+	tw.tableRoot = state.TableRoot
 	switch state.Phase {
 	case wpNone:
 		for i := range tw.lastSubtreeChunks {
@@ -683,8 +693,25 @@ func (tw *tableWriter) close() error {
 	if !tw.isOpen {
 		panic("table writer is not open")
 	}
+	if !tw.hasMeta {
+		panic("tableMeta missing")
+	}
 	tw.isOpen = false
-	var state writeState
+	state := writeState{
+		Phase:      tw.phase,
+		NextEntry:  tw.nextEntry,
+		EntryCount: tw.entryCount,
+		TableRoot:  tw.tableRoot,
+		Meta:       tw.meta,
+	}
+	/*
+	   type writeState struct {
+	   	LastEntryChunk    entriesForStorage
+	   	LastSubtreeChunks []subtreesForStorage
+	   	CopyLevel         uint
+	   	CopyReadPointer   uint64
+	   }
+	*/
 	switch tw.phase {
 	case wpWriteEntries:
 		for _, w := range tw.writers {
@@ -692,10 +719,17 @@ func (tw *tableWriter) close() error {
 				return err
 			}
 		}
+		state.LastEntryChunk = tw.lastEntryChunk.entries.toStorage()
+		state.LastSubtreeChunks = make([]subtreesForStorage, len(tw.lastSubtreeChunks))
+		for i, sc := range tw.lastSubtreeChunks {
+			state.LastSubtreeChunks[i] = sc.toStorage()
+		}
 	case wpTempCopy:
 		if err := tw.copyWriter.Close(); err != nil {
 			return err
 		}
+		state.CopyLevel = tw.copyLevel
+		state.CopyReadPointer = tw.copyReadPointer
 	case wpFinished:
 		return nil
 	default:
@@ -795,16 +829,35 @@ func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, be
 			if err := tw.addSubtreeEntry(level-1, boundaryEntry, beforePos, tw.writePointers[level], sc.getHash(1)); err != nil {
 				return err
 			}
+		} else {
+			tw.tableRoot = sc.getHash(1)
 		}
 		tw.lastSubtreeChunks[level] = tw.newSubtreeChunk(level)
 	}
 	return nil
 }
 
+func (tw *tableWriter) setMeta(meta tableMeta) {
+	if tw.hasMeta {
+		panic("tableMeta already exists")
+	}
+	tw.meta, tw.hasMeta = meta, true
+}
+
+func (tw *tableWriter) getTableRoot() common.Hash {
+	if tw.nextEntry != tw.entryCount {
+		panic("not enough entries")
+	}
+	return tw.tableRoot
+}
+
 func (tw *tableWriter) finalize() (bool, error) {
 	if tw.phase == wpWriteEntries {
 		if tw.nextEntry != tw.entryCount {
 			panic("not enough entries")
+		}
+		if !tw.hasMeta {
+			panic("tableMeta missing")
 		}
 		for i := range tw.format.subtreeLevels {
 			if err := tw.writers[i].Close(); err != nil {
@@ -870,49 +923,6 @@ type tableHeader struct {
 type tableMeta struct {
 	LastBlockNumber, BlockCount uint64
 	LastBlockHash, ParentHash   common.Hash
-}
-
-func (tw *tableWriter) finished(meta tableMeta) error {
-	if tw.nextEntry != tw.entryCount {
-		panic("not enough entries")
-	}
-	header := tableHeader{
-		LevelPointers: make([]uint64, tw.topLevel+1),
-		EntryCount:    tw.entryCount,
-		TableRoot:     tw.lastSubtreeChunks[0].getHash(1),
-		tableMeta:     meta,
-	}
-	wp := tw.writePointers[tw.topLevel]
-	header.LevelPointers[tw.topLevel] = wp
-	for i := int(tw.topLevel - 1); i >= 0; i-- {
-		tw.writers[i].Flush() //TODO error handling (every Flush, Seek, Close, etc)
-		tw.files[i].Seek(0, io.SeekStart)
-		bw, err := io.Copy(tw.writers[tw.topLevel], bufio.NewReader(tw.files[i]))
-		if err != nil {
-			return err
-		}
-		wp += uint64(bw)
-		header.LevelPointers[i] = wp
-		tw.files[i].Close()
-		if err := os.Remove(tw.getFileName(uint(i))); err != nil {
-			return err
-		}
-	}
-	enc, err := rlp.EncodeToBytes(&header)
-	if err != nil {
-		return err //TODO always guarantee file close
-	}
-	enc = append(enc, byte(len(enc)))
-	bw, err := tw.writers[tw.topLevel].Write(enc)
-	if err != nil {
-		return err
-	}
-	if bw != len(enc) {
-		return errors.New("error writing table header")
-	}
-	tw.writers[tw.topLevel].Flush()
-	tw.files[tw.topLevel].Close()
-	return nil
 }
 
 var zeroValues = func() []merkle.Value {
