@@ -113,7 +113,7 @@ func (ts *tableStorage) getTableReader(id tableID) (*tableReader, error) {
 
 }
 
-func (ts *tableStorage) getTableWriter(id tableID) (*tableReader, error) {
+func (ts *tableStorage) getTableWriter(id tableID) (*tableWriter, error) {
 
 }
 

@@ -546,6 +546,7 @@ type tableWriter struct {
 	copyReadPointer, copyReadSize int64
 	copyWriter                    io.WriteCloser
 	copyWritePointer              int64
+	levelPointers                 []uint64
 }
 
 const (
@@ -623,6 +624,7 @@ func newTableWriter(tf *tableFiles, name string, storedState bool, entryCount ui
 	case wpTempCopy:
 		tw.copyLevel = state.CopyLevel
 		tw.copyReadPointer = state.CopyReadPointer
+		tw.levelPointers = state.LevelPointers
 		var err error
 		tw.copyReader, tw.copyReadSize, err = tf.getReaderAt(name + writeTempSuffix(tw.copyLevel))
 		if err != nil {
@@ -697,20 +699,14 @@ func (tw *tableWriter) close() error {
 	}
 	tw.isOpen = false
 	state := writeState{
-		Phase:      tw.phase,
-		NextEntry:  tw.nextEntry,
-		EntryCount: tw.entryCount,
-		TableRoot:  tw.tableRoot,
-		Meta:       tw.meta,
+		Phase:     tw.phase,
+		NextEntry: tw.nextEntry,
+		tableHeader: tableHeader{
+			EntryCount: tw.entryCount,
+			TableRoot:  tw.tableRoot,
+			tableMeta:  tw.meta,
+		},
 	}
-	/*
-	   type writeState struct {
-	   	LastEntryChunk    entriesForStorage
-	   	LastSubtreeChunks []subtreesForStorage
-	   	CopyLevel         uint
-	   	CopyReadPointer   uint64
-	   }
-	*/
 	switch tw.phase {
 	case wpWriteEntries:
 		for _, w := range tw.writers {
@@ -729,6 +725,7 @@ func (tw *tableWriter) close() error {
 		}
 		state.CopyLevel = tw.copyLevel
 		state.CopyReadPointer = tw.copyReadPointer
+		state.LevelPointers = tw.levelPointers
 	case wpFinished:
 		return nil
 	default:
@@ -840,7 +837,7 @@ func (tw *tableWriter) setMeta(meta tableMeta) {
 	if tw.hasMeta {
 		panic("tableMeta already exists")
 	}
-	tw.meta, tw.hasMeta = meta, true
+	tw.tableMeta, tw.hasMeta = meta, true
 }
 
 func (tw *tableWriter) getTableRoot() common.Hash {
@@ -862,22 +859,41 @@ func (tw *tableWriter) finalize() (bool, error) {
 			if err := tw.writers[i].Close(); err != nil {
 				return false, err
 			}
-			tw.writers[i] = nil
+			tw.writers[i] = nil // signal for deleteOnError that this file has been successfully closed
 		}
 		tw.copyWriter = tw.writers[tw.format.subtreeLevels]
-		tw.writers[tw.format.subtreeLevels] = nil
+		tw.copyWritePointer = tw.writePointers[tw.format.subtreeLevels]
+		tw.writers = nil
 		tw.copyLevel = tw.format.subtreeLevels
+		tw.levelPointers = make([]uint64, tw.format.subtreeLevels+1)
 		tw.phase = wpTempCopy
 	}
 	if tw.phase != wpTempCopy {
 		panic("invalid table write phase")
 	}
 	for tw.copyReadPointer == tw.copyReadSize {
+		tw.levelPointers[tw.copyLevel] = tw.copyWritePointer
 		if tw.copyLevel == 0 {
-			// last temp level file copied; close and rename top level temp file and return success
+			// last temp level file copied; finalize by adding header
+			header := tableHeader{
+				LevelPointers: tw.levelPointers,
+				EntryCount:    tw.entryCount,
+				TableRoot:     tw.tableRoot,
+				tableMeta:     tw.meta,
+			}
+			headerEnc, err := rlp.Encode(tw.copyWriter, &header)
+			if err != nil {
+				return false, err
+			}
+			headerEnc = append(headerEnc, byte(len(headerEnc)))
+			if _, err := tw.copyWriter.Write(headerEnc); err != nil {
+				return false, err
+			}
+			// close and rename top level temp file and return success
 			if err := tw.copyWriter.Close(); err != nil {
 				return false, err
 			}
+			tw.copyWriter = nil
 			if err := tw.tf.renameFile(tw.name+writeTempSuffix(i), tw.name); err != nil {
 				return false, err
 			}
