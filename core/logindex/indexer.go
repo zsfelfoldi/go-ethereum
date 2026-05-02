@@ -83,11 +83,11 @@ func (ix *Indexer) updateActions() {
 }
 
 func (ix *Indexer) makeTargetSet() tableSet {
-	target := ix.params.rangeTarget(ix.valid, rangeSet{common.NewRange[uint64](ix.tailBlock, ix.headBlock+1-ix.tailBlock)})
+	target := ix.params.rangeTarget(ix.valid, common.SingleRangeSet[uint64](common.NewRange[uint64](ix.tailBlock, ix.headBlock+1-ix.tailBlock)))
 	for i, pl := range protocolLevels {
 		first := max(ix.headBlock, pl.tailAge) - pl.tailAge
 		afterLast := max(ix.headBlock+1, pl.headAge) - pl.headAge
-		target[i] = target[i].or(rangeSet{common.NewRange[uint64](first, afterLast-first)})
+		target[i] = target[i].Union(common.SingleRangeSet[uint64](common.NewRange[uint64](first, afterLast-first)))
 	}
 	return target
 }

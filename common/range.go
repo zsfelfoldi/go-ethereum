@@ -123,3 +123,177 @@ func (r Range[T]) Iter() iter.Seq[T] {
 		}
 	}
 }
+
+type RangeSet[T uint32 | uint64] []common.Range[T]
+
+func (a RangeSet[T]) Includes(v T) bool {
+	for _, r := range a {
+		if r.Includes(v) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a RangeSet[T]) ClosestLte(v T) (last T, found bool) {
+	for _, r := range a {
+		if r.First() > v {
+			return
+		}
+		if r.AfterLast() > v {
+			return v, true
+		}
+		last, found = r.Last(), true
+	}
+	return
+}
+
+func (a RangeSet[T]) ClosestGte(v T) (last T, found bool) {
+	for _, r := range a {
+		if r.First() > v {
+			return r.First(), true
+		}
+		if r.AfterLast() > v {
+			return v, true
+		}
+	}
+	return
+}
+
+type rangeBoundary[T uint32 | uint64] struct {
+	v T
+	d int
+}
+
+type rangeBoundaries[T uint32 | uint64] []rangeBoundary[T]
+
+func (rb *rangeBoundaries[T]) add(r common.Range[T], d int) {
+	*rb = append((*rb), rangeBoundary[T]{v: r.First(), d: d}, rangeBoundary[T]{v: r.AfterLast(), d: -d})
+}
+
+func (rb rangeBoundaries[T]) makeSet(threshold int) RangeSet[T] {
+	res := make(RangeSet[T], 0, len(rb)/2)
+	sort.Slice(rb, func(i, j int) bool {
+		return rb[i].v < rb[j].v
+	})
+	var (
+		sum     int
+		lastCmp bool
+		start   T
+	)
+	for i, r := range rb {
+		sum += r.d
+		cmp := sum >= threshold
+		if cmp != lastCmp && (i == len(rb)-1 || rb[i+1].v != r.v) {
+			if cmp {
+				start = r.v
+			} else {
+				res = append(res, common.NewRange[T](start, r.v-start))
+			}
+			lastCmp = cmp
+		}
+	}
+	return res
+}
+
+func (a RangeSet[T]) Intersection(b RangeSet[T]) RangeSet[T] {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	rb := make(rangeBoundaries[T], 0, (len(a)+len(b))*2)
+	for _, r := range a {
+		rb.add(r, 1)
+	}
+	for _, r := range b {
+		rb.add(r, 1)
+	}
+	return rb.makeSet(2)
+}
+
+func (a RangeSet[T]) Difference(b RangeSet[T]) RangeSet[T] {
+	if len(a) == 0 {
+		return nil
+	}
+	if len(b) == 0 {
+		return a
+	}
+	rb := make(rangeBoundaries[T], 0, (len(a)+len(b))*2)
+	for _, r := range a {
+		rb.add(r, 1)
+	}
+	for _, r := range b {
+		rb.add(r, -1)
+	}
+	return rb.makeSet(1)
+}
+
+func (a RangeSet[T]) Union(b RangeSet[T]) RangeSet[T] {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	rb := make(rangeBoundaries[T], 0, (len(a)+len(b))*2)
+	for _, r := range a {
+		rb.add(r, 1)
+	}
+	for _, r := range b {
+		rb.add(r, 1)
+	}
+	return rb.makeSet(1)
+}
+
+// iter iterates all integers in the range set.
+func (r RangeSet[T]) Iter() iter.Seq[T] {
+	return func(yield func(T) bool) {
+		for _, rr := range r {
+			for i := range rr.Iter() {
+				if !yield(i) {
+					break
+				}
+			}
+		}
+	}
+}
+
+func (a RangeSet[T]) Count() T {
+	var count T
+	for _, r := range a {
+		count += r.Count()
+	}
+	return count
+}
+
+func (a RangeSet[T]) SingleRange() common.Range[T] {
+	if len(a) > 1 {
+		panic("singleRange called for non-continuous RangeSet")
+	}
+	if len(a) == 1 {
+		return a[0]
+	}
+	return common.NewRange[T](0, 0)
+}
+
+func SingleRangeSet[T uint32 | uint64](r common.Range[T]) RangeSet[T] {
+	if r.IsEmpty() {
+		return nil
+	}
+	return RangeSet[T]{r}
+}
+
+func (a RangeSet[T]) Equal(b RangeSet[T]) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, r := range a {
+		if b[i] != r {
+			return false
+		}
+	}
+	return true
+}
+
+func (a RangeSet[T]) IsEmpty() bool {
+	return len(a) == 0
+}
