@@ -367,7 +367,11 @@ func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 
 	// Add log index roots
 	if chain.Config().IsEIP7745(header.Number, header.Time) {
-		header.BloomOrIndex = logIndex.GetIndexRoots(header.ParentHash, body.Transactions, receipts)
+		logIndexRoots, err := logIndex.GetIndexRoots(header.ParentHash, body.Transactions, receipts)
+		if err != nil {
+			return nil, err
+		}
+		header.BloomOrIndex = logIndexRoots
 	}
 
 	// Assemble the final block.

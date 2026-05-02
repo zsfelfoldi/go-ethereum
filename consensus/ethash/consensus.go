@@ -524,7 +524,11 @@ func (ethash *Ethash) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 
 	// Add log index roots
 	if chain.Config().IsEIP7745(header.Number, header.Time) {
-		header.BloomOrIndex = logIndex.GetIndexRoots(header.ParentHash, body.Transactions, receipts)
+		logIndexRoots, err := logIndex.GetIndexRoots(header.ParentHash, body.Transactions, receipts)
+		if err != nil {
+			return nil, err
+		}
+		header.BloomOrIndex = logIndexRoots
 	}
 
 	// Header seems complete, assemble into a block and return
