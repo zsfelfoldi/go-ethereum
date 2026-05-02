@@ -71,8 +71,8 @@ func (p *Params) compareOps(a, b tableOperation) int {
 	case a.operation < b.operation:
 		return -1
 	}
-	aa := a.id.index * p.tableLevels[a.id.level]
-	bb := b.id.index * p.tableLevels[b.id.level]
+	aa := p.blockRange(a.id).First()
+	bb := p.blockRange(b.id).First()
 	switch {
 	case aa > bb:
 		return 1
@@ -83,7 +83,7 @@ func (p *Params) compareOps(a, b tableOperation) int {
 	}
 }
 
-func (p *Params) nextAction(avail, target tableSet) (tableOperation, common.Range[uint64]) {
+func (p *Params) nextAction(complete, partial, target tableSet) (tableOperation, common.Range[uint64]) {
 	var (
 		bestOp    tableOperation
 		reqBlocks common.Range[uint64]
@@ -91,7 +91,7 @@ func (p *Params) nextAction(avail, target tableSet) (tableOperation, common.Rang
 	)
 	for i := len(p.tableLevels) - 1; i >= 0; i-- {
 		required = required.or(target[i])
-		if remove := avail[i].andNot(required); !remove.isEmpty {
+		if remove := complete[i].or(partial[i]).andNot(required); !remove.isEmpty {
 			op := tableOperation{
 				operation: opDelete,
 				id: tableID{
@@ -103,7 +103,7 @@ func (p *Params) nextAction(avail, target tableSet) (tableOperation, common.Rang
 				bestOp = op
 			}
 		}
-		required = required.andNot(avail[i])
+		required = required.andNot(complete[i])
 		if i > 0 {
 			merge := required.and(shiftTableLevel(avail[i-1], p.tableLevels[i-1], p.tableLevels[i], false))
 			if !merge.isEmpty {
@@ -155,4 +155,178 @@ func (p *Params) rangeTarget(avail tableSet, blockRange rangeSet) tableSet {
 		blockRange = blockRange.andNot(shiftTableLevel(target[i], p.tableLevels[i], p.tableLevels[0], false))
 	}
 	return target
+}
+
+type rangeSet[T uint32 | uint64] []common.Range[T]
+
+func (a rangeSet[T]) includes(v T) bool {
+	for _, r := range a {
+		if r.Includes(v) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a rangeSet[T]) closestLte(v T) (last T, found bool) {
+	for _, r := range a {
+		if r.First() > v {
+			return
+		}
+		if r.AfterLast() > v {
+			return v, true
+		}
+		last, found = r.Last(), true
+	}
+	return
+}
+
+func (a rangeSet[T]) closestGte(v T) (last T, found bool) {
+	for _, r := range a {
+		if r.First() > v {
+			return r.First(), true
+		}
+		if r.AfterLast() > v {
+			return v, true
+		}
+	}
+	return
+}
+
+type rangeBoundary[T uint32 | uint64] struct {
+	v T
+	d int
+}
+
+type rangeBoundaries[T uint32 | uint64] []rangeBoundary[T]
+
+func (rb *rangeBoundaries[T]) add(r common.Range[T], d int) {
+	*rb = append((*rb), rangeBoundary[T]{v: r.First(), d: d}, rangeBoundary[T]{v: r.AfterLast(), d: -d})
+}
+
+func (rb rangeBoundaries[T]) makeSet(threshold int) rangeSet[T] {
+	res := make(rangeSet[T], 0, len(rb)/2)
+	sort.Slice(rb, func(i, j int) bool {
+		return rb[i].v < rb[j].v
+	})
+	var (
+		sum     int
+		lastCmp bool
+		start   T
+	)
+	for i, r := range rb {
+		sum += r.d
+		cmp := sum >= threshold
+		if cmp != lastCmp && (i == len(rb)-1 || rb[i+1].v != r.v) {
+			if cmp {
+				start = r.v
+			} else {
+				res = append(res, common.NewRange[T](start, r.v-start))
+			}
+			lastCmp = cmp
+		}
+	}
+	return res
+}
+
+func (a rangeSet[T]) intersection(b rangeSet[T]) rangeSet[T] {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	rb := make(rangeBoundaries[T], 0, (len(a)+len(b))*2)
+	for _, r := range a {
+		rb.add(r, 1)
+	}
+	for _, r := range b {
+		rb.add(r, 1)
+	}
+	return rb.makeSet(2)
+}
+
+func (a rangeSet[T]) exclude(b rangeSet[T]) rangeSet[T] {
+	if len(a) == 0 {
+		return nil
+	}
+	if len(b) == 0 {
+		return a
+	}
+	rb := make(rangeBoundaries[T], 0, (len(a)+len(b))*2)
+	for _, r := range a {
+		rb.add(r, 1)
+	}
+	for _, r := range b {
+		rb.add(r, -1)
+	}
+	return rb.makeSet(1)
+}
+
+func (a rangeSet[T]) union(b rangeSet[T]) rangeSet[T] {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	rb := make(rangeBoundaries[T], 0, (len(a)+len(b))*2)
+	for _, r := range a {
+		rb.add(r, 1)
+	}
+	for _, r := range b {
+		rb.add(r, 1)
+	}
+	return rb.makeSet(1)
+}
+
+// iter iterates all integers in the range set.
+func (r rangeSet[T]) iter() iter.Seq[T] {
+	return func(yield func(T) bool) {
+		for _, rr := range r {
+			for i := range rr.Iter() {
+				if !yield(i) {
+					break
+				}
+			}
+		}
+	}
+}
+
+func (a rangeSet[T]) count() T {
+	var count T
+	for _, r := range a {
+		count += r.Count()
+	}
+	return count
+}
+
+func (a rangeSet[T]) singleRange() common.Range[T] {
+	if len(a) > 1 {
+		panic("singleRange called for non-continuous rangeSet")
+	}
+	if len(a) == 1 {
+		return a[0]
+	}
+	return common.NewRange[T](0, 0)
+}
+
+func singleRangeSet[T uint32 | uint64](r common.Range[T]) rangeSet[T] {
+	if r.IsEmpty() {
+		return nil
+	}
+	return rangeSet[T]{r}
+}
+
+func (a rangeSet[T]) equal(b rangeSet[T]) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, r := range a {
+		if b[i] != r {
+			return false
+		}
+	}
+	return true
+}
+
+func (a rangeSet[T]) isEmpty() bool {
+	return len(a) == 0
 }

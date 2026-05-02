@@ -34,6 +34,12 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+var (
+	ErrTableDeleted = errors.New("table already deleted")
+	errFileNotFound = errors.New("file not found")
+	errFileLocked   = errors.New("file is locked for writing")
+)
+
 const (
 	tempFileName = "rename_temp"
 	memFileName  = "small_tables"
@@ -72,10 +78,10 @@ type tableFileInfo struct {
 	fileCount, maxFileIndex int
 	size                    int64
 	memData                 []byte
-	locked                  bool
 	file                    *os.File // only in write mode; append to memData if nil
 	writer                  *bufio.Writer
-	chunkSize               int64 // size of currently written os file chunk
+	chunkSize               int64  // size of currently written os file chunk
+	locked, deleted         uint32 // atomic
 }
 
 func newTableFiles(path string, maxFileSize int64, maxOpenFiles int) (*tableFiles, error) {
@@ -182,7 +188,7 @@ func (tf *tableFiles) loadMemTables() {
 func (tf *tableFiles) storeMemTables() {
 	var memTables []storedMemTable
 	for name, fi := range ts.tableFiles {
-		if fi.locked {
+		if fi.isLocked() {
 			log.Error("Table file is still locked while shutting down", "name", name)
 			continue
 		}
@@ -212,16 +218,27 @@ func (tf *tableFiles) getReaderAt(name string) (io.ReaderAt, int64, error) {
 	if !ok {
 		return nil, 0, errors.New("table file does not exist")
 	}
-	if fi.locked {
+	if fi.isLocked() {
 		return nil, 0, errors.New("table file is currently locked")
 	}
 	return fi, fi.size, nil
+}
+
+func (fi *tableFileInfo) isDeleted() bool {
+	return atomic.LoadUint32(&fi.deleted) != 0
+}
+
+func (fi *tableFileInfo) isLocked() bool {
+	return atomic.LoadUint32(&fi.locked) != 0
 }
 
 func (tf *tableFiles) getOsFileForReading(fi *tableFileInfo, fileIndex int) (*os.File, error) {
 	tf.lock.Lock()
 	defer tf.lock.Unlock()
 
+	if fi.isDeleted() {
+		return nil, ErrTableDeleted
+	}
 	tf.accessCounter++
 	id := osFileID{tfInfo: fi, fileIndex: fileIndex}
 	if of, ok := tf.osFiles[id]; ok {
@@ -252,6 +269,12 @@ func (tf *tableFiles) getOsFileForReading(fi *tableFileInfo, fileIndex int) (*os
 }
 
 func (fi *tableFileInfo) ReadAt(p []byte, offset int64) (n int, err error) {
+	defer func() {
+		if err != nil && fi.isDeleted() {
+			err = ErrTableDeleted
+		}
+	}()
+
 	if fi.fileCount == 0 {
 		// table file stored in memory
 		if offset >= int64(len(fi.memData)) {
@@ -299,10 +322,10 @@ func (tf *tableFiles) getAppendWriter(name string, memory bool) (io.WriteCloser,
 		}
 		tf.tableFiles[name] = fi
 	}
-	if fi.locked {
+	if fi.isLocked() {
 		return nil, 0, errors.New("table file opened for writing is currently locked")
 	}
-	fi.locked = true
+	atomic.StoreUint32(&fi.locked, 1)
 	if !memory {
 		file, err := os.OpenFile(fi.tf.osFileName(fi.name, fi.fileCount), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
@@ -350,7 +373,7 @@ func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
 }
 
 func (fi *tableFileInfo) Close() error {
-	if !fi.locked { //TODO atomic?
+	if !fi.isLocked() {
 		return errors.New("table file was not open for writing")
 	}
 	if fi.fileCount != 0 {
@@ -360,7 +383,7 @@ func (fi *tableFileInfo) Close() error {
 		fi.file.Close()
 		fi.file, fi.writer = nil, nil
 	}
-	fi.locked = false
+	atomic.StoreUint32(&fi.locked, 0)
 }
 
 func (tf *tableFiles) renameFile(oldName, newName string) error {
@@ -372,10 +395,10 @@ func (tf *tableFiles) renameFile(oldName, newName string) error {
 	}
 	fi, ok := tf.tableFiles[oldName]
 	if !ok {
-		return errors.New("renamed table file does not exist")
+		return errFileNotFound
 	}
-	if fi.locked {
-		return errors.New("renamed table file is currently locked")
+	if fi.isLocked() {
+		return errFileLocked
 	}
 	delete(tf.tableFiles, oldName)
 	switch {
@@ -411,11 +434,12 @@ func (tf *tableFiles) deleteFile(name string) error {
 
 	fi, ok := tf.tableFiles[name]
 	if !ok {
-		return errors.New("deleted table file does not exist")
+		return errFileNotFound
 	}
-	if fi.locked {
-		return errors.New("deleted table file is currently locked")
+	if fi.isLocked() {
+		return errFileLocked
 	}
+	atomic.StoreUint32(&fi.deleted, 1)
 	delete(tf.tableFiles, name)
 	for i := range fi.fileCount {
 		id := osFileID{tfInfo: fi, fileIndex: i}

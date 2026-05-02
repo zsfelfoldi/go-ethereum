@@ -526,14 +526,15 @@ func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
 }
 
 type tableWriter struct {
-	tf                              *tableFiles
-	name                            string
-	entryCount                      uint64
-	format                          tableFormat
-	meta                            tableMeta
-	isOpen, hasStoredState, hasMeta bool
-	phase                           uint
-	tableRoot                       common.Hash // after all entries added
+	lock                                       sync.Mutex
+	tf                                         *tableFiles
+	name                                       string
+	entryCount                                 uint64
+	format                                     tableFormat
+	meta                                       tableMeta
+	isOpen, isDeleted, hasStoredState, hasMeta bool
+	phase                                      uint
+	tableRoot                                  common.Hash // after all entries added
 	// phase == wpWriteEntries
 	lastEntryChunk    *entryChunk
 	lastSubtreeChunks []*subtreeChunk
@@ -643,23 +644,45 @@ func newTableWriter(tf *tableFiles, name string, storedState bool, entryCount ui
 	return tw, nil
 }
 
-func (tw *tableWriter) deleteOnError() {
+func (tw *tableWriter) delete() error {
+	tw.lock.Lock()
+	defer tw.lock.Unlock()
+
+	var finalErr error
 	for _, w := range tw.writers {
 		if w != nil {
-			w.Close()
+			if err := w.Close(); err != nil {
+				finalErr = err
+			}
 		}
 	}
 	if tw.copyWriter != nil {
-		tw.copyWriter.Close()
+		if err := tw.copyWriter.Close(); err != nil {
+			finalErr = err
+		}
 	}
-	tw.tf.deleteFile(tw.name + writeStateSuffix)
+	if err := tw.tf.deleteFile(tw.name + writeStateSuffix); err != nil && err != errFileNotFound {
+		finalErr = err
+	}
 	for i := range tw.format.subtreeLevels + 1 {
-		tw.tf.deleteFile(tw.name + writeTempSuffix(i))
+		if err := tw.tf.deleteFile(tw.name + writeTempSuffix(i)); err != nil && err != errFileNotFound {
+			finalErr = err
+		}
 	}
-	tw.tf.deleteFile(tw.name)
+	if err := tw.tf.deleteFile(tw.name); err != nil && err != errFileNotFound {
+		finalErr = err
+	}
+	tw.isDeleted = true
+	return finalErr
 }
 
 func (tw *tableWriter) open() error {
+	tw.lock.Lock()
+	defer tw.lock.Unlock()
+
+	if tw.isDeleted {
+		return ErrTableDeleted
+	}
 	if tw.isOpen {
 		panic("table writer is already open")
 	}
@@ -691,6 +714,12 @@ func (tw *tableWriter) open() error {
 }
 
 func (tw *tableWriter) close() error {
+	tw.lock.Lock()
+	defer tw.lock.Unlock()
+
+	if tw.isDeleted {
+		return ErrTableDeleted
+	}
 	if !tw.isOpen {
 		panic("table writer is not open")
 	}
@@ -713,6 +742,7 @@ func (tw *tableWriter) close() error {
 			if err := w.Close(); err != nil {
 				return err
 			}
+			tw.writers[i] = nil // signal for a potential delete() that this writer has been successfully closed
 		}
 		state.LastEntryChunk = tw.lastEntryChunk.entries.toStorage()
 		state.LastSubtreeChunks = make([]subtreesForStorage, len(tw.lastSubtreeChunks))
@@ -723,6 +753,7 @@ func (tw *tableWriter) close() error {
 		if err := tw.copyWriter.Close(); err != nil {
 			return err
 		}
+		tw.copyWriter = nil
 		state.CopyLevel = tw.copyLevel
 		state.CopyReadPointer = tw.copyReadPointer
 		state.LevelPointers = tw.levelPointers
@@ -731,7 +762,7 @@ func (tw *tableWriter) close() error {
 	default:
 		panic("invalid table write phase")
 	}
-	sw, err := tw.tf.getAppendWriter(tw.name+writeNameSuffix, true)
+	sw, err := tw.tf.getAppendWriter(tw.name+writeStateSuffix, true)
 	if err != nil {
 		return err
 	}
@@ -763,6 +794,12 @@ func (tw *tableWriter) newSubtreeChunk(level uint) *subtreeChunk {
 }
 
 func (tw *tableWriter) addEntry(ie *indexEntry) error {
+	tw.lock.Lock()
+	defer tw.lock.Unlock()
+
+	if tw.isDeleted {
+		return ErrTableDeleted
+	}
 	if tw.phase != wpWriteEntries {
 		panic("invalid table write phase")
 	}
@@ -834,6 +871,9 @@ func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, be
 }
 
 func (tw *tableWriter) setMeta(meta tableMeta) {
+	tw.lock.Lock()
+	defer tw.lock.Unlock()
+
 	if tw.hasMeta {
 		panic("tableMeta already exists")
 	}
@@ -841,6 +881,9 @@ func (tw *tableWriter) setMeta(meta tableMeta) {
 }
 
 func (tw *tableWriter) getTableRoot() common.Hash {
+	tw.lock.Lock()
+	defer tw.lock.Unlock()
+
 	if tw.nextEntry != tw.entryCount {
 		panic("not enough entries")
 	}
@@ -848,6 +891,12 @@ func (tw *tableWriter) getTableRoot() common.Hash {
 }
 
 func (tw *tableWriter) finalize() (bool, error) {
+	tw.lock.Lock()
+	defer tw.lock.Unlock()
+
+	if tw.isDeleted {
+		return false, ErrTableDeleted
+	}
 	if tw.phase == wpWriteEntries {
 		if tw.nextEntry != tw.entryCount {
 			panic("not enough entries")
@@ -859,7 +908,7 @@ func (tw *tableWriter) finalize() (bool, error) {
 			if err := tw.writers[i].Close(); err != nil {
 				return false, err
 			}
-			tw.writers[i] = nil // signal for deleteOnError that this file has been successfully closed
+			tw.writers[i] = nil // signal for a potential delete() that this writer has been successfully closed
 		}
 		tw.copyWriter = tw.writers[tw.format.subtreeLevels]
 		tw.copyWritePointer = tw.writePointers[tw.format.subtreeLevels]
@@ -894,7 +943,12 @@ func (tw *tableWriter) finalize() (bool, error) {
 				return false, err
 			}
 			tw.copyWriter = nil
-			if err := tw.tf.renameFile(tw.name+writeTempSuffix(i), tw.name); err != nil {
+			for i := range tw.format.subtreeLevels {
+				if err := tw.tf.deleteFile(tw.name + writeTempSuffix(i)); err != nil {
+					return false, err
+				}
+			}
+			if err := tw.tf.renameFile(tw.name+writeTempSuffix(tw.format.subtreeLevels), tw.name); err != nil {
 				return false, err
 			}
 			tw.phase = wpFinished

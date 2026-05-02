@@ -53,6 +53,13 @@ func (ix *Indexer) mergeLoop() {
 		}
 		switch currentOp.operation {
 		case opDelete:
+			if err := ix.storage.deleteTable(currentOp.id); err != nil {
+				r := ix.params.blockRange(currentOp.id)
+				log.Error("Failed to delete index table", "start", r.First(), "count", r.Count(), "error", err)
+			}
+			ix.lock.Lock()
+			ix.updateActions()
+			ix.lock.Unlock()
 		case opMerge:
 		}
 	}

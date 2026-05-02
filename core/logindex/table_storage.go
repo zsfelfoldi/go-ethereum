@@ -34,17 +34,16 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
-var errDeleted = errors.New("table already deleted")
-
 type tableStorage struct {
-	lock                    sync.Mutex
-	params                  *Params
-	tf                      *tableFiles
-	readers, unknownReaders map[tableID]*tableReader
-	writers, unknownWriters map[tableID]*tableWriter
-	complete, partial       tableSet
-	initRequest             bool
-	initNumber              uint64
+	lock                       sync.Mutex
+	params                     *Params
+	tf                         *tableFiles
+	readers                    map[tableID]*tableReader
+	writers                    map[tableID]*tableWriter
+	triggers                   map[tableID]chan struct{}
+	complete, partial, preInit tableSet
+	initRequest                bool
+	initNumber                 uint64
 }
 
 const writeStateSuffix = ".state"
@@ -55,14 +54,14 @@ func writeTempSuffix(level int) string {
 
 func newTableStorage(p *Params, tf *tableFiles) (*tableStorage, error) {
 	ts := &tableStorage{
-		params:         p,
-		tf:             tf,
-		readers:        make(map[tableID]*tableReader),
-		unknownReaders: make(map[tableID]*tableReader),
-		writers:        make(map[tableID]*tableWriter),
-		unknownWriters: make(map[tableID]*tableWriter),
-		complete:       p.newTableSet(),
-		partial:        p.newTableSet(),
+		params:   p,
+		tf:       tf,
+		readers:  make(map[tableID]*tableReader),
+		writers:  make(map[tableID]*tableWriter),
+		triggers: make(map[tableID]chan struct{}),
+		complete: p.newTableSet(),
+		partial:  p.newTableSet(),
+		preInit:  p.newTableSet(),
 	}
 loop:
 	allFiles := tf.allFiles()
@@ -79,7 +78,9 @@ loop:
 				tf.deleteFile(name)
 				continue loop
 			}
-			ts.unknownReaders[id] = reader
+			ts.readers[id] = reader
+			ts.complete.add(id)
+			ts.preInit.add(id)
 		case fnWriteState:
 			writer, err := newTableWriter(tf, p.tableName(id), true, 0)
 			if err != nil {
@@ -87,7 +88,9 @@ loop:
 				tf.deleteFile(name)
 				continue loop
 			}
-			ts.unknownWriters[i] = writer
+			ts.writers[i] = writer
+			ts.partial.add(id)
+			ts.preInit.add(id)
 		}
 	}
 	for id := range ts.unknownWriters {
@@ -110,80 +113,169 @@ loop:
 }
 
 func (ts *tableStorage) getTableReader(id tableID) (*tableReader, error) {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
 
+	if tr, ok := ts.readers[id]; ok {
+		return tr, nil
+	}
+	return nil, errTableNotFound
+}
+
+func (ts *tableStorage) waitTableReader(id tableID) (*tableReader, error) {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
+
+	if tr, ok := ts.readers[id]; ok {
+		return tr, nil
+	}
+	ch, ok := ts.triggers[id]
+	if !ok {
+		ch = make(chan struct{})
+		ts.triggers[id] = ch
+	}
+	ts.lock.Unlock()
+	<-ch
+	ts.lock.Lock()
+	if tr, ok := ts.readers[id]; ok {
+		return tr, nil
+	}
+	return nil, errTableNotFound
+}
+
+func (ts *tableStorage) addTableWriter(id tableID, tw *tableWriter) error {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
+
+	if ts.writers[id] != nil {
+		return errors.New("table already exists")
+	}
+	ts.writers[id] = tw
+	return nil
 }
 
 func (ts *tableStorage) getTableWriter(id tableID) (*tableWriter, error) {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
 
+	if tw, ok := ts.writers[id]; ok {
+		return tw, nil
+	}
+	return nil, errTableNotFound
+}
+
+func (ts *tableStorage) finishedTableWriter(id tableID) error {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
+
+	tw, ok := ts.writers[id]
+	if !ok {
+		return errTableNotFound
+	}
+	if !tw.isFinalized() {
+		return errors.New("table writer not finalized yet")
+	}
+	delete(ts.writers, id)
+	ts.partial.remove(id)
+	tr, err := newTableReader(ts.tf, ts.params.tableName(id))
+	if err != nil {
+		return err
+	}
+	ts.readers[id] = tr
+	ts.complete.add(id)
+	if ch, ok := ts.triggers[id]; ok {
+		close(ch)
+		delete(ts.triggers, id)
+	}
+	return nil
 }
 
 func (ts *tableStorage) deleteTable(id tableID) error {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
 
+	if _, ok := ts.readers[id]; ok {
+		delete(ts.readers, id)
+		return ts.tf.deleteFile(ts.params.tableName(id))
+	}
+	if tw, ok := ts.writers[id]; ok {
+		delete(ts.writers, id)
+		return tw.delete()
+	}
+	return errTableNotFound
 }
 
 func (ts *tableStorage) requestInitBlockHash() (number uint64, request bool) {
 	ts.lock.Lock()
 	defer ts.lock.Unlock()
 
-	for _, tr := range ts.unknownReaders {
-		if !request || tr.meta.LastBlockNumber > number {
-			request, number = true, tr.meta.LastBlockNumber
-		}
-	}
-	for _, tw := range ts.unknownWriters {
-		if !request || tw.meta.LastBlockNumber > number {
-			request, number = true, tw.meta.LastBlockNumber
+	for i, rs := range ts.preInit {
+		if !rs.isEmpty() {
+			last := ts.params.blockRange(tableID{level: i, index: rs.last()}).Last()
+			if !request || last > number {
+				request, number = true, last
+			}
 		}
 	}
 	ts.initRequest, ts.initNumber = request, number
 	return
 }
 
-func (ts *tableStorage) deliverInitBlockHash(number uint64, hash common.Hash) {
+func (ts *tableStorage) deliverInitBlockHash(number uint64, hash common.Hash) bool {
 	ts.lock.Lock()
 	defer ts.lock.Unlock()
 
+	if ts.preInit == nil {
+		return true
+	}
 	if !ts.initRequest || number != ts.initNumber {
-		return
+		return false
 	}
 	ts.initRequest = false
 	hashes := make(map[uint64]common.Hash)
 	hashes[number] = hash
 	for len(hashes) > 0 {
 		for number, hash := range hashes {
-			for id, tr := range ts.unknownReaders {
-				if tr.meta.LastBlockNumber != number {
+			for id, tr := range ts.readers {
+				if tr.meta.LastBlockNumber != number || !ts.preInit.includes(id) {
 					continue
 				}
 				if tr.meta.LastBlockHash == hash {
-					ts.readers[id] = tr
 					if tr.meta.LastBlockNumber >= tr.meta.BlockCount {
 						hashes[tr.meta.LastBlockNumber-tr.meta.BlockCount] = tr.meta.ParentHash
 					}
 				} else {
+					ts.complete.remove(id)
 					ts.tf.deleteFile(ts.p.tableName(id))
 				}
-				delete(ts.unknownReaders, id)
+				ts.preInit.remove(id)
 			}
-			for id, tw := range ts.unknownWriters {
-				if tw.meta.LastBlockNumber != number {
+			for id, tw := range ts.writers {
+				if tw.meta.LastBlockNumber != number || !ts.preInit.includes(id) {
 					continue
 				}
 				if tw.meta.LastBlockHash == hash {
-					ts.writers[id] = tw
 					if tw.meta.LastBlockNumber >= tw.meta.BlockCount {
 						hashes[tw.meta.LastBlockNumber-tw.meta.BlockCount] = tw.meta.ParentHash
 					}
 				} else {
+					ts.partial.remove(id)
 					tw.delete()
 				}
-				delete(ts.unknownWriters, id)
+				ts.preInit.remove(id)
 			}
 		}
 	}
+	if ts.preInit.isEmpty() {
+		ts.preInit = nil
+	}
+	return ts.preInit == nil
 }
 
 func (ts *tableStorage) close() {
+	for _, ch := range ts.triggers {
+		close(ch)
+	}
 	ts.tf.close()
 }
 

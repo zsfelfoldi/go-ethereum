@@ -70,7 +70,7 @@ func NewIndexer(path string) *Indexer {
 }
 
 func (ix *Indexer) updateActions() {
-	completeSet, partialSet := ix.storage.tableSet()
+	completeSet, partialSet := ix.storage.tables()
 	currentOp, requestBlocks := ix.params.nextAction(completeSet, partialSet, ix.makeTargetSet(completeSet))
 	if currentOp != ix.currentOp {
 		ix.currentOp = currentOp
@@ -139,11 +139,4 @@ func (ix *Indexer) Stop() {
 	close(ix.closeMergeCh)
 	ix.mergeWg.Wait()
 	ix.storage.close()
-}
-
-func (ix *Indexer) updateMerge() {
-	select {
-	case ix.updateMergeCh <- struct{}{}:
-	default:
-	}
 }
