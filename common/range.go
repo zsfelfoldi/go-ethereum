@@ -18,6 +18,7 @@ package common
 
 import (
 	"iter"
+	"sort"
 )
 
 // Range represents a range of integers.
@@ -124,7 +125,7 @@ func (r Range[T]) Iter() iter.Seq[T] {
 	}
 }
 
-type RangeSet[T uint32 | uint64] []common.Range[T]
+type RangeSet[T uint32 | uint64] []Range[T]
 
 func (a RangeSet[T]) Includes(v T) bool {
 	for _, r := range a {
@@ -167,7 +168,7 @@ type rangeBoundary[T uint32 | uint64] struct {
 
 type rangeBoundaries[T uint32 | uint64] []rangeBoundary[T]
 
-func (rb *rangeBoundaries[T]) add(r common.Range[T], d int) {
+func (rb *rangeBoundaries[T]) add(r Range[T], d int) {
 	*rb = append((*rb), rangeBoundary[T]{v: r.First(), d: d}, rangeBoundary[T]{v: r.AfterLast(), d: -d})
 }
 
@@ -188,7 +189,7 @@ func (rb rangeBoundaries[T]) makeSet(threshold int) RangeSet[T] {
 			if cmp {
 				start = r.v
 			} else {
-				res = append(res, common.NewRange[T](start, r.v-start))
+				res = append(res, NewRange[T](start, r.v-start))
 			}
 			lastCmp = cmp
 		}
@@ -265,17 +266,17 @@ func (a RangeSet[T]) Count() T {
 	return count
 }
 
-func (a RangeSet[T]) SingleRange() common.Range[T] {
+func (a RangeSet[T]) SingleRange() Range[T] {
 	if len(a) > 1 {
 		panic("singleRange called for non-continuous RangeSet")
 	}
 	if len(a) == 1 {
 		return a[0]
 	}
-	return common.NewRange[T](0, 0)
+	return NewRange[T](0, 0)
 }
 
-func SingleRangeSet[T uint32 | uint64](r common.Range[T]) RangeSet[T] {
+func SingleRangeSet[T uint32 | uint64](r Range[T]) RangeSet[T] {
 	if r.IsEmpty() {
 		return nil
 	}

@@ -92,37 +92,52 @@ func (ix *Indexer) makeTargetSet() tableSet {
 	return target
 }
 
-func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, parentRoots []byte, transactions types.Transactions, receipts types.Receipts) []byte {
+func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, parentRoots []byte, transactions types.Transactions, receipts types.Receipts) ([]byte, error) {
 	ix.deleteTablesFromBlock(blockNumber)
 	roots := make([]byte, common.HashLength*len(ix.params.consensusLevels))
-	for i := 1; i < len(ix.params.consensusLevels); i++ {
-		level := ix.params.consensusLevels[i]
-		if blockNumber >= ix.params.consensusBlockAges[i] { //TODO fork block
-			id := tableID{level: level, index: (blockNumber - ix.params.consensusBlockAges[i]) >> level}
-			for {
-				tr, err := tr.ix.storage.getTableReader(id)
-				if err != nil {
-					log.Error("")
-					return nil
-				}
-				if tr == nil {
-					//				if ch :=
-					return nil //
-				}
-			}
+	entries := txAndLogEntries(blockNumber, transactions, receipts)
+	tw, err := ix.storage.addNewTableWriter(tableID{level: 0, index: blockNumber}, uint64(len(entries)))
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if err := tw.addEntry(&entry); err != nil {
+			ix.storage.deleteTable(tableID{level: 0, index: blockNumber})
+			return nil, err
 		}
 	}
+	updateIndexRoot(roots[:common.HashLength], tw.getTableRoot())
+	for i := 1; i < len(ix.params.protocolLevels); i++ {
+		blockCount := ix.params.tableLevels[i].blockCount
+		headAge := ix.params.protocolLevels[i].headAge
+		if blockNumber >= headAge && (blockNumber-headAge)%blockCount == blockCount-1 { //TODO fork block
+			id := tableID{level: i, index: (blockNumber - headAge) / blockCount}
+			tr, err := ix.storage.waitTableReader(id)
+			if err != nil {
+				return nil, err
+			}
+			updateIndexRoot(roots[common.HashLength*i:common.HashLength*(i+1)], tr.tableRoot)
+		}
+	}
+	return roots, nil
+}
 
-	entries := txAndLogEntries(blockNumber, transactions, receipts)
-
-	return nil
+func updateIndexRoot(rootSection []byte, newTableRoot common.Hash) {
+	hasher := sha256.New()
+	hasher.Write(rootSection)
+	hasher.Write(newTableRoot[:])
+	var result common.Hash
+	hasher.Sum(result[:0])
+	copy(rootSection, result[:])
 }
 
 func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts types.Receipts) (ready bool, needBlocks common.Range[uint64]) {
 	return ix.Status()
 }
 
-func (ix *Indexer) Revert(blockNumber uint64) {}
+func (ix *Indexer) Revert(blockNumber uint64) {
+	ix.deleteTablesFromBlock(blockNumber + 1)
+}
 
 func (ix *Indexer) Status() (ready bool, needBlocks common.Range[uint64]) {
 	i.lock.RLock()

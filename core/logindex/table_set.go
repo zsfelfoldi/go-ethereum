@@ -28,6 +28,10 @@ type tableLevel struct {
 	blockCount uint64
 }
 
+type protocolLevel struct {
+	tailAge, headAge uint64
+}
+
 type tableID struct {
 	level int
 	index uint64
@@ -55,10 +59,6 @@ func (p *Params) rangeID(r common.Range[uint64]) (tableID, bool) {
 		}
 	}
 	return tableID{}, false
-}
-
-type protocolLevel struct {
-	tailAge, headAge uint64
 }
 
 const (

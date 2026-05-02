@@ -28,6 +28,7 @@ import (
 	"math/bits"
 	"os"
 	"slices"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common/lru"
@@ -143,15 +144,19 @@ func (ts *tableStorage) waitTableReader(id tableID) (*tableReader, error) {
 	return nil, errTableNotFound
 }
 
-func (ts *tableStorage) addTableWriter(id tableID, tw *tableWriter) error {
+func (ts *tableStorage) addNewTableWriter(id tableID, entryCount uint64) (*tableWriter, error) {
 	ts.lock.Lock()
 	defer ts.lock.Unlock()
 
 	if ts.writers[id] != nil {
 		return errors.New("table already exists")
 	}
+	tw, err := newTableWriter(ts.tf, ts.params.tableName(id), false, entryCount)
+	if err != nil {
+		return nil, err
+	}
 	ts.writers[id] = tw
-	return nil
+	return tw, nil
 }
 
 func (ts *tableStorage) getTableWriter(id tableID) (*tableWriter, error) {
