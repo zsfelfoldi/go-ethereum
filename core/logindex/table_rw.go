@@ -28,9 +28,13 @@ import (
 	"math/bits"
 	"os"
 	"slices"
+	"sort"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -43,6 +47,13 @@ const (
 	subtreeCacheSize    = 100
 )
 
+const (
+	ieBlock = iota
+	ieTransaction
+	ieAddress
+	ieTopic0
+)
+
 type tableFormat struct {
 	entryCount                                    uint64
 	firstSubtreeHeight, subtreeLevels, leafHeight uint
@@ -50,7 +61,7 @@ type tableFormat struct {
 	memoryStorage, fileStorage uint
 }
 
-func newTableFormat(entryCount uint64) (tf tableFormat) {
+func (p *Params) newTableFormat(entryCount uint64) (tf tableFormat) {
 	tf.entryCount = entryCount
 	tf.leafHeight = uint(64 - bits.LeadingZeros64(max(entryCount, 1)-1))
 	if tf.leafHeight <= logEntryChunkSize {
@@ -59,11 +70,11 @@ func newTableFormat(entryCount uint64) (tf tableFormat) {
 		tf.subtreeLevels = (tf.leafHeight - logEntryChunkSize + logSubtreeChunkSize - 1) / logSubtreeChunkSize
 		tf.firstSubtreeHeight = tf.leafHeight - logEntryChunkSize - tf.subtreeLevels*logSubtreeChunkSize
 	}
-	if tf.firstSubtreeHeight < fileStorageThreshold {
-		if tf.leafHeight < fileStorageThreshold {
+	if tf.firstSubtreeHeight < p.fileStorageThresholdHeight {
+		if tf.leafHeight < p.fileStorageThresholdHeight {
 			tf.memoryStorage = tf.subtreeLevels + 1
 		} else {
-			tf.memoryStorage = (fileStorageThreshold-tf.firstSubtreeHeight)/logSubtreeChunkSize + 1
+			tf.memoryStorage = (p.fileStorageThresholdHeight-tf.firstSubtreeHeight)/logSubtreeChunkSize + 1
 		}
 	}
 	tf.fileStorage = tf.subtreeLevels + 1 - tf.memoryStorage
@@ -163,7 +174,7 @@ func txAndLogEntries(blockNumber uint64, txs types.Transactions, receipts types.
 	for txi, receipt := range receipts {
 		for li, log := range receipt.Logs {
 			var addr32 [32]byte
-			copy(addr32[xx:xx], log.Address[:])
+			copy(addr32[32-common.AddressLength:], log.Address[:])
 			entries = append(entries, indexEntry{
 				indexValue:  addr32,
 				blockNumber: blockNumber,
@@ -391,8 +402,7 @@ type tableReader struct {
 	subtreeChunkCache *lru.Cache[subtreePos, *subtreeChunk]
 	entryCount        uint64
 	levelPointers     []uint64
-	chunkHeights      []uint
-	topLevel          uint
+	format            tableFormat
 	tableRoot         merkle.Value
 	meta              tableMeta
 }
@@ -402,13 +412,13 @@ type subtreePos struct {
 	index uint64
 }
 
-func newTableReader(tf *tableFiles, name string) (*tableReader, error) {
+func newTableReader(params *Params, tf *tableFiles, name string) (*tableReader, error) {
 	ioReader, fileSize, err := tf.getReaderAt(name)
 	if err != nil {
 		return nil, err
 	}
 	var headerSizeByte [1]byte
-	_, err := ioReader.ReadAt(headerSizeByte[:], fileSize-1)
+	_, err = ioReader.ReadAt(headerSizeByte[:], fileSize-1)
 	if err != nil {
 		return nil, err
 	}
@@ -422,17 +432,16 @@ func newTableReader(tf *tableFiles, name string) (*tableReader, error) {
 		return nil, err
 	}
 	tr := &tableReader{
-		reader:            reader,
+		reader:            ioReader,
 		fileSize:          fileSize,
 		entryChunkCache:   lru.NewCache[uint64, indexEntries](entryCacheSize),
 		subtreeChunkCache: lru.NewCache[subtreePos, *subtreeChunk](subtreeCacheSize),
-		chunkHeights:      chunkHeights(header.EntryCount),
+		format:            params.newTableFormat(header.EntryCount),
 		entryCount:        header.EntryCount,
 		levelPointers:     header.LevelPointers,
 		tableRoot:         header.TableRoot,
 		meta:              header.tableMeta,
 	}
-	tr.topLevel = uint(len(tr.chunkHeights) - 2)
 	return tr, nil
 }
 
@@ -453,7 +462,7 @@ func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 		start, stop = tr.levelPointers[level+1]+sc.boundaryFilePos[i], tr.levelPointers[level+1]+sc.boundaryFilePos[i+1]
 	}
 	enc := make([]byte, stop-start)
-	_, err := tr.reader.ReadAt(enc, start)
+	_, err := tr.reader.ReadAt(enc, int64(start))
 	if err != nil {
 		return nil, err
 	}
@@ -461,7 +470,7 @@ func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 	if err := rlp.DecodeBytes(enc, &ss); err != nil {
 		return nil, err
 	}
-	sc := ss.toSubtreeChunk(tr.chunkHeights[level+1]-tr.chunkHeights[level], tr.chunkHeights[tr.topLevel+1]-tr.chunkHeights[level+1])
+	sc := ss.toSubtreeChunk(tr.format.subtreeChunkHeight(level), tr.format.leafHeight-tr.format.baseHeight(level+1))
 	tr.subtreeChunkCache.Add(sp, sc)
 	return sc, nil
 }
@@ -470,17 +479,14 @@ func (tr *tableReader) getEntryChunk(index uint64) (indexEntries, error) {
 	if ec, ok := tr.entryChunkCache.Get(index); ok {
 		return ec, nil
 	}
-	sc, err := tr.getSubtreeChunk(tr.topLevel-1, index/subtreeChunkSize)
+	sc, err := tr.getSubtreeChunk(tr.format.subtreeLevels-1, index/subtreeChunkSize)
 	if err != nil {
 		return nil, err
 	}
 	i := index % subtreeChunkSize
 	start, stop := sc.boundaryFilePos[i], sc.boundaryFilePos[i+1]
-	if tr.filePos != start {
-		tr.reader.Seek(int64(start), io.SeekStart)
-	}
 	enc := make([]byte, stop-start)
-	_, err := tr.reader.ReadAt(enc, start)
+	_, err = tr.reader.ReadAt(enc, int64(start))
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +512,7 @@ func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
 		chunkLevel uint
 		chunkIndex uint64
 	)
-	for chunkLevel < tr.topLevel {
+	for chunkLevel < tr.format.subtreeLevels {
 		sc, err := tr.getSubtreeChunk(chunkLevel, chunkIndex)
 		if err != nil {
 			return 0, false, err
@@ -534,7 +540,7 @@ type tableWriter struct {
 	meta                                       tableMeta
 	isOpen, isDeleted, hasStoredState, hasMeta bool
 	phase                                      uint
-	tableRoot                                  common.Hash // after all entries added
+	tableRoot                                  merkle.Value // after all entries added
 	// phase == wpWriteEntries
 	lastEntryChunk    *entryChunk
 	lastSubtreeChunks []*subtreeChunk
@@ -567,7 +573,7 @@ type writeState struct {
 	tableHeader
 }
 
-func newTableWriter(tf *tableFiles, name string, storedState bool, entryCount uint64) (*tableWriter, error) {
+func newTableWriter(params *Params, tf *tableFiles, name string, storedState bool, entryCount uint64) (*tableWriter, error) {
 	var state writeState
 	if storedState {
 		r, l, err := tf.getReaderAt(name + writeStateSuffix)
@@ -586,21 +592,21 @@ func newTableWriter(tf *tableFiles, name string, storedState bool, entryCount ui
 		}
 		entryCount = state.EntryCount
 	}
-	format := newTableFormat(entryCount)
+	format := params.newTableFormat(entryCount)
 	tw := &tableWriter{
 		tf:                tf,
 		name:              name,
 		hasStoredState:    storedState,
 		hasMeta:           storedState,
-		meta:              state.Meta,
-		lastEntryChunk:    tw.newEntryChunk(),
+		meta:              state.tableHeader.tableMeta,
 		lastSubtreeChunks: make([]*subtreeChunk, format.subtreeLevels),
 		writers:           make([]io.WriteCloser, format.subtreeLevels+1),
-		writePointers:     make([]uint64, format.subtreeLevels+1),
+		writePointers:     make([]int64, format.subtreeLevels+1),
 		entryCount:        entryCount,
 		format:            format,
 	}
 	tw.phase = state.Phase
+	tw.lastEntryChunk = tw.newEntryChunk()
 	tw.nextEntry = state.NextEntry
 	tw.tableRoot = state.TableRoot
 	switch state.Phase {
@@ -612,15 +618,15 @@ func newTableWriter(tf *tableFiles, name string, storedState bool, entryCount ui
 	case wpWriteEntries:
 		tw.lastEntryChunk.entries = state.LastEntryChunk.toEntries()
 		for i := range tw.lastSubtreeChunks {
-			tw.lastSubtreeChunks[i] = state.LastSubtreeChunks[i].toSubtreeChunk(tw.format.subtreeChunkHeight(i), tw.format.leafHeight-tw.format.baseHeight(i+1))
+			tw.lastSubtreeChunks[i] = state.LastSubtreeChunks[i].toSubtreeChunk(tw.format.subtreeChunkHeight(uint(i)), tw.format.leafHeight-tw.format.baseHeight(uint(i+1)))
 		}
 		for i := range tw.format.subtreeLevels + 1 {
-			_, l, err := tf.getReaderAt(name + writeTempSuffix(i))
+			_, l, err := tf.getReaderAt(name + writeTempSuffix(uint(i)))
 			if err != nil {
-				tw.deleteOnError()
+				tw.delete()
 				return nil, err
 			}
-			tw.writePointers[i] = uint64(l)
+			tw.writePointers[i] = l
 		}
 	case wpTempCopy:
 		tw.copyLevel = state.CopyLevel
@@ -629,16 +635,16 @@ func newTableWriter(tf *tableFiles, name string, storedState bool, entryCount ui
 		var err error
 		tw.copyReader, tw.copyReadSize, err = tf.getReaderAt(name + writeTempSuffix(tw.copyLevel))
 		if err != nil {
-			tw.deleteOnError()
+			tw.delete()
 			return nil, err
 		}
 		_, tw.copyWritePointer, err = tf.getReaderAt(name + writeTempSuffix(tw.format.subtreeLevels))
 		if err != nil {
-			tw.deleteOnError()
+			tw.delete()
 			return nil, err
 		}
 	default:
-		tw.deleteOnError()
+		tw.delete()
 		return nil, errors.New("invalid table write phase")
 	}
 	return tw, nil

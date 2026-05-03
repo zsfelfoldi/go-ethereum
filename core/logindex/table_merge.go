@@ -31,6 +31,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common/lru"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -45,7 +46,7 @@ func (ix *Indexer) mergeLoop() {
 		for !shutdown && currentOp.operation == opNone {
 			<-ix.updateMergeCh
 			ix.lock.Lock()
-			currentOp, shutdown := ix.currentOp, ix.shutdown
+			currentOp, shutdown = ix.currentOp, ix.shutdown
 			ix.lock.Unlock()
 		}
 		if shutdown {

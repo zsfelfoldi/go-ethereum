@@ -31,6 +31,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/rlp"
 )
@@ -49,7 +50,7 @@ type tableStorage struct {
 
 const writeStateSuffix = ".state"
 
-func writeTempSuffix(level int) string {
+func writeTempSuffix(level uint) string {
 	return fmt.Sprintf(".temp_%02x", level)
 }
 
@@ -64,8 +65,8 @@ func newTableStorage(p *Params, tf *tableFiles) (*tableStorage, error) {
 		partial:  p.newTableSet(),
 		preInit:  p.newTableSet(),
 	}
-loop:
 	allFiles := tf.allFiles()
+loop:
 	for name := range allFiles {
 		ftype, id, _ := p.parseFileName(name)
 		switch ftype {
@@ -111,6 +112,13 @@ loop:
 		}
 	}
 	return ts
+}
+
+func (ts *tableStorage) tables() (tableSet, tableSet) {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
+
+	return ts.complete, ts.partial
 }
 
 func (ts *tableStorage) getTableReader(id tableID) (*tableReader, error) {
@@ -199,15 +207,44 @@ func (ts *tableStorage) deleteTable(id tableID) error {
 	ts.lock.Lock()
 	defer ts.lock.Unlock()
 
+	return ts.deleteTableLocked(id)
+}
+
+func (ts *tableStorage) deleteTableLocked(id tableID) error {
 	if _, ok := ts.readers[id]; ok {
 		delete(ts.readers, id)
+		ts.complete.remove(id)
 		return ts.tf.deleteFile(ts.params.tableName(id))
 	}
 	if tw, ok := ts.writers[id]; ok {
 		delete(ts.writers, id)
+		ts.partial.remove(id)
 		return tw.delete()
 	}
 	return errTableNotFound
+}
+
+func (ts *tableStorage) deleteTablesFromBlock(blockNumber uint64) error {
+	ts.lock.Lock()
+	defer ts.lock.Unlock()
+
+	for i := range ts.params.tableLevels {
+		for {
+			rs := ts.complete[i].Union(ts.partial[i])
+			if rs.IsEmpty() {
+				break
+			}
+			id := tableID{level: i, index: rs.Last()}
+			if ts.params.blockRange(id).Last() >= blockNumber {
+				if err := ts.deleteTableLocked(id); err != nil {
+					return err
+				}
+			} else {
+				break
+			}
+		}
+	}
+	return nil
 }
 
 func (ts *tableStorage) requestInitBlockHash() (number uint64, request bool) {
@@ -216,7 +253,7 @@ func (ts *tableStorage) requestInitBlockHash() (number uint64, request bool) {
 
 	for i, rs := range ts.preInit {
 		if !rs.isEmpty() {
-			last := ts.params.blockRange(tableID{level: i, index: rs.last()}).Last()
+			last := ts.params.blockRange(tableID{level: i, index: rs.Last()}).Last()
 			if !request || last > number {
 				request, number = true, last
 			}

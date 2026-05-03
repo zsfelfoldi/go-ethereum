@@ -27,10 +27,14 @@ import (
 	"math"
 	"math/bits"
 	"os"
+	"path/filepath"
 	"slices"
+	"sync"
+	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common/lru"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -169,7 +173,7 @@ func (tf *tableFiles) loadMemTables() {
 		log.Error("Could not read small index table file", "error", err)
 		return
 	}
-	err := rlp.Decode(f, &memTables)
+	err = rlp.Decode(f, &memTables)
 	f.Close()
 	if err != nil {
 		log.Error("Could not decode small index table file", "error", err)
@@ -180,14 +184,14 @@ func (tf *tableFiles) loadMemTables() {
 			tf:      tf,
 			name:    mt.Name,
 			memData: mt.Data,
-			size:    len(mt.Data),
+			size:    int64(len(mt.Data)),
 		}
 	}
 }
 
 func (tf *tableFiles) storeMemTables() {
 	var memTables []storedMemTable
-	for name, fi := range ts.tableFiles {
+	for name, fi := range tf.tableFiles {
 		if fi.isLocked() {
 			log.Error("Table file is still locked while shutting down", "name", name)
 			continue
@@ -248,7 +252,7 @@ func (tf *tableFiles) getOsFileForReading(fi *tableFileInfo, fileIndex int) (*os
 	for len(tf.osFiles) >= tf.maxOpenFiles {
 		// close least recently accessed os file
 		var closeId osFileID
-		lowest := math.MaxUint64
+		lowest := uint64(math.MaxUint64)
 		for id, of := range tf.osFiles {
 			if of.accessCounter < lowest {
 				lowest = of.accessCounter
@@ -256,15 +260,15 @@ func (tf *tableFiles) getOsFileForReading(fi *tableFileInfo, fileIndex int) (*os
 			}
 		}
 		if err := tf.osFiles[closeId].file.Close(); err != nil {
-			log.Error("Could not close index table file", "name", tf.osFileName(closeId.tfInfo, closeId.fileIndex), "error", err)
+			log.Error("Could not close index table file", "name", tf.osFileName(closeId.tfInfo.name, closeId.fileIndex), "error", err)
 		}
 		delete(tf.osFiles, closeId)
 	}
-	file, err := os.Open(tf.osFileName(id.tfInfo.name))
+	file, err := os.Open(tf.osFileName(id.tfInfo.name, id.fileIndex))
 	if err != nil {
 		return nil, err
 	}
-	tf.osFiles[id] = osFileInfo{file: file, accessCounter: tf.accessCounter}
+	tf.osFiles[id] = &osFileInfo{file: file, accessCounter: tf.accessCounter}
 	return file, nil
 }
 
@@ -282,11 +286,11 @@ func (fi *tableFileInfo) ReadAt(p []byte, offset int64) (n int, err error) {
 		}
 		maxLen := int64(len(fi.memData)) - offset
 		if int64(len(p)) <= maxLen {
-			copy(p, maxLen[offset:offset+int64(len(p))])
+			copy(p, fi.memData[offset:offset+int64(len(p))])
 			return len(p), nil
 		}
-		copy(p[:maxLen], maxLen[offset:offset+maxLen])
-		return maxLen, errors.New("end of file reached")
+		copy(p[:maxLen], fi.memData[offset:offset+maxLen])
+		return int(maxLen), errors.New("end of file reached")
 	}
 	// table file stored on disk
 	fileIndex := int(offset / fi.tf.maxFileSize)
@@ -302,12 +306,12 @@ func (fi *tableFileInfo) ReadAt(p []byte, offset int64) (n int, err error) {
 	if int64(len(p)) <= maxLen {
 		return file.ReadAt(p, filePos)
 	}
-	n, err := file.ReadAt(p[:maxLen], filePos)
+	n, err = file.ReadAt(p[:maxLen], filePos)
 	if err != nil {
 		return n, err
 	}
 	n, err = fi.ReadAt(p[maxLen:], filePos+maxLen)
-	return maxLen + n, err
+	return int(maxLen) + n, err
 }
 
 func (tf *tableFiles) getAppendWriter(name string, memory bool) (io.WriteCloser, error) {
@@ -323,7 +327,7 @@ func (tf *tableFiles) getAppendWriter(name string, memory bool) (io.WriteCloser,
 		tf.tableFiles[name] = fi
 	}
 	if fi.isLocked() {
-		return nil, 0, errors.New("table file opened for writing is currently locked")
+		return nil, errors.New("table file opened for writing is currently locked")
 	}
 	atomic.StoreUint32(&fi.locked, 1)
 	if !memory {
@@ -352,7 +356,7 @@ func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
 		fi.chunkSize += int64(n)
 		return n, err
 	}
-	n, err := fi.writer.Write(p[:maxLen])
+	n, err = fi.writer.Write(p[:maxLen])
 	fi.size += int64(n)
 	if err != nil {
 		return n, err
@@ -369,7 +373,7 @@ func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
 	fi.fileCount++
 	fi.chunkSize = 0
 	n, err = fi.Write(p[maxLen:])
-	return maxLen + n, err
+	return int(maxLen) + n, err
 }
 
 func (fi *tableFileInfo) Close() error {
@@ -384,6 +388,7 @@ func (fi *tableFileInfo) Close() error {
 		fi.file, fi.writer = nil, nil
 	}
 	atomic.StoreUint32(&fi.locked, 0)
+	return nil
 }
 
 func (tf *tableFiles) renameFile(oldName, newName string) error {
@@ -404,21 +409,21 @@ func (tf *tableFiles) renameFile(oldName, newName string) error {
 	switch {
 	case fi.fileCount == 1:
 		if err := os.Rename(tf.osFileName(oldName, 0), tf.osFileName(newName, 0)); err != nil {
-			return error
+			return err
 		}
 	case fi.fileCount > 1:
 		// rename file index 0 to a temporary name first to ensure that file index
 		// range is not continuous under either name until the rename fully succeeds.
-		if err := os.Rename(tf.osFileName(oldName, 0), tf.tempFileName); err != nil {
-			return error
+		if err := os.Rename(tf.osFileName(oldName, 0), filepath.Join(tf.path, tempFileName)); err != nil {
+			return err
 		}
 		for i := 1; i < fi.fileCount; i++ {
 			if err := os.Rename(tf.osFileName(oldName, i), tf.osFileName(newName, i)); err != nil {
-				return error
+				return err
 			}
 		}
-		if err := os.Rename(tf.tempFileName, tf.osFileName(newName, 0)); err != nil {
-			return error
+		if err := os.Rename(filepath.Join(tf.path, tempFileName), tf.osFileName(newName, 0)); err != nil {
+			return err
 		}
 	}
 	fi.name = newName
@@ -445,12 +450,12 @@ func (tf *tableFiles) deleteFile(name string) error {
 		id := osFileID{tfInfo: fi, fileIndex: i}
 		if of, ok := tf.osFiles[id]; ok {
 			if err := of.file.Close(); err != nil {
-				log.Error("Could not close index table file", "name", tf.osFileName(fi, i), "error", err)
+				log.Error("Could not close index table file", "name", tf.osFileName(fi.name, i), "error", err)
 			}
 			delete(tf.osFiles, id)
 		}
 		if err := os.Remove(tf.osFileName(name, i)); err != nil {
-			return error
+			return err
 		}
 	}
 	return nil

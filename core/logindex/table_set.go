@@ -16,16 +16,15 @@
 
 package logindex
 
+import (
+	"github.com/ethereum/go-ethereum/common"
+)
+
 type tableSet []common.RangeSet[uint64]
 
-type Params struct {
-	tableLevels    []tableLevel
-	protocolLevels []protocolLevel
-}
-
 type tableLevel struct {
-	//TODO storage mode
-	blockCount uint64
+	blockCount  uint64
+	leanStorage bool //TODO
 }
 
 type protocolLevel struct {

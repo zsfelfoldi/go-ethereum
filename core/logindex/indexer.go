@@ -17,13 +17,16 @@
 package logindex
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 // Config contains the configuration options for NewIndexer.
@@ -40,28 +43,63 @@ type Config struct {
 	HashScheme bool
 }
 
-type Indexer struct {
-	lock          sync.RWMutex
-	params        *Params
-	storage       *tableStorage
-	requestBlocks common.Range[uint64]
-	currentOp     tableOperation
-	close         bool
+type Params struct {
+	tableLevels                []tableLevel
+	protocolLevels             []protocolLevel
+	fileStorageThresholdHeight uint
+}
 
+var DefaultParams = &Params{
+	tableLevels: []tableLevel{
+		{blockCount: 0x1},
+		{blockCount: 0x4},
+		{blockCount: 0x10},
+		{blockCount: 0x40},
+		{blockCount: 0x100},
+		{blockCount: 0x400},
+		{blockCount: 0x1000},
+		{blockCount: 0x4000},
+		{blockCount: 0x10000},
+		{blockCount: 0x40000},
+		{blockCount: 0x100000},
+		{blockCount: 0x200000, leanStorage: true},
+	},
+	protocolLevels: []protocolLevel{
+		{tailAge: 5, headAge: 0},
+		{tailAge: 20, headAge: 0},
+		{tailAge: 80, headAge: 1},
+		{tailAge: 320, headAge: 4},
+		{tailAge: 8192, headAge: 16},
+	},
+	fileStorageThresholdHeight: 12,
+}
+
+type Indexer struct {
+	lock                 sync.Mutex
+	params               *Params
+	storage              *tableStorage
+	requestBlocks        common.Range[uint64]
+	currentOp            tableOperation
+	headBlock, tailBlock uint64
+
+	shutdown      bool
 	updateMergeCh chan struct{}
-	closeMergeCh  chan chan struct{}
 	mergeWg       sync.WaitGroup
 }
 
-func NewIndexer(path string) *Indexer {
+func NewIndexer(params *Params, path string) *Indexer {
 	fmt.Println("*** PATH", path)
-	storage, allTables, err := newTableStorage(path)
+	files, err := newTableFiles(path, 2000000000, 16)
+	if err != nil {
+		log.Crit("Could not open index table file manager", "error", err) //TODO return?
+	}
+	storage, err := newTableStorage(params, files)
 	if err != nil {
 		log.Crit("Could not open index table storage", "error", err)
 	}
 	ix := &Indexer{
+		params:        params,
 		storage:       storage,
-		unknown:       allTables,
 		updateMergeCh: make(chan struct{}, 1),
 	}
 	ix.mergeWg.Add(1)
@@ -82,9 +120,9 @@ func (ix *Indexer) updateActions() {
 	ix.requestBlocks = requestBlocks
 }
 
-func (ix *Indexer) makeTargetSet() tableSet {
-	target := ix.params.rangeTarget(ix.valid, common.SingleRangeSet[uint64](common.NewRange[uint64](ix.tailBlock, ix.headBlock+1-ix.tailBlock)))
-	for i, pl := range protocolLevels {
+func (ix *Indexer) makeTargetSet(complete tableSet) tableSet {
+	target := ix.params.rangeTarget(complete, common.SingleRangeSet[uint64](common.NewRange[uint64](ix.tailBlock, ix.headBlock+1-ix.tailBlock)))
+	for i, pl := range ix.params.protocolLevels {
 		first := max(ix.headBlock, pl.tailAge) - pl.tailAge
 		afterLast := max(ix.headBlock+1, pl.headAge) - pl.headAge
 		target[i] = target[i].Union(common.SingleRangeSet[uint64](common.NewRange[uint64](first, afterLast-first)))
@@ -93,8 +131,8 @@ func (ix *Indexer) makeTargetSet() tableSet {
 }
 
 func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, parentRoots []byte, transactions types.Transactions, receipts types.Receipts) ([]byte, error) {
-	ix.deleteTablesFromBlock(blockNumber)
-	roots := make([]byte, common.HashLength*len(ix.params.consensusLevels))
+	ix.storage.deleteTablesFromBlock(blockNumber)
+	roots := make([]byte, common.HashLength*len(ix.params.protocolLevels))
 	entries := txAndLogEntries(blockNumber, transactions, receipts)
 	tw, err := ix.storage.addNewTableWriter(tableID{level: 0, index: blockNumber}, uint64(len(entries)))
 	if err != nil {
@@ -106,7 +144,8 @@ func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, par
 			return nil, err
 		}
 	}
-	updateIndexRoot(roots[:common.HashLength], tw.getTableRoot())
+	tableRoot := tw.getTableRoot()
+	updateIndexRoot(roots[:common.HashLength], tableRoot[:])
 	for i := 1; i < len(ix.params.protocolLevels); i++ {
 		blockCount := ix.params.tableLevels[i].blockCount
 		headAge := ix.params.protocolLevels[i].headAge
@@ -116,34 +155,35 @@ func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, par
 			if err != nil {
 				return nil, err
 			}
-			updateIndexRoot(roots[common.HashLength*i:common.HashLength*(i+1)], tr.tableRoot)
+			updateIndexRoot(roots[common.HashLength*i:common.HashLength*(i+1)], tr.tableRoot[:])
 		}
 	}
 	return roots, nil
 }
 
-func updateIndexRoot(rootSection []byte, newTableRoot common.Hash) {
+func updateIndexRoot(rootSection, newTableRoot []byte) {
 	hasher := sha256.New()
 	hasher.Write(rootSection)
-	hasher.Write(newTableRoot[:])
+	hasher.Write(newTableRoot)
 	var result common.Hash
 	hasher.Sum(result[:0])
 	copy(rootSection, result[:])
 }
 
 func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts types.Receipts) (ready bool, needBlocks common.Range[uint64]) {
+	//TODO headBlock, tailBlock
 	return ix.Status()
 }
 
 func (ix *Indexer) Revert(blockNumber uint64) {
-	ix.deleteTablesFromBlock(blockNumber + 1)
+	ix.storage.deleteTablesFromBlock(blockNumber + 1)
 }
 
 func (ix *Indexer) Status() (ready bool, needBlocks common.Range[uint64]) {
-	i.lock.RLock()
-	defer i.lock.RUnlock()
+	ix.lock.Lock()
+	defer ix.lock.Unlock()
 
-	return !i.requestBlocks.IsEmpty(), i.requestBlocks
+	return !ix.requestBlocks.IsEmpty(), ix.requestBlocks
 }
 
 func (ix *Indexer) SetHistoryCutoff(blockNumber uint64) {}
@@ -151,7 +191,13 @@ func (ix *Indexer) SetFinalized(blockNumber uint64)     {}
 func (ix *Indexer) Suspended()                          {}
 
 func (ix *Indexer) Stop() {
-	close(ix.closeMergeCh)
+	ix.lock.Lock()
+	ix.shutdown = true
+	ix.lock.Unlock()
+	select {
+	case ix.updateMergeCh <- struct{}{}:
+	default:
+	}
 	ix.mergeWg.Wait()
 	ix.storage.close()
 }
