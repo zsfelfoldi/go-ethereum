@@ -36,12 +36,29 @@ type tableID struct {
 	index uint64
 }
 
+func (p *Params) newTableSet() tableSet {
+	return make(tableSet, len(p.tableLevels))
+}
+
 func (ts tableSet) add(id tableID) {
 	ts[id.level] = ts[id.level].Union(common.SingleRangeSet[uint64](common.NewRange[uint64](id.index, 1)))
 }
 
 func (ts tableSet) remove(id tableID) {
 	ts[id.level] = ts[id.level].Difference(common.SingleRangeSet[uint64](common.NewRange[uint64](id.index, 1)))
+}
+
+func (ts tableSet) includes(id tableID) bool {
+	return ts[id.level].Includes(id.index)
+}
+
+func (ts tableSet) isEmpty() bool {
+	for _, rs := range ts {
+		if !rs.IsEmpty() {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Params) blockRange(id tableID) common.Range[uint64] {
@@ -97,60 +114,62 @@ func (p *Params) nextAction(complete, partial, target tableSet) (tableOperation,
 		required  common.RangeSet[uint64]
 	)
 	for i := len(p.tableLevels) - 1; i >= 0; i-- {
-		required = required.or(target[i])
-		if remove := complete[i].or(partial[i]).andNot(required); !remove.isEmpty {
+		required = required.Union(target[i])
+		if remove := complete[i].Union(partial[i]).Difference(required); !remove.IsEmpty() {
 			op := tableOperation{
 				operation: opDelete,
 				id: tableID{
 					level: i,
-					index: remove.last(),
+					index: remove.Last(),
 				},
 			}
 			if p.compareOps(op, bestOp) > 0 {
 				bestOp = op
 			}
 		}
-		required = required.andNot(complete[i])
+		required = required.Difference(complete[i])
 		if i > 0 {
-			merge := required.and(shiftTableLevel(avail[i-1], p.tableLevels[i-1], p.tableLevels[i], false))
-			if !merge.isEmpty {
+			merge := required.Intersection(shiftTableLevel(complete[i-1], p.tableLevels[i-1], p.tableLevels[i], false))
+			if !merge.IsEmpty() {
 				op := tableOperation{
 					operation: opMerge,
 					id: tableID{
 						level: i,
-						index: merge.last(),
+						index: merge.Last(),
 					},
 				}
 				if p.compareOps(op, bestOp) > 0 {
 					bestOp = op
 				}
 			}
-			required = shiftTableLevel(required.andNot(merge), p.tableLevels[i], p.tableLevels[i-1], false)
+			required = shiftTableLevel(required.Difference(merge), p.tableLevels[i], p.tableLevels[i-1], false)
 		} else {
-			if !required.isEmpty() {
-				reqBlocks = required.lastSection()
+			if !required.IsEmpty() {
+				reqBlocks = required.LastSection()
 			}
 		}
 	}
 	return bestOp, reqBlocks
 }
 
-func shiftTableLevel(rs common.RangeSet[uint64], from, to tableLevel, partial bool) common.RangeSet[uint64] {
-	for i, r := range rs {
-		first := r.First()*from.blockCount + from.offset - to.offset
+// TODO partial helyett vmi jobb nev
+func shiftTableLevel(rs common.RangeSet[uint64], from, to tableLevel, partial bool) (result common.RangeSet[uint64]) {
+	for _, r := range rs {
+		first := r.First() * from.blockCount
 		if !partial {
 			first += to.blockCount - 1
 		}
 		first /= to.blockCount
-		afterLast := r.AfterLast()*from.blockCount + from.offset - to.offset
+		afterLast := r.AfterLast() * from.blockCount
 		if partial {
 			afterLast += to.blockCount - 1
 		}
 		afterLast /= to.blockCount
-		rs[i] = common.NewRange[uint64](first, afterLast-first)
+		if afterLast > first {
+			result = result.Union(common.SingleRangeSet[uint64](common.NewRange[uint64](first, afterLast-first)))
+		}
 	}
-	rs.normalize()
-	return rs
+	return result
 }
 
 func (p *Params) rangeTarget(avail tableSet, blockRange common.RangeSet[uint64]) tableSet {
@@ -158,8 +177,8 @@ func (p *Params) rangeTarget(avail tableSet, blockRange common.RangeSet[uint64])
 	for i := len(p.tableLevels) - 1; i >= 0; i-- {
 		fullTables := shiftTableLevel(blockRange, p.tableLevels[0], p.tableLevels[i], false)
 		partialTables := shiftTableLevel(blockRange, p.tableLevels[0], p.tableLevels[i], true)
-		target[i] = fullTables.or(partialTables.and(avail[i]))
-		blockRange = blockRange.andNot(shiftTableLevel(target[i], p.tableLevels[i], p.tableLevels[0], false))
+		target[i] = fullTables.Union(partialTables.Intersection(avail[i]))
+		blockRange = blockRange.Difference(shiftTableLevel(target[i], p.tableLevels[i], p.tableLevels[0], false))
 	}
 	return target
 }

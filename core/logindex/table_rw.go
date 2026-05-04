@@ -17,16 +17,12 @@
 package logindex
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
-	"math"
 	"math/bits"
-	"os"
 	"slices"
 	"sort"
 	"sync"
@@ -45,6 +41,8 @@ const (
 	logSubtreeChunkSize = 6
 	entryCacheSize      = 100
 	subtreeCacheSize    = 100
+
+	maxCopyLength = 0x10000
 )
 
 const (
@@ -401,7 +399,7 @@ type tableReader struct {
 	entryChunkCache   *lru.Cache[uint64, indexEntries]
 	subtreeChunkCache *lru.Cache[subtreePos, *subtreeChunk]
 	entryCount        uint64
-	levelPointers     []uint64
+	levelPointers     []int64
 	format            tableFormat
 	tableRoot         merkle.Value
 	meta              tableMeta
@@ -438,9 +436,12 @@ func newTableReader(params *Params, tf *tableFiles, name string) (*tableReader, 
 		subtreeChunkCache: lru.NewCache[subtreePos, *subtreeChunk](subtreeCacheSize),
 		format:            params.newTableFormat(header.EntryCount),
 		entryCount:        header.EntryCount,
-		levelPointers:     header.LevelPointers,
+		levelPointers:     make([]int64, len(header.LevelPointers)),
 		tableRoot:         header.TableRoot,
 		meta:              header.tableMeta,
+	}
+	for i, p := range header.LevelPointers {
+		tr.levelPointers[i] = int64(p)
 	}
 	return tr, nil
 }
@@ -450,7 +451,7 @@ func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 	if sc, ok := tr.subtreeChunkCache.Get(sp); ok {
 		return sc, nil
 	}
-	var start, stop uint64
+	var start, stop int64
 	if level == 0 {
 		start, stop = tr.levelPointers[1], tr.levelPointers[0]
 	} else {
@@ -459,10 +460,10 @@ func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 			return nil, err
 		}
 		i := index % subtreeChunkSize
-		start, stop = tr.levelPointers[level+1]+sc.boundaryFilePos[i], tr.levelPointers[level+1]+sc.boundaryFilePos[i+1]
+		start, stop = tr.levelPointers[level+1]+int64(sc.boundaryFilePos[i]), tr.levelPointers[level+1]+int64(sc.boundaryFilePos[i+1])
 	}
 	enc := make([]byte, stop-start)
-	_, err := tr.reader.ReadAt(enc, int64(start))
+	_, err := tr.reader.ReadAt(enc, start)
 	if err != nil {
 		return nil, err
 	}
@@ -553,14 +554,14 @@ type tableWriter struct {
 	copyReadPointer, copyReadSize int64
 	copyWriter                    io.WriteCloser
 	copyWritePointer              int64
-	levelPointers                 []uint64
+	levelPointers                 []int64
 }
 
 const (
 	wpNone = iota // new table write, no partial state
 	wpWriteEntries
 	wpTempCopy
-	wpFinished
+	wpFinalized
 )
 
 type writeState struct {
@@ -630,8 +631,11 @@ func newTableWriter(params *Params, tf *tableFiles, name string, storedState boo
 		}
 	case wpTempCopy:
 		tw.copyLevel = state.CopyLevel
-		tw.copyReadPointer = state.CopyReadPointer
-		tw.levelPointers = state.LevelPointers
+		tw.copyReadPointer = int64(state.CopyReadPointer)
+		tw.levelPointers = make([]int64, len(state.LevelPointers))
+		for i, p := range state.LevelPointers {
+			tw.levelPointers[i] = int64(p)
+		}
 		var err error
 		tw.copyReader, tw.copyReadSize, err = tf.getReaderAt(name + writeTempSuffix(tw.copyLevel))
 		if err != nil {
@@ -744,7 +748,7 @@ func (tw *tableWriter) close() error {
 	}
 	switch tw.phase {
 	case wpWriteEntries:
-		for _, w := range tw.writers {
+		for i, w := range tw.writers {
 			if err := w.Close(); err != nil {
 				return err
 			}
@@ -761,9 +765,12 @@ func (tw *tableWriter) close() error {
 		}
 		tw.copyWriter = nil
 		state.CopyLevel = tw.copyLevel
-		state.CopyReadPointer = tw.copyReadPointer
-		state.LevelPointers = tw.levelPointers
-	case wpFinished:
+		state.CopyReadPointer = uint64(tw.copyReadPointer)
+		state.LevelPointers = make([]uint64, len(tw.levelPointers))
+		for i, p := range tw.levelPointers {
+			state.LevelPointers[i] = uint64(p)
+		}
+	case wpFinalized:
 		return nil
 	default:
 		panic("invalid table write phase")
@@ -820,16 +827,16 @@ func (tw *tableWriter) addEntry(ie *indexEntry) error {
 		if err != nil {
 			return err
 		}
-		bw, err := tw.writers[tw.topLevel].Write(enc)
+		n, err := tw.writers[tw.format.subtreeLevels].Write(enc)
 		if err != nil {
 			return err
 		}
-		if bw != len(enc) {
+		if n != len(enc) {
 			return errors.New("error writing table chunk")
 		}
-		beforePos := tw.writePointers[tw.topLevel]
-		tw.writePointers[tw.topLevel] += uint64(bw)
-		if err := tw.addSubtreeEntry(tw.topLevel-1, ie, beforePos, tw.writePointers[tw.topLevel], tw.lastEntryChunk.getHash(1)); err != nil {
+		beforePos := tw.writePointers[tw.format.subtreeLevels]
+		tw.writePointers[tw.format.subtreeLevels] += int64(n)
+		if err := tw.addSubtreeEntry(tw.format.subtreeLevels-1, ie, beforePos, tw.writePointers[tw.format.subtreeLevels], tw.lastEntryChunk.getHash(1)); err != nil {
 			return err
 		}
 		tw.lastEntryChunk = tw.newEntryChunk()
@@ -837,15 +844,15 @@ func (tw *tableWriter) addEntry(ie *indexEntry) error {
 	return nil
 }
 
-func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, beforePos, afterPos uint64, hash merkle.Value) error {
+func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, beforePos, afterPos int64, hash merkle.Value) error {
 	sc := tw.lastSubtreeChunks[level]
 	if sc.branches < subtreeChunkSize-1 {
 		sc.boundaryEntries = append(sc.boundaryEntries, *boundaryEntry)
 	}
 	if sc.branches == 0 {
-		sc.boundaryFilePos = []uint64{beforePos}
+		sc.boundaryFilePos = []uint64{uint64(beforePos)}
 	}
-	sc.boundaryFilePos = append(sc.boundaryFilePos, afterPos)
+	sc.boundaryFilePos = append(sc.boundaryFilePos, uint64(afterPos))
 	sc.hashes[1<<sc.height+sc.branches] = hash
 	sc.hasHash[1<<sc.height+sc.branches] = true
 	sc.branches++
@@ -855,15 +862,15 @@ func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, be
 		if err != nil {
 			return err
 		}
-		bw, err := tw.writers[level].Write(enc)
+		n, err := tw.writers[level].Write(enc)
 		if err != nil {
 			return err
 		}
-		if bw != len(enc) {
+		if n != len(enc) {
 			return errors.New("error writing subtree chunk")
 		}
 		beforePos := tw.writePointers[level]
-		tw.writePointers[level] += uint64(bw)
+		tw.writePointers[level] += int64(n)
 		if level > 0 {
 			if err := tw.addSubtreeEntry(level-1, boundaryEntry, beforePos, tw.writePointers[level], sc.getHash(1)); err != nil {
 				return err
@@ -883,10 +890,10 @@ func (tw *tableWriter) setMeta(meta tableMeta) {
 	if tw.hasMeta {
 		panic("tableMeta already exists")
 	}
-	tw.tableMeta, tw.hasMeta = meta, true
+	tw.meta, tw.hasMeta = meta, true
 }
 
-func (tw *tableWriter) getTableRoot() common.Hash {
+func (tw *tableWriter) getTableRoot() merkle.Value {
 	tw.lock.Lock()
 	defer tw.lock.Unlock()
 
@@ -920,7 +927,7 @@ func (tw *tableWriter) finalize() (bool, error) {
 		tw.copyWritePointer = tw.writePointers[tw.format.subtreeLevels]
 		tw.writers = nil
 		tw.copyLevel = tw.format.subtreeLevels
-		tw.levelPointers = make([]uint64, tw.format.subtreeLevels+1)
+		tw.levelPointers = make([]int64, tw.format.subtreeLevels+1)
 		tw.phase = wpTempCopy
 	}
 	if tw.phase != wpTempCopy {
@@ -931,12 +938,15 @@ func (tw *tableWriter) finalize() (bool, error) {
 		if tw.copyLevel == 0 {
 			// last temp level file copied; finalize by adding header
 			header := tableHeader{
-				LevelPointers: tw.levelPointers,
+				LevelPointers: make([]uint64, len(tw.levelPointers)),
 				EntryCount:    tw.entryCount,
 				TableRoot:     tw.tableRoot,
 				tableMeta:     tw.meta,
 			}
-			headerEnc, err := rlp.Encode(tw.copyWriter, &header)
+			for i, p := range tw.levelPointers {
+				header.LevelPointers[i] = uint64(p)
+			}
+			headerEnc, err := rlp.EncodeToBytes(&header)
 			if err != nil {
 				return false, err
 			}
@@ -957,7 +967,7 @@ func (tw *tableWriter) finalize() (bool, error) {
 			if err := tw.tf.renameFile(tw.name+writeTempSuffix(tw.format.subtreeLevels), tw.name); err != nil {
 				return false, err
 			}
-			tw.phase = wpFinished
+			tw.phase = wpFinalized
 			return true, nil
 		}
 		tw.copyLevel--
@@ -973,19 +983,26 @@ func (tw *tableWriter) finalize() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if n != copyLength {
+	if int64(n) != copyLength {
 		return false, errors.New("could not read copy data chunk")
 	}
-	n, err := tw.copyWriter.Write(data)
+	n, err = tw.copyWriter.Write(data)
 	if err != nil {
 		return false, err
 	}
-	if n != copyLength {
+	if int64(n) != copyLength {
 		return false, errors.New("could not write copy data chunk")
 	}
 	tw.copyReadPointer += copyLength
 	tw.copyWritePointer += copyLength
 	return false, nil
+}
+
+func (tw *tableWriter) isFinalized() bool {
+	tw.lock.Lock()
+	defer tw.lock.Unlock()
+
+	return tw.phase == wpFinalized
 }
 
 type tableHeader struct {

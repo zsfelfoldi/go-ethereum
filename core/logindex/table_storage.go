@@ -17,23 +17,12 @@
 package logindex
 
 import (
-	"bufio"
-	"bytes"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
-	"math"
-	"math/bits"
-	"os"
-	"slices"
 	"sync"
 
-	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/lru"
-	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 type tableStorage struct {
@@ -50,33 +39,35 @@ type tableStorage struct {
 
 const writeStateSuffix = ".state"
 
+var errTableNotFound = errors.New("table not found")
+
 func writeTempSuffix(level uint) string {
 	return fmt.Sprintf(".temp_%02x", level)
 }
 
-func newTableStorage(p *Params, tf *tableFiles) (*tableStorage, error) {
+func newTableStorage(params *Params, tf *tableFiles) (*tableStorage, error) {
 	ts := &tableStorage{
-		params:   p,
+		params:   params,
 		tf:       tf,
 		readers:  make(map[tableID]*tableReader),
 		writers:  make(map[tableID]*tableWriter),
 		triggers: make(map[tableID]chan struct{}),
-		complete: p.newTableSet(),
-		partial:  p.newTableSet(),
-		preInit:  p.newTableSet(),
+		complete: params.newTableSet(),
+		partial:  params.newTableSet(),
+		preInit:  params.newTableSet(),
 	}
 	allFiles := tf.allFiles()
 loop:
-	for name := range allFiles {
-		ftype, id, _ := p.parseFileName(name)
+	for _, name := range allFiles {
+		ftype, id, _ := params.parseFileName(name)
 		switch ftype {
 		case fnUnknown:
 			log.Warn("Unexpected index table file", "name", name)
 			tf.deleteFile(name)
 		case fnTable:
-			reader, err := newTableReader(tf, p.tableName(id))
+			reader, err := newTableReader(params, tf, params.tableName(id))
 			if err != nil {
-				log.Error("Invalid index table file", "name", p.tableName(id), "error", err)
+				log.Error("Invalid index table file", "name", params.tableName(id), "error", err)
 				tf.deleteFile(name)
 				continue loop
 			}
@@ -84,34 +75,34 @@ loop:
 			ts.complete.add(id)
 			ts.preInit.add(id)
 		case fnWriteState:
-			writer, err := newTableWriter(tf, p.tableName(id), true, 0)
+			writer, err := newTableWriter(params, tf, params.tableName(id), true, 0)
 			if err != nil {
-				log.Error("Invalid partial index table file", "name", p.tableName(id), "error", err)
+				log.Error("Invalid partial index table file", "name", params.tableName(id), "error", err)
 				tf.deleteFile(name)
 				continue loop
 			}
-			ts.writers[i] = writer
+			ts.writers[id] = writer
 			ts.partial.add(id)
 			ts.preInit.add(id)
 		}
 	}
-	for id := range ts.unknownWriters {
-		if _, ok := ts.unknownReaders[id]; ok {
-			log.Warn("Both complete and partial index table found", "name", p.tableName(id))
-			delete(ts.unknownWriters, id)
-			tf.deleteFile(p.tableName(id) + writeStateSuffix)
+	for id := range ts.writers {
+		if _, ok := ts.readers[id]; ok {
+			log.Warn("Both complete and partial index table found", "name", params.tableName(id))
+			delete(ts.writers, id)
+			tf.deleteFile(params.tableName(id) + writeStateSuffix)
 		}
 	}
-	for name := range allFiles {
-		ftype, id, tempLevel := p.parseFileName(name)
+	for _, name := range allFiles {
+		ftype, id, tempLevel := params.parseFileName(name)
 		if ftype == fnWriteTemp {
-			if w, ok := ts.unknownWriters[id]; !ok || tempLevel > w.format.subtreeLevels {
+			if w, ok := ts.writers[id]; !ok || tempLevel > w.format.subtreeLevels {
 				log.Warn("Unexpected index table writer temp file", "name", name)
 				tf.deleteFile(name)
 			}
 		}
 	}
-	return ts
+	return ts, nil
 }
 
 func (ts *tableStorage) tables() (tableSet, tableSet) {
@@ -157,9 +148,9 @@ func (ts *tableStorage) addNewTableWriter(id tableID, entryCount uint64) (*table
 	defer ts.lock.Unlock()
 
 	if ts.writers[id] != nil {
-		return errors.New("table already exists")
+		return nil, errors.New("table already exists")
 	}
-	tw, err := newTableWriter(ts.tf, ts.params.tableName(id), false, entryCount)
+	tw, err := newTableWriter(ts.params, ts.tf, ts.params.tableName(id), false, entryCount)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +181,7 @@ func (ts *tableStorage) finishedTableWriter(id tableID) error {
 	}
 	delete(ts.writers, id)
 	ts.partial.remove(id)
-	tr, err := newTableReader(ts.tf, ts.params.tableName(id))
+	tr, err := newTableReader(ts.params, ts.tf, ts.params.tableName(id))
 	if err != nil {
 		return err
 	}
@@ -252,7 +243,7 @@ func (ts *tableStorage) requestInitBlockHash() (number uint64, request bool) {
 	defer ts.lock.Unlock()
 
 	for i, rs := range ts.preInit {
-		if !rs.isEmpty() {
+		if !rs.IsEmpty() {
 			last := ts.params.blockRange(tableID{level: i, index: rs.Last()}).Last()
 			if !request || last > number {
 				request, number = true, last
@@ -288,7 +279,7 @@ func (ts *tableStorage) deliverInitBlockHash(number uint64, hash common.Hash) bo
 					}
 				} else {
 					ts.complete.remove(id)
-					ts.tf.deleteFile(ts.p.tableName(id))
+					ts.tf.deleteFile(ts.params.tableName(id))
 				}
 				ts.preInit.remove(id)
 			}
@@ -322,7 +313,7 @@ func (ts *tableStorage) close() {
 }
 
 func (p *Params) tableName(id tableID) string {
-	br := p.tableLevels[id.level].blockRange(id.index)
+	br := p.blockRange(id)
 	return fmt.Sprintf("table_%016x_%016x", br.First(), br.Count())
 }
 
@@ -333,11 +324,11 @@ const (
 	fnWriteTemp
 )
 
-func (p *Params) parseFileName(name string) (int, tableID, int) {
+func (p *Params) parseFileName(name string) (int, tableID, uint) {
 	var (
 		firstBlock, blockCount uint64
 		suffix                 string
-		tempLevel              int
+		tempLevel              uint
 	)
 	n, _ := fmt.Sscanf(name, "table_%016x_%016x%s", &firstBlock, &blockCount, &suffix)
 	if n != 2 && n != 3 {

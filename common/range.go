@@ -298,3 +298,17 @@ func (a RangeSet[T]) Equal(b RangeSet[T]) bool {
 func (a RangeSet[T]) IsEmpty() bool {
 	return len(a) == 0
 }
+
+func (a RangeSet[T]) Last() T {
+	if len(a) == 0 {
+		panic("last item of empty range set is not allowed")
+	}
+	return a[len(a)-1].Last()
+}
+
+func (a RangeSet[T]) LastSection() Range[T] {
+	if len(a) == 0 {
+		panic("last section of empty range set is not allowed")
+	}
+	return a[len(a)-1]
+}

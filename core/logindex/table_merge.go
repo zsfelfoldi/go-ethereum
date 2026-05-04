@@ -17,29 +17,13 @@
 package logindex
 
 import (
-	"bufio"
-	"bytes"
-	"crypto/sha256"
-	"encoding/binary"
-	"errors"
-	"fmt"
-	"io"
-	"math"
-	"math/bits"
-	"os"
-	"slices"
-
-	"github.com/ethereum/go-ethereum/beacon/merkle"
-	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/rlp"
 )
 
 func (ix *Indexer) mergeLoop() {
 	defer ix.mergeWg.Done()
 
 	for {
-		<-ix.updateMergeCh
 		ix.lock.Lock()
 		currentOp, shutdown := ix.currentOp, ix.shutdown
 		ix.lock.Unlock()
@@ -62,6 +46,14 @@ func (ix *Indexer) mergeLoop() {
 			ix.updateActions()
 			ix.lock.Unlock()
 		case opMerge:
+			// init merge
+			for {
+				// do merge iteration
+				select {
+				case <-ix.updateMergeCh:
+				default:
+				}
+			}
 		}
 	}
 }

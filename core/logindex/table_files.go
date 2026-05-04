@@ -18,22 +18,15 @@ package logindex
 
 import (
 	"bufio"
-	"bytes"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"math"
-	"math/bits"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"sync/atomic"
 
-	"github.com/ethereum/go-ethereum/beacon/merkle"
-	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 )
@@ -150,6 +143,17 @@ func newTableFiles(path string, maxFileSize int64, maxOpenFiles int) (*tableFile
 
 	}
 	return tf, nil
+}
+
+func (tf *tableFiles) allFiles() []string {
+	tf.lock.Lock()
+	defer tf.lock.Unlock()
+
+	res := make([]string, 0, len(tf.tableFiles))
+	for name := range tf.tableFiles {
+		res = append(res, name)
+	}
+	return res
 }
 
 func (tf *tableFiles) close() {
