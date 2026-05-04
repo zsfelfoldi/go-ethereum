@@ -308,7 +308,7 @@ func (a RangeSet[T]) Last() T {
 
 func (a RangeSet[T]) LastSection() Range[T] {
 	if len(a) == 0 {
-		panic("last section of empty range set is not allowed")
+		return Range[T]{}
 	}
 	return a[len(a)-1]
 }

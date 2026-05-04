@@ -277,7 +277,13 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	}
 	options.Overrides = &overrides
 
-	eth.logIndex = logindex.NewIndexer(stack.ResolvePath("logindex"))
+	logIndexConfig := logindex.Config{
+		History:        config.LogHistory,
+		Disabled:       config.LogNoHistory,
+		ExportFileName: config.LogExportCheckpoints,
+		HashScheme:     scheme == rawdb.HashScheme,
+	}
+	eth.logIndex = logindex.NewIndexer(logindex.DefaultParams, logIndexConfig, stack.ResolvePath("logindex"))
 	eth.blockchain, err = core.NewBlockChain(chainDb, config.Genesis, eth.engine, eth.logIndex, options)
 	eth.blockchain.RegisterIndexer(eth.logIndex, "log index", true, true)
 	if err != nil {

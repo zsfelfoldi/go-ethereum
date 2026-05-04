@@ -136,7 +136,7 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 		return fmt.Errorf("invalid gas used (remote: %d local: %d)", block.GasUsed(), res.GasUsed)
 	}
 	if v.config.IsEIP7745(header.Number, header.Time) {
-		logIndexRoots, err := v.logIndex.GetIndexRoots(header.ParentHash, block.Transactions(), res.Receipts)
+		logIndexRoots, err := v.logIndex.GetIndexRoots(header.Number.Uint64(), header.ParentHash, block.Transactions(), res.Receipts)
 		if err != nil {
 			return fmt.Errorf("failed to process log index roots: %v", err)
 		}

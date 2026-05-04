@@ -592,7 +592,7 @@ func (c *Clique) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *
 
 	// Add log index roots
 	if chain.Config().IsEIP7745(header.Number, header.Time) {
-		logIndexRoots, err := logIndex.GetIndexRoots(header.ParentHash, body.Transactions, receipts)
+		logIndexRoots, err := logIndex.GetIndexRoots(header.Number.Uint64(), header.ParentHash, body.Transactions, receipts)
 		if err != nil {
 			return nil, err
 		}

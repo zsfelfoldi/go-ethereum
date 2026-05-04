@@ -107,11 +107,10 @@ func (p *Params) compareOps(a, b tableOperation) int {
 	}
 }
 
-func (p *Params) nextAction(complete, partial, target tableSet) (tableOperation, common.Range[uint64]) {
+func (p *Params) nextAction(complete, partial, target tableSet) (tableOperation, common.RangeSet[uint64]) {
 	var (
-		bestOp    tableOperation
-		reqBlocks common.Range[uint64]
-		required  common.RangeSet[uint64]
+		bestOp   tableOperation
+		required common.RangeSet[uint64]
 	)
 	for i := len(p.tableLevels) - 1; i >= 0; i-- {
 		required = required.Union(target[i])
@@ -143,13 +142,9 @@ func (p *Params) nextAction(complete, partial, target tableSet) (tableOperation,
 				}
 			}
 			required = shiftTableLevel(required.Difference(merge), p.tableLevels[i], p.tableLevels[i-1], false)
-		} else {
-			if !required.IsEmpty() {
-				reqBlocks = required.LastSection()
-			}
 		}
 	}
-	return bestOp, reqBlocks
+	return bestOp, required
 }
 
 // TODO partial helyett vmi jobb nev

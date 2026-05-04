@@ -23,9 +23,12 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 )
+
+const headerCacheSize = 100
 
 // Config contains the configuration options for NewIndexer.
 type Config struct {
@@ -42,7 +45,7 @@ type Config struct {
 }
 
 type Params struct {
-	tableLevels                []tableLevel
+	tableLevels                []tableLevel //TODO config?
 	protocolLevels             []protocolLevel
 	fileStorageThresholdHeight uint
 }
@@ -79,11 +82,16 @@ type Indexer struct {
 	storage              *tableStorage
 	requestBlocks        common.Range[uint64]
 	currentOp            tableOperation
+	requiredBlockTables  common.RangeSet[uint64]
 	headBlock, tailBlock uint64
 
 	hasProcessedBlock    bool
 	processedBlockNumber uint64
 	processedIndexRoot   common.Hash
+
+	waitForHeaderNumber uint64
+	waitForHeaderCh     chan bool // waiting for header if not nil
+	recentHeaders       *lru.Cache[uint64, *types.Header]
 
 	shutdown      bool
 	updateMergeCh chan struct{}
@@ -105,6 +113,7 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 		config:        config,
 		storage:       storage,
 		updateMergeCh: make(chan struct{}, 1),
+		recentHeaders: lru.NewCache[uint64, *types.Header](headerCacheSize),
 	}
 	ix.mergeWg.Add(1)
 	go ix.mergeLoop()
@@ -113,7 +122,7 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 
 func (ix *Indexer) updateActions() {
 	completeSet, partialSet := ix.storage.tables()
-	currentOp, requestBlocks := ix.params.nextAction(completeSet, partialSet, ix.makeTargetSet(completeSet))
+	currentOp, requiredBlockTables := ix.params.nextAction(completeSet, partialSet, ix.makeTargetSet(completeSet))
 	if currentOp != ix.currentOp {
 		ix.currentOp = currentOp
 		select {
@@ -121,7 +130,8 @@ func (ix *Indexer) updateActions() {
 		default:
 		}
 	}
-	ix.requestBlocks = requestBlocks
+	ix.requiredBlockTables = requiredBlockTables
+	ix.requestBlocks = requiredBlockTables.LastSection() //TODO or waitForHeaders, init block, search req block...; priority
 }
 
 func (ix *Indexer) makeTargetSet(complete tableSet) tableSet {
@@ -134,9 +144,33 @@ func (ix *Indexer) makeTargetSet(complete tableSet) tableSet {
 	return target
 }
 
-func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentIndexRoots []byte, transactions types.Transactions, receipts types.Receipts) ([]byte, error) {
+func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, transactions types.Transactions, receipts types.Receipts) ([]byte, error) {
 	ix.lock.Lock()
 	defer ix.lock.Unlock()
+
+	indexRoots := make([]byte, common.HashLength*len(ix.params.protocolLevels))
+	if blockNumber > 0 {
+		parentHeader, ok := ix.recentHeaders.Get(blockNumber - 1)
+		for !ok {
+			ch := make(chan bool, 1)
+			ix.waitForHeaderNumber = blockNumber
+			ix.waitForHeaderCh = ch
+			ix.updateActions()
+			ix.lock.Unlock()
+			shutdown := <-ch
+			ix.lock.Lock()
+			if shutdown {
+				return nil, errors.New("could not retrieve parent header")
+			}
+			parentHeader, ok = ix.recentHeaders.Get(blockNumber)
+		}
+		if parentHeader.Hash() != parentHash {
+			return nil, errors.New("parent header hash mismatch")
+		}
+		if len(parentHeader.BloomOrIndex) == len(indexRoots) {
+			copy(indexRoots, parentHeader.BloomOrIndex)
+		}
+	}
 
 	if ix.hasProcessedBlock {
 		if err := ix.storage.deleteTable(tableID{level: 0, index: ix.processedBlockNumber}); err != nil {
@@ -146,15 +180,6 @@ func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentIndexRoots []byte, tr
 	}
 
 	ix.storage.deleteTablesFromBlock(blockNumber)
-	indexRoots := make([]byte, common.HashLength*len(ix.params.protocolLevels))
-	switch {
-	case parentIndexRoots == nil:
-	case len(parentIndexRoots) == common.HashLength*len(ix.params.protocolLevels):
-		copy(indexRoots, parentIndexRoots)
-	default:
-		return nil, errors.New("invalid length for parent index roots")
-	}
-
 	entries := txAndLogEntries(blockNumber, transactions, receipts)
 	tw, err := ix.storage.addNewTableWriter(tableID{level: 0, index: blockNumber}, uint64(len(entries)))
 	if err != nil {
@@ -209,10 +234,23 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 func (ix *Indexer) addBlockData(header *types.Header, body *types.Body, receipts types.Receipts) error {
 	var tw *tableWriter
 	blockNumber := header.Number.Uint64()
-	if blockNumber <= ix.headBlock && ix.headBlock != 0 && !ix.requestBlocks.Includes(blockNumber) {
-		return nil // unexpected block
+	if blockNumber > ix.headBlock {
+		ix.headBlock = blockNumber
+		ix.tailBlock = max(blockNumber, ix.config.History-1) - ix.config.History + 1
+		ix.recentHeaders.Add(blockNumber, header)
+	}
+	if ix.waitForHeaderCh != nil && ix.waitForHeaderNumber == blockNumber {
+		ix.recentHeaders.Add(blockNumber, header)
+		select {
+		case ix.waitForHeaderCh <- false:
+		default:
+		}
+		ix.waitForHeaderCh = nil
 	}
 
+	if blockNumber <= ix.headBlock && ix.headBlock != 0 && !ix.requiredBlockTables.Includes(blockNumber) {
+		return nil // unexpected block, do not create table
+	}
 	if ix.hasProcessedBlock && ix.processedBlockNumber == blockNumber &&
 		len(header.BloomOrIndex) == common.HashLength*len(ix.params.protocolLevels) {
 		var indexRoot common.Hash
@@ -253,10 +291,6 @@ func (ix *Indexer) addBlockData(header *types.Header, body *types.Body, receipts
 	}
 	if err := ix.storage.finishedTableWriter(tableID{level: 0, index: blockNumber}); err != nil {
 		return err
-	}
-	if blockNumber > ix.headBlock {
-		ix.headBlock = blockNumber
-		ix.tailBlock = max(blockNumber, ix.config.History-1) - ix.config.History + 1
 	}
 	ix.updateActions()
 	return nil
