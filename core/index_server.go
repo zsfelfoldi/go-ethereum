@@ -18,6 +18,7 @@
 package core
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -328,8 +329,10 @@ func (s *indexServer) requestBlock(blockNumber uint64, needBody, needReceipts bo
 	}
 	select {
 	case s.blockRequestCh[priority] <- req:
+		fmt.Println("*** request", req, "success")
 		return true
 	default:
+		fmt.Println("*** request", req, "fail")
 		return false
 	}
 }
@@ -339,7 +342,7 @@ func (s *indexServer) setIndexerPriority(priority int) {
 	defer s.priorityLock.Unlock()
 
 	s.indexerPriority = priority
-	s.setMaxPriority(min(s.indexerPriority, s.systemPriority))
+	s.updatePriority()
 }
 
 func (s *indexServer) setSystemPriority(priority int) {
@@ -347,10 +350,12 @@ func (s *indexServer) setSystemPriority(priority int) {
 	defer s.priorityLock.Unlock()
 
 	s.systemPriority = priority
-	s.setMaxPriority(min(s.indexerPriority, s.systemPriority))
+	s.updatePriority()
 }
 
-func (s *indexServer) setMaxPriority(priority int) {
+func (s *indexServer) updatePriority() {
+	fmt.Println("*** updatePriority", s.indexerPriority, s.systemPriority)
+	priority := min(s.indexerPriority, s.systemPriority)
 	select {
 	case <-s.deliverPriorityCh:
 	default:
@@ -397,7 +402,9 @@ func (s *indexServer) historicReadLoop() {
 			case revertCount = <-s.revertCountCh:
 			case deliveredCount = <-s.deliveredCountCh:
 			case req := <-s.blockRequestCh[0]:
+				fmt.Println("*** readLoop mp 0 <- reqCh 0", req)
 				s.blockDataCh[0] <- s.readBlockData(req, revertCount)
+				fmt.Println("*** readLoop mp 0 -> dataCh 0", req)
 				readCount[0]++
 			}
 		case 2:
@@ -408,10 +415,14 @@ func (s *indexServer) historicReadLoop() {
 			case revertCount = <-s.revertCountCh:
 			case deliveredCount = <-s.deliveredCountCh:
 			case req := <-s.blockRequestCh[0]:
+				fmt.Println("*** readLoop mp 1 <- reqCh 0", req)
 				s.blockDataCh[0] <- s.readBlockData(req, revertCount)
+				fmt.Println("*** readLoop mp 1 -> dataCh 0", req)
 				readCount[0]++
 			case req := <-s.blockRequestCh[1]:
+				fmt.Println("*** readLoop mp 1 <- reqCh 1", req)
 				s.blockDataCh[1] <- s.readBlockData(req, revertCount)
+				fmt.Println("*** readLoop mp 1 -> dataCh 1", req)
 				readCount[1]++
 			}
 		case 3:
@@ -422,13 +433,19 @@ func (s *indexServer) historicReadLoop() {
 			case revertCount = <-s.revertCountCh:
 			case deliveredCount = <-s.deliveredCountCh:
 			case req := <-s.blockRequestCh[0]:
+				fmt.Println("*** readLoop mp 2 <- reqCh 0", req)
 				s.blockDataCh[0] <- s.readBlockData(req, revertCount)
+				fmt.Println("*** readLoop mp 2 -> dataCh 0", req)
 				readCount[0]++
 			case req := <-s.blockRequestCh[1]:
+				fmt.Println("*** readLoop mp 2 <- reqCh 1", req)
 				s.blockDataCh[1] <- s.readBlockData(req, revertCount)
+				fmt.Println("*** readLoop mp 2 -> dataCh 1", req)
 				readCount[1]++
 			case req := <-s.blockRequestCh[2]:
+				fmt.Println("*** readLoop mp 2 <- reqCh 2", req)
 				s.blockDataCh[2] <- s.readBlockData(req, revertCount)
+				fmt.Println("*** readLoop mp 2 -> dataCh 2", req)
 				readCount[2]++
 			}
 		default:
@@ -513,6 +530,11 @@ func (s *indexServer) historicDeliverLoop() {
 }
 
 func (s *indexServer) deliverBlockData(bd blockData, priority int) {
+	var number uint64
+	if bd.header != nil {
+		number = bd.header.Number.Uint64()
+	}
+	fmt.Println("*** deliverBlockData", number, bd.header != nil, bd.body != nil, bd.receipts != nil, priority)
 	s.indexerLock.Lock()
 	defer func() {
 		s.deliveredCount[priority]++
@@ -529,6 +551,7 @@ func (s *indexServer) deliverBlockData(bd blockData, priority int) {
 			}
 		}
 		s.indexerLock.Unlock()
+		fmt.Println("*** deliverBlockData done", number, bd.header != nil, bd.body != nil, bd.receipts != nil, priority)
 	}()
 
 	for i := s.lastRevertCount; i < bd.revertCount; i++ {

@@ -242,7 +242,7 @@ func (ix *Indexer) updateTableOperations() {
 		default:
 		}
 	}
-	fmt.Println("requiredBlockTables:", requiredBlockTables)
+	fmt.Println("requiredBlockTables:", requiredBlockTables, "requestedBlockTables", ix.requestedBlockTables)
 	ix.requiredBlockTables = requiredBlockTables
 	if ix.requestBlock != nil {
 		request := ix.requiredBlockTables.Difference(ix.requestedBlockTables)
@@ -416,6 +416,7 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 		return
 	}
 	blockNumber := header.Number.Uint64()
+	fmt.Println("AddBlockData", blockNumber, body != nil, receipts != nil)
 	if blockNumber >= ix.headBlock {
 		ix.headBlock = blockNumber
 		ix.recentHeaders.Add(blockNumber, header)
@@ -430,6 +431,7 @@ func (ix *Indexer) processBlockTables(header *types.Header, body *types.Body, re
 	var tw *tableWriter
 	blockNumber := header.Number.Uint64()
 	if blockNumber <= ix.headBlock && ix.headBlock != 0 && !ix.requiredBlockTables.Includes(blockNumber) {
+		fmt.Println(" unexpected", blockNumber, "required", ix.requiredBlockTables)
 		return nil // unexpected block, do not create table
 	}
 	ix.requestedBlockTables = ix.requestedBlockTables.Difference(common.SingleRangeSet[uint64](common.NewRange[uint64](blockNumber, 1)))
@@ -480,6 +482,7 @@ func (ix *Indexer) processBlockTables(header *types.Header, body *types.Body, re
 	if err := ix.storage.finalizeTableWriter(tableID{level: 0, index: blockNumber}); err != nil {
 		return err
 	}
+	fmt.Println(" success")
 	ix.updateTableOperations()
 	return nil
 }
