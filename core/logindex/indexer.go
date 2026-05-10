@@ -31,9 +31,9 @@ import (
 )
 
 const (
-	headerCacheSize      = 100
+	headerCacheSize     = 100
 	maxSingleBlockRange = 8
-	blockRequestLevels   = 2 // priority levels where block requests are processed
+	blockRequestLevels  = 2 // priority levels where block requests are processed
 )
 
 // Config contains the configuration options for NewIndexer.
@@ -143,6 +143,10 @@ func (ix *Indexer) getBlockData(number uint64, needBody, needReceipts bool, prio
 	ix.lock.Lock()
 	defer ix.lock.Unlock()
 
+	ix.getBlockDataLocked(number, needBody, needReceipts, priority, deliverFn)
+}
+
+func (ix *Indexer) getBlockDataLocked(number uint64, needBody, needReceipts bool, priority int, deliverFn blockDeliverFn) {
 	req := blockRequest{
 		number:       number,
 		needBody:     needBody,
@@ -213,7 +217,7 @@ func (ix *Indexer) updateTableOperations() {
 			return
 		}
 		fmt.Println("requesting init block", reqNumber)
-		ix.getBlockData(reqNumber, false, false, 0, func(req blockRequest, header *types.Header, body *types.Body, receipts types.Receipts) {
+		ix.getBlockDataLocked(reqNumber, false, false, 0, func(req blockRequest, header *types.Header, body *types.Body, receipts types.Receipts) {
 			if header != nil {
 				ix.storage.deliverInitBlockHash(reqNumber, header.Hash())
 			} else {

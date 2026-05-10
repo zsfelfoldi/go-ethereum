@@ -127,6 +127,9 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 		nextReadEntry := make([]*indexEntry, len(readers))
 		if nextEntry != 0 {
 			// find next read position in each source reader
+			if lastEntry == nil {
+				return false, errors.New("last entry not found")
+			}
 			var checkNextEntry uint64
 			for i, tr := range readers {
 				pos, found, err := tr.seekEntry(lastEntry)
@@ -138,8 +141,11 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 				}
 				nextReadPosition[i] = pos
 				checkNextEntry += pos
+				fmt.Println(" reader", i, "pos", pos)
 			}
 			if checkNextEntry != nextEntry {
+				fmt.Println(" checkNextEntry", checkNextEntry)
+				panic("xxx")
 				return false, errors.New("next entry mismatch")
 			}
 		}
