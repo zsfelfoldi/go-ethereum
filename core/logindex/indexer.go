@@ -32,7 +32,7 @@ import (
 
 const (
 	headerCacheSize      = 100
-	maxSingleBlockTables = 8
+	maxSingleBlockRange = 8
 	blockRequestLevels   = 2 // priority levels where block requests are processed
 )
 
@@ -224,8 +224,11 @@ func (ix *Indexer) updateTableOperations() {
 		return
 	}
 	indexerPriority := 2
-	if completeSet[0].Count() >= maxSingleBlockTables {
-		indexerPriority = 1
+	for _, r := range completeSet[0] {
+		if r.Count() >= maxSingleBlockRange {
+			indexerPriority = 1
+			break
+		}
 	}
 	if indexerPriority != ix.indexerPriority {
 		ix.indexerPriority = indexerPriority
@@ -430,7 +433,7 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 func (ix *Indexer) processBlockTables(header *types.Header, body *types.Body, receipts types.Receipts) error {
 	var tw *tableWriter
 	blockNumber := header.Number.Uint64()
-	if blockNumber <= ix.headBlock && ix.headBlock != 0 && !ix.requiredBlockTables.Includes(blockNumber) {
+	if blockNumber < ix.headBlock && !ix.requiredBlockTables.Includes(blockNumber) {
 		fmt.Println(" unexpected", blockNumber, "required", ix.requiredBlockTables)
 		return nil // unexpected block, do not create table
 	}

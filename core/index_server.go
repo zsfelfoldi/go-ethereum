@@ -129,6 +129,8 @@ func (f *indexServers) register(indexer Indexer, name string) {
 		deliveredCountCh:  make(chan [priorityLevels]uint64, 1),
 		readPriorityCh:    make(chan int, 1),
 		deliverPriorityCh: make(chan int, 1),
+		indexerPriority:   priorityLevels - 1,
+		systemPriority:    priorityLevels - 1,
 	}
 	for i := range priorityLevels {
 		server.blockRequestCh[i] = make(chan blockRequest, queueCapacity)

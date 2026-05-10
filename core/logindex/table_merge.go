@@ -18,6 +18,7 @@ package logindex
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -71,6 +72,7 @@ func (ix *Indexer) mergeLoop() {
 }
 
 func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, finalErr error) {
+	fmt.Println("mergeTable", id)
 	if id.level == 0 {
 		panic("cannot merge table on the lowest level")
 	}
@@ -86,7 +88,11 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 		readers[i] = tr
 	}
 	tw, err := ix.storage.getTableWriter(id)
+	if err == nil {
+		fmt.Println(" found existing table", id)
+	}
 	if err == errTableNotFound {
+		fmt.Println(" add new table", id)
 		tw, err = ix.storage.addNewTableWriter(id, entryCount)
 		if err != nil {
 			return false, err
@@ -116,6 +122,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 	}
 	if tw.getPhase() == wpWriteEntries {
 		lastEntry, nextEntry := tw.lastAndNextEntry()
+		fmt.Println("lastAndNextEntry", lastEntry != nil, nextEntry)
 		nextReadPosition := make([]uint64, len(readers))
 		nextReadEntry := make([]*indexEntry, len(readers))
 		if nextEntry != 0 {
