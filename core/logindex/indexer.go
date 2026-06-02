@@ -365,6 +365,7 @@ func getBlockEntries(blockNumber uint64, parentHash common.Hash, txs types.Trans
 			},
 		})
 	}
+	var cli uint32
 	for txi, tx := range txs {
 		entries = append(entries, indexEntry{
 			indexValue: indexValue{
@@ -374,8 +375,10 @@ func getBlockEntries(blockNumber uint64, parentHash common.Hash, txs types.Trans
 			indexPosition: indexPosition{
 				blockNumber: blockNumber,
 				txIndex:     uint32(txi),
+				logIndex:    cli,
 			},
 		})
+		cli += uint32(len(receipts[txi].Logs))
 	}
 	for txi, receipt := range receipts {
 		for li, log := range receipt.Logs {

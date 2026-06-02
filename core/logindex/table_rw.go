@@ -911,7 +911,13 @@ func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, be
 				return err
 			}
 		} else {
-			tw.tableRoot = sc.getHash(1) //TODO hash with entryCount
+			subtreeRoot := sc.getHash(1)
+			var entryCountEnc [32]byte
+			binary.BigEndian.PutUint64(entryCountEnc[0:8], tw.entryCount)
+			hasher := sha256.New()
+			hasher.Write(subtreeRoot[:])
+			hasher.Write(entryCountEnc[:])
+			hasher.Sum(tw.tableRoot[:0])
 		}
 		tw.lastSubtreeChunks[level] = tw.newSubtreeChunk(level)
 	}
