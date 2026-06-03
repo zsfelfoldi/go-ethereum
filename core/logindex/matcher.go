@@ -189,7 +189,7 @@ type matcherResults struct {
 // matcher defines a general abstraction for any matcher configuration that
 // can instantiate a matcherInstance.
 type matcher interface {
-	newInstance(ctx context.Context, reader *tableReader, first, last indexPosition, direction int) matcherInstance
+	newInstance(ctx context.Context, reader *tableReader, prover *proverInstance, first, last indexPosition, direction int) matcherInstance
 }
 
 // matcherInstance defines a general abstraction for a matcher configuration
@@ -204,7 +204,8 @@ type matcher interface {
 type matcherInstance interface {
 	next() (*indexPosition, error)
 	advance(*indexPosition) error
-	split(*indexPosition) matcherInstance
+	split(*proverInstance, *indexPosition) matcherInstance
+	prove(bool) uint32
 }
 
 // singleMatcher implements matcher by returning matches for a single log value hash.
@@ -219,6 +220,7 @@ type singleMatcherInstance struct {
 	ctx                  context.Context
 	compare              indexEntry // value part is fixed, position part is used for comparisons
 	reader               *tableReader
+	prover               *proverInstance
 	entryPtr             uint64
 	direction            int
 	initialized, isEmpty bool
@@ -227,7 +229,7 @@ type singleMatcherInstance struct {
 }
 
 // newInstance creates a new instance of singleMatcher.
-func (m *singleMatcher) newInstance(ctx context.Context, reader *tableReader, first, last indexPosition, direction int) matcherInstance {
+func (m *singleMatcher) newInstance(ctx context.Context, reader *tableReader, prover *proverInstance, first, last indexPosition, direction int) matcherInstance {
 	mi := &singleMatcherInstance{
 		singleMatcher: m,
 		ctx:           ctx,
@@ -235,6 +237,7 @@ func (m *singleMatcher) newInstance(ctx context.Context, reader *tableReader, fi
 			indexValue: m.value,
 		},
 		reader:    reader,
+		prover:    prover,
 		direction: direction,
 		first:     first,
 		last:      last,
@@ -364,7 +367,7 @@ func (m *singleMatcherInstance) advance(findPos *indexPosition) error {
 }
 
 // split implements matcherInstance.
-func (m *singleMatcherInstance) split(splitPos *indexPosition) matcherInstance {
+func (m *singleMatcherInstance) split(prover *proverInstance, splitPos *indexPosition) matcherInstance {
 	if !m.initialized {
 		panic("cannot split uninitialized single matcher")
 	}
@@ -373,6 +376,7 @@ func (m *singleMatcherInstance) split(splitPos *indexPosition) matcherInstance {
 		ctx:           m.ctx,
 		compare:       m.compare,
 		reader:        m.reader,
+		prover:        prover,
 		entryPtr:      m.entryPtr,
 		direction:     m.direction,
 		first:         m.first,
@@ -396,6 +400,10 @@ func (m *singleMatcherInstance) split(splitPos *indexPosition) matcherInstance {
 	return m2
 }
 
+func (m *singleMatcherInstance) prove(active bool) uint32 {
+
+}
+
 // matchAny combinines a set of matchers and returns a match for every position
 // where any of the underlying matchers signaled a match. A zero-length matchAny
 // acts as a "wild card" that signals a potential match at every position.
@@ -410,19 +418,19 @@ type matchAnyInstance struct {
 }
 
 // newInstance creates a new instance of matchAny.
-func (m matchAny) newInstance(ctx context.Context, reader *tableReader, first, last indexPosition, direction int) matcherInstance {
+func (m matchAny) newInstancnewInstance(ctx context.Context, reader *tableReader, prover *proverInstance, first, last indexPosition, direction int) matcherInstance {
 	if len(m) == 0 {
 		panic("zero length matchAny")
 	}
 	if len(m) == 1 {
-		return m[0].newInstance(ctx, reader, first, last, direction)
+		return m[0].newInstance(ctx, reader, prover, first, last, direction)
 	}
 	mi := &matchAnyInstance{
 		children:  make([]matcherInstance, len(m)),
 		direction: direction,
 	}
 	for i, mm := range m {
-		mi.children[i] = mm.newInstance(ctx, reader, first, last, direction)
+		mi.children[i] = mm.newInstance(ctx, reader, prover, first, last, direction)
 	}
 	return mi
 }
@@ -482,18 +490,22 @@ func (m *matchAnyInstance) advance(findPos *indexPosition) error {
 }
 
 // split implements matcherInstance.
-func (m *matchAnyInstance) split(splitPos *indexPosition) matcherInstance {
+func (m *matchAnyInstance) split(prover *proverInstance, splitPos *indexPosition) matcherInstance {
 	c := &matchAnyInstance{
 		children:  make([]matcherInstance, len(m.children)),
 		direction: m.direction,
 	}
 	for i, cm := range m.children {
-		c.children[i] = cm.split(splitPos)
+		c.children[i] = cm.split(prover, splitPos)
 	}
 	if m.currentPos != nil && (splitPos.compare(m.currentPos) == 1) != (m.direction == 1) {
 		m.currentPos, m.isEmpty = nil, true
 	}
 	return c
+}
+
+func (m *matchAnyInstance) prove(active bool) uint32 {
+
 }
 
 type matchAll []matcher
@@ -507,19 +519,19 @@ type matchAllInstance struct {
 }
 
 // newInstance creates a new instance of matchAll.
-func (m matchAll) newInstance(ctx context.Context, reader *tableReader, first, last indexPosition, direction int) matcherInstance {
+func (m matchAll) newInstance(ctx context.Context, reader *tableReader, prover *proverInstance, first, last indexPosition, direction int) matcherInstance {
 	if len(m) == 0 {
 		panic("zero length matchAll")
 	}
 	if len(m) == 1 {
-		return m[0].newInstance(ctx, reader, first, last, direction)
+		return m[0].newInstance(ctx, reader, prover, first, last, direction)
 	}
 	mi := &matchAllInstance{
 		children:  make([]matcherInstance, len(m)),
 		direction: direction,
 	}
 	for i, mm := range m {
-		mi.children[i] = mm.newInstance(ctx, reader, first, last, direction)
+		mi.children[i] = mm.newInstance(ctx, reader, prover, first, last, direction)
 	}
 	return mi
 }
@@ -591,18 +603,22 @@ func (m *matchAllInstance) advance(findPos *indexPosition) error {
 }
 
 // split implements matcherInstance.
-func (m *matchAllInstance) split(splitPos *indexPosition) matcherInstance {
+func (m *matchAllInstance) split(prover *proverInstance, splitPos *indexPosition) matcherInstance {
 	c := &matchAllInstance{
 		children:  make([]matcherInstance, len(m.children)),
 		direction: m.direction,
 	}
 	for i, cm := range m.children {
-		c.children[i] = cm.split(splitPos)
+		c.children[i] = cm.split(prover, splitPos)
 	}
 	if m.currentPos != nil && (splitPos.compare(m.currentPos) == 1) != (m.direction == 1) {
 		m.currentPos, m.isEmpty = nil, true
 	}
 	return c
+}
+
+func (m *matchAllInstance) prove(active bool) uint32 {
+
 }
 
 /*
