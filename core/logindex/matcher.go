@@ -131,6 +131,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 			session:        session,
 			tableProver:    prover,
 			proverInstance: proverInstance,
+			andNode:        proverInstance.addAndNode(),
 			blockRange:     br,
 			blockInResults: make(map[uint64]int),
 			deliverCh:      make(chan struct{}, 1),
@@ -207,10 +208,9 @@ type matcher interface {
 // a result has been returned has no effect. Exactly one matcherResult is
 // returned per requested map index unless dropped.
 type matcherInstance interface {
-	next() (*indexPosition, error)
+	next() (*indexPosition, uint32, error)
 	advance(*indexPosition) error
 	split(*proverInstance, *indexPosition) matcherInstance
-	prove(bool) uint32
 }
 
 // singleMatcher implements matcher by returning matches for a single log value hash.
@@ -222,15 +222,16 @@ type singleMatcher struct {
 // singleMatcherInstance is an instance of singleMatcher.
 type singleMatcherInstance struct {
 	*singleMatcher
-	ctx                  context.Context
-	compare              indexEntry // value part is fixed, position part is used for comparisons
-	reader               *tableReader
-	prover               *proverInstance
-	entryPtr             uint64
-	direction            int
-	initialized, isEmpty bool
-	first, last          indexPosition
-	currentPos           *indexPosition
+	ctx                                              context.Context
+	compare                                          indexEntry // value part is fixed, position part is used for comparisons
+	reader                                           *tableReader
+	prover                                           *proverInstance
+	entryPtr                                         uint64
+	direction                                        int
+	initialized, isEmpty                             bool
+	first, last                                      indexPosition
+	currentPos                                       *indexPosition
+	lastEntryNode, currentEntryNode, lastSectionNode uint32
 }
 
 // newInstance creates a new instance of singleMatcher.
@@ -272,19 +273,34 @@ func (m *singleMatcherInstance) init() error {
 }
 
 // next implements matcherInstance.
-func (m *singleMatcherInstance) next() (*indexPosition, error) {
+func (m *singleMatcherInstance) next() (*indexPosition, uint32, error) {
 	if !m.initialized {
 		if err := m.init(); err != nil {
-			return nil, err
+			return nil, 0, err
+		}
+	}
+	if m.lastSectionNode == 0 {
+		if m.currentEntryNode == 0 {
+			m.currentEntryNode = m.prover.addLeafNode(m.entryPtr)
+		}
+		if m.entryPtr != 0 {
+			if m.lastEntryNode == 0 {
+				m.lastEntryNode = m.prover.addLeafNode(m.entryPtr - 1)
+			}
+			m.lastSectionNode = m.prover.addAndNode()
+			m.prover.connect(m.lastEntryNode, m.lastSectionNode)
+			m.prover.connect(m.currentEntryNode, m.lastSectionNode)
+		} else {
+			m.lastSectionNode = m.lastEntryNode
 		}
 	}
 	if m.currentPos == nil {
 		if m.isEmpty {
-			return nil, nil
+			return nil, m.lastSectionNode, nil
 		}
 		entry, err := m.reader.getEntry(m.entryPtr)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		var comparePos *indexPosition
 		switch m.direction {
@@ -296,11 +312,11 @@ func (m *singleMatcherInstance) next() (*indexPosition, error) {
 		if entry.indexValue != m.value || entry.indexPosition.compare(comparePos) == m.direction {
 			m.isEmpty = true
 			m.currentPos = nil
-			return nil, nil
+			return nil, m.lastSectionNode, nil
 		}
 		m.currentPos = &entry.indexPosition
 	}
-	return m.currentPos, nil
+	return m.currentPos, m.lastSectionNode, nil
 }
 
 // advance implements matcherInstance.
@@ -335,9 +351,22 @@ func (m *singleMatcherInstance) advance(findPos *indexPosition) error {
 				m.isEmpty = true
 			}
 		}
+		m.lastEntryNode = m.currentEntryNode
+		m.currentEntryNode, m.lastSectionNode = 0, 0
 		return nil
 	}
 	//fmt.Println("singleMatcherInstance", m.value, "advance", *findPos)
+	// ensure that we are not moving beyond the position range limit
+	var limitPos *indexPosition
+	switch m.direction {
+	case 1:
+		limitPos = &m.last
+	case -1:
+		limitPos = &m.first
+	}
+	if findPos.compare(limitPos) == m.direction {
+		findPos = limitPos
+	}
 	// move to the entry at or beyond findPos
 	m.compare.indexPosition = *findPos
 	pos, found, err := m.reader.seekEntry(&m.compare)
@@ -351,6 +380,7 @@ func (m *singleMatcherInstance) advance(findPos *indexPosition) error {
 		fmt.Println("  pos", p, entry.indexValue, entry.indexPosition)
 	}*/
 	//----
+	oldEntryPtr := m.entryPtr
 	switch m.direction {
 	case 1:
 		if pos < m.reader.entryCount {
@@ -367,6 +397,14 @@ func (m *singleMatcherInstance) advance(findPos *indexPosition) error {
 			}
 		}
 		m.entryPtr = pos
+	}
+	switch m.entryPtr {
+	case oldEntryPtr:
+	case uint64(int64(oldEntryPtr) + int64(m.direction)):
+		m.lastEntryNode = m.currentEntryNode
+		m.currentEntryNode, m.lastSectionNode = 0, 0
+	default:
+		m.lastEntryNode, m.currentEntryNode, m.lastSectionNode = 0, 0, 0
 	}
 	return nil
 }
@@ -405,10 +443,6 @@ func (m *singleMatcherInstance) split(prover *proverInstance, splitPos *indexPos
 	return m2
 }
 
-func (m *singleMatcherInstance) prove(active bool) uint32 {
-	return 0
-}
-
 // matchAny combinines a set of matchers and returns a match for every position
 // where any of the underlying matchers signaled a match. A zero-length matchAny
 // acts as a "wild card" that signals a potential match at every position.
@@ -416,10 +450,12 @@ type matchAny []matcher
 
 // matchAnyInstance is an instance of matchAny.
 type matchAnyInstance struct {
-	children   []matcherInstance
-	direction  int
-	currentPos *indexPosition
-	isEmpty    bool
+	children        []matcherInstance
+	prover          *proverInstance
+	direction       int
+	currentPos      *indexPosition
+	lastSectionNode uint32
+	isEmpty         bool
 }
 
 // newInstance creates a new instance of matchAny.
@@ -441,21 +477,27 @@ func (m matchAny) newInstance(ctx context.Context, reader *tableReader, prover *
 }
 
 // next implements matcherInstance.
-func (m *matchAnyInstance) next() (*indexPosition, error) {
+func (m *matchAnyInstance) next() (*indexPosition, uint32, error) {
 	if m.isEmpty || m.currentPos != nil {
-		return m.currentPos, nil
+		return m.currentPos, m.lastSectionNode, nil
+	}
+	if m.prover != nil {
+		m.lastSectionNode = m.prover.addAndNode()
 	}
 	for _, cm := range m.children {
-		pos, err := cm.next()
+		pos, node, err := cm.next()
 		if err != nil {
-			return nil, err
+			return nil, 0, err
+		}
+		if m.prover != nil {
+			m.prover.connect(node, m.lastSectionNode)
 		}
 		if pos != nil && (m.currentPos == nil || m.currentPos.compare(pos) == m.direction) {
 			m.currentPos = pos
 		}
 	}
 	m.isEmpty = m.currentPos == nil
-	return m.currentPos, nil
+	return m.currentPos, m.lastSectionNode, nil
 }
 
 // advance implements matcherInstance.
@@ -464,7 +506,7 @@ func (m *matchAnyInstance) advance(findPos *indexPosition) error {
 		return nil
 	}
 	if findPos == nil {
-		currentPos, err := m.next()
+		currentPos, _, err := m.next()
 		if err != nil {
 			return err
 		}
@@ -473,7 +515,7 @@ func (m *matchAnyInstance) advance(findPos *indexPosition) error {
 		}
 		m.currentPos = nil
 		for _, cm := range m.children {
-			pos, err := cm.next()
+			pos, _, err := cm.next()
 			if err != nil {
 				return err
 			}
@@ -509,18 +551,16 @@ func (m *matchAnyInstance) split(prover *proverInstance, splitPos *indexPosition
 	return c
 }
 
-func (m *matchAnyInstance) prove(active bool) uint32 {
-	return 0
-}
-
 type matchAll []matcher
 
 // matchAllInstance is an instance of matchAll.
 type matchAllInstance struct {
-	children   []matcherInstance
-	direction  int
-	currentPos *indexPosition
-	isEmpty    bool
+	children        []matcherInstance
+	prover          *proverInstance
+	direction       int
+	currentPos      *indexPosition
+	lastSectionNode uint32
+	isEmpty         bool
 }
 
 // newInstance creates a new instance of matchAll.
@@ -542,26 +582,46 @@ func (m matchAll) newInstance(ctx context.Context, reader *tableReader, prover *
 }
 
 // next implements matcherInstance.
-func (m *matchAllInstance) next() (*indexPosition, error) {
+func (m *matchAllInstance) next() (*indexPosition, uint32, error) {
 	//fmt.Println("matchAllInstance.next()")
 	if m.isEmpty || m.currentPos != nil {
-		return m.currentPos, nil
+		return m.currentPos, m.lastSectionNode, nil
 	}
 	for {
 		match := true
-		var next *indexPosition
+		var (
+			next              *indexPosition
+			nextNode, andNode uint32
+		)
+		if m.prover != nil {
+			andNode = m.prover.addAndNode()
+		}
 		for i, cm := range m.children {
-			pos, err := cm.next()
+			pos, node, err := cm.next()
 			if err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			if pos == nil {
 				m.isEmpty = true
-				return nil, nil
+				var orNode uint32
+				if m.prover != nil {
+					orNode := m.prover.addOrNode()
+					m.prover.connect(node, orNode)
+					for j := i + 1; j < len(m.children); j++ {
+						pos, node, err := cm.next()
+						if err != nil {
+							return nil, 0, err
+						}
+						if pos == nil {
+							m.prover.connect(node, orNode)
+						}
+					}
+				}
+				return nil, orNode, nil
 			}
 			//fmt.Println(" child", i, "next()", *pos)
 			if i == 0 {
-				next = pos
+				next, nextNode = pos, node
 			} else {
 				switch next.compare(pos) {
 				case m.direction:
@@ -572,16 +632,19 @@ func (m *matchAllInstance) next() (*indexPosition, error) {
 				}
 			}
 		}
+		if m.prover != nil {
+			m.prover.connect(nextNode, andNode)
+		}
 		//fmt.Println(" match", match)
 		if match {
-			m.currentPos = next
-			return next, nil
+			m.currentPos, m.lastSectionNode = next, andNode
+			return next, andNode, nil
 		}
 		for _, cm := range m.children {
-			if pos, _ := cm.next(); *pos != *next {
+			if pos, _, _ := cm.next(); *pos != *next {
 				//fmt.Println(" child", i, "advance", *next)
 				if err := cm.advance(next); err != nil {
-					return nil, err
+					return nil, 0, err
 				}
 			}
 		}
@@ -594,7 +657,7 @@ func (m *matchAllInstance) advance(findPos *indexPosition) error {
 		return nil
 	}
 	if findPos == nil {
-		if _, err := m.next(); err != nil {
+		if _, _, err := m.next(); err != nil {
 			return err
 		}
 	}
@@ -620,10 +683,6 @@ func (m *matchAllInstance) split(prover *proverInstance, splitPos *indexPosition
 		m.currentPos, m.isEmpty = nil, true
 	}
 	return c
-}
-
-func (m *matchAllInstance) prove(active bool) uint32 {
-	return 0
 }
 
 /*
@@ -766,6 +825,7 @@ type matcherProcess struct {
 	session        *matcherSession
 	tableProver    *tableProver
 	proverInstance *proverInstance
+	andNode        uint32
 	prev, next     *matcherProcess
 	blockRange     common.Range[uint64]
 
@@ -893,12 +953,13 @@ func (mp *matcherProcess) run() {
 	for !mp.finished {
 		if !mp.matcherFinished && len(mp.positions) < mp.completeUntil+maxIncompleteResults {
 			//fmt.Println(" mp.matcher.next()")
-			pos, err := mp.matcher.next()
+			pos, node, err := mp.matcher.next()
 			if err != nil {
 				//fmt.Println("matcherProcess", mp.blockRange, "error (next)", err)
 				mp.finished, mp.err = true, err
 				return
 			}
+			mp.proverInstance.connect(node, mp.andNode)
 			if pos == nil {
 				//fmt.Println("matcherProcess", mp.blockRange, "finished")
 				mp.matcherFinished = true
@@ -1017,6 +1078,7 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		session:        mp.session,
 		tableProver:    mp.tableProver,
 		proverInstance: proverInstance,
+		andNode:        proverInstance.addAndNode(),
 		prev:           mp,
 		next:           mp.next,
 		blockRange:     mp.blockRange,

@@ -20,12 +20,29 @@ type tableProver struct {
 }
 
 func newTableProver() *tableProver {
+	panic("xxx")
 	return &tableProver{}
 }
 
 func (tp *tableProver) newInstance() *proverInstance {
+	panic("xxx")
 	return &proverInstance{}
-
 }
 
 type proverInstance struct{}
+
+func (pi *proverInstance) addLeafNode(entryIndex uint64) uint32 {
+	panic("xxx")
+}
+
+func (pi *proverInstance) addAndNode() uint32 {
+	panic("xxx")
+}
+
+func (pi *proverInstance) addOrNode() uint32 {
+	panic("xxx")
+}
+
+func (pi *proverInstance) connect(source, target uint32) {
+	panic("xxx")
+}
