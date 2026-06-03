@@ -117,15 +117,20 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 	for i, tr := range readers {
 		br := tr.blockRange().Intersection(blockRange)
 		//fmt.Println(" ", br)
+		prover := newTableProver()
+		proverInstance := prover.newInstance()
 		mp := &matcherProcess{
 			indexer: ix,
 			matcher: matcher.newInstance(
 				ctx,
 				tr,
+				proverInstance,
 				indexPosition{blockNumber: br.First()},
 				indexPosition{blockNumber: br.Last(), txIndex: math.MaxUint32, logIndex: math.MaxUint32},
 				direction),
 			session:        session,
+			tableProver:    prover,
+			proverInstance: proverInstance,
 			blockRange:     br,
 			blockInResults: make(map[uint64]int),
 			deliverCh:      make(chan struct{}, 1),
@@ -401,7 +406,7 @@ func (m *singleMatcherInstance) split(prover *proverInstance, splitPos *indexPos
 }
 
 func (m *singleMatcherInstance) prove(active bool) uint32 {
-
+	return 0
 }
 
 // matchAny combinines a set of matchers and returns a match for every position
@@ -418,7 +423,7 @@ type matchAnyInstance struct {
 }
 
 // newInstance creates a new instance of matchAny.
-func (m matchAny) newInstancnewInstance(ctx context.Context, reader *tableReader, prover *proverInstance, first, last indexPosition, direction int) matcherInstance {
+func (m matchAny) newInstance(ctx context.Context, reader *tableReader, prover *proverInstance, first, last indexPosition, direction int) matcherInstance {
 	if len(m) == 0 {
 		panic("zero length matchAny")
 	}
@@ -505,7 +510,7 @@ func (m *matchAnyInstance) split(prover *proverInstance, splitPos *indexPosition
 }
 
 func (m *matchAnyInstance) prove(active bool) uint32 {
-
+	return 0
 }
 
 type matchAll []matcher
@@ -618,7 +623,7 @@ func (m *matchAllInstance) split(prover *proverInstance, splitPos *indexPosition
 }
 
 func (m *matchAllInstance) prove(active bool) uint32 {
-
+	return 0
 }
 
 /*
@@ -756,11 +761,13 @@ const (
 )
 
 type matcherProcess struct {
-	indexer    *Indexer
-	matcher    matcherInstance
-	session    *matcherSession
-	prev, next *matcherProcess
-	blockRange common.Range[uint64]
+	indexer        *Indexer
+	matcher        matcherInstance
+	session        *matcherSession
+	tableProver    *tableProver
+	proverInstance *proverInstance
+	prev, next     *matcherProcess
+	blockRange     common.Range[uint64]
 
 	// accessed by control thread only
 	status  int
@@ -1003,10 +1010,13 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 	if !ok {
 		return nil, nil
 	}
+	proverInstance := mp.tableProver.newInstance()
 	mp2 := &matcherProcess{
 		indexer:        mp.indexer,
-		matcher:        mp.matcher.split(&indexPosition{blockNumber: splitAt}),
+		matcher:        mp.matcher.split(proverInstance, &indexPosition{blockNumber: splitAt}),
 		session:        mp.session,
+		tableProver:    mp.tableProver,
+		proverInstance: proverInstance,
 		prev:           mp,
 		next:           mp.next,
 		blockRange:     mp.blockRange,
