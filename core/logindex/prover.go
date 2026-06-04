@@ -33,12 +33,14 @@ const (
 )
 
 type tableProver struct {
-	lock       sync.Mutex
-	nodeChunks []*logicNodeChunk
+	lock         sync.Mutex
+	treeHeight   int
+	nodeChunks   []*logicNodeChunk
+	finalizeHeap finalizeHeap
 }
 
-func newTableProver() *tableProver {
-	return &tableProver{}
+func newTableProver(treeHeight int) *tableProver {
+	return &tableProver{treeHeight: treeHeight}
 }
 
 func (tp *tableProver) newInstance() *proverInstance {
@@ -73,7 +75,7 @@ func (tp *tableProver) getNode(node uint32) *logicNode {
 	return &tp.nodeChunks[(node-1)/nodeChunkSize].nodes[(node-1)%nodeChunkSize]
 }
 
-func (tp *tableProver) finalize() {
+func (tp *tableProver) finalize(finalNode uint32) {
 	var entryCount int
 	for _, chunk := range tp.nodeChunks {
 		for i := range chunk.count {
@@ -105,13 +107,17 @@ func (tp *tableProver) finalize() {
 			j++
 		}
 	}
+	pi = nil
 	entryNodes = entryNodes[:j]
+	entryCount = j
 	tp.finalizeHeap = finalizeHeap{
 		getNode:    tp.getNode,
+		treeHeight: tp.treeHeight,
 		entryNodes: entryNodes,
 		prevEntry:  make([]uint32, len(entryNodes)),
 		nextEntry:  make([]uint32, len(entryNodes)),
 		heapOrder:  make([]uint32, len(entryNodes)),
+		heapIndex:  make([]uint32, len(entryNodes)),
 	}
 	for i := range entryNodes {
 		if i > 0 {
@@ -127,18 +133,102 @@ func (tp *tableProver) finalize() {
 		tp.finalizeHeap.heapOrder[i] = i
 		tp.finalizeHeap.heapIndex[i] = i
 	}
+	heap.Init(&tp.finalizeHeap)
+	for tp.finalizeHeap.Len() != 0 {
+		entry := heap.Pop(&tp.finalizeHeap).(uint32)
+		if tp.canSetToFalse(tp.finalizeHeap.entryNodes[entry], finalNode) {
+			tp.setFinalValue(tp.finalizeHeap.entryNodes[entry], false)
+			tp.finalizeHeap.removeEntry(entry)
+			tp.finalizeHeap.entryNodes[entry] = 0
+			entryCount--
+		} else {
+			tp.setFinalValue(tp.finalizeHeap.entryNodes[entry], true)
+		}
+	}
+	tp.finalizeHeap.prevEntry, tp.finalizeHeap.nextEntry, tp.finalizeHeap.heapOrder, tp.finalizeHeap.heapIndex = nil, nil, nil, nil
+	entryIndices = make([]uint64, 0, entryCount)
+	for _, entryNode := range tp.finalizeHeap.entryNodes {
+		if entryNode != 0 {
+			entryIndices = append(entryIndices, tp.getNode(entryNode).entryOrGate)
+		}
+	}
+	tp.finalizeHeap.entryNodes = nil
+	tp.nodeChunks = nil
+
 }
 
 type finalizeHeap struct {
 	getNode              func(uint32) *logicNode
+	treeHeight           int
 	entryNodes           []uint32
 	prevEntry, nextEntry []uint32
 	heapOrder, heapIndex []uint32
 }
 
+// number of merkle multiproof hashes required between adjacent proven entry
+// indices a and b (assuming a < b)
+func (fh *finalizeHeap) proofCost(a, b uint64) int {
+	//
+	switch {
+	case a == math.MaxUint64 && b == math.MaxUint64:
+		// no entries remaining; proof is just a root hash
+		return 1
+	case a == math.MaxUint64:
+		// b has no left neighbor; each 1 bit in b costs a proof hash
+		return bits.OnesCount64(b)
+	case b == math.MaxUint64:
+		// a has no right neighbor; each 0 bit in a costs a proof hash
+		return fh.treeHeight - bits.OnesCount64(a)
+	default:
+		if a >= b {
+			panic("proofCost: invalid index order")
+		}
+		// we ignore the shared binary prefix plus the first different bit (0 in a, 1 in b)
+		ignorePrefix := bits.LeadingZeros64(a^b) + 1
+		// in the remaining lower bits, each 0 bit in a and each 1 bit in b costs a proof hash
+		return 64 - ignorePrefix - bits.OnesCount64(a<<ignorePrefix) + bits.OnesCount64(b<<ignorePrefix)
+	}
+}
+
+// multiproof hash cost saved by removing given entryNodes index
+func (fh *finalizeHeap) savedCost(entry uint32) int {
+	var a, c uint64
+	if prev := fh.prevEntry[entry]; prev != math.MaxUint32 {
+		a = fh.getNode(fh.entryNodes[prev]).entryOrGate
+	} else {
+		a = math.MaxUint64
+	}
+	b := fh.getNode(fh.entryNodes[entry]).entryOrGate
+	if next := fh.nextEntry[entry]; next != math.MaxUint32 {
+		c = fh.getNode(fh.entryNodes[next]).entryOrGate
+	} else {
+		c = math.MaxUint64
+	}
+	return fh.proofCost(a, b) + fh.proofCost(b, c) - fh.proofCost(a, c)
+}
+
+func (fh *finalizeHeap) removeEntry(entry uint32) {
+	prev := fh.prevEntry[entry]
+	next := fh.nextEntry[entry]
+	if prev != math.MaxUint32 {
+		fh.nextEntry[prev] = next
+	}
+	if next != math.MaxUint32 {
+		fh.prevEntry[next] = prev
+	}
+	heap.Remove(fh, fh.heapIndex[entry])
+	if prev != math.MaxUint32 {
+		heap.Fix(fh, fh.heapIndex[prev])
+	}
+	if next != math.MaxUint32 {
+		heap.Fix(fh, fh.heapIndex[next])
+	}
+}
+
 func (fh *finalizeHeap) Len() int { return len(fh.heapOrder) }
 
 func (fh *finalizeHeap) Less(i, j int) bool {
+	return fh.savedCost(i) > fh.savedCost(j)
 }
 
 func (fh *finalizeHeap) Swap(i, j int) {
