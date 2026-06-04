@@ -66,12 +66,121 @@ func (tp *tableProver) getChunk(index uint32) *logicNodeChunk {
 	return tp.nodeChunks[index]
 }
 
-/*func (tp *tableProver) getNode(node uint32) *logicNode {
+func (tp *tableProver) getNode(node uint32) *logicNode {
 	if node == 0 {
 		return nil
 	}
 	return &tp.nodeChunks[(node-1)/nodeChunkSize].nodes[(node-1)%nodeChunkSize]
-}*/
+}
+
+func (tp *tableProver) finalize() {
+	var entryCount int
+	for _, chunk := range tp.nodeChunks {
+		for i := range chunk.count {
+			if !chunk.nodes[i].isGate() {
+				entryCount++
+			}
+		}
+	}
+	entryNodes := make([]uint32, entryCount)
+	var entryPtr int
+	for _, chunk := range tp.nodeChunks {
+		for i := range chunk.count {
+			if !chunk.nodes[i].isGate() {
+				entryNodes[entryPtr] = chunk.index*nodeChunkSize + 1 + uint32(i)
+				entryPtr++
+			}
+		}
+	}
+	sort.Slice(entryNodes, func(i, j int) bool {
+		return tp.getNode(entryNodes[i]).entryOrGate < tp.getNode(entryNodes[j]).entryOrGate
+	})
+	pi := tp.newInstance()
+	var j int
+	for i, node := range entryNodes {
+		if j > 0 && tp.getNode(entryNodes[j-1]).entryOrGate == tp.getNode(node).entryOrGate {
+			pi.mergeEntryNodes(entryNodes[j-1], node)
+		} else {
+			entryNodes[j] = node
+			j++
+		}
+	}
+	entryNodes = entryNodes[:j]
+	tp.finalizeHeap = finalizeHeap{
+		getNode:    tp.getNode,
+		entryNodes: entryNodes,
+		prevEntry:  make([]uint32, len(entryNodes)),
+		nextEntry:  make([]uint32, len(entryNodes)),
+		heapOrder:  make([]uint32, len(entryNodes)),
+	}
+	for i := range entryNodes {
+		if i > 0 {
+			tp.finalizeHeap.prevEntry[i] = i - 1
+		} else {
+			tp.finalizeHeap.prevEntry[i] = math.MaxUint32
+		}
+		if i < len(entryNodes)-1 {
+			tp.finalizeHeap.nextEntry[i] = i + 1
+		} else {
+			tp.finalizeHeap.nextEntry[i] = math.MaxUint32
+		}
+		tp.finalizeHeap.heapOrder[i] = i
+		tp.finalizeHeap.heapIndex[i] = i
+	}
+}
+
+type finalizeHeap struct {
+	getNode              func(uint32) *logicNode
+	entryNodes           []uint32
+	prevEntry, nextEntry []uint32
+	heapOrder, heapIndex []uint32
+}
+
+func (fh *finalizeHeap) Len() int { return len(fh.heapOrder) }
+
+func (fh *finalizeHeap) Less(i, j int) bool {
+}
+
+func (fh *finalizeHeap) Swap(i, j int) {
+	fh.heapOrder[i], fh.heapOrder[j] = fh.heapOrder[j], fh.heapOrder[i]
+	fh.heapIndex[fh.heapOrder[i]] = i
+	fh.heapIndex[fh.heapOrder[j]] = j
+}
+
+func (fh *finalizeHeap) Push(x any) {
+	n := len(fh.heapOrder)
+	item := x.(uint32)
+	fh.heapIndex[item] = n
+	fh.heapOrder = append(fh.heapOrder, item)
+}
+
+func (fh *finalizeHeap) Pop() any {
+	n := len(fh.heapOrder)
+	item := fh.heapOrder[n-1]
+	fh.heapIndex[item] = math.MaxUint32
+	fh.heapOrder = fh.heapOrder[:n-1]
+	return item
+}
+
+func (pi *proverInstance) mergeEntryNodes(node, node2 uint32) {
+	n := pi.getNode(node)
+	n2 := pi.getNode(node2)
+	count := n.outputCount()
+	count2 := n2.outputCount()
+	if count+count2 <= maxOutputCount {
+		copy(n.output[count:count+count2], n2.output[:count2])
+	} else {
+		n2.entryOrGate = logicOrGate
+		node3 := pi.addOrNode()
+		n3 := pi.getNode(node3)
+		n3.output = n.output
+		n.output[0] = node2
+		n.output[1] = node3
+		for i := 2; i < maxOutputCount; i++ {
+			n.output[i] = 0
+		}
+	}
+}
 
 type proverInstance struct {
 	prover       *tableProver
