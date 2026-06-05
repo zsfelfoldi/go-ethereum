@@ -286,15 +286,15 @@ func (m *singleMatcherInstance) next() (*indexPosition, uint32, error) {
 		if m.currentEntryNode == 0 {
 			m.currentEntryNode = m.prover.addProvenEntryNode(m.entryPtr)
 		}
-		if m.entryPtr != 0 {
+		if (m.direction == 1 && m.entryPtr != 0) || (m.direction == 1 && m.entryPtr < m.reader.entryCount-1) {
 			if m.lastEntryNode == 0 {
-				m.lastEntryNode = m.prover.addProvenEntryNode(m.entryPtr - 1)
+				m.lastEntryNode = m.prover.addProvenEntryNode(uint64(int64(m.entryPtr) - int64(m.direction)))
 			}
 			m.lastSectionNode = m.prover.addAndGateNode()
 			m.prover.connect(m.lastEntryNode, m.lastSectionNode)
 			m.prover.connect(m.currentEntryNode, m.lastSectionNode)
 		} else {
-			m.lastSectionNode = m.lastEntryNode
+			m.lastSectionNode = m.currentEntryNode
 		}
 	}
 	if m.currentPos == nil {
