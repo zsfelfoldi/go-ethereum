@@ -131,7 +131,6 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 			session:        session,
 			tableProver:    prover,
 			proverInstance: proverInstance,
-			andNode:        proverInstance.addAndGateNode(),
 			blockRange:     br,
 			blockInResults: make(map[uint64]int),
 			deliverCh:      make(chan struct{}, 1),
@@ -188,6 +187,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 
 type matcherResults struct {
 	logs       []*types.Log
+	provers    []*tableProver
 	blockRange common.Range[uint64]
 	err        error
 }
@@ -786,23 +786,45 @@ func (ms *matcherSession) returnResults() {
 		logs:       make([]*types.Log, 0, resCount),
 		blockRange: common.NewRange[uint64](ms.first.blockRange.First(), ms.last.blockRange.AfterLast()-ms.first.blockRange.First()),
 	}
+	var (
+		currentProver *tableProver
+		andNode       uint32
+	)
 
 	addProcessResults := func(mp *matcherProcess) bool {
 		mp.blockDataLock.Lock()
 		defer mp.blockDataLock.Unlock()
 
-		for _, log := range mp.logs {
+		if mp.tableProver != nil && mp.tableProver != currentProver {
+			if currentProver != nil {
+				res.provers = append(res.provers, currentProver)
+			}
+			currentProver = mp.tableProver
+			andNode = mp.proverInstance.addAndGateNode()
+			mp.proverInstance.connect(andNode, mp.proverInstance.addFinalResultNode())
+		}
+		for i, log := range mp.logs {
 			if uint64(len(res.logs)) == resCount {
 				return false
 			}
+			mp.proverInstance.connect(mp.sectionNodes[i], andNode)
 			if log != droppedLogResult {
 				res.logs = append(res.logs, log)
 			}
 		}
-		return uint64(len(res.logs)) != resCount
+		if uint64(len(res.logs)) == resCount {
+			return false
+		}
+		if len(mp.sectionNodes) > len(mp.logs) {
+			mp.proverInstance.connect(mp.sectionNodes[len(mp.logs)], andNode)
+		}
+		return true
 	}
 
 	for mp := ms.first; mp != nil && addProcessResults(mp); mp = mp.next {
+	}
+	if currentProver != nil {
+		res.provers = append(res.provers, currentProver)
 	}
 	//fmt.Println("  ms.resultsCh <- res")
 	ms.resultsCh <- res
@@ -825,7 +847,6 @@ type matcherProcess struct {
 	session        *matcherSession
 	tableProver    *tableProver
 	proverInstance *proverInstance
-	andNode        uint32
 	prev, next     *matcherProcess
 	blockRange     common.Range[uint64]
 
@@ -835,6 +856,7 @@ type matcherProcess struct {
 
 	// accessed only by worker thread while status == mpRunning
 	positions                     []indexPosition
+	sectionNodes                  []uint32
 	completeUntil, droppedResults int
 	finished, matcherFinished     bool
 	err                           error
@@ -959,7 +981,7 @@ func (mp *matcherProcess) run() {
 				mp.finished, mp.err = true, err
 				return
 			}
-			mp.proverInstance.connect(node, mp.andNode)
+			mp.sectionNodes = append(mp.sectionNodes, node)
 			if pos == nil {
 				//fmt.Println("matcherProcess", mp.blockRange, "finished")
 				mp.matcherFinished = true
@@ -1048,7 +1070,7 @@ func (mp *matcherProcess) deliverBlockData(req blockRequest, header *types.Heade
 			logOffset += uint(len(receipts[i].Logs)) //TODO different position encoding?
 		}
 		l := receipts[pos.txIndex].Logs[pos.logIndex]
-		if len(l.Topics) < mp.session.minTopicCount {
+		if len(l.Topics) < mp.session.minTopicCount && mp.tableProver == nil { // include results with too few topic in proving mode
 			mp.logs[firstInResults] = droppedLogResult
 		} else {
 			mp.logs[firstInResults] = &types.Log{
@@ -1078,7 +1100,6 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		session:        mp.session,
 		tableProver:    mp.tableProver,
 		proverInstance: proverInstance,
-		andNode:        proverInstance.addAndGateNode(),
 		prev:           mp,
 		next:           mp.next,
 		blockRange:     mp.blockRange,
