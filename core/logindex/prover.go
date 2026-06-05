@@ -162,11 +162,13 @@ func (tp *tableProver) finalize() {
 		switch finalResult.logicState() {
 		case lsDecidedTrue:
 			tp.traverse(setFalse, entryNode)
+			tp.finalizeHeap.removeEntry(entryNode)
 		case lsAssumedTrue:
 			tp.traverse(trySetFalse, entryNode)
 			switch finalResult.logicState() {
 			case lsAssumedTrue:
 				tp.traverse(confirmSetFalse, entryNode)
+				tp.finalizeHeap.removeEntry(entryNode)
 			case lsAssumedFalse:
 				tp.traverse(revertSetFalse, entryNode)
 				tp.traverse(setTrue, entryNode)

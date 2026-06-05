@@ -798,6 +798,7 @@ func (ms *matcherSession) returnResults() {
 		mp.blockDataLock.Lock()
 		defer mp.blockDataLock.Unlock()
 
+		fmt.Println(" sectionNodes", mp.sectionNodes)
 		if mp.tableProver != nil && mp.tableProver != currentProver {
 			if currentProver != nil {
 				res.provers = append(res.provers, currentProver)
