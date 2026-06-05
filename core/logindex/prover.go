@@ -159,17 +159,21 @@ func (tp *tableProver) finalize() {
 	heap.Init(&tp.finalizeHeap)
 	for tp.finalizeHeap.Len() != 0 {
 		sortedIndex := heap.Pop(&tp.finalizeHeap).(uint32)
+		//fmt.Println("heap.Pop", sortedIndex)
+		tp.finalizeHeap.print()
 		entryNode := tp.finalizeHeap.entryNodes[sortedIndex]
 		switch finalResult.logicState() {
 		case lsDecidedTrue:
 			tp.traverse(setFalse, entryNode)
 			tp.finalizeHeap.removedEntry(sortedIndex)
+			entryCount--
 		case lsAssumedTrue:
 			tp.traverse(trySetFalse, entryNode)
 			switch finalResult.logicState() {
 			case lsAssumedTrue:
 				tp.traverse(confirmSetFalse, entryNode)
 				tp.finalizeHeap.removedEntry(sortedIndex)
+				entryCount--
 			case lsAssumedFalse:
 				tp.traverse(revertSetFalse, entryNode)
 				tp.traverse(setTrue, entryNode)
@@ -179,6 +183,9 @@ func (tp *tableProver) finalize() {
 		default:
 			panic("unexpected logic state for final result node")
 		}
+	}
+	if finalResult.logicState() != lsDecidedTrue {
+		panic("invalid final result logic state")
 	}
 	tp.finalizeHeap.prevEntry, tp.finalizeHeap.nextEntry, tp.finalizeHeap.heapOrder, tp.finalizeHeap.heapIndex = nil, nil, nil, nil
 	fmt.Println(" optimized entry node count", entryCount)
@@ -346,6 +353,8 @@ type finalizeHeap struct {
 	entryNodes           []uint32
 	prevEntry, nextEntry []uint32
 	heapOrder, heapIndex []uint32
+	fixedCostEntry       uint32 //TODO is this necessary?
+	fixedCost            int
 }
 
 // number of merkle multiproof hashes required between adjacent proven entry
@@ -375,6 +384,9 @@ func (fh *finalizeHeap) proofCost(a, b uint64) int {
 
 // multiproof hash cost saved by removing given entryNodes index
 func (fh *finalizeHeap) savedCost(entry uint32) int {
+	if entry == fh.fixedCostEntry {
+		return fh.fixedCost
+	}
 	var a, c uint64
 	if prev := fh.prevEntry[entry]; prev != math.MaxUint32 {
 		a = fh.getNode(fh.entryNodes[prev]).nodeValue()
@@ -391,32 +403,54 @@ func (fh *finalizeHeap) savedCost(entry uint32) int {
 }
 
 func (fh *finalizeHeap) removedEntry(sortedIndex uint32) {
-	fh.entryNodes[sortedIndex] = 0
 	prev := fh.prevEntry[sortedIndex]
 	next := fh.nextEntry[sortedIndex]
-	if prev != math.MaxUint32 {
-		fh.nextEntry[prev] = next
-	}
+	//fmt.Println("removedEntry", sortedIndex, "prev", prev, "next", next)
+	fh.print()
 	if next != math.MaxUint32 {
+		// save cost of next node before doing changes that affect cost calculation
+		fh.fixedCostEntry, fh.fixedCost = next, fh.savedCost(next)
 		fh.prevEntry[next] = prev
 	}
 	if prev != math.MaxUint32 {
-		heap.Fix(fh, int(fh.heapIndex[prev]))
+		fh.nextEntry[prev] = next
+	}
+	fh.entryNodes[sortedIndex] = 0
+	if prev != math.MaxUint32 {
+		if h := fh.heapIndex[prev]; h != math.MaxUint32 {
+			//fmt.Println("heap.Fix", h)
+			heap.Fix(fh, int(h))
+		}
 	}
 	if next != math.MaxUint32 {
-		heap.Fix(fh, int(fh.heapIndex[next])) //TODO is this correct?
+		fh.fixedCostEntry = 0 // now allow calculating the updated cost for next node
+		if h := fh.heapIndex[next]; h != math.MaxUint32 {
+			//fmt.Println("heap.Fix", h)
+			heap.Fix(fh, int(h))
+		}
 	}
+	//fmt.Println(" ... after")
+	fh.print()
+}
+
+func (fh *finalizeHeap) print() {
+	return
+	fmt.Println(" entryNodes:", fh.entryNodes)
+	fmt.Println(" prevEntry: ", fh.prevEntry)
+	fmt.Println(" nextEntry: ", fh.nextEntry)
+	fmt.Println(" heapOrder: ", fh.heapOrder)
+	fmt.Println(" heapIndex: ", fh.heapIndex)
 }
 
 func (fh *finalizeHeap) Len() int { return len(fh.heapOrder) }
 
 func (fh *finalizeHeap) Less(i, j int) bool {
-	fmt.Println("heap: Less", i, j)
+	//fmt.Println("heap: Less", i, j)
 	return fh.savedCost(fh.heapOrder[i]) > fh.savedCost(fh.heapOrder[j])
 }
 
 func (fh *finalizeHeap) Swap(i, j int) {
-	fmt.Println("heap: Swap", i, j)
+	//fmt.Println("heap: Swap", i, j)
 	fh.heapOrder[i], fh.heapOrder[j] = fh.heapOrder[j], fh.heapOrder[i]
 	fh.heapIndex[fh.heapOrder[i]] = uint32(i)
 	fh.heapIndex[fh.heapOrder[j]] = uint32(j)
@@ -424,7 +458,7 @@ func (fh *finalizeHeap) Swap(i, j int) {
 
 func (fh *finalizeHeap) Push(x any) {
 	item := x.(uint32)
-	fmt.Println("heap: Push", item, len(fh.heapOrder))
+	//fmt.Println("heap: Push", item, len(fh.heapOrder))
 	fh.heapIndex[item] = uint32(len(fh.heapOrder))
 	fh.heapOrder = append(fh.heapOrder, item)
 }
@@ -432,8 +466,8 @@ func (fh *finalizeHeap) Push(x any) {
 func (fh *finalizeHeap) Pop() any {
 	n := len(fh.heapOrder)
 	item := fh.heapOrder[n-1]
-	fmt.Println("heap: Pop", item, n-1)
-	fh.heapIndex[item] = 123456789 //math.MaxUint32
+	//fmt.Println("heap: Pop", item, n-1)
+	fh.heapIndex[item] = math.MaxUint32
 	fh.heapOrder = fh.heapOrder[:n-1]
 	return item
 }
@@ -512,14 +546,14 @@ func (pi *proverInstance) addNode(nodeType uint32, nodeValue uint64) uint32 {
 	if pi.currentChunk.count == nodeChunkSize {
 		pi.currentChunk = nil
 	}
-	fmt.Println("addNode", node, "nt", nodeType, "nv", nodeValue)
+	//fmt.Println("addNode", node, "nt", nodeType, "nv", nodeValue)
 	return node
 }
 
 func (pi *proverInstance) connect(source, target uint32) {
 	s := pi.getNode(source)
 	t := pi.getNode(target)
-	fmt.Println("connect source", source, "nt", s.nodeType(), "target", target, "nt", t.nodeType())
+	//fmt.Println("connect source", source, "nt", s.nodeType(), "target", target, "nt", t.nodeType())
 	if t.nodeType() == ntProvenEntry {
 		panic("logic connection target is a proven entry node")
 	}

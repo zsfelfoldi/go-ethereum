@@ -36,7 +36,7 @@ import (
 const (
 	headerCacheSize            = 100
 	blockRequestLevels         = 2        // priority levels where block requests are processed
-	maxMatcherThreads          = 1        //TODO        //TODO config
+	maxMatcherThreads          = 4        //TODO        //TODO config
 	maxMergeThreads            = 4        //TODO config
 	memFileLowThreshold        = 10000000 //TODO config
 	memFileHighThreshold       = 15000000 //TODO config

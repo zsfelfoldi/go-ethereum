@@ -277,9 +277,9 @@ func (m *singleMatcherInstance) init() error {
 
 // next implements matcherInstance.
 func (m *singleMatcherInstance) next() (dpos *indexPosition, dlsn uint32, derr error) {
-	defer func() {
+	/*defer func() {
 		fmt.Println("singleMatcherInstance  pos", dpos, "lsn", dlsn, "err", derr)
-	}()
+	}()*/
 	if !m.initialized {
 		if err := m.init(); err != nil {
 			return nil, 0, err
@@ -485,9 +485,9 @@ func (m matchAny) newInstance(ctx context.Context, reader *tableReader, prover *
 
 // next implements matcherInstance.
 func (m *matchAnyInstance) next() (dpos *indexPosition, dlsn uint32, derr error) {
-	defer func() {
+	/*defer func() {
 		fmt.Println("matchAnyInstance  pos", dpos, "lsn", dlsn, "err", derr)
-	}()
+	}()*/
 	if m.isEmpty || m.currentPos != nil {
 		return m.currentPos, m.lastSectionNode, nil
 	}
@@ -595,9 +595,9 @@ func (m matchAll) newInstance(ctx context.Context, reader *tableReader, prover *
 
 // next implements matcherInstance.
 func (m *matchAllInstance) next() (dpos *indexPosition, dlsn uint32, derr error) {
-	defer func() {
+	/*defer func() {
 		fmt.Println("matchAllInstance  pos", dpos, "lsn", dlsn, "err", derr)
-	}()
+	}()*/
 	//fmt.Println("matchAllInstance.next()")
 	if m.isEmpty || m.currentPos != nil {
 		return m.currentPos, m.lastSectionNode, nil
@@ -812,7 +812,7 @@ func (ms *matcherSession) returnResults() {
 		mp.blockDataLock.Lock()
 		defer mp.blockDataLock.Unlock()
 
-		fmt.Println(" sectionNodes", mp.sectionNodes)
+		//fmt.Println(" sectionNodes", mp.sectionNodes)
 		if mp.tableProver != nil && mp.tableProver != currentProver {
 			if currentProver != nil {
 				res.provers = append(res.provers, currentProver)
