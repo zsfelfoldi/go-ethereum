@@ -276,7 +276,10 @@ func (m *singleMatcherInstance) init() error {
 }
 
 // next implements matcherInstance.
-func (m *singleMatcherInstance) next() (*indexPosition, uint32, error) {
+func (m *singleMatcherInstance) next() (dpos *indexPosition, dlsn uint32, derr error) {
+	defer func() {
+		fmt.Println("singleMatcherInstance  pos", dpos, "lsn", dlsn, "err", derr)
+	}()
 	if !m.initialized {
 		if err := m.init(); err != nil {
 			return nil, 0, err
@@ -471,6 +474,7 @@ func (m matchAny) newInstance(ctx context.Context, reader *tableReader, prover *
 	}
 	mi := &matchAnyInstance{
 		children:  make([]matcherInstance, len(m)),
+		prover:    prover,
 		direction: direction,
 	}
 	for i, mm := range m {
@@ -480,7 +484,10 @@ func (m matchAny) newInstance(ctx context.Context, reader *tableReader, prover *
 }
 
 // next implements matcherInstance.
-func (m *matchAnyInstance) next() (*indexPosition, uint32, error) {
+func (m *matchAnyInstance) next() (dpos *indexPosition, dlsn uint32, derr error) {
+	defer func() {
+		fmt.Println("matchAnyInstance  pos", dpos, "lsn", dlsn, "err", derr)
+	}()
 	if m.isEmpty || m.currentPos != nil {
 		return m.currentPos, m.lastSectionNode, nil
 	}
@@ -543,6 +550,7 @@ func (m *matchAnyInstance) advance(findPos *indexPosition) error {
 func (m *matchAnyInstance) split(prover *proverInstance, splitPos *indexPosition) matcherInstance {
 	c := &matchAnyInstance{
 		children:  make([]matcherInstance, len(m.children)),
+		prover:    prover,
 		direction: m.direction,
 	}
 	for i, cm := range m.children {
@@ -576,6 +584,7 @@ func (m matchAll) newInstance(ctx context.Context, reader *tableReader, prover *
 	}
 	mi := &matchAllInstance{
 		children:  make([]matcherInstance, len(m)),
+		prover:    prover,
 		direction: direction,
 	}
 	for i, mm := range m {
@@ -585,7 +594,10 @@ func (m matchAll) newInstance(ctx context.Context, reader *tableReader, prover *
 }
 
 // next implements matcherInstance.
-func (m *matchAllInstance) next() (*indexPosition, uint32, error) {
+func (m *matchAllInstance) next() (dpos *indexPosition, dlsn uint32, derr error) {
+	defer func() {
+		fmt.Println("matchAllInstance  pos", dpos, "lsn", dlsn, "err", derr)
+	}()
 	//fmt.Println("matchAllInstance.next()")
 	if m.isEmpty || m.currentPos != nil {
 		return m.currentPos, m.lastSectionNode, nil
@@ -608,7 +620,7 @@ func (m *matchAllInstance) next() (*indexPosition, uint32, error) {
 				m.isEmpty = true
 				var orNode uint32
 				if m.prover != nil {
-					orNode := m.prover.addOrGateNode()
+					orNode = m.prover.addOrGateNode()
 					m.prover.connect(node, orNode)
 					for j := i + 1; j < len(m.children); j++ {
 						pos, node, err := cm.next()
@@ -620,6 +632,7 @@ func (m *matchAllInstance) next() (*indexPosition, uint32, error) {
 						}
 					}
 				}
+				m.currentPos, m.lastSectionNode = nil, orNode
 				return nil, orNode, nil
 			}
 			//fmt.Println(" child", i, "next()", *pos)
@@ -677,6 +690,7 @@ func (m *matchAllInstance) advance(findPos *indexPosition) error {
 func (m *matchAllInstance) split(prover *proverInstance, splitPos *indexPosition) matcherInstance {
 	c := &matchAllInstance{
 		children:  make([]matcherInstance, len(m.children)),
+		prover:    prover,
 		direction: m.direction,
 	}
 	for i, cm := range m.children {

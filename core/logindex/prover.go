@@ -136,11 +136,11 @@ func (tp *tableProver) finalize() {
 	tp.finalizeHeap = finalizeHeap{
 		getNode:    tp.getNode,
 		treeHeight: tp.treeHeight,
-		entryNodes: entryNodes,
-		prevEntry:  make([]uint32, len(entryNodes)),
-		nextEntry:  make([]uint32, len(entryNodes)),
-		heapOrder:  make([]uint32, len(entryNodes)),
-		heapIndex:  make([]uint32, len(entryNodes)),
+		entryNodes: entryNodes,                      // ntProvenEntry logic nodes sorted by entry index
+		prevEntry:  make([]uint32, len(entryNodes)), // indices of entryNodes (sortedIndex)
+		nextEntry:  make([]uint32, len(entryNodes)), // indices of entryNodes (sortedIndex)
+		heapOrder:  make([]uint32, len(entryNodes)), // indices of entryNodes (sortedIndex)
+		heapIndex:  make([]uint32, len(entryNodes)), // indices of heapOrder
 	}
 	for i := range entryNodes {
 		if i > 0 {
@@ -158,17 +158,18 @@ func (tp *tableProver) finalize() {
 	}
 	heap.Init(&tp.finalizeHeap)
 	for tp.finalizeHeap.Len() != 0 {
-		entryNode := heap.Pop(&tp.finalizeHeap).(uint32)
+		sortedIndex := heap.Pop(&tp.finalizeHeap).(uint32)
+		entryNode := tp.finalizeHeap.entryNodes[sortedIndex]
 		switch finalResult.logicState() {
 		case lsDecidedTrue:
 			tp.traverse(setFalse, entryNode)
-			tp.finalizeHeap.removeEntry(entryNode)
+			tp.finalizeHeap.removedEntry(sortedIndex)
 		case lsAssumedTrue:
 			tp.traverse(trySetFalse, entryNode)
 			switch finalResult.logicState() {
 			case lsAssumedTrue:
 				tp.traverse(confirmSetFalse, entryNode)
-				tp.finalizeHeap.removeEntry(entryNode)
+				tp.finalizeHeap.removedEntry(sortedIndex)
 			case lsAssumedFalse:
 				tp.traverse(revertSetFalse, entryNode)
 				tp.traverse(setTrue, entryNode)
@@ -389,31 +390,33 @@ func (fh *finalizeHeap) savedCost(entry uint32) int {
 	return fh.proofCost(a, b) + fh.proofCost(b, c) - fh.proofCost(a, c)
 }
 
-func (fh *finalizeHeap) removeEntry(entry uint32) {
-	prev := fh.prevEntry[entry]
-	next := fh.nextEntry[entry]
+func (fh *finalizeHeap) removedEntry(sortedIndex uint32) {
+	fh.entryNodes[sortedIndex] = 0
+	prev := fh.prevEntry[sortedIndex]
+	next := fh.nextEntry[sortedIndex]
 	if prev != math.MaxUint32 {
 		fh.nextEntry[prev] = next
 	}
 	if next != math.MaxUint32 {
 		fh.prevEntry[next] = prev
 	}
-	heap.Remove(fh, int(fh.heapIndex[entry]))
 	if prev != math.MaxUint32 {
 		heap.Fix(fh, int(fh.heapIndex[prev]))
 	}
 	if next != math.MaxUint32 {
-		heap.Fix(fh, int(fh.heapIndex[next]))
+		heap.Fix(fh, int(fh.heapIndex[next])) //TODO is this correct?
 	}
 }
 
 func (fh *finalizeHeap) Len() int { return len(fh.heapOrder) }
 
 func (fh *finalizeHeap) Less(i, j int) bool {
-	return fh.savedCost(uint32(i)) > fh.savedCost(uint32(j))
+	fmt.Println("heap: Less", i, j)
+	return fh.savedCost(fh.heapOrder[i]) > fh.savedCost(fh.heapOrder[j])
 }
 
 func (fh *finalizeHeap) Swap(i, j int) {
+	fmt.Println("heap: Swap", i, j)
 	fh.heapOrder[i], fh.heapOrder[j] = fh.heapOrder[j], fh.heapOrder[i]
 	fh.heapIndex[fh.heapOrder[i]] = uint32(i)
 	fh.heapIndex[fh.heapOrder[j]] = uint32(j)
@@ -421,6 +424,7 @@ func (fh *finalizeHeap) Swap(i, j int) {
 
 func (fh *finalizeHeap) Push(x any) {
 	item := x.(uint32)
+	fmt.Println("heap: Push", item, len(fh.heapOrder))
 	fh.heapIndex[item] = uint32(len(fh.heapOrder))
 	fh.heapOrder = append(fh.heapOrder, item)
 }
@@ -428,7 +432,8 @@ func (fh *finalizeHeap) Push(x any) {
 func (fh *finalizeHeap) Pop() any {
 	n := len(fh.heapOrder)
 	item := fh.heapOrder[n-1]
-	fh.heapIndex[item] = math.MaxUint32
+	fmt.Println("heap: Pop", item, n-1)
+	fh.heapIndex[item] = 123456789 //math.MaxUint32
 	fh.heapOrder = fh.heapOrder[:n-1]
 	return item
 }
@@ -507,15 +512,17 @@ func (pi *proverInstance) addNode(nodeType uint32, nodeValue uint64) uint32 {
 	if pi.currentChunk.count == nodeChunkSize {
 		pi.currentChunk = nil
 	}
+	fmt.Println("addNode", node, "nt", nodeType, "nv", nodeValue)
 	return node
 }
 
 func (pi *proverInstance) connect(source, target uint32) {
+	s := pi.getNode(source)
 	t := pi.getNode(target)
+	fmt.Println("connect source", source, "nt", s.nodeType(), "target", target, "nt", t.nodeType())
 	if t.nodeType() == ntProvenEntry {
 		panic("logic connection target is a proven entry node")
 	}
-	s := pi.getNode(source)
 	if oc := s.outputCount(); oc < maxOutputCount {
 		s.output[oc] = target
 		t.setNodeValue(t.nodeValue() + 1)
@@ -536,7 +543,7 @@ type logicNodeChunk struct {
 	index, count uint32
 }
 
-const (
+/*const (
 	nodeTypeShift = 62
 	nodeTypeMask  = uint64(3) << nodeTypeShift
 
@@ -552,6 +559,26 @@ const (
 	lsAssumedTrue
 	lsDecidedFalse
 	lsDecidedTrue
+
+	nodeValueMask = (uint64(1) << logicStateShift) - 1
+)*/
+
+const (
+	nodeTypeShift = 62
+	nodeTypeMask  = uint64(3) << nodeTypeShift
+
+	ntProvenEntry = 0
+	ntAndGate     = 1
+	ntOrGate      = 2
+	ntFinalResult = 3
+
+	logicStateShift = 60
+	logicStateMask  = uint64(3) << logicStateShift
+
+	lsAssumedFalse = 0
+	lsAssumedTrue  = 1
+	lsDecidedFalse = 2
+	lsDecidedTrue  = 3
 
 	nodeValueMask = (uint64(1) << logicStateShift) - 1
 )
