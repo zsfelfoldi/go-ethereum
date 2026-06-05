@@ -161,6 +161,9 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 	}
 	select {
 	case results := <-session.resultsCh:
+		for _, prover := range results.provers {
+			prover.finalize()
+		}
 		//fmt.Println(" results", len(results.logs), "error", results.err)
 		return results.logs, results.blockRange, results.err
 	case <-ctx.Done():

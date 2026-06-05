@@ -18,6 +18,7 @@ package logindex
 
 import (
 	"container/heap"
+	"fmt"
 	"math"
 	"math/bits"
 	"sort"
@@ -85,11 +86,12 @@ func (tp *tableProver) getNode(node uint32) *logicNode {
 
 func (tp *tableProver) finalize() {
 	var (
-		entryCount  int
-		finalResult *logicNode
+		entryCount, allCount int
+		finalResult          *logicNode
 	)
 	for _, chunk := range tp.nodeChunks {
 		for i := range chunk.count {
+			allCount++
 			switch chunk.nodes[i].nodeType() {
 			case ntProvenEntry:
 				entryCount++
@@ -104,6 +106,7 @@ func (tp *tableProver) finalize() {
 	if finalResult == nil {
 		panic("no final result node found")
 	}
+	fmt.Println("finalize", tp.reader.blockRange(), "entry nodes", entryCount, "all nodes", allCount)
 	entryNodes := make([]uint32, entryCount)
 	var entryPtr int
 	for _, chunk := range tp.nodeChunks {
@@ -175,6 +178,7 @@ func (tp *tableProver) finalize() {
 		}
 	}
 	tp.finalizeHeap.prevEntry, tp.finalizeHeap.nextEntry, tp.finalizeHeap.heapOrder, tp.finalizeHeap.heapIndex = nil, nil, nil, nil
+	fmt.Println(" optimized entry node count", entryCount)
 	entryIndices := make([]uint64, 0, entryCount)
 	for _, entryNode := range tp.finalizeHeap.entryNodes {
 		if entryNode != 0 {
