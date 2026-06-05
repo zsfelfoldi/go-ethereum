@@ -117,7 +117,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 	for i, tr := range readers {
 		br := tr.blockRange().Intersection(blockRange)
 		//fmt.Println(" ", br)
-		prover := newTableProver()
+		prover := newTableProver(tr)
 		proverInstance := prover.newInstance()
 		mp := &matcherProcess{
 			indexer: ix,
@@ -131,7 +131,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 			session:        session,
 			tableProver:    prover,
 			proverInstance: proverInstance,
-			andNode:        proverInstance.addAndNode(),
+			andNode:        proverInstance.addAndGateNode(),
 			blockRange:     br,
 			blockInResults: make(map[uint64]int),
 			deliverCh:      make(chan struct{}, 1),
@@ -281,13 +281,13 @@ func (m *singleMatcherInstance) next() (*indexPosition, uint32, error) {
 	}
 	if m.lastSectionNode == 0 {
 		if m.currentEntryNode == 0 {
-			m.currentEntryNode = m.prover.addLeafNode(m.entryPtr)
+			m.currentEntryNode = m.prover.addProvenEntryNode(m.entryPtr)
 		}
 		if m.entryPtr != 0 {
 			if m.lastEntryNode == 0 {
-				m.lastEntryNode = m.prover.addLeafNode(m.entryPtr - 1)
+				m.lastEntryNode = m.prover.addProvenEntryNode(m.entryPtr - 1)
 			}
-			m.lastSectionNode = m.prover.addAndNode()
+			m.lastSectionNode = m.prover.addAndGateNode()
 			m.prover.connect(m.lastEntryNode, m.lastSectionNode)
 			m.prover.connect(m.currentEntryNode, m.lastSectionNode)
 		} else {
@@ -482,7 +482,7 @@ func (m *matchAnyInstance) next() (*indexPosition, uint32, error) {
 		return m.currentPos, m.lastSectionNode, nil
 	}
 	if m.prover != nil {
-		m.lastSectionNode = m.prover.addAndNode()
+		m.lastSectionNode = m.prover.addAndGateNode()
 	}
 	for _, cm := range m.children {
 		pos, node, err := cm.next()
@@ -594,7 +594,7 @@ func (m *matchAllInstance) next() (*indexPosition, uint32, error) {
 			nextNode, andNode uint32
 		)
 		if m.prover != nil {
-			andNode = m.prover.addAndNode()
+			andNode = m.prover.addAndGateNode()
 		}
 		for i, cm := range m.children {
 			pos, node, err := cm.next()
@@ -605,7 +605,7 @@ func (m *matchAllInstance) next() (*indexPosition, uint32, error) {
 				m.isEmpty = true
 				var orNode uint32
 				if m.prover != nil {
-					orNode := m.prover.addOrNode()
+					orNode := m.prover.addOrGateNode()
 					m.prover.connect(node, orNode)
 					for j := i + 1; j < len(m.children); j++ {
 						pos, node, err := cm.next()
@@ -1078,7 +1078,7 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		session:        mp.session,
 		tableProver:    mp.tableProver,
 		proverInstance: proverInstance,
-		andNode:        proverInstance.addAndNode(),
+		andNode:        proverInstance.addAndGateNode(),
 		prev:           mp,
 		next:           mp.next,
 		blockRange:     mp.blockRange,
