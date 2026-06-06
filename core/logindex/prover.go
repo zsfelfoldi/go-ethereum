@@ -84,7 +84,7 @@ func (tp *tableProver) getNode(node uint32) *logicNode {
 	return &tp.nodeChunks[(node-1)/nodeChunkSize].nodes[(node-1)%nodeChunkSize]
 }
 
-func (tp *tableProver) finalize() {
+func (tp *tableProver) finalize() (TableQueryProof, error) {
 	var (
 		entryCount, allCount int
 		finalResult          *logicNode
@@ -189,14 +189,51 @@ func (tp *tableProver) finalize() {
 	}
 	tp.finalizeHeap.prevEntry, tp.finalizeHeap.nextEntry, tp.finalizeHeap.heapOrder, tp.finalizeHeap.heapIndex = nil, nil, nil, nil
 	fmt.Println(" optimized entry node count", entryCount)
-	entryIndices := make([]uint64, 0, entryCount)
+
+	proof := TableQueryProof{
+		FirstBlock:   tp.reader.blockRange().First(),
+		TableSize:    tp.reader.blockRange().Count(),
+		EntryIndices: make([]uint64, 0, entryCount),
+	}
 	for _, entryNode := range tp.finalizeHeap.entryNodes {
 		if entryNode != 0 {
-			entryIndices = append(entryIndices, tp.getNode(entryNode).nodeValue())
+			proof.EntryIndices = append(entryIndices, tp.getNode(entryNode).nodeValue())
 		}
 	}
 	tp.finalizeHeap.entryNodes = nil
 	tp.nodeChunks = nil
+	entries := make(indexEntries, entryCount)
+	lastIndex := uint64(math.MaxUint64)
+	for i, entryIndex := range proof.EntryIndices {
+		var err error
+		if entries[i], err = tp.reader.getEntry(entryIndex); err != nil {
+			return TableQueryProof{}, err
+		}
+		if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, entryIndex); err != nil {
+			return TableQueryProof{}, err
+		}
+		lastIndex = entryIndex
+	}
+	if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, uint64(math.MaxUint64)); err != nil {
+		return TableQueryProof{}, err
+	}
+	proof.ProvenEntries = entries.toStorage()
+	return proof, nil
+}
+
+func (tp *tableProver) makeProofHashes(hashes []merkle.Value, a, b uint64) []merkle.Value {
+
+}
+
+func iterateTreeIndices(treeHeight int, a, b uint64, callback func(uint64)) {
+
+}
+
+func iterateTreeIndicesUp(treeHeight, fromHeight int, entryIndex uint64, callback func(uint64)) {
+
+}
+
+func iterateTreeIndicesDown(treeHeight, toHeight int, entryIndex uint64, callback func(uint64)) {
 
 }
 
