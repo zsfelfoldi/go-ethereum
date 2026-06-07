@@ -24,17 +24,13 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common/lru"
 )
 
 const (
-	nodeChunkSize      = 1024
-	maxOutputCount     = 4
-	logicAndGate       = uint64(0xffffffff00000000)
-	logicOrGate        = uint64(0xfffffffe00000000)
-	logicGateMask      = uint64(0xffffffff00000000)
-	logicInputMask     = uint64(0x00000000ffffffff)
-	logicGateThreshold = uint64(0xfffffffe00000000)
+	nodeChunkSize  = 1024
+	maxOutputCount = 4
 )
 
 type tableProver struct {
@@ -197,7 +193,7 @@ func (tp *tableProver) finalize() (TableQueryProof, error) {
 	}
 	for _, entryNode := range tp.finalizeHeap.entryNodes {
 		if entryNode != 0 {
-			proof.EntryIndices = append(entryIndices, tp.getNode(entryNode).nodeValue())
+			proof.EntryIndices = append(proof.EntryIndices, tp.getNode(entryNode).nodeValue())
 		}
 	}
 	tp.finalizeHeap.entryNodes = nil
@@ -205,15 +201,17 @@ func (tp *tableProver) finalize() (TableQueryProof, error) {
 	entries := make(indexEntries, entryCount)
 	lastIndex := uint64(math.MaxUint64)
 	for i, entryIndex := range proof.EntryIndices {
-		var err error
-		if entries[i], err = tp.reader.getEntry(entryIndex); err != nil {
+		entry, err := tp.reader.getEntry(entryIndex)
+		if err != nil {
 			return TableQueryProof{}, err
 		}
+		entries[i] = *entry
 		if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, entryIndex); err != nil {
 			return TableQueryProof{}, err
 		}
 		lastIndex = entryIndex
 	}
+	var err error
 	if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, uint64(math.MaxUint64)); err != nil {
 		return TableQueryProof{}, err
 	}
@@ -221,20 +219,63 @@ func (tp *tableProver) finalize() (TableQueryProof, error) {
 	return proof, nil
 }
 
-func (tp *tableProver) makeProofHashes(hashes []merkle.Value, a, b uint64) []merkle.Value {
-
+func (tp *tableProver) makeProofHashes(hashes []merkle.Value, a, b uint64) ([]merkle.Value, error) {
+	iterateProofIndices(tp.treeHeight, a, b, func(gti uint64) error {
+		hash, err := tp.reader.getHash(gti)
+		if err != nil {
+			return nil, err
+		}
+		hashes = append(hashes, hash)
+		return nil
+	})
+	return hashes, nil
 }
 
-func iterateTreeIndices(treeHeight int, a, b uint64, callback func(uint64)) {
-
+func iterateProofIndices(treeHeight int, a, b uint64, callback func(uint64) error) error {
+	switch {
+	case a == math.MaxUint64 && b == math.MaxUint64:
+		// no entries proven; merkle multiproof is just the root hash
+		return callback(1)
+	case a == math.MaxUint64:
+		// b has no left neighbor; each 1 bit in b corresponds to a proven hash
+		return iterateProofIndicesUp(treeHeight, 0, b, callback)
+	case b == math.MaxUint64:
+		// a has no right neighbor; each 0 bit in a corresponds to a proven hash
+		return iterateProofIndicesDown(treeHeight, 0, a, callback)
+	default:
+		if a >= b {
+			panic("iterateProofIndices: invalid index order")
+		}
+		// we ignore the shared binary prefix plus the first different bit (0 in a, 1 in b)
+		splitHeight := treeHeight + bits.LeadingZeros64(a^b) - 63
+		// in the remaining lower bits, each 0 bit in a and each 1 bit in b corresponds to a proven hash
+		if err := iterateProofIndicesDown(treeHeight, splitHeight, a, callback); err != nil {
+			return err
+		}
+		return iterateProofIndicesUp(treeHeight, splitHeight, b, callback)
+	}
 }
 
-func iterateTreeIndicesUp(treeHeight, fromHeight int, entryIndex uint64, callback func(uint64)) {
-
+func iterateProofIndicesUp(treeHeight, fromHeight int, entryIndex uint64, callback func(uint64) error) error {
+	for h := fromHeight; h < treeHeight; h++ { // h == 0 corresponds to entryIndex MSB
+		if entryIndex&(uint64(1)<<(treeHeight-1-h)) != 0 {
+			if err := callback((entryIndex>>(treeHeight-1-h) ^ 1) + uint64(1)<<(h+1)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
-func iterateTreeIndicesDown(treeHeight, toHeight int, entryIndex uint64, callback func(uint64)) {
-
+func iterateProofIndicesDown(treeHeight, toHeight int, entryIndex uint64, callback func(uint64) error) error {
+	for h := treeHeight - 1; h >= toHeight; h-- { // h == 0 corresponds to entryIndex MSB
+		if entryIndex&(uint64(1)<<(treeHeight-1-h)) == 0 {
+			if err := callback((entryIndex>>(treeHeight-1-h) ^ 1) + uint64(1)<<(h+1)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 const (
@@ -397,7 +438,6 @@ type finalizeHeap struct {
 // number of merkle multiproof hashes required between adjacent proven entry
 // indices a and b (assuming a < b)
 func (fh *finalizeHeap) proofCost(a, b uint64) int {
-	//
 	switch {
 	case a == math.MaxUint64 && b == math.MaxUint64:
 		// no entries remaining; proof is just a root hash
@@ -551,7 +591,7 @@ func (pi *proverInstance) getNode(node uint32) *logicNode {
 }
 
 func (pi *proverInstance) addProvenEntryNode(entryIndex uint64) uint32 {
-	if entryIndex >= logicGateThreshold {
+	if entryIndex >= nodeValueMask {
 		panic("invalid entry index")
 	}
 	return pi.addNode(ntProvenEntry, entryIndex)
@@ -613,26 +653,6 @@ type logicNodeChunk struct {
 	nodes        [nodeChunkSize]logicNode
 	index, count uint32
 }
-
-/*const (
-	nodeTypeShift = 62
-	nodeTypeMask  = uint64(3) << nodeTypeShift
-
-	ntProvenEntry = iota
-	ntAndGate
-	ntOrGate
-	ntFinalResult
-
-	logicStateShift = 60
-	logicStateMask  = uint64(3) << logicStateShift
-
-	lsAssumedFalse = iota
-	lsAssumedTrue
-	lsDecidedFalse
-	lsDecidedTrue
-
-	nodeValueMask = (uint64(1) << logicStateShift) - 1
-)*/
 
 const (
 	nodeTypeShift = 62

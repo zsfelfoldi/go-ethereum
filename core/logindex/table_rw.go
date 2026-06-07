@@ -93,6 +93,17 @@ func (tf *tableFormat) subtreeChunkHeight(level uint) uint {
 	}
 }
 
+func (tf *tableFormat) getChunkLevel(height uint) uint {
+	if height <= tf.firstSubtreeHeight {
+		return 0
+	}
+	//if height >= tf.firstSubtreeHeight+(tf.subtreeLevels-1)*logSubtreeChunkSize {
+	if height > tf.firstSubtreeHeight+(tf.subtreeLevels-1)*logSubtreeChunkSize {
+		return tf.subtreeLevels
+	}
+	return (height - tf.firstSubtreeHeight + logSubtreeChunkSize - 1) / logSubtreeChunkSize
+}
+
 func (tf *tableFormat) baseHeight(level uint) uint {
 	switch {
 	case level == 0:
@@ -503,6 +514,27 @@ func (tr *tableReader) getEntryChunk(index uint64) (indexEntries, error) {
 	ec := ess.toEntries()
 	tr.entryChunkCache.Add(index, ec)
 	return ec, nil
+}
+
+func (tr *tableReader) getHash(gti uint64) (merkle.Value, error) {
+	gtiHeight := uint(63 - bits.LeadingZeros64(gti))
+	chunkLevel := tr.format.getChunkLevel(gtiHeight)
+	chunkBaseHeight := tr.format.baseHeight(chunkLevel)
+	chunkIndex := (gti - uint64(1)<<gtiHeight) >> (gtiHeight - chunkBaseHeight)
+	m := uint64(1) << (gtiHeight - chunkBaseHeight)
+	chunkGti := m + gti&(m-1)
+	if chunkLevel == tr.format.subtreeLevels {
+		ec, err := tr.getEntryChunk(chunkIndex)
+		if err != nil {
+			return merkle.Value{}, err
+		}
+		return ec.getHash(chunkGti)
+	}
+	sc, err := tr.getSubtreeChunk(chunkLevel, chunkIndex)
+	if err != nil {
+		return merkle.Value{}, err
+	}
+	return sc.getHash(chunkGti), nil
 }
 
 func (tr *tableReader) getEntry(index uint64) (*indexEntry, error) {

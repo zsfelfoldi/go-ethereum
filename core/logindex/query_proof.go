@@ -16,12 +16,21 @@
 
 package logindex
 
+import (
+	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/core/types"
+)
+
 type QueryProof struct {
 	Query              FilterQuery
 	RefHeader          types.Header
 	HistoricTableProof []byte
 	TableChainProofs   []TableChainProof
 	TableQueryProofs   []TableQueryProof
+}
+
+type FilterQuery struct {
+	//TODO
 }
 
 type TableChainProof struct {
