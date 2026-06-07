@@ -159,16 +159,41 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 	case <-ctx.Done():
 		return nil, common.Range[uint64]{}, ctx.Err()
 	}
+	var results matcherResults
 	select {
-	case results := <-session.resultsCh:
-		for _, prover := range results.provers {
-			prover.finalize()
-		}
-		//fmt.Println(" results", len(results.logs), "error", results.err)
-		return results.logs, results.blockRange, results.err
+	case results = <-session.resultsCh:
 	case <-ctx.Done():
 		return nil, common.Range[uint64]{}, ctx.Err()
 	}
+	if results.blockRange.IsEmpty() {
+		return nil, common.Range[uint64]{}, errors.New("entire search range has been invalidated") //TODO
+	}
+	proof := &QueryProof{
+		Query: FilterQuery{
+			FirstBlock: results.blockRange.First(),
+			LastBlock:  results.blockRange.Last(),
+			MaxResults: maxResults,
+			Reverse:    (1 - direction) / 2,
+			Addresses:  addresses,
+			Topics:     topics,
+		},
+		//RefHeader: *refHeader,
+		//HistoricTableProof: nil, //TODO
+		//TableChainProofs: nil,
+		TableQueryProofs: make([]TableQueryProof, len(results.provers)),
+	}
+	for i, prover := range results.provers {
+		if tproof, err := prover.finalize(); err == nil {
+			proof.TableQueryProofs[i] = tproof
+		} else {
+			return nil, common.Range[uint64]{}, err
+		}
+	}
+	if err := proof.Verify(); err != nil {
+		return nil, common.Range[uint64]{}, err
+	}
+	//fmt.Println(" results", len(results.logs), "error", results.err)
+	return results.logs, results.blockRange, results.err
 
 	/*start := time.Now()
 	res, err := m.process()

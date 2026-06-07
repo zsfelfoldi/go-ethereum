@@ -215,6 +215,7 @@ func (tp *tableProver) finalize() (TableQueryProof, error) {
 	if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, uint64(math.MaxUint64)); err != nil {
 		return TableQueryProof{}, err
 	}
+	fmt.Println(" proof hash count", len(proof.ProofHashes))
 	proof.ProvenEntries = entries.toStorage()
 	return proof, nil
 }
@@ -223,7 +224,7 @@ func (tp *tableProver) makeProofHashes(hashes []merkle.Value, a, b uint64) ([]me
 	iterateProofIndices(tp.treeHeight, a, b, func(gti uint64) error {
 		hash, err := tp.reader.getHash(gti)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		hashes = append(hashes, hash)
 		return nil

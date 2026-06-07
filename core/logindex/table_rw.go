@@ -408,7 +408,7 @@ func (sc *subtreeChunk) getHash(gti uint64) (result merkle.Value) {
 type tableReader struct {
 	reader            io.ReaderAt
 	fileSize          int64
-	entryChunkCache   *lru.Cache[uint64, indexEntries]
+	entryChunkCache   *lru.Cache[uint64, *entryChunk]
 	subtreeChunkCache *lru.Cache[subtreePos, *subtreeChunk]
 	entryCount        uint64
 	levelPointers     []int64
@@ -444,7 +444,7 @@ func newTableReader(params *Params, tf *tableFiles, name string) (*tableReader, 
 	tr := &tableReader{
 		reader:            ioReader,
 		fileSize:          fileSize,
-		entryChunkCache:   lru.NewCache[uint64, indexEntries](entryCacheSize),
+		entryChunkCache:   lru.NewCache[uint64, *entryChunk](entryCacheSize),
 		subtreeChunkCache: lru.NewCache[subtreePos, *subtreeChunk](subtreeCacheSize),
 		format:            params.newTableFormat(header.EntryCount),
 		entryCount:        header.EntryCount,
@@ -492,7 +492,7 @@ func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 	return sc, nil
 }
 
-func (tr *tableReader) getEntryChunk(index uint64) (indexEntries, error) {
+func (tr *tableReader) getEntryChunk(index uint64) (*entryChunk, error) {
 	if ec, ok := tr.entryChunkCache.Get(index); ok {
 		return ec, nil
 	}
@@ -511,7 +511,10 @@ func (tr *tableReader) getEntryChunk(index uint64) (indexEntries, error) {
 	if err := rlp.DecodeBytes(enc, &ess); err != nil {
 		return nil, err
 	}
-	ec := ess.toEntries()
+	ec := &entryChunk{
+		entries: ess.toEntries(),
+		height:  tr.format.entryChunkHeight(),
+	}
 	tr.entryChunkCache.Add(index, ec)
 	return ec, nil
 }
@@ -528,7 +531,7 @@ func (tr *tableReader) getHash(gti uint64) (merkle.Value, error) {
 		if err != nil {
 			return merkle.Value{}, err
 		}
-		return ec.getHash(chunkGti)
+		return ec.getHash(chunkGti), nil
 	}
 	sc, err := tr.getSubtreeChunk(chunkLevel, chunkIndex)
 	if err != nil {
@@ -542,7 +545,7 @@ func (tr *tableReader) getEntry(index uint64) (*indexEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ec[index%entryChunkSize], nil
+	return &ec.entries[index%entryChunkSize], nil
 }
 
 func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
@@ -572,7 +575,7 @@ func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
-	subIndex, found := ec.find(target)
+	subIndex, found := ec.entries.find(target)
 	//fmt.Println("seek e", chunkLevel, chunkIndex, subIndex)
 	return chunkIndex*entryChunkSize + uint64(subIndex), found, nil
 }

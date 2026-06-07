@@ -30,7 +30,10 @@ type QueryProof struct {
 }
 
 type FilterQuery struct {
-	//TODO
+	FirstBlock, LastBlock uint64
+	MaxResults, Reverse   uint
+	Addresses             []common.Address
+	Topics                [][]common.Hash
 }
 
 type TableChainProof struct {
@@ -51,4 +54,8 @@ type BlockResults struct {
 	Header         types.Header
 	ProvenReceipts []uint64
 	ReceiptProofs  [][][]byte
+}
+
+func (qp *QueryProof) Verify() error {
+	return nil //TODO
 }
