@@ -53,8 +53,8 @@ type TableQueryProof struct {
 
 type BlockResults struct {
 	Header         types.Header
-	ProvenReceipts []uint64
-	ReceiptProofs  [][][]byte
+	ProvenReceipts []uint
+	ReceiptsProof  [][]byte // receipts trie nodes in ascending order of node hash
 }
 
 func (qp *QueryProof) Verify() error {

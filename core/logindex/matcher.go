@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 )
 
 var ErrMatchAll = errors.New("match-all queries not allowed")
@@ -133,6 +136,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 			proverInstance: proverInstance,
 			blockRange:     br,
 			blockInResults: make(map[uint64]int),
+			blockProofs:    make(map[uint64]*blockProof),
 			deliverCh:      make(chan struct{}, 1),
 		}
 		if i == 0 {
@@ -911,6 +915,7 @@ type matcherProcess struct {
 	deliverCh      chan struct{}
 	blockInResults map[uint64]int
 	logs           []*types.Log
+	blockProofs    map[uint64]*blockProof
 	deliveryFailed bool
 
 	// atomic flags accessed by both threads during processing
@@ -1103,10 +1108,21 @@ func (mp *matcherProcess) deliverBlockData(req blockRequest, header *types.Heade
 	case mp.deliverCh <- struct{}{}:
 	default:
 	}
+
+	var blockProof *blockProof
+	if mp.tableProver != nil {
+		blockProof = mp.blockProofs[req.number]
+		if blockProof == nil {
+			blockProof = newBlockProof()
+			mp.blockProofs[req.number] = blockProof
+		}
+	}
+
+loop:
 	for ; firstInResults < len(mp.logs); firstInResults++ {
 		pos := mp.positions[firstInResults]
 		if pos.blockNumber != req.number || uint32(len(receipts)) <= pos.txIndex || uint32(len(receipts[pos.txIndex].Logs)) <= pos.logIndex {
-			return
+			break loop
 		}
 		var logOffset uint
 		for i := range pos.txIndex {
@@ -1128,7 +1144,57 @@ func (mp *matcherProcess) deliverBlockData(req blockRequest, header *types.Heade
 				Index:          logOffset + uint(pos.logIndex),
 			}
 		}
+		if blockProof != nil {
+			blockProof.addTxIndex(pos.txIndex)
+		}
 	}
+	if blockProof != nil {
+		blockProof.createProof(receipts)
+	}
+}
+
+type blockProof struct {
+	proveReceipts map[uint32]bool
+	receiptsProof map[common.Hash][]byte
+}
+
+func newBlockProof() *blockProof {
+	return &blockProof{
+		proveReceipts: make(map[uint32]bool),
+		receiptsProof: make(map[common.Hash][]byte),
+	}
+}
+
+func (bp *blockProof) addTxIndex(txIndex uint32) {
+	if _, ok := bp.proveReceipts[txIndex]; !ok {
+		bp.proveReceipts[txIndex] = false
+	}
+}
+
+func (bp *blockProof) createProof(receipts types.Receipts) {
+	proveHexKeys := make(map[string]struct{})
+	proveHexKeys[""] = struct{}{}
+	var indexBuf, indexHex []byte
+	for txi, proven := range bp.proveReceipts {
+		if proven {
+			continue
+		}
+		indexBuf = rlp.AppendUint64(indexBuf[:0], uint64(txi))
+		indexHex = indexHex[:0]
+		for _, b := range indexBuf {
+			indexHex = append(indexHex, b/16)
+			proveHexKeys[string(indexHex)] = struct{}{}
+			indexHex = append(indexHex, b%16)
+			proveHexKeys[string(indexHex)] = struct{}{}
+		}
+		bp.proveReceipts[txi] = true
+	}
+	types.DeriveSha(receipts, trie.NewStackTrie(func(path []byte, hash common.Hash, blob []byte) {
+		if _, ok := proveHexKeys[string(path)]; ok {
+			bp.receiptsProof[hash] = slices.Clone(blob)
+			delete(proveHexKeys, string(path))
+		}
+	}))
 }
 
 func (mp *matcherProcess) split() (*matcherProcess, error) {
@@ -1147,6 +1213,7 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		next:           mp.next,
 		blockRange:     mp.blockRange,
 		blockInResults: make(map[uint64]int),
+		blockProofs:    make(map[uint64]*blockProof),
 		deliverCh:      make(chan struct{}, 1),
 	}
 	if mp.next != nil {
