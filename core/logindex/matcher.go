@@ -132,6 +132,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 				indexPosition{blockNumber: br.Last(), txIndex: math.MaxUint32, logIndex: math.MaxUint32},
 				direction),
 			session:        session,
+			tableReader:    tr,
 			tableProver:    prover,
 			proverInstance: proverInstance,
 			blockRange:     br,
@@ -865,6 +866,7 @@ func (ms *matcherSession) returnResults() {
 		if len(mp.sectionNodes) > len(mp.logs) {
 			mp.proverInstance.connect(mp.sectionNodes[len(mp.logs)], andNode)
 		}
+		mp.tableProver.addBlockProofs(mp.blockProofs)
 		return true
 	}
 
@@ -892,6 +894,7 @@ type matcherProcess struct {
 	indexer        *Indexer
 	matcher        matcherInstance
 	session        *matcherSession
+	tableReader    *tableReader
 	tableProver    *tableProver
 	proverInstance *proverInstance
 	prev, next     *matcherProcess
@@ -916,7 +919,7 @@ type matcherProcess struct {
 	blockInResults map[uint64]int
 	logs           []*types.Log
 	blockProofs    map[uint64]*blockProof
-	deliveryFailed bool
+	deliveryErr    error
 
 	// atomic flags accessed by both threads during processing
 	estimatedResults  uint64 // set by worker thread; MSB is "can split" flag
@@ -1055,8 +1058,8 @@ func (mp *matcherProcess) run() {
 		cumulativeResults, suspendNow := mp.getCumulativeResults()
 		mp.blockDataLock.Lock()
 		var requestBlocks []uint64
-		if mp.deliveryFailed {
-			mp.finished, mp.err = true, errors.New("block data not delivered")
+		if mp.deliveryErr != nil {
+			mp.finished, mp.err = true, mp.deliveryErr
 		} else {
 			for len(mp.positions) > len(mp.logs) {
 				pos := mp.positions[len(mp.logs)]
@@ -1101,7 +1104,7 @@ func (mp *matcherProcess) deliverBlockData(req blockRequest, header *types.Heade
 		return
 	}
 	if header == nil || body == nil || receipts == nil {
-		mp.deliveryFailed = true
+		mp.deliveryErr = errors.New("block data not delivered")
 		return
 	}
 	select {
@@ -1113,7 +1116,29 @@ func (mp *matcherProcess) deliverBlockData(req blockRequest, header *types.Heade
 	if mp.tableProver != nil {
 		blockProof = mp.blockProofs[req.number]
 		if blockProof == nil {
-			blockProof = newBlockProof()
+			if req.number == mp.blockRange.Last() {
+				blockProof = newBlockProof(header, math.MaxUint64)
+			} else {
+				blockEntry := indexEntry{
+					indexValue: indexValue{
+						entryType: ieBlock,
+						value:     ([32]byte)(header.Hash()),
+					},
+					indexPosition: indexPosition{
+						blockNumber: req.number,
+					},
+				}
+				blockEntryIndex, found, err := mp.tableReader.seekEntry(&blockEntry)
+				if err != nil {
+					mp.deliveryErr = err
+					return
+				}
+				if !found {
+					mp.deliveryErr = errors.New("could not find block entry index")
+					return
+				}
+				blockProof = newBlockProof(header, blockEntryIndex)
+			}
 			mp.blockProofs[req.number] = blockProof
 		}
 	}
@@ -1128,6 +1153,7 @@ loop:
 		for i := range pos.txIndex {
 			logOffset += uint(len(receipts[i].Logs)) //TODO different position encoding?
 		}
+		txHash := body.Transactions[pos.txIndex].Hash()
 		l := receipts[pos.txIndex].Logs[pos.logIndex]
 		if len(l.Topics) < mp.session.minTopicCount && mp.tableProver == nil { // include results with too few topic in proving mode
 			mp.logs[firstInResults] = droppedLogResult
@@ -1137,7 +1163,7 @@ loop:
 				Topics:         l.Topics,
 				Data:           l.Data,
 				BlockNumber:    pos.blockNumber,
-				TxHash:         body.Transactions[pos.txIndex].Hash(),
+				TxHash:         txHash,
 				TxIndex:        uint(pos.txIndex),
 				BlockHash:      header.Hash(),
 				BlockTimestamp: header.Time,
@@ -1145,7 +1171,27 @@ loop:
 			}
 		}
 		if blockProof != nil {
-			blockProof.addTxIndex(pos.txIndex)
+			txEntry := indexEntry{
+				indexValue: indexValue{
+					entryType: ieTransaction,
+					value:     ([32]byte)(txHash),
+				},
+				indexPosition: indexPosition{
+					blockNumber: pos.blockNumber,
+					txIndex:     pos.txIndex,
+					logIndex:    uint32(logOffset),
+				},
+			}
+			txEntryIndex, found, err := mp.tableReader.seekEntry(&txEntry)
+			if err != nil {
+				mp.deliveryErr = err
+				return
+			}
+			if !found {
+				mp.deliveryErr = errors.New("could not find transaction entry index")
+				return
+			}
+			blockProof.addMatchingTx(pos.txIndex, txEntryIndex)
 		}
 	}
 	if blockProof != nil {
@@ -1154,20 +1200,49 @@ loop:
 }
 
 type blockProof struct {
-	proveReceipts map[uint32]bool
-	receiptsProof map[common.Hash][]byte
+	header          *types.Header
+	blockEntryIndex uint64 // MaxUint64 if block is last in table
+	matchingTxs     map[uint32]matchingTx
+	receiptsProof   map[common.Hash][]byte
 }
 
-func newBlockProof() *blockProof {
+type matchingTx struct {
+	txEntryIndex      uint64
+	receiptProofAdded bool
+}
+
+func newBlockProof(header *types.Header, blockEntryIndex uint64) *blockProof {
 	return &blockProof{
-		proveReceipts: make(map[uint32]bool),
+		header:        header,
+		matchingTxs:   make(map[uint32]matchingTx),
 		receiptsProof: make(map[common.Hash][]byte),
 	}
 }
 
-func (bp *blockProof) addTxIndex(txIndex uint32) {
-	if _, ok := bp.proveReceipts[txIndex]; !ok {
-		bp.proveReceipts[txIndex] = false
+func (bp *blockProof) merge(bp2 *blockProof) {
+	if bp.header.Hash() != bp2.header.Hash() || bp.blockEntryIndex != bp2.blockEntryIndex {
+		panic("invalid block proof merge")
+	}
+	for txi, mtx2 := range bp2.matchingTxs {
+		if mtx, ok := bp.matchingTxs[txi]; ok {
+			if mtx.txEntryIndex != mtx2.txEntryIndex {
+				panic("invalid matching tx proof merge")
+			}
+			if mtx2.receiptProofAdded && !mtx.receiptProofAdded {
+				bp.matchingTxs[txi] = mtx2
+			}
+		} else {
+			bp.matchingTxs[txi] = mtx2
+		}
+	}
+	for hash, blob := range bp2.receiptsProof {
+		bp.receiptsProof[hash] = blob
+	}
+}
+
+func (bp *blockProof) addMatchingTx(txIndex uint32, entryIndex uint64) {
+	if _, ok := bp.matchingTxs[txIndex]; !ok {
+		bp.matchingTxs[txIndex] = matchingTx{txEntryIndex: entryIndex}
 	}
 }
 
@@ -1175,8 +1250,8 @@ func (bp *blockProof) createProof(receipts types.Receipts) {
 	proveHexKeys := make(map[string]struct{})
 	proveHexKeys[""] = struct{}{}
 	var indexBuf, indexHex []byte
-	for txi, proven := range bp.proveReceipts {
-		if proven {
+	for txi, mtx := range bp.matchingTxs {
+		if mtx.receiptProofAdded {
 			continue
 		}
 		indexBuf = rlp.AppendUint64(indexBuf[:0], uint64(txi))
@@ -1187,7 +1262,8 @@ func (bp *blockProof) createProof(receipts types.Receipts) {
 			indexHex = append(indexHex, b%16)
 			proveHexKeys[string(indexHex)] = struct{}{}
 		}
-		bp.proveReceipts[txi] = true
+		mtx.receiptProofAdded = true
+		bp.matchingTxs[txi] = mtx
 	}
 	types.DeriveSha(receipts, trie.NewStackTrie(func(path []byte, hash common.Hash, blob []byte) {
 		if _, ok := proveHexKeys[string(path)]; ok {
@@ -1207,6 +1283,7 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		indexer:        mp.indexer,
 		matcher:        mp.matcher.split(proverInstance, &indexPosition{blockNumber: splitAt}),
 		session:        mp.session,
+		tableReader:    mp.tableReader,
 		tableProver:    mp.tableProver,
 		proverInstance: proverInstance,
 		prev:           mp,

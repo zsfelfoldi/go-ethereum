@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 )
 
@@ -38,6 +39,7 @@ type tableProver struct {
 	reader       *tableReader
 	treeHeight   int
 	nodeChunks   []*logicNodeChunk
+	blockProofs  map[uint64]*blockProof
 	finalizeHeap finalizeHeap
 }
 
@@ -45,6 +47,20 @@ func newTableProver(reader *tableReader) *tableProver {
 	return &tableProver{
 		reader:     reader,
 		treeHeight: 64 - bits.LeadingZeros64(max(reader.entryCount, 1)-1),
+	}
+}
+
+func (tp *tableProver) addBlockProofs(newProofs map[uint64]*blockProof) {
+	if tp.blockProofs == nil {
+		tp.blockProofs = newProofs
+		return
+	}
+	for number, newProof := range newProofs {
+		if proof, ok := tp.blockProofs[number]; ok {
+			proof.merge(newProof)
+		} else {
+			tp.blockProofs[number] = newProof
+		}
 	}
 }
 
@@ -186,16 +202,61 @@ func (tp *tableProver) finalize() (TableQueryProof, error) {
 	tp.finalizeHeap.prevEntry, tp.finalizeHeap.nextEntry, tp.finalizeHeap.heapOrder, tp.finalizeHeap.heapIndex = nil, nil, nil, nil
 	fmt.Println(" optimized entry node count", entryCount)
 
+	blockNumbers := make([]uint64, 0, len(tp.blockProofs))
+	for number, proof := range tp.blockProofs {
+		blockNumbers = append(blockNumbers, number)
+		entryCount += len(proof.matchingTxs) + 1
+	}
+	sort.Slice(blockNumbers, func(i, j int) bool {
+		return blockNumbers[i] < blockNumbers[j]
+	})
 	proof := TableQueryProof{
 		FirstBlock:   tp.reader.blockRange().First(),
 		TableSize:    tp.reader.blockRange().Count(),
 		EntryIndices: make([]uint64, 0, entryCount),
+		BlockResults: make([]BlockResults, len(blockNumbers)),
+	}
+	for _, bp := range tp.blockProofs {
+		proof.EntryIndices = append(proof.EntryIndices, bp.blockEntryIndex)
+		for _, mtx := range bp.matchingTxs {
+			proof.EntryIndices = append(proof.EntryIndices, mtx.txEntryIndex)
+		}
 	}
 	for _, entryNode := range tp.finalizeHeap.entryNodes {
 		if entryNode != 0 {
 			proof.EntryIndices = append(proof.EntryIndices, tp.getNode(entryNode).nodeValue())
 		}
 	}
+	sort.Slice(proof.EntryIndices, func(i, j int) bool {
+		return proof.EntryIndices[i] < proof.EntryIndices[j]
+	})
+
+	for i, number := range blockNumbers {
+		bp := tp.blockProofs[number]
+		br := BlockResults{
+			Header:         *bp.header,
+			ProvenReceipts: make([]uint, 0, len(bp.matchingTxs)),
+			ReceiptsProof:  make([][]byte, len(bp.receiptsProof)),
+		}
+		for txi := range bp.matchingTxs {
+			br.ProvenReceipts = append(br.ProvenReceipts, uint(txi))
+		}
+		sort.Slice(br.ProvenReceipts, func(i, j int) bool {
+			return br.ProvenReceipts[i] < br.ProvenReceipts[j]
+		})
+		proofHashes := make([]common.Hash, 0, len(bp.receiptsProof))
+		for hash := range bp.receiptsProof {
+			proofHashes = append(proofHashes, hash)
+		}
+		sort.Slice(proofHashes, func(i, j int) bool {
+			return proofHashes[i].Cmp(proofHashes[j]) < 0
+		})
+		for i, hash := range proofHashes {
+			br.ReceiptsProof[i] = bp.receiptsProof[hash]
+		}
+		proof.BlockResults[i] = br
+	}
+
 	tp.finalizeHeap.entryNodes = nil
 	tp.nodeChunks = nil
 	entries := make(indexEntries, entryCount)
