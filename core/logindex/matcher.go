@@ -172,8 +172,8 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 		Query: FilterQuery{
 			FirstBlock: results.blockRange.First(),
 			LastBlock:  results.blockRange.Last(),
-			MaxResults: maxResults,
-			Reverse:    (1 - direction) / 2,
+			MaxResults: uint(maxResults),
+			Reverse:    uint(1-direction) / 2,
 			Addresses:  addresses,
 			Topics:     topics,
 		},
