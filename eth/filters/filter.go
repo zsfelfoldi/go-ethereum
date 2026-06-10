@@ -385,7 +385,15 @@ func (s *searchSession) doSearchIteration() error {
 func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([]*types.Log, error) {
 	if indexer := f.sys.backend.LogIndexer(); indexer != nil {
 		fmt.Println("Starting search with log indexer")
-		logs, resultsRange, err := indexer.GetMatches(ctx, firstBlock, lastBlock, math.MaxUint64, 1, f.addresses, f.topics)
+		query := logindex.FilterQuery{
+			FirstBlock: firstBlock,
+			LastBlock:  lastBlock,
+			MaxResults: math.MaxUint64,
+			Reverse:    false,
+			Addresses:  f.addresses,
+			Topics:     f.topics,
+		}
+		logs, resultsRange, _, err := indexer.GetMatches(ctx, query, false, nil, nil)
 		if err != logindex.ErrMatchAll {
 			fmt.Println("Search first/last block:", firstBlock, lastBlock, "results range:", resultsRange, "result count:", len(logs), "error:", err)
 			/*for i, log := range logs {
