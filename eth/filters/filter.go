@@ -393,7 +393,11 @@ func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([
 			Addresses:  f.addresses,
 			Topics:     f.topics,
 		}
-		logs, resultsRange, _, err := indexer.GetMatches(ctx, query, false, nil, nil)
+		stateDb, head, err := f.sys.backend.StateAndHeaderByNumberOrHash(ctx, rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber))
+		if err != nil {
+			return nil, err
+		}
+		logs, resultsRange, _, err := indexer.GetMatches(ctx, query, true, head, stateDb.Database())
 		if err != logindex.ErrMatchAll {
 			fmt.Println("Search first/last block:", firstBlock, lastBlock, "results range:", resultsRange, "result count:", len(logs), "error:", err)
 			/*for i, log := range logs {
