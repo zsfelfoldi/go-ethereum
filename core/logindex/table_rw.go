@@ -414,6 +414,7 @@ type tableReader struct {
 	levelPointers     []int64
 	format            tableFormat
 	tableRoot         merkle.Value
+	indexContract     common.Address //TODO
 	meta              tableMeta
 }
 

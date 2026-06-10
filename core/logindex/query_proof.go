@@ -23,38 +23,36 @@ import (
 )
 
 type QueryProof struct {
-	Query              FilterQuery
-	RefHeader          types.Header
-	HistoricTableProof []byte
-	TableChainProofs   []TableChainProof
-	TableQueryProofs   []TableQueryProof
+	Query            FilterQuery
+	RefHeader        types.Header
+	IndexContracts   []common.Address
+	IndexTablesProof [][]byte
+	TableQueryProofs []tableQueryProof
 }
 
-type FilterQuery struct {
-	FirstBlock, LastBlock uint64
-	MaxResults, Reverse   uint
-	Addresses             []common.Address
-	Topics                [][]common.Hash
-}
-
-type TableChainProof struct {
-	LastBlock, TableSize uint64
-	LastChainHash        merkle.Value
-	ProvenRoots          []merkle.Value
-}
-
-type TableQueryProof struct {
+type tableQueryProof struct {
+	IndexContract         uint
 	FirstBlock, TableSize uint64
 	ProvenEntries         entriesForStorage
 	EntryIndices          []uint64
 	ProofHashes           []merkle.Value
-	BlockResults          []BlockResults
+	BlockResults          []blockResults
 }
 
-type BlockResults struct {
+type blockResults struct {
 	Header         types.Header
 	ProvenReceipts []uint
 	ReceiptsProof  [][]byte // receipts trie nodes in ascending order of node hash
+}
+
+func (qp *QueryProof) addOrGetIndexContract(address common.Address) uint {
+	for i, addr := range qp.IndexContracts {
+		if addr == address {
+			return uint(i)
+		}
+	}
+	qp.IndexContracts = append(qp.IndexContracts, address)
+	return uint(len(qp.IndexContracts) - 1)
 }
 
 func (qp *QueryProof) Verify() error {

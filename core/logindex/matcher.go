@@ -30,6 +30,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -45,11 +46,22 @@ const (
 	maxIncompleteResults     = 8
 )
 
-func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxResults uint64, direction int, addresses []common.Address, topics [][]common.Hash) ([]*types.Log, common.Range[uint64], error) {
+type FilterQuery struct {
+	FirstBlock, LastBlock, MaxResults uint64
+	Reverse                           bool
+	Addresses                         []common.Address
+	Topics                            [][]common.Hash
+}
+
+func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header, stateDb state.Database) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
 	ix.lock.Lock()
-	firstBlock = min(firstBlock, ix.headBlock) //TODO inditas utan, amig syncing megy, itt 0 a head
-	lastBlock = min(lastBlock, ix.headBlock)
+	firstBlock := min(query.FirstBlock, ix.headBlock) //TODO inditas utan, amig syncing megy, itt 0 a head
+	lastBlock := min(query.LastBlock, ix.headBlock)
 	blockRange := common.NewRange[uint64](firstBlock, lastBlock+1-firstBlock)
+	direction := 1
+	if query.Reverse {
+		direction = -1
+	}
 	readers := ix.storage.getRangeReaders(blockRange)
 	ix.lock.Unlock()
 	sort.Slice(readers, func(i, j int) bool {
@@ -76,21 +88,21 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 		}
 	}
 	// build matcher according to the given filter criteria
-	matcher := make(matchAll, 0, len(topics)+1)
+	matcher := make(matchAll, 0, len(query.Topics)+1)
 	// matchAddress signals a match when there is a match for any of the given
 	// addresses.
 	// If the list of addresses is empty then it creates a "wild card" matcher
 	// that signals every index as a potential match.
-	if len(addresses) > 0 {
-		matchAddress := make(matchAny, len(addresses))
-		for i, address := range addresses {
+	if len(query.Addresses) > 0 {
+		matchAddress := make(matchAny, len(query.Addresses))
+		for i, address := range query.Addresses {
 			var addr32 [32]byte
 			copy(addr32[32-common.AddressLength:], address[:])
 			matchAddress[i] = &singleMatcher{value: indexValue{entryType: ieAddress, value: addr32}}
 		}
 		matcher = append(matcher, matchAddress)
 	}
-	for i, topicList := range topics {
+	for i, topicList := range query.Topics {
 		// matchTopic signals a match when there is a match for any of the topics
 		// specified for the given position (topicList).
 		// If topicList is empty then it creates a "wild card" matcher that signals
@@ -104,19 +116,19 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 		}
 	}
 	if len(matcher) == 0 {
-		return nil, common.Range[uint64]{}, ErrMatchAll
+		return nil, common.Range[uint64]{}, nil, ErrMatchAll
 	}
 	// create matcher session
 	session := &matcherSession{
 		ctx:            ctx,
 		requestCounter: atomic.AddUint64(&ix.matcherControl.requestCounter, 1),
-		maxResults:     maxResults,
+		maxResults:     query.MaxResults,
 		validUntil:     blockRange.Last(),
 		direction:      direction,
-		minTopicCount:  len(topics),
+		minTopicCount:  len(query.Topics),
 		resultsCh:      make(chan matcherResults, 1),
 	}
-	fmt.Println("create session", firstBlock, lastBlock, addresses, topics)
+	fmt.Println("create session", firstBlock, lastBlock, query.Addresses, query.Topics)
 	for i, tr := range readers {
 		br := tr.blockRange().Intersection(blockRange)
 		//fmt.Println(" ", br)
@@ -162,43 +174,68 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 	select {
 	case ix.matcherControl.sessionCh <- session:
 	case <-ctx.Done():
-		return nil, common.Range[uint64]{}, ctx.Err()
+		return nil, common.Range[uint64]{}, nil, ctx.Err()
 	}
 	var results matcherResults
 	select {
 	case results = <-session.resultsCh:
 	case <-ctx.Done():
-		return nil, common.Range[uint64]{}, ctx.Err()
+		return nil, common.Range[uint64]{}, nil, ctx.Err()
 	}
 	if results.blockRange.IsEmpty() {
-		return nil, common.Range[uint64]{}, errors.New("entire search range has been invalidated") //TODO
+		return nil, common.Range[uint64]{}, nil, errors.New("entire search range has been invalidated") //TODO
 	}
-	proof := &QueryProof{
-		Query: FilterQuery{
-			FirstBlock: results.blockRange.First(),
-			LastBlock:  results.blockRange.Last(),
-			MaxResults: uint(maxResults),
-			Reverse:    uint(1-direction) / 2,
-			Addresses:  addresses,
-			Topics:     topics,
-		},
-		//RefHeader: *refHeader,
-		//HistoricTableProof: nil, //TODO
-		//TableChainProofs: nil,
-		TableQueryProofs: make([]TableQueryProof, len(results.provers)),
-	}
-	for i, prover := range results.provers {
-		if tproof, err := prover.finalize(); err == nil {
+	var proof *QueryProof
+	if prove {
+		proof = &QueryProof{
+			Query:            query,
+			RefHeader:        *refHeader,
+			TableQueryProofs: make([]tableQueryProof, len(results.provers)),
+		}
+		proof.Query.FirstBlock = results.blockRange.First()
+		proof.Query.LastBlock = results.blockRange.Last()
+		trie, err := stateDb.OpenTrie(refHeader.Root)
+		if err != nil {
+			return nil, common.Range[uint64]{}, nil, err
+		}
+		proofDb := make(trieProofWriter)
+		for i, prover := range results.provers {
+			tproof, err := prover.finalize()
+			if err != nil {
+				return nil, common.Range[uint64]{}, nil, err
+			}
+			tproof.IndexContract = proof.addOrGetIndexContract(prover.reader.indexContract)
 			proof.TableQueryProofs[i] = tproof
-		} else {
-			return nil, common.Range[uint64]{}, err
+			// generate state proof nodes for table root
+			account, err := trie.GetAccount(prover.reader.indexContract)
+			if err != nil {
+				return nil, common.Range[uint64]{}, nil, err
+			}
+			strie, err := stateDb.OpenStorageTrie(refHeader.Root, prover.reader.indexContract, account.Root, trie)
+			if err != nil {
+				return nil, common.Range[uint64]{}, nil, err
+			}
+			tableRootKey, err := getTableRootKey(stateDb, refHeader.Root, prover.reader.indexContract, tproof.FirstBlock, tproof.TableSize)
+			if err != nil {
+				return nil, common.Range[uint64]{}, nil, err
+			}
+			if err := strie.Prove(tableRootKey, proofDb); err != nil {
+				return nil, common.Range[uint64]{}, nil, err
+			}
+		}
+		for _, address := range proof.IndexContracts {
+			if err := trie.Prove(address.Bytes(), proofDb); err != nil { //TODO hashed address?
+				return nil, common.Range[uint64]{}, nil, err
+			}
+		}
+		proof.IndexTablesProof = proofDb.proofForStorage()
+
+		if err := proof.Verify(); err != nil {
+			return nil, common.Range[uint64]{}, nil, err
 		}
 	}
-	if err := proof.Verify(); err != nil {
-		return nil, common.Range[uint64]{}, err
-	}
 	//fmt.Println(" results", len(results.logs), "error", results.err)
-	return results.logs, results.blockRange, results.err
+	return results.logs, results.blockRange, proof, results.err
 
 	/*start := time.Now()
 	res, err := m.process()
@@ -216,6 +253,10 @@ func (ix *Indexer) GetMatches(ctx context.Context, firstBlock, lastBlock, maxRes
 		m.getLogStats.print()
 	}
 	return res, err*/
+}
+
+func getTableRootKey(stateDb state.Database, stateRoot common.Hash, contract common.Address, firstBlock, tableSize uint64) ([]byte, error) {
+	return nil, nil //TODO
 }
 
 type matcherResults struct {
@@ -1203,7 +1244,7 @@ type blockProof struct {
 	header          *types.Header
 	blockEntryIndex uint64 // MaxUint64 if block is last in table
 	matchingTxs     map[uint32]matchingTx
-	receiptsProof   map[common.Hash][]byte
+	receiptsProof   trieProofWriter
 }
 
 type matchingTx struct {
@@ -1215,7 +1256,7 @@ func newBlockProof(header *types.Header, blockEntryIndex uint64) *blockProof {
 	return &blockProof{
 		header:        header,
 		matchingTxs:   make(map[uint32]matchingTx),
-		receiptsProof: make(map[common.Hash][]byte),
+		receiptsProof: make(trieProofWriter),
 	}
 }
 

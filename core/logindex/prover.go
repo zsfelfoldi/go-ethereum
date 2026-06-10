@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
+	"slices"
 	"sort"
 	"sync"
 
@@ -96,7 +97,7 @@ func (tp *tableProver) getNode(node uint32) *logicNode {
 	return &tp.nodeChunks[(node-1)/nodeChunkSize].nodes[(node-1)%nodeChunkSize]
 }
 
-func (tp *tableProver) finalize() (TableQueryProof, error) {
+func (tp *tableProver) finalize() (tableQueryProof, error) {
 	var (
 		entryCount, allCount int
 		finalResult          *logicNode
@@ -210,11 +211,11 @@ func (tp *tableProver) finalize() (TableQueryProof, error) {
 	sort.Slice(blockNumbers, func(i, j int) bool {
 		return blockNumbers[i] < blockNumbers[j]
 	})
-	proof := TableQueryProof{
+	proof := tableQueryProof{
 		FirstBlock:   tp.reader.blockRange().First(),
 		TableSize:    tp.reader.blockRange().Count(),
 		EntryIndices: make([]uint64, 0, entryCount),
-		BlockResults: make([]BlockResults, len(blockNumbers)),
+		BlockResults: make([]blockResults, len(blockNumbers)),
 	}
 	for _, bp := range tp.blockProofs {
 		proof.EntryIndices = append(proof.EntryIndices, bp.blockEntryIndex)
@@ -233,10 +234,10 @@ func (tp *tableProver) finalize() (TableQueryProof, error) {
 
 	for i, number := range blockNumbers {
 		bp := tp.blockProofs[number]
-		br := BlockResults{
+		br := blockResults{
 			Header:         *bp.header,
 			ProvenReceipts: make([]uint, 0, len(bp.matchingTxs)),
-			ReceiptsProof:  make([][]byte, len(bp.receiptsProof)),
+			ReceiptsProof:  bp.receiptsProof.proofForStorage(),
 		}
 		for txi := range bp.matchingTxs {
 			br.ProvenReceipts = append(br.ProvenReceipts, uint(txi))
@@ -244,16 +245,6 @@ func (tp *tableProver) finalize() (TableQueryProof, error) {
 		sort.Slice(br.ProvenReceipts, func(i, j int) bool {
 			return br.ProvenReceipts[i] < br.ProvenReceipts[j]
 		})
-		proofHashes := make([]common.Hash, 0, len(bp.receiptsProof))
-		for hash := range bp.receiptsProof {
-			proofHashes = append(proofHashes, hash)
-		}
-		sort.Slice(proofHashes, func(i, j int) bool {
-			return proofHashes[i].Cmp(proofHashes[j]) < 0
-		})
-		for i, hash := range proofHashes {
-			br.ReceiptsProof[i] = bp.receiptsProof[hash]
-		}
 		proof.BlockResults[i] = br
 	}
 
@@ -264,17 +255,17 @@ func (tp *tableProver) finalize() (TableQueryProof, error) {
 	for i, entryIndex := range proof.EntryIndices {
 		entry, err := tp.reader.getEntry(entryIndex)
 		if err != nil {
-			return TableQueryProof{}, err
+			return tableQueryProof{}, err
 		}
 		entries[i] = *entry
 		if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, entryIndex); err != nil {
-			return TableQueryProof{}, err
+			return tableQueryProof{}, err
 		}
 		lastIndex = entryIndex
 	}
 	var err error
 	if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, uint64(math.MaxUint64)); err != nil {
-		return TableQueryProof{}, err
+		return tableQueryProof{}, err
 	}
 	fmt.Println(" proof hash count", len(proof.ProofHashes))
 	proof.ProvenEntries = entries.toStorage()
@@ -781,4 +772,33 @@ func (ln *logicNode) outputCount() int {
 		}
 	}
 	return maxOutputCount
+}
+
+type trieProofWriter map[common.Hash][]byte
+
+func (t trieProofWriter) Put(key []byte, value []byte) error {
+	if len(key) != common.HashLength {
+		panic("invalid proof database key")
+	}
+	var hash common.Hash
+	copy(hash[:], key)
+	t[hash] = slices.Clone(value)
+	return nil
+}
+
+func (t trieProofWriter) Delete(key []byte) error { panic("not implemented") }
+
+func (t trieProofWriter) proofForStorage() [][]byte {
+	proof := make([][]byte, len(t))
+	proofHashes := make([]common.Hash, 0, len(t))
+	for hash := range t {
+		proofHashes = append(proofHashes, hash)
+	}
+	sort.Slice(proofHashes, func(i, j int) bool {
+		return proofHashes[i].Cmp(proofHashes[j]) < 0
+	})
+	for i, hash := range proofHashes {
+		proof[i] = t[hash]
+	}
+	return proof
 }
