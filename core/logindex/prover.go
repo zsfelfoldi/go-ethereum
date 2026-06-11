@@ -52,6 +52,7 @@ func newTableProver(reader *tableReader) *tableProver {
 }
 
 func (tp *tableProver) addBlockProofs(newProofs map[uint64]*blockProof) {
+	fmt.Println("addBlockProofs", len(newProofs))
 	if tp.blockProofs == nil {
 		tp.blockProofs = newProofs
 		return
@@ -218,8 +219,10 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 		BlockResults: make([]blockResults, len(blockNumbers)),
 	}
 	for _, bp := range tp.blockProofs {
+		fmt.Println("block entry", bp.blockEntryIndex)
 		proof.EntryIndices = append(proof.EntryIndices, bp.blockEntryIndex)
 		for _, mtx := range bp.matchingTxs {
+			fmt.Println("tx entry", mtx.txEntryIndex)
 			proof.EntryIndices = append(proof.EntryIndices, mtx.txEntryIndex)
 		}
 	}
@@ -252,6 +255,7 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 	tp.nodeChunks = nil
 	entries := make(indexEntries, entryCount)
 	lastIndex := uint64(math.MaxUint64)
+	fmt.Println("proof.EntryIndices", proof.EntryIndices)
 	for i, entryIndex := range proof.EntryIndices {
 		entry, err := tp.reader.getEntry(entryIndex)
 		if err != nil {
@@ -267,7 +271,6 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 	if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, uint64(math.MaxUint64)); err != nil {
 		return tableQueryProof{}, err
 	}
-	fmt.Println(" proof hash count", len(proof.ProofHashes))
 	proof.ProvenEntries = entries.toStorage()
 	return proof, nil
 }
@@ -296,7 +299,10 @@ func iterateProofIndices(treeHeight int, a, b uint64, callback func(uint64) erro
 		// a has no right neighbor; each 0 bit in a corresponds to a proven hash
 		return iterateProofIndicesDown(treeHeight, 0, a, callback)
 	default:
-		if a >= b {
+		if a == b {
+			return nil
+		}
+		if a > b {
 			panic("iterateProofIndices: invalid index order")
 		}
 		// we ignore the shared binary prefix plus the first different bit (0 in a, 1 in b)

@@ -451,6 +451,7 @@ func newTableReader(params *Params, tf *tableFiles, name string) (*tableReader, 
 		entryCount:        header.EntryCount,
 		levelPointers:     make([]int64, len(header.LevelPointers)),
 		tableRoot:         header.TableRoot,
+		indexContract:     common.HexToAddress("0x0000F90827F1C53a10cb7A02335B175320002935"), //TODO
 		meta:              header.Meta,
 	}
 	for i, p := range header.LevelPointers {

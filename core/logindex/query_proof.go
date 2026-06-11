@@ -17,6 +17,8 @@
 package logindex
 
 import (
+	"fmt"
+
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -57,4 +59,25 @@ func (qp *QueryProof) addOrGetIndexContract(address common.Address) uint {
 
 func (qp *QueryProof) Verify() error {
 	return nil //TODO
+}
+
+func (qp *QueryProof) printStats() {
+	fmt.Println("* Reference block number:", qp.RefHeader.Number.Uint64())
+	fmt.Println("* Unique index contracts:", len(qp.IndexContracts))
+	fmt.Println("* Table root MPT proof nodes:", len(qp.IndexTablesProof))
+	for i, tqp := range qp.TableQueryProofs {
+		fmt.Println("*** Table query proof", i)
+		fmt.Println("  * Contract index:", tqp.IndexContract)
+		fmt.Println("  * First block:", tqp.FirstBlock)
+		fmt.Println("  * Table size:", tqp.TableSize)
+		fmt.Println("  * Number of proven entries:", len(tqp.ProvenEntries))
+		fmt.Println("  * Number of IXT proof hashes:", len(tqp.ProofHashes))
+		fmt.Println("  * Number of block results:", len(tqp.BlockResults))
+		for j, br := range tqp.BlockResults {
+			fmt.Println("  *** Block result", j)
+			fmt.Println("    * Block number:", br.Header.Number.Uint64())
+			fmt.Println("    * Number of proven receipts:", len(br.ProvenReceipts))
+			fmt.Println("    * Number of receipt MPT proof nodes:", len(br.ReceiptsProof))
+		}
+	}
 }

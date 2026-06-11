@@ -229,7 +229,9 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			}
 		}
 		proof.IndexTablesProof = proofDb.proofForStorage()
-
+		proof.printStats()
+		proofEnc, err := rlp.EncodeToBytes(proof)
+		fmt.Println("encoded proof", len(proofEnc), err)
 		if err := proof.Verify(); err != nil {
 			return nil, common.Range[uint64]{}, nil, err
 		}
@@ -883,7 +885,7 @@ func (ms *matcherSession) returnResults() {
 		mp.blockDataLock.Lock()
 		defer mp.blockDataLock.Unlock()
 
-		//fmt.Println(" sectionNodes", mp.sectionNodes)
+		fmt.Println("addProcessResults", mp.tableReader.blockRange())
 		if mp.tableProver != nil && mp.tableProver != currentProver {
 			if currentProver != nil {
 				res.provers = append(res.provers, currentProver)
@@ -894,6 +896,9 @@ func (ms *matcherSession) returnResults() {
 		}
 		for i, log := range mp.logs {
 			if uint64(len(res.logs)) == resCount {
+				lastLog := res.logs[resCount-1]
+				trimBlockProofs(mp.blockProofs, lastLog.BlockNumber, uint32(lastLog.TxIndex), mp.session.direction)
+				mp.tableProver.addBlockProofs(mp.blockProofs)
 				return false
 			}
 			mp.proverInstance.connect(mp.sectionNodes[i], andNode)
@@ -901,14 +906,11 @@ func (ms *matcherSession) returnResults() {
 				res.logs = append(res.logs, log)
 			}
 		}
-		if uint64(len(res.logs)) == resCount {
-			return false
-		}
 		if len(mp.sectionNodes) > len(mp.logs) {
 			mp.proverInstance.connect(mp.sectionNodes[len(mp.logs)], andNode)
 		}
 		mp.tableProver.addBlockProofs(mp.blockProofs)
-		return true
+		return uint64(len(res.logs)) != resCount
 	}
 
 	for mp := ms.first; mp != nil && addProcessResults(mp); mp = mp.next {
@@ -919,6 +921,22 @@ func (ms *matcherSession) returnResults() {
 	//fmt.Println("  ms.resultsCh <- res")
 	ms.resultsCh <- res
 	return
+}
+
+func trimBlockProofs(blockProofs map[uint64]*blockProof, lastBlock uint64, lastTx uint32, direction int) {
+	for number, bp := range blockProofs {
+		if (number > lastBlock && direction == 1) || (number < lastBlock && direction == -1) {
+			delete(blockProofs, number)
+			continue
+		}
+		if number == lastBlock {
+			for txi := range bp.matchingTxs {
+				if (txi > lastTx && direction == 1) || (txi < lastTx && direction == -1) {
+					delete(bp.matchingTxs, txi)
+				}
+			}
+		}
+	}
 }
 
 var uint64msb = uint64(1) << 63
@@ -1254,9 +1272,10 @@ type matchingTx struct {
 
 func newBlockProof(header *types.Header, blockEntryIndex uint64) *blockProof {
 	return &blockProof{
-		header:        header,
-		matchingTxs:   make(map[uint32]matchingTx),
-		receiptsProof: make(trieProofWriter),
+		header:          header,
+		blockEntryIndex: blockEntryIndex,
+		matchingTxs:     make(map[uint32]matchingTx),
+		receiptsProof:   make(trieProofWriter),
 	}
 }
 
