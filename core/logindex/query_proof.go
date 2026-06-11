@@ -57,10 +57,6 @@ func (qp *QueryProof) addOrGetIndexContract(address common.Address) uint {
 	return uint(len(qp.IndexContracts) - 1)
 }
 
-func (qp *QueryProof) Verify() error {
-	return nil //TODO
-}
-
 func (qp *QueryProof) printStats() {
 	fmt.Println("* Reference block number:", qp.RefHeader.Number.Uint64())
 	fmt.Println("* Unique index contracts:", len(qp.IndexContracts))
@@ -80,4 +76,8 @@ func (qp *QueryProof) printStats() {
 			fmt.Println("    * Number of receipt MPT proof nodes:", len(br.ReceiptsProof))
 		}
 	}
+}
+
+func (qp *QueryProof) Verify() error {
+	return nil //TODO
 }

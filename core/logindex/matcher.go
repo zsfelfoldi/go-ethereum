@@ -231,7 +231,15 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		proof.IndexTablesProof = proofDb.proofForStorage()
 		proof.printStats()
 		proofEnc, err := rlp.EncodeToBytes(proof)
-		fmt.Println("encoded proof", len(proofEnc), err)
+		if err != nil {
+			return nil, common.Range[uint64]{}, nil, err
+		}
+		fmt.Println("encoded proof", len(proofEnc))
+		var proofDec QueryProof
+		if err := rlp.DecodeBytes(proofEnc, &proofDec); err != nil {
+			return nil, common.Range[uint64]{}, nil, err
+		}
+		proofDec.printStats()
 		if err := proof.Verify(); err != nil {
 			return nil, common.Range[uint64]{}, nil, err
 		}
