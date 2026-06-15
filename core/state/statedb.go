@@ -204,6 +204,10 @@ func NewWithReader(root common.Hash, db Database, reader Reader) (*StateDB, erro
 	return sdb, nil
 }
 
+func (s *StateDB) SetWitness(witness *stateless.Witness) {
+	s.witness = witness
+}
+
 // StartPrefetcher initializes a new trie prefetcher to pull in nodes from the
 // state trie concurrently while the state is mutated so that when we reach the
 // commit phase, most of the needed data is already hot.

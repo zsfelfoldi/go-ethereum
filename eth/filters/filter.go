@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/history"
 	"github.com/ethereum/go-ethereum/core/logindex"
+	"github.com/ethereum/go-ethereum/core/logindex/indexcontract"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -397,7 +398,11 @@ func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([
 		if err != nil {
 			return nil, err
 		}
-		logs, resultsRange, _, err := indexer.GetMatches(ctx, query, true, head, stateDb.Database())
+		parent, err := f.sys.backend.HeaderByHash(ctx, head.ParentHash)
+		if err != nil {
+			return nil, err
+		}
+		logs, resultsRange, _, err := indexer.GetMatches(ctx, query, true, head, indexcontract.NewProver(head, parent, stateDb))
 		if err != logindex.ErrMatchAll {
 			fmt.Println("Search first/last block:", firstBlock, lastBlock, "results range:", resultsRange, "result count:", len(logs), "error:", err)
 			/*for i, log := range logs {

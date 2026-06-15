@@ -53,7 +53,11 @@ type FilterQuery struct {
 	Topics                            [][]common.Hash
 }
 
-func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header, stateDb state.Database) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
+type contractProver interface {
+	GetTableRoot(contract common.Address, firstBlock, tableSize uint64) (common.Hash, error)
+}
+
+func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header, contractProver contractProver) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
 	ix.lock.Lock()
 	firstBlock := min(query.FirstBlock, ix.headBlock) //TODO inditas utan, amig syncing megy, itt 0 a head
 	lastBlock := min(query.LastBlock, ix.headBlock)
@@ -194,10 +198,11 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		}
 		proof.Query.FirstBlock = results.blockRange.First()
 		proof.Query.LastBlock = results.blockRange.Last()
-		trie, err := stateDb.OpenTrie(refHeader.Root)
-		if err != nil {
-			return nil, common.Range[uint64]{}, nil, err
-		}
+		/*		stateDb := state.Database()
+				trie, err := stateDb.OpenTrie(refHeader.Root)
+				if err != nil {
+					return nil, common.Range[uint64]{}, nil, err
+				}*/
 		proofDb := make(trieProofWriter)
 		for i, prover := range results.provers {
 			tproof, err := prover.finalize()
@@ -207,7 +212,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			tproof.IndexContract = proof.addOrGetIndexContract(prover.reader.indexContract)
 			proof.TableQueryProofs[i] = tproof
 			// generate state proof nodes for table root
-			account, err := trie.GetAccount(prover.reader.indexContract)
+			/*account, err := trie.GetAccount(prover.reader.indexContract)
 			if err != nil {
 				return nil, common.Range[uint64]{}, nil, err
 			}
@@ -221,13 +226,13 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			}
 			if err := strie.Prove(tableRootKey, proofDb); err != nil {
 				return nil, common.Range[uint64]{}, nil, err
-			}
+			}*/
 		}
-		for _, address := range proof.IndexContracts {
+		/*for _, address := range proof.IndexContracts {
 			if err := trie.Prove(address.Bytes(), proofDb); err != nil { //TODO hashed address?
 				return nil, common.Range[uint64]{}, nil, err
 			}
-		}
+		}*/
 		proof.IndexTablesProof = proofDb.proofForStorage()
 		proof.printStats()
 		proofEnc, err := rlp.EncodeToBytes(proof)
@@ -243,6 +248,9 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		if err := proof.Verify(); err != nil {
 			return nil, common.Range[uint64]{}, nil, err
 		}
+		root, err := contractProver.GetTableRoot(common.Address{}, 0, 0)
+		fmt.Println("getTableRoot", root, err)
+		fmt.Println("refHeader.Parent", refHeader.ParentHash)
 	}
 	//fmt.Println(" results", len(results.logs), "error", results.err)
 	return results.logs, results.blockRange, proof, results.err
