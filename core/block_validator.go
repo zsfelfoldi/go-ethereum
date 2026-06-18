@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/logindex"
@@ -166,6 +167,10 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 			return fmt.Errorf("invalid log index roots (remote: %x  local: %x)", header.BloomOrIndex, logIndexRoots)
 		}
 	} else {
+		start := time.Now()
+		logIndexRoots, err := v.logIndex.GetIndexRoots(header.Number.Uint64(), header.ParentHash, block.Transactions(), res.Receipts)
+		dt := time.Since(start)
+		fmt.Println("GetIndexRoots", logIndexRoots, err, dt)
 		// Validate the received block's bloom with the one derived from the generated receipts.
 		// For valid blocks this should always validate to true.
 		//

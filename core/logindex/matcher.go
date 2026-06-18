@@ -59,6 +59,7 @@ type contractProver interface {
 
 func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header, contractProver contractProver) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
 	ix.lock.Lock()
+	start := time.Now()
 	firstBlock := min(query.FirstBlock, ix.headBlock) //TODO inditas utan, amig syncing megy, itt 0 a head
 	lastBlock := min(query.LastBlock, ix.headBlock)
 	blockRange := common.NewRange[uint64](firstBlock, lastBlock+1-firstBlock)
@@ -135,7 +136,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	fmt.Println("create session", firstBlock, lastBlock, query.Addresses, query.Topics)
 	for i, tr := range readers {
 		br := tr.blockRange().Intersection(blockRange)
-		//fmt.Println(" ", br)
+		fmt.Println(" ", br)
 		prover := newTableProver(tr)
 		proverInstance := prover.newInstance()
 		mp := &matcherProcess{
@@ -189,6 +190,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	if results.blockRange.IsEmpty() {
 		return nil, common.Range[uint64]{}, nil, errors.New("entire search range has been invalidated") //TODO
 	}
+	fmt.Println("+++ Runtime without proof generation:", time.Since(start))
 	var proof *QueryProof
 	if prove {
 		proof = &QueryProof{
@@ -240,7 +242,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			return nil, common.Range[uint64]{}, nil, err
 		}
 		fmt.Println("encoded proof", len(proofEnc))
-		var proofDec QueryProof
+		/*var proofDec QueryProof
 		if err := rlp.DecodeBytes(proofEnc, &proofDec); err != nil {
 			return nil, common.Range[uint64]{}, nil, err
 		}
@@ -250,9 +252,10 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		}
 		root, err := contractProver.GetTableRoot(common.Address{}, 0, 0)
 		fmt.Println("getTableRoot", root, err)
-		fmt.Println("refHeader.Parent", refHeader.ParentHash)
+		fmt.Println("refHeader.Parent", refHeader.ParentHash)*/
 	}
 	//fmt.Println(" results", len(results.logs), "error", results.err)
+	fmt.Println("+++ Runtime with proof generation:", time.Since(start))
 	return results.logs, results.blockRange, proof, results.err
 
 	/*start := time.Now()
@@ -852,17 +855,17 @@ func (ms *matcherSession) print() {
 }
 
 func (ms *matcherSession) returnResults() {
-	//fmt.Println("*** returnResults")
+	fmt.Println("*** returnResults")
 	//ms.print()
 	if ms.err != nil {
 		ms.resultsCh <- matcherResults{err: ms.err}
 		return
 	}
 	var resCount uint64
-	for mp := ms.first; mp != nil; mp = mp.next {
-		//fmt.Println(" mp", mp.blockRange)
+	for mp := ms.first; mp != nil; mp = mp.next { //TODO reverse ???
+		fmt.Println(" mp", mp.blockRange)
 		if mp.isRemoved() {
-			//fmt.Println("  removed")
+			fmt.Println("  removed")
 			if mp.prev == nil {
 				ms.first = mp.next
 				if mp.next != nil {
@@ -877,20 +880,20 @@ func (ms *matcherSession) returnResults() {
 			}
 		}
 		resCount += uint64(len(mp.positions) - mp.droppedResults)
-		//fmt.Println("  resCount", len(mp.positions), mp.droppedResults, resCount)
+		fmt.Println("  resCount", len(mp.positions), mp.droppedResults, resCount)
 		if resCount >= ms.maxResults {
 			resCount = ms.maxResults
 			break
 		}
 	}
 	if ms.first == nil {
-		//fmt.Println("  ms.first == nil")
+		fmt.Println("  ms.first == nil")
 		ms.resultsCh <- matcherResults{}
 		return
 	}
 	res := matcherResults{
 		logs:       make([]*types.Log, 0, resCount),
-		blockRange: common.NewRange[uint64](ms.first.blockRange.First(), ms.last.blockRange.AfterLast()-ms.first.blockRange.First()),
+		blockRange: common.NewRange[uint64](ms.first.blockRange.First(), ms.last.blockRange.AfterLast()-ms.first.blockRange.First()), //TODO reverse ???
 	}
 	var (
 		currentProver *tableProver
@@ -911,7 +914,7 @@ func (ms *matcherSession) returnResults() {
 			mp.proverInstance.connect(andNode, mp.proverInstance.addFinalResultNode())
 		}
 		for i, log := range mp.logs {
-			if uint64(len(res.logs)) == resCount {
+			if uint64(len(res.logs)) == ms.maxResults {
 				lastLog := res.logs[resCount-1]
 				trimBlockProofs(mp.blockProofs, lastLog.BlockNumber, uint32(lastLog.TxIndex), mp.session.direction)
 				mp.tableProver.addBlockProofs(mp.blockProofs)
@@ -926,7 +929,7 @@ func (ms *matcherSession) returnResults() {
 			mp.proverInstance.connect(mp.sectionNodes[len(mp.logs)], andNode)
 		}
 		mp.tableProver.addBlockProofs(mp.blockProofs)
-		return uint64(len(res.logs)) != resCount
+		return uint64(len(res.logs)) != ms.maxResults
 	}
 
 	for mp := ms.first; mp != nil && addProcessResults(mp); mp = mp.next {

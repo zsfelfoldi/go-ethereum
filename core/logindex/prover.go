@@ -220,7 +220,9 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 	}
 	for _, bp := range tp.blockProofs {
 		fmt.Println("block entry", bp.blockEntryIndex)
-		proof.EntryIndices = append(proof.EntryIndices, bp.blockEntryIndex)
+		if bp.blockEntryIndex != math.MaxUint64 {
+			proof.EntryIndices = append(proof.EntryIndices, bp.blockEntryIndex) //TODO add parent block of next table
+		}
 		for _, mtx := range bp.matchingTxs {
 			fmt.Println("tx entry", mtx.txEntryIndex)
 			proof.EntryIndices = append(proof.EntryIndices, mtx.txEntryIndex)
