@@ -87,10 +87,11 @@ type backend interface {
 // types of node backend as an entrypoint. It's responsible for all interactions
 // relevant with trie nodes and node preimages.
 type Database struct {
-	disk      ethdb.Database
-	config    *Config        // Configuration for trie database
-	preimages *preimageStore // The store for caching preimages
-	backend   backend        // The backend for managing trie nodes
+	disk       ethdb.Database
+	config     *Config        // Configuration for trie database
+	preimages  *preimageStore // The store for caching preimages
+	backend    backend        // The backend for managing trie nodes
+	proofNodes ProofNodes
 }
 
 // NewDatabase initializes the trie database with default settings, note
