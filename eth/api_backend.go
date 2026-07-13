@@ -295,6 +295,10 @@ func (b *EthAPIBackend) StateByNumberOrHash(ctx context.Context, blockNrOrHash r
 	return nil, nil, errors.New("invalid arguments; neither block nor hash specified")
 }
 
+func (b *EthAPIBackend) StateProverAt(header *types.Header, proofNodes, proofCodes map[common.Hash][]byte) (*state.StateDB, error) {
+	return b.eth.BlockChain().StateProverAt(header, proofNodes, proofCodes)
+}
+
 func (b *EthAPIBackend) HistoryPruningCutoff() uint64 {
 	bn, _ := b.eth.blockchain.HistoryPruningCutoff()
 	return bn

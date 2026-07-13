@@ -91,7 +91,7 @@ type Database struct {
 	config     *Config        // Configuration for trie database
 	preimages  *preimageStore // The store for caching preimages
 	backend    backend        // The backend for managing trie nodes
-	proofNodes ProofNodes
+	proofNodes map[common.Hash][]byte
 }
 
 // NewDatabase initializes the trie database with default settings, note

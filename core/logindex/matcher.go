@@ -57,7 +57,7 @@ type FilterQuery struct {
 }
 
 type contractProver interface {
-	GetTableRoot(ctx context.Context, refHead common.Hash, contract common.Address, firstBlock, tableSize uint64) (common.Hash, error)
+	ProveTableRoot(ctx context.Context, refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error)
 }
 
 func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header, contractProver contractProver) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
@@ -208,7 +208,8 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 				if err != nil {
 					return nil, common.Range[uint64]{}, nil, err
 				}*/
-		proofDb := make(trieProofWriter)
+		proofNodes := make(trieProofWriter)
+		proofCodes := make(trieProofWriter)
 		for i, prover := range results.provers {
 			tproof, err := prover.finalize()
 			if err != nil {
@@ -217,7 +218,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			tproof.IndexContract = proof.addOrGetIndexContract(prover.reader.indexContract)
 			proof.TableQueryProofs[i] = tproof
 			// generate state proof nodes for table root
-			tableRoot, err := contractProver.GetTableRoot(ctx, refHeader.Hash(), params.IndexContractAddress, prover.reader.blockRange().First(), prover.reader.blockRange().Count())
+			tableRoot, err := contractProver.ProveTableRoot(ctx, refHeader, params.IndexContractAddress, prover.reader.blockRange().First(), prover.reader.blockRange().Count(), proofNodes, proofCodes)
 			fmt.Println("GetTableRoot", prover.reader.blockRange(), tableRoot, err)
 			if err != nil {
 				return nil, common.Range[uint64]{}, nil, err
@@ -246,7 +247,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 				return nil, common.Range[uint64]{}, nil, err
 			}
 		}*/
-		proof.IndexTablesProof = proofDb.proofForStorage()
+		proof.IndexTablesProof = proofNodes.proofForStorage()
 		proof.printStats()
 		proofEnc, err := rlp.EncodeToBytes(proof)
 		if err != nil {

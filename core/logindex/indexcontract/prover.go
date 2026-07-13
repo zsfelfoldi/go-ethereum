@@ -34,14 +34,12 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/holiman/uint256"
 )
 
 type proverBackend interface {
 	ChainConfig() *params.ChainConfig
-	HeaderByHash(ctx context.Context, blockHash common.Hash) (*types.Header, error)
-	StateByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*state.StateDB, *types.Header, error)
+	StateProverAt(header *types.Header, proofNodes, proofCodes map[common.Hash][]byte) (*state.StateDB, error)
 }
 
 type Prover struct {
@@ -52,31 +50,26 @@ func NewProver(backend proverBackend) Prover {
 	return Prover{backend: backend}
 }
 
-func (p Prover) GetTableRoot(ctx context.Context, refHead common.Hash, contract common.Address, firstBlock, tableSize uint64) (common.Hash, error) {
-	fmt.Println("GetTableRoot", firstBlock, tableSize)
-	state, head, err := p.backend.StateByNumberOrHash(ctx, rpc.BlockNumberOrHashWithHash(refHead, false))
-	//state, head, err := p.backend.StateByNumberOrHash(ctx, rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber))
+func (p Prover) ProveTableRoot(ctx context.Context, refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
+	fmt.Println("ProveTableRoot", firstBlock, tableSize)
+	state, err := p.backend.StateProverAt(refHead, proofNodes, proofCodes)
 	if err != nil {
 		return common.Hash{}, err
 	}
 	//fmt.Println("header state root", head.Root, "intermediate root", state.IntermediateRoot(false))
-	parent, err := p.backend.HeaderByHash(ctx, head.ParentHash)
-	if err != nil {
-		return common.Hash{}, err
-	}
-	chainCtx := &chainContext{chainConfig: p.backend.ChainConfig(), head: head, parent: parent, engine: ethash.NewFaker()}
-	witness, err := stateless.NewWitness(head, chainCtx, false)
+	chainCtx := &chainContext{chainConfig: p.backend.ChainConfig(), head: refHead, engine: ethash.NewFaker()}
+	witness, err := stateless.NewWitness(refHead, chainCtx, false)
 	if err != nil {
 		return common.Hash{}, err
 	}
 	state.SetWitness(witness)
-	context := core.NewEVMBlockContext(head, chainCtx, nil)
+	context := core.NewEVMBlockContext(refHead, chainCtx, nil)
 	evm := vm.NewEVM(context, state, chainCtx.chainConfig, vm.Config{})
 
 	var callData [64]byte
 	binary.BigEndian.PutUint64(callData[24:32], firstBlock)
 	binary.BigEndian.PutUint64(callData[56:64], tableSize)
-	baseFee := uint256.MustFromBig(head.BaseFee)
+	baseFee := uint256.MustFromBig(refHead.BaseFee)
 	msg := &core.Message{
 		GasLimit:  10_000_000,
 		GasPrice:  baseFee,
@@ -115,9 +108,9 @@ func (p Prover) GetTableRoot(ctx context.Context, refHead common.Hash, contract 
 }
 
 type chainContext struct {
-	chainConfig  *params.ChainConfig
-	head, parent *types.Header
-	engine       consensus.Engine
+	chainConfig *params.ChainConfig
+	head        *types.Header
+	engine      consensus.Engine
 }
 
 func (c *chainContext) Engine() consensus.Engine {
@@ -127,9 +120,6 @@ func (c *chainContext) Engine() consensus.Engine {
 func (c *chainContext) GetHeader(hash common.Hash, number uint64) *types.Header {
 	if hash == c.head.Hash() && number == c.head.Number.Uint64() {
 		return c.head
-	}
-	if hash == c.parent.Hash() && number == c.parent.Number.Uint64() {
-		return c.parent
 	}
 	return nil
 }
@@ -146,18 +136,12 @@ func (c *chainContext) GetHeaderByNumber(number uint64) *types.Header {
 	if number == c.head.Number.Uint64() {
 		return c.head
 	}
-	if number == c.parent.Number.Uint64() {
-		return c.parent
-	}
 	return nil
 }
 
 func (c *chainContext) GetHeaderByHash(hash common.Hash) *types.Header {
 	if hash == c.head.Hash() {
 		return c.head
-	}
-	if hash == c.parent.Hash() {
-		return c.parent
 	}
 	return nil
 }

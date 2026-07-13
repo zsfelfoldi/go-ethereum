@@ -74,7 +74,7 @@ func (c *codeCache) Put(hash common.Hash, code []byte) {
 type CodeReader struct {
 	db         ethdb.KeyValueReader
 	cache      *codeCache
-	proofCodes ProofCodes
+	proofCodes map[common.Hash][]byte
 
 	// Cache statistics
 	hit       atomic.Int64 // Number of code lookups found in the cache
@@ -84,7 +84,7 @@ type CodeReader struct {
 }
 
 // newCodeReader constructs the code reader with provided key value store and the cache.
-func newCodeReader(db ethdb.KeyValueReader, cache *codeCache, proofCodes ProofCodes) *CodeReader {
+func newCodeReader(db ethdb.KeyValueReader, cache *codeCache, proofCodes map[common.Hash][]byte) *CodeReader {
 	return &CodeReader{
 		db:         db,
 		cache:      cache,
@@ -114,7 +114,11 @@ func (r *CodeReader) Code(addr common.Address, codeHash common.Hash) []byte {
 
 	code = rawdb.ReadCode(r.db, codeHash)
 	if len(code) > 0 {
-		r.proofCodes[codeHash] = slices.Clone(code)
+		if r.proofCodes != nil {
+			if _, ok := r.proofCodes[codeHash]; !ok {
+				r.proofCodes[codeHash] = slices.Clone(code)
+			}
+		}
 		r.cache.Put(codeHash, code)
 		r.missBytes.Add(int64(len(code)))
 	}
@@ -149,7 +153,11 @@ func (r *CodeReader) CodeWithPrefix(addr common.Address, codeHash common.Hash) [
 
 	code = rawdb.ReadCodeWithPrefix(r.db, codeHash)
 	if len(code) > 0 {
-		r.proofCodes[codeHash] = slices.Clone(code)
+		if r.proofCodes != nil {
+			if _, ok := r.proofCodes[codeHash]; !ok {
+				r.proofCodes[codeHash] = slices.Clone(code)
+			}
+		}
 		r.cache.Put(codeHash, code)
 		r.missBytes.Add(int64(len(code)))
 	}
@@ -216,7 +224,7 @@ func (b *CodeBatch) Commit() error {
 type CodeDB struct {
 	db         ethdb.KeyValueStore
 	cache      *codeCache
-	proofCodes ProofCodes
+	proofCodes map[common.Hash][]byte
 }
 
 // NewCodeDB constructs the contract code database with the provided key value store.
@@ -248,26 +256,17 @@ func (d *CodeDB) NewBatchWithSize(size int) *CodeBatch {
 	return newCodeBatchWithSize(d, size)
 }
 
-type ProofCodes map[common.Hash][]byte
-
-func NewProofCodeReader(proofCodes ProofCodes) *CodeDB {
+func NewProofCodeReader(proofCodes map[common.Hash][]byte) *CodeDB {
 	return &CodeDB{
 		cache:      newCodeCache(),
 		proofCodes: proofCodes,
 	}
 }
 
-func NewProofCodeWriter(db ethdb.KeyValueStore) *CodeDB {
+func NewProofCodeWriter(db ethdb.KeyValueStore, proofCodes map[common.Hash][]byte) *CodeDB {
 	return &CodeDB{
 		db:         db,
 		cache:      newCodeCache(),
-		proofCodes: make(ProofCodes),
+		proofCodes: proofCodes,
 	}
-}
-
-func (d *CodeDB) GetProofCodes() ProofCodes {
-	if d.proofCodes == nil || d.db == nil {
-		panic("not a proof code writer")
-	}
-	return d.proofCodes
 }
