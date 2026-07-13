@@ -17,7 +17,6 @@
 package indexcontract
 
 import (
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -28,12 +27,10 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/ethash"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/holiman/uint256"
 )
 
@@ -50,22 +47,19 @@ func NewProver(backend proverBackend) Prover {
 	return Prover{backend: backend}
 }
 
-func (p Prover) ProveTableRoot(ctx context.Context, refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
+func (p Prover) ProveTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
 	fmt.Println("ProveTableRoot", firstBlock, tableSize)
 	state, err := p.backend.StateProverAt(refHead, proofNodes, proofCodes)
 	if err != nil {
 		return common.Hash{}, err
 	}
-	//fmt.Println("header state root", head.Root, "intermediate root", state.IntermediateRoot(false))
-	chainCtx := &chainContext{chainConfig: p.backend.ChainConfig(), head: refHead, engine: ethash.NewFaker()}
-	witness, err := stateless.NewWitness(refHead, chainCtx, false)
-	if err != nil {
-		return common.Hash{}, err
-	}
-	state.SetWitness(witness)
+	return getTableRoot(state, p.backend.ChainConfig(), refHead, contract, firstBlock, tableSize)
+}
+
+func getTableRoot(state *state.StateDB, chainConfig *params.ChainConfig, refHead *types.Header, contract common.Address, firstBlock, tableSize uint64) (common.Hash, error) {
+	chainCtx := &chainContext{chainConfig: chainConfig, head: refHead, engine: ethash.NewFaker()}
 	context := core.NewEVMBlockContext(refHead, chainCtx, nil)
 	evm := vm.NewEVM(context, state, chainCtx.chainConfig, vm.Config{})
-
 	var callData [64]byte
 	binary.BigEndian.PutUint64(callData[24:32], firstBlock)
 	binary.BigEndian.PutUint64(callData[56:64], tableSize)
@@ -90,20 +84,6 @@ func (p Prover) ProveTableRoot(ctx context.Context, refHead *types.Header, contr
 	}
 	var tableRoot common.Hash
 	copy(tableRoot[:], result.ReturnData)
-	state.IntermediateRoot(false)
-	for node := range witness.State {
-		n := ([]byte)(node)
-		hash := crypto.Keccak256(n)
-		dec, err := rlp.SplitListValues(n)
-		dlen := make([]int, len(dec))
-		for i, d := range dec {
-			dlen[i] = len(d)
-		}
-		fmt.Printf("state %x : %v %v\n", hash, dlen, err)
-	}
-	for code := range witness.Codes {
-		fmt.Printf("code %x\n", ([]byte)(code))
-	}
 	return tableRoot, nil
 }
 
@@ -144,4 +124,26 @@ func (c *chainContext) GetHeaderByHash(hash common.Hash) *types.Header {
 		return c.head
 	}
 	return nil
+}
+
+type Verifier struct {
+	chainConfig *params.ChainConfig
+	trieConfig  *triedb.Config
+}
+
+func NewVerifier(chainConfig *params.ChainConfig, trieConfig *triedb.Config) Verifier {
+	return Verifier{
+		chainConfig: chainConfig,
+		trieConfig:  trieConfig,
+	}
+}
+
+func (v Verifier) GetProvenTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
+	proofDb := triedb.NewProofReader(proofNodes, v.trieConfig)
+	codeDb := state.NewProofCodeReader(proofCodes)
+	state, err := state.New(refHead.Root, state.NewMPTDatabase(proofDb, codeDb)) //TODO UBT
+	if err != nil {
+		return common.Hash{}, err
+	}
+	return getTableRoot(state, v.chainConfig, refHead, contract, firstBlock, tableSize)
 }

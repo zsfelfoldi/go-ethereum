@@ -57,10 +57,14 @@ type FilterQuery struct {
 }
 
 type contractProver interface {
-	ProveTableRoot(ctx context.Context, refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error)
+	ProveTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error)
 }
 
-func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header, contractProver contractProver) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
+type contractVerifier interface {
+	GetProvenTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error)
+}
+
+func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header, contractProver contractProver, contractVerifier contractVerifier) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
 	ix.lock.Lock()
 	start := time.Now()
 	firstBlock := min(query.FirstBlock, ix.headBlock) //TODO inditas utan, amig syncing megy, itt 0 a head
@@ -218,7 +222,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			tproof.IndexContract = proof.addOrGetIndexContract(prover.reader.indexContract)
 			proof.TableQueryProofs[i] = tproof
 			// generate state proof nodes for table root
-			tableRoot, err := contractProver.ProveTableRoot(ctx, refHeader, params.IndexContractAddress, prover.reader.blockRange().First(), prover.reader.blockRange().Count(), proofNodes, proofCodes)
+			tableRoot, err := contractProver.ProveTableRoot(refHeader, params.IndexContractAddress, prover.reader.blockRange().First(), prover.reader.blockRange().Count(), proofNodes, proofCodes)
 			fmt.Println("GetTableRoot", prover.reader.blockRange(), tableRoot, err)
 			if err != nil {
 				return nil, common.Range[uint64]{}, nil, err
@@ -247,7 +251,21 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 				return nil, common.Range[uint64]{}, nil, err
 			}
 		}*/
-		proof.IndexTablesProof = proofNodes.proofForStorage()
+
+		for hash, node := range proofNodes {
+			dec, err := rlp.SplitListValues(node)
+			dlen := make([]int, len(dec))
+			for i, d := range dec {
+				dlen[i] = len(d)
+			}
+			fmt.Printf("state %x : %v %v\n", hash, dlen, err)
+		}
+		for hash, code := range proofCodes {
+			fmt.Printf("code %x : %x\n", hash, code)
+		}
+
+		proof.ContractProofNodes = proofNodes.proofForStorage()
+		proof.ContractProofCodes = proofCodes.proofForStorage()
 		proof.printStats()
 		proofEnc, err := rlp.EncodeToBytes(proof)
 		if err != nil {
@@ -260,7 +278,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		}
 		fmt.Println("decoded proof")
 		//proofDec.printStats()
-		if res, err := proof.Verify(); err != nil {
+		if res, err := proof.Verify(contractVerifier); err != nil {
 			fmt.Println("verify error:", err)
 			return nil, common.Range[uint64]{}, nil, err
 		} else {

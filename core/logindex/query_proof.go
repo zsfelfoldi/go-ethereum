@@ -36,11 +36,13 @@ import (
 )
 
 type QueryProof struct {
-	Query            FilterQuery
-	RefHeader        types.Header
-	IndexContracts   []common.Address
-	IndexTablesProof [][]byte
-	TableQueryProofs []tableQueryProof
+	Query                                  FilterQuery
+	RefHeader                              types.Header
+	IndexContracts                         []common.Address
+	ContractProofNodes, ContractProofCodes [][]byte
+	TableQueryProofs                       []tableQueryProof
+
+	contractProofNodes, contractProofCodes map[common.Hash][]byte
 }
 
 type tableQueryProof struct {
@@ -76,7 +78,8 @@ func (qp *QueryProof) addOrGetIndexContract(address common.Address) uint32 {
 func (qp *QueryProof) printStats() {
 	fmt.Println("* Reference block number:", qp.RefHeader.Number.Uint64())
 	fmt.Println("* Unique index contracts:", len(qp.IndexContracts))
-	fmt.Println("* Table root MPT proof nodes:", len(qp.IndexTablesProof))
+	fmt.Println("* Table root MPT proof nodes:", len(qp.ContractProofNodes))
+	fmt.Println("* Table root MPT proof codes:", len(qp.ContractProofCodes))
 	for i, tqp := range qp.TableQueryProofs {
 		fmt.Println("*** Table query proof", i)
 		fmt.Println("  * Contract index:", tqp.IndexContract)
@@ -95,7 +98,7 @@ func (qp *QueryProof) printStats() {
 	}
 }
 
-func (qp *QueryProof) Verify() ([]*types.Log, error) {
+func (qp *QueryProof) Verify(contractVerifier contractVerifier) ([]*types.Log, error) {
 	fmt.Println("* qp.Verify")
 	//TODO check index contract whitelist
 	var resultCount, nextTableFirst uint64
@@ -132,8 +135,10 @@ func (qp *QueryProof) Verify() ([]*types.Log, error) {
 	}
 	fmt.Println("* limitedTableProof", limitedTableProof)
 	var results []*types.Log
+	qp.contractProofNodes = makeProofMap(qp.ContractProofNodes)
+	qp.contractProofCodes = makeProofMap(qp.ContractProofCodes)
 	for i, tqp := range qp.TableQueryProofs {
-		provenTableRoot, err := qp.getProvenTableRoot(qp.IndexContracts[tqp.IndexContract], tqp.FirstBlock, tqp.TableSize)
+		provenTableRoot, err := qp.getProvenTableRoot(contractVerifier, qp.IndexContracts[tqp.IndexContract], tqp.FirstBlock, tqp.TableSize)
 		if err != nil {
 			return nil, err
 		}
@@ -145,8 +150,8 @@ func (qp *QueryProof) Verify() ([]*types.Log, error) {
 	return results, nil
 }
 
-func (qp *QueryProof) getProvenTableRoot(indexContract common.Address, firstBlock, tableSize uint64) (common.Hash, error) {
-	return common.Hash{}, nil //TODO
+func (qp *QueryProof) getProvenTableRoot(contractVerifier contractVerifier, indexContract common.Address, firstBlock, tableSize uint64) (common.Hash, error) {
+	return contractVerifier.GetProvenTableRoot(&qp.RefHeader, indexContract, firstBlock, tableSize, qp.contractProofNodes, qp.contractProofCodes)
 }
 
 // if total result count equals MaxResults then resultsLimited is true for the
@@ -158,10 +163,10 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println(" * calc table root", ctr)
-	/*if common.Hash(ctr) != provenTableRoot {
+	fmt.Println(" * calc table root", common.Hash(ctr), "proven table root", provenTableRoot)
+	if common.Hash(ctr) != provenTableRoot {
 		return nil, errors.New("table root mismatch")
-	}*/ //TODO
+	}
 	blockRange := common.NewRange[uint64](tqp.FirstBlock, tqp.TableSize).Intersection(common.NewRange[uint64](query.FirstBlock, query.LastBlock+1-query.FirstBlock))
 	if blockRange.IsEmpty() {
 		return nil, errors.New("useful block range is empty")
@@ -284,7 +289,7 @@ loop:
 		} else if hash != blockHash {
 			return nil, nil, nil, errors.New("block hash mismatch")
 		}
-		br.initProofMap()
+		br.proofMap = makeProofMap(br.ReceiptsProof)
 		for _, txIndex := range br.ProvenReceipts {
 			txInfo, ok := provenTxEntries[txPosition{blockNumber: number, txIndex: txIndex}]
 			if !ok {
@@ -559,14 +564,14 @@ func ipsIntersection(sets []indexPositionSet) indexPositionSet {
 	return ipsMerge(sets).filter(len(sets))
 }
 
-func (br *blockResults) initProofMap() {
-	//fmt.Println("blockResults init; receipt hash:", br.Header.ReceiptHash)
-	br.proofMap = make(map[common.Hash][]byte)
-	for _, node := range br.ReceiptsProof {
+func makeProofMap(storageProof [][]byte) map[common.Hash][]byte {
+	proofMap := make(map[common.Hash][]byte)
+	for _, node := range storageProof {
 		hash := crypto.Keccak256Hash(node)
 		//fmt.Println(" hash", hash, "node", node)
-		br.proofMap[hash] = node
+		proofMap[hash] = node
 	}
+	return proofMap
 }
 
 func (br *blockResults) getProvenReceipt(txIndex uint32) (*types.Receipt, error) {
