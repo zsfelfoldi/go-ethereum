@@ -428,6 +428,24 @@ func (bc *BlockChain) StateAt(header *types.Header) (*state.StateDB, error) {
 	return state.New(header.Root, state.NewMPTDatabase(bc.triedb, bc.codedb).WithSnapshot(bc.snaps))
 }
 
+func (bc *BlockChain) StateProverAt(header *types.Header) (*state.StateDB, func() (triedb.ProofNodes, state.ProofCodes), error) {
+	proofDb := bc.triedb.NewProofWriter()
+	codeDb := state.NewProofCodeWriter(bc.db)
+	proofFn := func() (triedb.ProofNodes, state.ProofCodes) { return proofDb.GetProofNodes(), codeDb.GetProofCodes() }
+	if bc.chainConfig.IsUBT(header.Number, header.Time) {
+		state, err := state.New(header.Root, state.NewUBTDatabase(proofDb, codeDb))
+		if err != nil {
+			return nil, nil, err
+		}
+		return state, proofFn, nil
+	}
+	state, err := state.New(header.Root, state.NewMPTDatabase(proofDb, codeDb))
+	if err != nil {
+		return nil, nil, err
+	}
+	return state, proofFn, nil
+}
+
 // StateAtForkBoundary returns a new mutable state based on the parent state
 // and the given header, handling the transition across the UBT fork.
 func (bc *BlockChain) StateAtForkBoundary(parent *types.Header, header *types.Header) (*state.StateDB, error) {
