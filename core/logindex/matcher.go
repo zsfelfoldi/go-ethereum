@@ -1723,7 +1723,7 @@ func (pq *processQueue) Pop() any {
 }
 
 func (fq *FilterQuery) matchSpecified(log *types.Log) bool {
-	if len(fq.Addresses) > 0 && !slices.Contains(fq.Addresses, log.Address) {
+	if len(log.Topics) < len(fq.Topics) || (len(fq.Addresses) > 0 && !slices.Contains(fq.Addresses, log.Address)) {
 		return false
 	}
 	for i, sub := range fq.Topics {

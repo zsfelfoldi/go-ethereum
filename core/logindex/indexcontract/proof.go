@@ -58,7 +58,7 @@ func (p Prover) ProveTableRoot(refHead *types.Header, contract common.Address, f
 
 func getTableRoot(state *state.StateDB, chainConfig *params.ChainConfig, refHead *types.Header, contract common.Address, firstBlock, tableSize uint64) (common.Hash, error) {
 	chainCtx := &chainContext{chainConfig: chainConfig, head: refHead, engine: ethash.NewFaker()}
-	context := core.NewEVMBlockContext(refHead, chainCtx, nil)
+	context := core.NewEVMBlockContext(refHead, chainCtx, new(common.Address))
 	evm := vm.NewEVM(context, state, chainCtx.chainConfig, vm.Config{})
 	var callData [64]byte
 	binary.BigEndian.PutUint64(callData[24:32], firstBlock)
