@@ -222,7 +222,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			tproof.IndexContract = proof.addOrGetIndexContract(prover.reader.indexContract)
 			proof.TableQueryProofs[i] = tproof
 			// generate state proof nodes for table root
-			tableRoot, err := contractProver.ProveTableRoot(refHeader, params.IndexContractAddress, prover.reader.blockRange().First(), prover.reader.blockRange().Count(), proofNodes, proofCodes)
+			tableRoot, err := contractProver.ProveTableRoot(refHeader, prover.reader.indexContract, prover.reader.blockRange().First(), prover.reader.blockRange().Count(), proofNodes, proofCodes)
 			fmt.Println("GetTableRoot", prover.reader.blockRange(), tableRoot, err)
 			if err != nil {
 				return nil, common.Range[uint64]{}, nil, err
