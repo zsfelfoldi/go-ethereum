@@ -273,7 +273,7 @@ var (
 	DeterministicFactoryCode    = common.FromHex("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3")
 
 	// EIP-8304 - Trustless log index
-	IndexContractAddress = common.HexToAddress("0x485a43a95d2eb0cb1bb35a93c3f7cb5b0a22960b") //TODO replace dummy test contract
+	IndexContractAddress = common.HexToAddress("0x355fbbd72254dd6ba6f41d591b36770029882ae3") //TODO replace dummy test contract
 	IndexContractCode    = common.FromHex("0x3373fffffffffffffffffffffffffffffffffffffffe1460605760403603605c576020358060801c605c576104008160048104430304828202925f35818106605c5704908103196103ff10605c570601548015605c575f5260205ff35b5f5ffd5b604035602035610400818102915f350406015500")
 )
 

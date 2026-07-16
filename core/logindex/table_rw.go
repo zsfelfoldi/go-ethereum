@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
+	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -441,7 +442,7 @@ type subtreePos struct {
 	index uint64
 }
 
-func newTableReader(params *Params, tf *tableFiles, name string) (*tableReader, error) {
+func newTableReader(p *Params, tf *tableFiles, name string) (*tableReader, error) {
 	ioReader, fileSize, err := tf.getReaderAt(name)
 	if err != nil {
 		return nil, err
@@ -465,11 +466,11 @@ func newTableReader(params *Params, tf *tableFiles, name string) (*tableReader, 
 		fileSize:          fileSize,
 		entryChunkCache:   lru.NewCache[uint64, *entryChunk](entryCacheSize),
 		subtreeChunkCache: lru.NewCache[subtreePos, *subtreeChunk](subtreeCacheSize),
-		format:            params.newTableFormat(header.EntryCount),
+		format:            p.newTableFormat(header.EntryCount),
 		entryCount:        header.EntryCount,
 		levelPointers:     make([]int64, len(header.LevelPointers)),
 		tableRoot:         header.TableRoot,
-		indexContract:     common.HexToAddress("0x485a43a95d2eb0cb1bb35a93c3f7cb5b0a22960b"), //TODO
+		indexContract:     params.IndexContractAddress, //TODO
 		meta:              header.Meta,
 	}
 	for i, p := range header.LevelPointers {
