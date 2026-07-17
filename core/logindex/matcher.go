@@ -1239,7 +1239,7 @@ func (mp *matcherProcess) deliverBlockData(req blockRequest, header *types.Heade
 	if mp.tableProver != nil {
 		blockProof = mp.blockProofs[req.number]
 		if blockProof == nil {
-			if req.number == mp.blockRange.Last() { //TODO
+			if req.number == mp.tableReader.blockRange().Last() { //TODO
 				blockProof = newBlockProof(header, math.MaxUint64)
 			} else {
 				blockEntry := indexEntry{
