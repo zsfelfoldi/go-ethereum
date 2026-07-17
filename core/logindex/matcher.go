@@ -131,10 +131,14 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		return nil, common.Range[uint64]{}, nil, ErrMatchAll
 	}
 	// create matcher session
+	maxResults := math.MaxInt
+	if uint64(maxResults) > query.MaxResults {
+		maxResults = int(query.MaxResults)
+	}
 	session := &matcherSession{
 		ctx:            ctx,
 		requestCounter: atomic.AddUint64(&ix.matcherControl.requestCounter, 1),
-		maxResults:     query.MaxResults,
+		maxResults:     maxResults,
 		validUntil:     blockRange.Last(),
 		direction:      direction,
 		minTopicCount:  len(query.Topics),
@@ -868,7 +872,7 @@ var stNames = []string{"", "fetchFirst", "fetchMore", "process", "getLog", "othe
 type matcherSession struct {
 	ctx            context.Context
 	requestCounter uint64
-	maxResults     uint64
+	maxResults     int
 	validUntil     uint64
 	direction      int
 	minTopicCount  int
@@ -888,8 +892,8 @@ func (ms *matcherSession) print() {
 		if mp.next != nil {
 			nextRange = mp.next.blockRange
 		}
-		fmt.Println(" range", mp.blockRange, "len(pos)", len(mp.positions), "len(logs)", len(mp.logs), "completeUntil", mp.completeUntil,
-			"droppedResults", mp.droppedResults, "matcherFinished", mp.matcherFinished, "finished", mp.finished, "status", mp.status,
+		fmt.Println(" range", mp.blockRange, "len(pos)", len(mp.positions), "len(allMatches)", len(mp.allMatches), "validMatches", mp.validMatches,
+			"completeUntil", mp.completeUntil, "completeValid", mp.completeValid, "matcherFinished", mp.matcherFinished, "finished", mp.finished, "status", mp.status,
 			"prevRange", prevRange, "nextRange", nextRange)
 		mp.blockDataLock.Unlock()
 	}
@@ -902,7 +906,7 @@ func (ms *matcherSession) returnResults() {
 		ms.resultsCh <- matcherResults{err: ms.err}
 		return
 	}
-	var resCount uint64
+	var resCount int
 	for mp := ms.first; mp != nil; mp = mp.next { //TODO reverse ???
 		fmt.Println(" mp", mp.blockRange)
 		if mp.isRemoved() {
@@ -920,8 +924,8 @@ func (ms *matcherSession) returnResults() {
 				ms.last = mp.prev
 			}
 		}
-		resCount += uint64(len(mp.positions) - mp.droppedResults)
-		fmt.Println("  resCount", len(mp.positions), mp.droppedResults, resCount)
+		resCount += mp.validMatches
+		//fmt.Println("  resCount", len(mp.positions), mp.droppedResults, resCount)
 		if resCount >= ms.maxResults {
 			resCount = ms.maxResults
 			break
@@ -939,25 +943,25 @@ func (ms *matcherSession) returnResults() {
 	var (
 		currentProver   *tableProver
 		andNode         uint32
-		lastResultCount uint64
+		lastResultCount int
 	)
 
 	addProcessResults := func(mp *matcherProcess) bool {
 		mp.blockDataLock.Lock()
 		defer mp.blockDataLock.Unlock()
 
-		fmt.Println("addProcessResults", mp.tableReader.blockRange())
+		fmt.Println("addProcessResults", mp.tableReader.blockRange(), "len(mp.allMatches)", len(mp.allMatches), "len(mp.sectionNodes)", len(mp.sectionNodes))
 		if mp.tableProver != nil && mp.tableProver != currentProver {
 			if currentProver != nil {
 				res.provers = append(res.provers, currentProver)
 			}
 			currentProver = mp.tableProver
 			andNode = mp.proverInstance.addAndGateNode()
-			lastResultCount = uint64(len(res.logs))
+			lastResultCount = len(res.logs)
 			mp.proverInstance.connect(andNode, mp.proverInstance.addFinalResultNode())
 		}
-		for i, log := range mp.logs {
-			if uint64(len(res.logs)) == ms.maxResults {
+		for i, log := range mp.allMatches {
+			if len(res.logs) == ms.maxResults {
 				lastLog := res.logs[resCount-1]
 				trimBlockProofs(mp.blockProofs, lastLog.BlockNumber, uint32(lastLog.TxIndex), mp.session.direction)
 				mp.tableProver.addBlockProofs(mp.blockProofs, ms.maxResults-lastResultCount)
@@ -965,16 +969,16 @@ func (ms *matcherSession) returnResults() {
 				return false
 			}
 			mp.proverInstance.connect(mp.sectionNodes[i], andNode)
-			if log != droppedLogResult {
+			if len(log.Topics) >= ms.minTopicCount {
 				res.logs = append(res.logs, log)
 			}
 		}
-		if len(mp.sectionNodes) > len(mp.logs) {
-			mp.proverInstance.connect(mp.sectionNodes[len(mp.logs)], andNode)
+		if len(mp.sectionNodes) > len(mp.allMatches) {
+			mp.proverInstance.connect(mp.sectionNodes[len(mp.allMatches)], andNode)
 		}
-		mp.tableProver.addBlockProofs(mp.blockProofs, uint64(len(res.logs))-lastResultCount)
-		lastResultCount = uint64(len(res.logs))
-		return uint64(len(res.logs)) != ms.maxResults
+		mp.tableProver.addBlockProofs(mp.blockProofs, len(res.logs)-lastResultCount)
+		lastResultCount = len(res.logs)
+		return len(res.logs) != ms.maxResults
 	}
 
 	for mp := ms.first; mp != nil && addProcessResults(mp); mp = mp.next {
@@ -1028,19 +1032,20 @@ type matcherProcess struct {
 	pqIndex int
 
 	// accessed only by worker thread while status == mpRunning
-	positions                     []indexPosition
-	sectionNodes                  []uint32
-	completeUntil, droppedResults int
-	finished, matcherFinished     bool
-	err                           error
-	runTime                       time.Duration
-	started                       mclock.AbsTime
+	positions                    []indexPosition
+	sectionNodes                 []uint32
+	completeUntil, completeValid int
+	finished, matcherFinished    bool
+	err                          error
+	runTime                      time.Duration
+	started                      mclock.AbsTime
 
 	// accessed by block data delivery thread
 	blockDataLock  sync.Mutex
 	deliverCh      chan struct{}
 	blockInResults map[uint64]int
-	logs           []*types.Log
+	allMatches     []*types.Log // including invalid matches where len(log.Topics) < len(query.Topics)
+	validMatches   int          // number of valid matches
 	blockProofs    map[uint64]*blockProof
 	deliveryErr    error
 
@@ -1048,8 +1053,6 @@ type matcherProcess struct {
 	estimatedResults  uint64 // set by worker thread; MSB is "can split" flag
 	cumulativeResults uint64 // set by control thread; MSB is "suspend now" flag
 }
-
-var droppedLogResult = &types.Log{}
 
 // called by worker thread
 func (mp *matcherProcess) updateEstimatedResults(running bool) (uint64, bool) {
@@ -1064,8 +1067,8 @@ func (mp *matcherProcess) updateEstimatedResults(running bool) (uint64, bool) {
 		if running {
 			runTime += time.Duration(max(0, mclock.Now()-mp.started))
 		}
-		remainingResults := uint64(float64(len(mp.positions)-mp.droppedResults) * ratio)
-		estimatedResults = uint64(len(mp.positions)-mp.droppedResults) + remainingResults
+		remainingResults := uint64(float64(mp.validMatches) * ratio)
+		estimatedResults = uint64(mp.validMatches) + remainingResults
 		if runTime >= splitAfter {
 			remainingTime := time.Duration(float64(runTime) * ratio)
 			canSplit = remainingTime >= splitThreshold
@@ -1184,23 +1187,23 @@ func (mp *matcherProcess) run() {
 		if mp.deliveryErr != nil {
 			mp.finished, mp.err = true, mp.deliveryErr
 		} else {
-			for len(mp.positions) > len(mp.logs) {
-				pos := mp.positions[len(mp.logs)]
+			for len(mp.positions) > len(mp.allMatches) {
+				pos := mp.positions[len(mp.allMatches)]
 				if _, ok := mp.blockInResults[pos.blockNumber]; !ok {
-					mp.blockInResults[pos.blockNumber] = len(mp.logs)
+					mp.blockInResults[pos.blockNumber] = len(mp.allMatches)
 					//fmt.Println("*** getBlockData", pos.blockNumber)
 					//fmt.Println(" len(mp.positions)", len(mp.positions), "len(mp.logs)", len(mp.logs), "blockInResults[", pos.blockNumber, "] = ", len(mp.logs))
 					requestBlocks = append(requestBlocks, pos.blockNumber)
 				}
-				mp.logs = append(mp.logs, nil)
+				mp.allMatches = append(mp.allMatches, nil)
 			}
-			for mp.completeUntil < len(mp.logs) && mp.logs[mp.completeUntil] != nil {
-				if mp.logs[mp.completeUntil] == droppedLogResult {
-					mp.droppedResults++
+			for mp.completeUntil < len(mp.allMatches) && mp.allMatches[mp.completeUntil] != nil {
+				if len(mp.allMatches[mp.completeUntil].Topics) >= mp.session.minTopicCount {
+					mp.completeValid++
 				}
 				mp.completeUntil++
 			}
-			if mp.matcherFinished && mp.completeUntil == len(mp.logs) {
+			if mp.matcherFinished && mp.completeUntil == len(mp.allMatches) {
 				mp.finished = true
 			}
 		}
@@ -1209,7 +1212,7 @@ func (mp *matcherProcess) run() {
 			// start requests outside blockDataLock to avoid wrong locking order
 			mp.indexer.getBlockDataLocked(blockNumber, true, true, 0 /*TODO*/, mp.deliverBlockData)
 		}
-		if suspendNow || cumulativeResults+uint64(mp.completeUntil-mp.droppedResults) >= mp.session.maxResults {
+		if suspendNow || cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
 			return
 		}
 	}
@@ -1267,7 +1270,7 @@ func (mp *matcherProcess) deliverBlockData(req blockRequest, header *types.Heade
 	}
 
 loop:
-	for ; firstInResults < len(mp.logs); firstInResults++ {
+	for ; firstInResults < len(mp.allMatches); firstInResults++ {
 		pos := mp.positions[firstInResults]
 		if pos.blockNumber != req.number || uint32(len(receipts)) <= pos.txIndex || uint32(len(receipts[pos.txIndex].Logs)) <= pos.logIndex {
 			break loop
@@ -1278,20 +1281,19 @@ loop:
 		}
 		txHash := body.Transactions[pos.txIndex].Hash()
 		l := receipts[pos.txIndex].Logs[pos.logIndex]
-		if len(l.Topics) < mp.session.minTopicCount && mp.tableProver == nil { // include results with too few topic in proving mode
-			mp.logs[firstInResults] = droppedLogResult
-		} else {
-			mp.logs[firstInResults] = &types.Log{
-				Address:        l.Address,
-				Topics:         l.Topics,
-				Data:           l.Data,
-				BlockNumber:    pos.blockNumber,
-				TxHash:         txHash,
-				TxIndex:        uint(pos.txIndex),
-				BlockHash:      header.Hash(),
-				BlockTimestamp: header.Time,
-				Index:          logOffset + uint(pos.logIndex),
-			}
+		if len(l.Topics) >= mp.session.minTopicCount {
+			mp.validMatches++
+		}
+		mp.allMatches[firstInResults] = &types.Log{
+			Address:        l.Address,
+			Topics:         l.Topics,
+			Data:           l.Data,
+			BlockNumber:    pos.blockNumber,
+			TxHash:         txHash,
+			TxIndex:        uint(pos.txIndex),
+			BlockHash:      header.Hash(),
+			BlockTimestamp: header.Time,
+			Index:          logOffset + uint(pos.logIndex),
 		}
 		if blockProof != nil {
 			txEntry := indexEntry{
@@ -1660,7 +1662,7 @@ func (mp *matcherProcess) newStatus(cumulativeResults uint64) int {
 		}
 		return mpFinished
 	}
-	if cumulativeResults+uint64(mp.completeUntil-mp.droppedResults) >= mp.session.maxResults {
+	if cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
 		if mp.prev == nil || mp.prev.status == mpFinishedAll {
 			return mpFinishedAll
 		}
@@ -1723,14 +1725,14 @@ func (pq *processQueue) Pop() any {
 }
 
 func (fq *FilterQuery) matchSpecified(log *types.Log) bool {
-	if len(log.Topics) < len(fq.Topics) || (len(fq.Addresses) > 0 && !slices.Contains(fq.Addresses, log.Address)) {
+	if len(fq.Addresses) > 0 && !slices.Contains(fq.Addresses, log.Address) {
 		return false
 	}
 	for i, sub := range fq.Topics {
 		if len(sub) == 0 {
 			continue // empty rule set == wildcard
 		}
-		if !slices.Contains(sub, log.Topics[i]) {
+		if len(log.Topics) <= i || !slices.Contains(sub, log.Topics[i]) {
 			return false
 		}
 	}

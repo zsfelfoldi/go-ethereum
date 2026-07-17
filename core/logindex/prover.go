@@ -41,7 +41,7 @@ type tableProver struct {
 	treeHeight   int
 	nodeChunks   []*logicNodeChunk
 	blockProofs  map[uint64]*blockProof
-	resultCount  uint64
+	validResults int
 	finalizeHeap finalizeHeap
 }
 
@@ -52,9 +52,9 @@ func newTableProver(reader *tableReader) *tableProver {
 	}
 }
 
-func (tp *tableProver) addBlockProofs(newProofs map[uint64]*blockProof, newResults uint64) {
-	fmt.Println("addBlockProofs", len(newProofs), newResults)
-	tp.resultCount += newResults
+func (tp *tableProver) addBlockProofs(newProofs map[uint64]*blockProof, newValidResults int) {
+	fmt.Println("addBlockProofs", len(newProofs), newValidResults)
+	tp.validResults += newValidResults
 	if tp.blockProofs == nil {
 		tp.blockProofs = newProofs
 		return
@@ -219,7 +219,7 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 		TableSize:    tp.reader.blockRange().Count(),
 		EntryIndices: make([]uint64, 0, entryCount),
 		EntryCount:   tp.reader.entryCount,
-		ResultCount:  tp.resultCount,
+		ResultCount:  uint64(tp.validResults),
 		BlockResults: make([]blockResults, len(blockNumbers)),
 	}
 	for _, bp := range tp.blockProofs {

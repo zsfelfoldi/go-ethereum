@@ -219,6 +219,8 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 	fmt.Println(" * begin", begin, "end", end)
 	fmt.Println("after trim count:", count, "expected:", tqp.ResultCount)
 	if uint64(count) != tqp.ResultCount {
+		fmt.Println("count", count, "tqp.ResultCount", tqp.ResultCount, "len(inclusionProven)", len(inclusionProven), "len(validResult)", len(validResult), "validResult", validResult)
+		panic("xxxxx")
 		return nil, errors.New("invalid result count")
 	}
 	fmt.Println(" * result count", count)
