@@ -19,7 +19,6 @@ package indexcontract
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"math"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -48,7 +47,7 @@ func NewProver(backend proverBackend) Prover {
 }
 
 func (p Prover) ProveTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
-	fmt.Println("ProveTableRoot", firstBlock, tableSize)
+	//fmt.Println("ProveTableRoot", firstBlock, tableSize)
 	state, err := p.backend.StateProverAt(refHead, proofNodes, proofCodes)
 	if err != nil {
 		return common.Hash{}, err

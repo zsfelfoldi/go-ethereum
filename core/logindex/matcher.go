@@ -144,10 +144,10 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		minTopicCount:  len(query.Topics),
 		resultsCh:      make(chan matcherResults, 1),
 	}
-	fmt.Println("create session", firstBlock, lastBlock, query.Addresses, query.Topics)
+	//fmt.Println("create session", firstBlock, lastBlock, query.Addresses, query.Topics)
 	for i, tr := range readers {
 		br := tr.blockRange().Intersection(blockRange)
-		fmt.Println(" ", br)
+		//fmt.Println(" ", br)
 		prover := newTableProver(tr)
 		proverInstance := prover.newInstance()
 		mp := &matcherProcess{
@@ -201,7 +201,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	if results.blockRange.IsEmpty() {
 		return nil, common.Range[uint64]{}, nil, errors.New("entire search range has been invalidated") //TODO
 	}
-	fmt.Println("+++ Runtime without proof generation:", time.Since(start))
+	//fmt.Println("+++ Runtime without proof generation:", time.Since(start))
 	var proof *QueryProof
 	if prove {
 		proof = &QueryProof{
@@ -227,7 +227,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			proof.TableQueryProofs[i] = tproof
 			// generate state proof nodes for table root
 			tableRoot, err := contractProver.ProveTableRoot(refHeader, prover.reader.indexContract, prover.reader.blockRange().First(), prover.reader.blockRange().Count(), proofNodes, proofCodes)
-			fmt.Println("GetTableRoot", prover.reader.blockRange(), tableRoot, err)
+			//fmt.Println("GetTableRoot", prover.reader.blockRange(), tableRoot, err)
 			if err != nil {
 				return nil, common.Range[uint64]{}, nil, err
 			}
@@ -256,7 +256,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			}
 		}*/
 
-		for hash, node := range proofNodes {
+		/*for hash, node := range proofNodes {
 			dec, err := rlp.SplitListValues(node)
 			dlen := make([]int, len(dec))
 			for i, d := range dec {
@@ -266,31 +266,33 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		}
 		for hash, code := range proofCodes {
 			fmt.Printf("code %x : %x\n", hash, code)
-		}
+		}*/
 
 		proof.ContractProofNodes = proofNodes.proofForStorage()
 		proof.ContractProofCodes = proofCodes.proofForStorage()
-		proof.printStats()
+		//proof.printStats()
 		proofEnc, err := rlp.EncodeToBytes(proof)
 		if err != nil {
 			return nil, common.Range[uint64]{}, nil, err
 		}
-		fmt.Println("encoded proof", len(proofEnc))
+		proveTime := time.Since(start)
+		start = time.Now()
 		var proofDec QueryProof
 		if err := rlp.DecodeBytes(proofEnc, &proofDec); err != nil {
 			return nil, common.Range[uint64]{}, nil, err
 		}
-		fmt.Println("decoded proof")
+		//fmt.Println("decoded proof")
 		//proofDec.printStats()
-		if res, err := proof.Verify(contractVerifier); err != nil {
-			fmt.Println("verify error:", err)
+		if _, err := proof.Verify(contractVerifier); err != nil { //TODO only verify in dev mode
+			//fmt.Println("verify error:", err)
 			return nil, common.Range[uint64]{}, nil, err
-		} else {
+		} /* else {
 			fmt.Println("verified results:", len(res))
-		}
+		}*/
+		fmt.Println("[***] range length", blockRange.Count(), "result count", len(results.logs), "proof size", len(proofEnc), "prove time", proveTime, "verify time", time.Since(start))
 	}
 	//fmt.Println(" results", len(results.logs), "error", results.err)
-	fmt.Println("+++ Runtime with proof generation:", time.Since(start))
+	//fmt.Println("+++ Runtime with proof generation:", time.Since(start))
 	return results.logs, results.blockRange, proof, results.err
 
 	/*start := time.Now()
@@ -900,7 +902,7 @@ func (ms *matcherSession) print() {
 }
 
 func (ms *matcherSession) returnResults() {
-	fmt.Println("*** returnResults")
+	//fmt.Println("*** returnResults")
 	//ms.print()
 	if ms.err != nil {
 		ms.resultsCh <- matcherResults{err: ms.err}
@@ -908,9 +910,9 @@ func (ms *matcherSession) returnResults() {
 	}
 	var resCount int
 	for mp := ms.first; mp != nil; mp = mp.next { //TODO reverse ???
-		fmt.Println(" mp", mp.blockRange)
+		//fmt.Println(" mp", mp.blockRange)
 		if mp.isRemoved() {
-			fmt.Println("  removed")
+			//fmt.Println("  removed")
 			if mp.prev == nil {
 				ms.first = mp.next
 				if mp.next != nil {
@@ -932,7 +934,7 @@ func (ms *matcherSession) returnResults() {
 		}
 	}
 	if ms.first == nil {
-		fmt.Println("  ms.first == nil")
+		//fmt.Println("  ms.first == nil")
 		ms.resultsCh <- matcherResults{}
 		return
 	}
@@ -950,7 +952,7 @@ func (ms *matcherSession) returnResults() {
 		mp.blockDataLock.Lock()
 		defer mp.blockDataLock.Unlock()
 
-		fmt.Println("addProcessResults", mp.tableReader.blockRange(), "len(mp.allMatches)", len(mp.allMatches), "len(mp.sectionNodes)", len(mp.sectionNodes))
+		//fmt.Println("addProcessResults", mp.tableReader.blockRange(), "len(mp.allMatches)", len(mp.allMatches), "len(mp.sectionNodes)", len(mp.sectionNodes))
 		if mp.tableProver != nil && mp.tableProver != currentProver {
 			if currentProver != nil {
 				res.provers = append(res.provers, currentProver)

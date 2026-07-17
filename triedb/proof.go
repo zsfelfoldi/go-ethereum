@@ -18,7 +18,6 @@ package triedb
 
 import (
 	"errors"
-	"fmt"
 	"slices"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -80,10 +79,10 @@ type proofNodeReader struct {
 func (pnr proofNodeReader) Node(owner common.Hash, path []byte, hash common.Hash) ([]byte, error) {
 	if pnr.parent == nil {
 		if node, ok := pnr.proofNodes[hash]; ok {
-			fmt.Printf("Retrieved node:  owner %x  hash %x  path  %x\n", owner, hash, path)
+			//fmt.Printf("Retrieved node:  owner %x  hash %x  path  %x\n", owner, hash, path)
 			return node, nil
 		}
-		fmt.Printf("Node not found:  owner %x  hash %x  path  %x\n", owner, hash, path)
+		//fmt.Printf("Node not found:  owner %x  hash %x  path  %x\n", owner, hash, path)
 		return nil, errors.New("not found")
 	}
 	node, err := pnr.parent.Node(owner, path, hash)
@@ -91,7 +90,7 @@ func (pnr proofNodeReader) Node(owner common.Hash, path []byte, hash common.Hash
 		return nil, err
 	}
 	if _, ok := pnr.proofNodes[hash]; !ok {
-		fmt.Printf("Store node:  owner %x  hash %x  path  %x\n", owner, hash, path)
+		//fmt.Printf("Store node:  owner %x  hash %x  path  %x\n", owner, hash, path)
 		pnr.proofNodes[hash] = slices.Clone(node)
 	}
 	return node, nil

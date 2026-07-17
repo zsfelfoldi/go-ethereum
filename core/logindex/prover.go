@@ -53,7 +53,7 @@ func newTableProver(reader *tableReader) *tableProver {
 }
 
 func (tp *tableProver) addBlockProofs(newProofs map[uint64]*blockProof, newValidResults int) {
-	fmt.Println("addBlockProofs", len(newProofs), newValidResults)
+	//fmt.Println("addBlockProofs", len(newProofs), newValidResults)
 	tp.validResults += newValidResults
 	if tp.blockProofs == nil {
 		tp.blockProofs = newProofs
@@ -122,7 +122,7 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 	if finalResult == nil {
 		panic("no final result node found")
 	}
-	fmt.Println("finalize", tp.reader.blockRange(), "entry nodes", entryCount, "all nodes", allCount, "table root", tp.reader.tableRoot)
+	//fmt.Println("finalize", tp.reader.blockRange(), "entry nodes", entryCount, "all nodes", allCount, "table root", tp.reader.tableRoot)
 	entryNodes := make([]uint32, entryCount)
 	var entryPtr int
 	for _, chunk := range tp.nodeChunks {
@@ -176,7 +176,7 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 	for tp.finalizeHeap.Len() != 0 {
 		sortedIndex := heap.Pop(&tp.finalizeHeap).(uint32)
 		//fmt.Println("heap.Pop", sortedIndex)
-		tp.finalizeHeap.print()
+		//tp.finalizeHeap.print()
 		entryNode := tp.finalizeHeap.entryNodes[sortedIndex]
 		switch finalResult.logicState() {
 		case lsDecidedTrue:
@@ -204,7 +204,7 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 		panic("invalid final result logic state")
 	}
 	tp.finalizeHeap.prevEntry, tp.finalizeHeap.nextEntry, tp.finalizeHeap.heapOrder, tp.finalizeHeap.heapIndex = nil, nil, nil, nil
-	fmt.Println(" optimized entry node count", entryCount)
+	//fmt.Println(" optimized entry node count", entryCount)
 
 	blockNumbers := make([]uint64, 0, len(tp.blockProofs))
 	for number, proof := range tp.blockProofs {
@@ -261,13 +261,13 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 	tp.nodeChunks = nil
 	entries := make(indexEntries, entryCount)
 	lastIndex := uint64(math.MaxUint64)
-	fmt.Println("proof.EntryIndices", len(proof.EntryIndices))
+	//fmt.Println("proof.EntryIndices", len(proof.EntryIndices))
 	for i, entryIndex := range proof.EntryIndices {
 		entry, err := tp.reader.getEntry(entryIndex)
 		if err != nil {
 			return tableQueryProof{}, err
 		}
-		fmt.Println("entry", entryIndex, "hash", common.Hash(entry.hash()))
+		//fmt.Println("entry", entryIndex, "hash", common.Hash(entry.hash()))
 		entries[i] = *entry
 		if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, entryIndex); err != nil {
 			return tableQueryProof{}, err
@@ -279,8 +279,8 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 		return tableQueryProof{}, err
 	}
 	proof.ProvenEntries = entries.toStorage()
-	treeRoot, _ := tp.reader.getHash(1)
-	fmt.Println("tree root", common.Hash(treeRoot))
+	//treeRoot, _ := tp.reader.getHash(1)
+	//fmt.Println("tree root", common.Hash(treeRoot))
 	return proof, nil
 }
 
@@ -290,7 +290,7 @@ func (tp *tableProver) makeProofHashes(hashes []merkle.Value, a, b uint64) ([]me
 		if err != nil {
 			return err
 		}
-		fmt.Println("node", gti, "hash", common.Hash(hash))
+		//fmt.Println("node", gti, "hash", common.Hash(hash))
 		hashes = append(hashes, hash)
 		return nil
 	}); err != nil {
@@ -554,7 +554,7 @@ func (fh *finalizeHeap) removedEntry(sortedIndex uint32) {
 	prev := fh.prevEntry[sortedIndex]
 	next := fh.nextEntry[sortedIndex]
 	//fmt.Println("removedEntry", sortedIndex, "prev", prev, "next", next)
-	fh.print()
+	//fh.print()
 	if next != math.MaxUint32 {
 		// save cost of next node before doing changes that affect cost calculation
 		fh.fixedCostEntry, fh.fixedCost = next, fh.savedCost(next)
@@ -578,7 +578,7 @@ func (fh *finalizeHeap) removedEntry(sortedIndex uint32) {
 		}
 	}
 	//fmt.Println(" ... after")
-	fh.print()
+	//fh.print()
 }
 
 func (fh *finalizeHeap) print() {

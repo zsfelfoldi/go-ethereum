@@ -99,7 +99,7 @@ func (qp *QueryProof) printStats() {
 }
 
 func (qp *QueryProof) Verify(contractVerifier contractVerifier) ([]*types.Log, error) {
-	fmt.Println("* qp.Verify")
+	//fmt.Println("* qp.Verify")
 	//TODO check index contract whitelist
 	var resultCount, nextTableFirst uint64
 	if len(qp.TableQueryProofs) == 0 {
@@ -112,16 +112,16 @@ func (qp *QueryProof) Verify(contractVerifier contractVerifier) ([]*types.Log, e
 		}
 		nextTableFirst = tqp.FirstBlock + tqp.TableSize
 	}
-	fmt.Println("* no gap, no overlap")
+	//fmt.Println("* no gap, no overlap")
 	if qp.TableQueryProofs[0].FirstBlock > qp.Query.FirstBlock ||
 		qp.TableQueryProofs[len(qp.TableQueryProofs)-1].FirstBlock+qp.TableQueryProofs[len(qp.TableQueryProofs)-1].TableSize <= qp.Query.LastBlock {
 		return nil, errors.New("table proofs do not cover query range")
 	}
-	fmt.Println("* fully covered")
+	//fmt.Println("* fully covered")
 	if resultCount > qp.Query.MaxResults {
 		return nil, errors.New("query result count limit exceeded")
 	}
-	fmt.Println("* resultCount", resultCount)
+	//fmt.Println("* resultCount", resultCount)
 	limitedTableProof := -1
 	if resultCount == qp.Query.MaxResults {
 		if qp.Query.Reverse {
@@ -133,7 +133,7 @@ func (qp *QueryProof) Verify(contractVerifier contractVerifier) ([]*types.Log, e
 			return nil, errors.New("useless table proof for limited query results")
 		}
 	}
-	fmt.Println("* limitedTableProof", limitedTableProof)
+	//fmt.Println("* limitedTableProof", limitedTableProof)
 	var results []*types.Log
 	qp.contractProofNodes = makeProofMap(qp.ContractProofNodes)
 	qp.contractProofCodes = makeProofMap(qp.ContractProofCodes)
@@ -157,13 +157,13 @@ func (qp *QueryProof) getProvenTableRoot(contractVerifier contractVerifier, inde
 // if total result count equals MaxResults then resultsLimited is true for the
 // first/last tableQueryProof (depending on direction)
 func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Hash, resultsLimited bool, results []*types.Log) ([]*types.Log, error) {
-	fmt.Println("** tqp.verify", tqp.FirstBlock, tqp.TableSize)
+	//fmt.Println("** tqp.verify", tqp.FirstBlock, tqp.TableSize)
 	tqp.entries = tqp.ProvenEntries.toEntries()
 	ctr, err := tqp.calculateTableRoot()
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println(" * calc table root", common.Hash(ctr), "proven table root", provenTableRoot)
+	//fmt.Println(" * calc table root", common.Hash(ctr), "proven table root", provenTableRoot)
 	if common.Hash(ctr) != provenTableRoot {
 		return nil, errors.New("table root mismatch")
 	}
@@ -175,7 +175,7 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 	end := indexPosition{blockNumber: blockRange.Last(), txIndex: math.MaxUint32, logIndex: math.MaxUint32}
 	oldCount := len(results)
 	results, inclusionProven, validResult, err := tqp.getProvenEntries(query, results)
-	fmt.Println("getProvenEntries oldCount:", oldCount, "results:", len(results), "inclusionProven", len(inclusionProven))
+	//fmt.Println("getProvenEntries oldCount:", oldCount, "results:", len(results), "inclusionProven", len(inclusionProven))
 	if err != nil {
 		return nil, err
 	}
@@ -216,14 +216,14 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 		}
 		count = int(tqp.ResultCount)
 	}
-	fmt.Println(" * begin", begin, "end", end)
-	fmt.Println("after trim count:", count, "expected:", tqp.ResultCount)
+	//fmt.Println(" * begin", begin, "end", end)
+	//fmt.Println("after trim count:", count, "expected:", tqp.ResultCount)
 	if uint64(count) != tqp.ResultCount {
-		fmt.Println("count", count, "tqp.ResultCount", tqp.ResultCount, "len(inclusionProven)", len(inclusionProven), "len(validResult)", len(validResult), "validResult", validResult)
+		//fmt.Println("count", count, "tqp.ResultCount", tqp.ResultCount, "len(inclusionProven)", len(inclusionProven), "len(validResult)", len(validResult), "validResult", validResult)
 		panic("xxxxx")
 		return nil, errors.New("invalid result count")
 	}
-	fmt.Println(" * result count", count)
+	//fmt.Println(" * result count", count)
 	potentialMatches := tqp.getPotentialMatches(query, begin, end)
 	//fmt.Println(" * inclusion proven", inclusionProven)
 	//fmt.Println(" * potential matches", potentialMatches)
@@ -237,7 +237,7 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 	if i != len(inclusionProven) {
 		return nil, errors.New("inclusion and exclusion proofs do not match")
 	}
-	fmt.Println(" * inclusion/exclusion proof match")
+	//fmt.Println(" * inclusion/exclusion proof match")
 	return results, nil
 }
 
@@ -342,7 +342,7 @@ func (tqp *tableQueryProof) calculateTableRoot() (merkle.Value, error) {
 				return errors.New("not enough proof hashes")
 			}
 			hashes[gti] = tqp.ProofHashes[proofHashPtr]
-			fmt.Println("node", gti, "hash", common.Hash(hashes[gti]))
+			//fmt.Println("node", gti, "hash", common.Hash(hashes[gti]))
 			proofHashPtr++
 			return nil
 		})
@@ -353,7 +353,7 @@ func (tqp *tableQueryProof) calculateTableRoot() (merkle.Value, error) {
 			return merkle.Value{}, errors.New("invalid entry index")
 		}
 		hashes[leafOffset+entryIndex] = tqp.entries[i].hash()
-		fmt.Println("entry", entryIndex, "hash", common.Hash(hashes[leafOffset+entryIndex]))
+		//fmt.Println("entry", entryIndex, "hash", common.Hash(hashes[leafOffset+entryIndex]))
 		if err := loadProofHashes(lastIndex, entryIndex); err != nil {
 			return merkle.Value{}, err
 		}
@@ -384,7 +384,7 @@ func (tqp *tableQueryProof) calculateTableRoot() (merkle.Value, error) {
 	var tableRoot, entryCountNode merkle.Value
 	binary.LittleEndian.PutUint64(entryCountNode[:8], tqp.EntryCount)
 	treeRoot := getHash(1)
-	fmt.Println("tree root", common.Hash(treeRoot))
+	//fmt.Println("tree root", common.Hash(treeRoot))
 	hasher := sha256.New()
 	hasher.Write(treeRoot[:])
 	hasher.Write(entryCountNode[:])
@@ -430,7 +430,7 @@ func (tqp *tableQueryProof) excludeBefore(i int) bool {
 
 // assumes entries, entryCount present
 func (tqp *tableQueryProof) getValueMatches(value indexValue, begin, end indexPosition) indexPositionSet {
-	fmt.Println("getValueMatches value", value, "begin", begin, "end", end, "entries", len(tqp.EntryIndices))
+	//fmt.Println("getValueMatches value", value, "begin", begin, "end", end, "entries", len(tqp.EntryIndices))
 	/*for i, idx := range tqp.EntryIndices {
 		fmt.Println(" ", idx, tqp.entries[i])
 	}*/
@@ -444,7 +444,7 @@ func (tqp *tableQueryProof) getValueMatches(value indexValue, begin, end indexPo
 	if lastFound {
 		afterLastInRange++
 	}
-	fmt.Println("firstInRange", firstInRange, "afterLastInRange", afterLastInRange, "lastFound", lastFound)
+	//fmt.Println("firstInRange", firstInRange, "afterLastInRange", afterLastInRange, "lastFound", lastFound)
 	var ips indexPositionSet
 	if tqp.excludeBefore(firstInRange) {
 		if firstInRange < afterLastInRange {
