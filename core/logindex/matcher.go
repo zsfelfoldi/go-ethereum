@@ -218,11 +218,16 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 				}*/
 		proofNodes := make(trieProofWriter)
 		proofCodes := make(trieProofWriter)
+		var proveParentBlock common.Hash
 		for i, prover := range results.provers {
-			tproof, err := prover.finalize()
+			if i != 0 && prover.reader.blockRange().First() != results.provers[i-1].reader.blockRange().AfterLast() {
+				panic("prover block ranges are not continuous")
+			}
+			tproof, proveLastBlock, err := prover.finalize(proveParentBlock)
 			if err != nil {
 				return nil, common.Range[uint64]{}, nil, err
 			}
+			proveParentBlock = proveLastBlock
 			tproof.IndexContract = proof.addOrGetIndexContract(prover.reader.indexContract)
 			proof.TableQueryProofs[i] = tproof
 			// generate state proof nodes for table root

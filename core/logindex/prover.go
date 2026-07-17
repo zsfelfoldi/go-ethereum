@@ -18,6 +18,7 @@ package logindex
 
 import (
 	"container/heap"
+	"errors"
 	"fmt"
 	"math"
 	"math/bits"
@@ -100,10 +101,12 @@ func (tp *tableProver) getNode(node uint32) *logicNode {
 	return &tp.nodeChunks[(node-1)/nodeChunkSize].nodes[(node-1)%nodeChunkSize]
 }
 
-func (tp *tableProver) finalize() (tableQueryProof, error) {
+func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, common.Hash, error) {
+	fmt.Println("tp.finalize", tp.reader.blockRange(), "proveParentBlock", proveParentBlock)
 	var (
 		entryCount, allCount int
 		finalResult          *logicNode
+		proveLastBlock       common.Hash
 	)
 	for _, chunk := range tp.nodeChunks {
 		for i := range chunk.count {
@@ -217,15 +220,36 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 	proof := tableQueryProof{
 		FirstBlock:   tp.reader.blockRange().First(),
 		TableSize:    tp.reader.blockRange().Count(),
-		EntryIndices: make([]uint64, 0, entryCount),
+		EntryIndices: make([]uint64, 0, entryCount+1),
 		EntryCount:   tp.reader.entryCount,
 		ResultCount:  uint64(tp.validResults),
 		BlockResults: make([]blockResults, len(blockNumbers)),
 	}
-	for _, bp := range tp.blockProofs {
+	if proveParentBlock != (common.Hash{}) {
+		entryIndex, found, err := tp.reader.seekEntry(&indexEntry{
+			indexValue: indexValue{
+				entryType: ieBlock,
+				value:     proveParentBlock,
+			},
+			indexPosition: indexPosition{
+				blockNumber: tp.reader.blockRange().First() - 1,
+			},
+		})
+		fmt.Println(" fetch parent block entry", found, err)
+		if err != nil {
+			return tableQueryProof{}, common.Hash{}, err
+		}
+		if !found {
+			return tableQueryProof{}, common.Hash{}, errors.New("parent block entry not found")
+		}
+		proof.EntryIndices = append(proof.EntryIndices, entryIndex)
+	}
+	for blockNumber, bp := range tp.blockProofs {
 		//fmt.Println("block entry", bp.blockEntryIndex)
-		if bp.blockEntryIndex != math.MaxUint64 {
-			proof.EntryIndices = append(proof.EntryIndices, bp.blockEntryIndex) //TODO add parent block of next table
+		if blockNumber != tp.reader.blockRange().Last() {
+			proof.EntryIndices = append(proof.EntryIndices, bp.blockEntryIndex)
+		} else {
+			proveLastBlock = bp.header.Hash()
 		}
 		for _, mtx := range bp.matchingTxs {
 			//fmt.Println("tx entry", mtx.txEntryIndex)
@@ -259,29 +283,29 @@ func (tp *tableProver) finalize() (tableQueryProof, error) {
 
 	tp.finalizeHeap.entryNodes = nil
 	tp.nodeChunks = nil
-	entries := make(indexEntries, entryCount)
+	entries := make(indexEntries, len(proof.EntryIndices))
 	lastIndex := uint64(math.MaxUint64)
 	//fmt.Println("proof.EntryIndices", len(proof.EntryIndices))
 	for i, entryIndex := range proof.EntryIndices {
 		entry, err := tp.reader.getEntry(entryIndex)
 		if err != nil {
-			return tableQueryProof{}, err
+			return tableQueryProof{}, common.Hash{}, err
 		}
 		//fmt.Println("entry", entryIndex, "hash", common.Hash(entry.hash()))
 		entries[i] = *entry
 		if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, entryIndex); err != nil {
-			return tableQueryProof{}, err
+			return tableQueryProof{}, common.Hash{}, err
 		}
 		lastIndex = entryIndex
 	}
 	var err error
 	if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, uint64(math.MaxUint64)); err != nil {
-		return tableQueryProof{}, err
+		return tableQueryProof{}, common.Hash{}, err
 	}
 	proof.ProvenEntries = entries.toStorage()
 	//treeRoot, _ := tp.reader.getHash(1)
 	//fmt.Println("tree root", common.Hash(treeRoot))
-	return proof, nil
+	return proof, proveLastBlock, nil
 }
 
 func (tp *tableProver) makeProofHashes(hashes []merkle.Value, a, b uint64) ([]merkle.Value, error) {

@@ -137,14 +137,23 @@ func (qp *QueryProof) Verify(contractVerifier contractVerifier) ([]*types.Log, e
 	var results []*types.Log
 	qp.contractProofNodes = makeProofMap(qp.ContractProofNodes)
 	qp.contractProofCodes = makeProofMap(qp.ContractProofCodes)
+	var reqParentBlockHash common.Hash
 	for i, tqp := range qp.TableQueryProofs {
 		provenTableRoot, err := qp.getProvenTableRoot(contractVerifier, qp.IndexContracts[tqp.IndexContract], tqp.FirstBlock, tqp.TableSize)
 		if err != nil {
 			return nil, err
 		}
-		results, err = tqp.verify(&qp.Query, provenTableRoot, i == limitedTableProof, results)
+		results, reqParentBlockHash, err = tqp.verify(&qp.Query, provenTableRoot, i == limitedTableProof, results, reqParentBlockHash)
 		if err != nil {
 			return nil, err
+		}
+	}
+	if reqParentBlockHash != (common.Hash{}) {
+		tqp := qp.TableQueryProofs[len(qp.TableQueryProofs)-1]
+		if qp.RefHeader.Number.Uint64() != tqp.FirstBlock+tqp.TableSize-1 {
+			return nil, errors.New("required last block of last proven table not proven by reference head")
+		} else if qp.RefHeader.Hash() != reqParentBlockHash {
+			return nil, errors.New("required last block of last proven table does not match reference head")
 		}
 	}
 	return results, nil
@@ -156,28 +165,28 @@ func (qp *QueryProof) getProvenTableRoot(contractVerifier contractVerifier, inde
 
 // if total result count equals MaxResults then resultsLimited is true for the
 // first/last tableQueryProof (depending on direction)
-func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Hash, resultsLimited bool, results []*types.Log) ([]*types.Log, error) {
+func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Hash, resultsLimited bool, results []*types.Log, reqParentBlockHash common.Hash) ([]*types.Log, common.Hash, error) {
 	//fmt.Println("** tqp.verify", tqp.FirstBlock, tqp.TableSize)
 	tqp.entries = tqp.ProvenEntries.toEntries()
 	ctr, err := tqp.calculateTableRoot()
 	if err != nil {
-		return nil, err
+		return nil, common.Hash{}, err
 	}
 	//fmt.Println(" * calc table root", common.Hash(ctr), "proven table root", provenTableRoot)
 	if common.Hash(ctr) != provenTableRoot {
-		return nil, errors.New("table root mismatch")
+		return nil, common.Hash{}, errors.New("table root mismatch")
 	}
 	blockRange := common.NewRange[uint64](tqp.FirstBlock, tqp.TableSize).Intersection(common.NewRange[uint64](query.FirstBlock, query.LastBlock+1-query.FirstBlock))
 	if blockRange.IsEmpty() {
-		return nil, errors.New("useful block range is empty")
+		return nil, common.Hash{}, errors.New("useful block range is empty")
 	}
 	begin := indexPosition{blockNumber: blockRange.First()}
 	end := indexPosition{blockNumber: blockRange.Last(), txIndex: math.MaxUint32, logIndex: math.MaxUint32}
 	oldCount := len(results)
-	results, inclusionProven, validResult, err := tqp.getProvenEntries(query, results)
+	results, inclusionProven, validResult, reqLastBlockHash, err := tqp.getProvenEntries(query, results, reqParentBlockHash)
 	//fmt.Println("getProvenEntries oldCount:", oldCount, "results:", len(results), "inclusionProven", len(inclusionProven))
 	if err != nil {
-		return nil, err
+		return nil, common.Hash{}, err
 	}
 	count := len(results) - oldCount
 	if resultsLimited && uint64(count) > tqp.ResultCount {
@@ -221,7 +230,7 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 	if uint64(count) != tqp.ResultCount {
 		//fmt.Println("count", count, "tqp.ResultCount", tqp.ResultCount, "len(inclusionProven)", len(inclusionProven), "len(validResult)", len(validResult), "validResult", validResult)
 		panic("xxxxx")
-		return nil, errors.New("invalid result count")
+		return nil, common.Hash{}, errors.New("invalid result count")
 	}
 	//fmt.Println(" * result count", count)
 	potentialMatches := tqp.getPotentialMatches(query, begin, end)
@@ -230,15 +239,15 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 	var i int
 	for pos := range potentialMatches.iter() {
 		if i >= len(inclusionProven) || inclusionProven[i] != pos {
-			return nil, errors.New("inclusion and exclusion proofs do not match")
+			return nil, common.Hash{}, errors.New("inclusion and exclusion proofs do not match")
 		}
 		i++
 	}
 	if i != len(inclusionProven) {
-		return nil, errors.New("inclusion and exclusion proofs do not match")
+		return nil, common.Hash{}, errors.New("inclusion and exclusion proofs do not match")
 	}
 	//fmt.Println(" * inclusion/exclusion proof match")
-	return results, nil
+	return results, reqLastBlockHash, nil
 }
 
 // getProvenEntries returns all logs matching the filter criteria from proven
@@ -249,7 +258,7 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 // Also note that the inclusionProven position list might be longer than the
 // number of added results in case a log satisfies the matchSpecified but not
 // the matchLength criteria.
-func (tqp *tableQueryProof) getProvenEntries(query *FilterQuery, results []*types.Log) ([]*types.Log, []indexPosition, []bool, error) {
+func (tqp *tableQueryProof) getProvenEntries(query *FilterQuery, results []*types.Log, reqParentBlockHash common.Hash) ([]*types.Log, []indexPosition, []bool, common.Hash, error) {
 	type txPosition struct {
 		blockNumber uint64
 		txIndex     uint32
@@ -261,45 +270,60 @@ func (tqp *tableQueryProof) getProvenEntries(query *FilterQuery, results []*type
 	provenBlockEntries := make(map[uint64]common.Hash)
 	provenTxEntries := make(map[txPosition]txInfo)
 	var (
-		inclusionProven []indexPosition
-		validResult     []bool
+		inclusionProven  []indexPosition
+		validResult      []bool
+		reqLastBlockHash common.Hash
 	)
+	fmt.Println("getProvenEntries", tqp.FirstBlock, tqp.TableSize)
 loop:
 	for _, entry := range tqp.entries {
 		switch entry.entryType {
 		case ieBlock:
-			provenBlockEntries[entry.blockNumber] = entry.value //TODO last block
+			fmt.Println(" block entry", entry.blockNumber, common.Hash(entry.value))
+			provenBlockEntries[entry.blockNumber] = entry.value
 		case ieTransaction:
 			provenTxEntries[txPosition{blockNumber: entry.blockNumber, txIndex: entry.txIndex}] = txInfo{txHash: entry.value, cumulativeLogIndex: entry.logIndex}
 		default:
 			break loop // block/tx entries come first in the sorted list
 		}
 	}
+	if reqParentBlockHash != (common.Hash{}) {
+		fmt.Println(" required parent block entry", tqp.FirstBlock-1, common.Hash(reqParentBlockHash))
+		if pbh, ok := provenBlockEntries[tqp.FirstBlock-1]; !ok {
+			return nil, nil, nil, common.Hash{}, errors.New("required proven parent block hash is missing")
+		} else if pbh != reqParentBlockHash {
+			return nil, nil, nil, common.Hash{}, errors.New("required proven parent block hash does not match")
+		}
+	}
 	var lastNumber uint64
 	for i, br := range tqp.BlockResults {
 		number := br.Header.Number.Uint64()
 		if number < tqp.FirstBlock || number >= tqp.FirstBlock+tqp.TableSize || number < query.FirstBlock || number > query.LastBlock {
-			return nil, nil, nil, errors.New("invalid block proof")
+			return nil, nil, nil, common.Hash{}, errors.New("invalid block proof")
 		}
 		if i > 0 && number <= lastNumber {
-			return nil, nil, nil, errors.New("invalid block proof order")
+			return nil, nil, nil, common.Hash{}, errors.New("invalid block proof order")
 		}
 		lastNumber = number
 		blockHash := br.Header.Hash()
-		if hash, ok := provenBlockEntries[number]; !ok {
-			return nil, nil, nil, errors.New("block entry missing")
-		} else if hash != blockHash {
-			return nil, nil, nil, errors.New("block hash mismatch")
+		if number < tqp.FirstBlock+tqp.TableSize-1 {
+			if hash, ok := provenBlockEntries[number]; !ok {
+				return nil, nil, nil, common.Hash{}, errors.New("block entry missing")
+			} else if hash != blockHash {
+				return nil, nil, nil, common.Hash{}, errors.New("block hash mismatch")
+			}
+		} else {
+			reqLastBlockHash = blockHash
 		}
 		br.proofMap = makeProofMap(br.ReceiptsProof)
 		for _, txIndex := range br.ProvenReceipts {
 			txInfo, ok := provenTxEntries[txPosition{blockNumber: number, txIndex: txIndex}]
 			if !ok {
-				return nil, nil, nil, errors.New("transaction entry missing")
+				return nil, nil, nil, common.Hash{}, errors.New("transaction entry missing")
 			}
 			receipt, err := br.getProvenReceipt(txIndex)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, common.Hash{}, err
 			}
 			for i, log := range receipt.Logs {
 				if query.matchSpecified(log) {
@@ -323,7 +347,7 @@ loop:
 			}
 		}
 	}
-	return results, inclusionProven, validResult, nil
+	return results, inclusionProven, validResult, reqLastBlockHash, nil
 }
 
 func (tqp *tableQueryProof) calculateTableRoot() (merkle.Value, error) {
