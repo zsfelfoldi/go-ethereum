@@ -67,14 +67,19 @@ type contractVerifier interface {
 func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header, contractProver contractProver, contractVerifier contractVerifier) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
 	ix.lock.Lock()
 	start := time.Now()
-	firstBlock := min(query.FirstBlock, ix.headBlock) //TODO inditas utan, amig syncing megy, itt 0 a head
-	lastBlock := min(query.LastBlock, ix.headBlock)
+	headBlock := refHeader.Number.Uint64() //TODO check whether refHeader is part of the indexed chain (common ancestor if not?)
+	firstBlock := min(query.FirstBlock, headBlock)
+	lastBlock := min(query.LastBlock, headBlock)
 	blockRange := common.NewRange[uint64](firstBlock, lastBlock+1-firstBlock)
 	direction := 1
 	if query.Reverse {
 		direction = -1
 	}
-	readers := ix.storage.getRangeReaders(blockRange)
+	readerRange := blockRange
+	if prove && lastBlock < headBlock {
+		readerRange.SetLast(lastBlock + 1)
+	}
+	readers := ix.storage.getRangeReaders(readerRange)
 	ix.lock.Unlock()
 	sort.Slice(readers, func(i, j int) bool {
 		switch direction {
@@ -145,10 +150,15 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		resultsCh:      make(chan matcherResults, 1),
 	}
 	//fmt.Println("create session", firstBlock, lastBlock, query.Addresses, query.Topics)
+	var lastBlockProver *tableProver
 	for i, tr := range readers {
-		br := tr.blockRange().Intersection(blockRange)
+		br := tr.blockRange().Intersection(blockRange) // can be empty in the last table because of readerRange extension
 		//fmt.Println(" ", br)
 		prover := newTableProver(tr)
+		if br.IsEmpty() {
+			lastBlockProver = prover
+			break
+		}
 		proverInstance := prover.newInstance()
 		mp := &matcherProcess{
 			indexer: ix,
@@ -219,9 +229,16 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		proofNodes := make(trieProofWriter)
 		proofCodes := make(trieProofWriter)
 		var proveParentBlock common.Hash
+		if lastBlockProver != nil && len(results.provers) > 0 &&
+			lastBlockProver.reader.blockRange().First() == results.provers[len(results.provers)-1].reader.blockRange().AfterLast() {
+			results.provers = append(results.provers, lastBlockProver)
+		}
 		for i, prover := range results.provers {
 			if i != 0 && prover.reader.blockRange().First() != results.provers[i-1].reader.blockRange().AfterLast() {
 				panic("prover block ranges are not continuous")
+			}
+			if prover == lastBlockProver && proveParentBlock == (common.Hash{}) {
+				break
 			}
 			tproof, proveLastBlock, err := prover.finalize(proveParentBlock)
 			if err != nil {
@@ -239,40 +256,10 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			if tableRoot != common.Hash(prover.reader.tableRoot) {
 				return nil, common.Range[uint64]{}, nil, errors.New("local table root does not match index contract")
 			}
-			/*account, err := trie.GetAccount(prover.reader.indexContract)
-			if err != nil {
-				return nil, common.Range[uint64]{}, nil, err
-			}
-			strie, err := stateDb.OpenStorageTrie(refHeader.Root, prover.reader.indexContract, account.Root, trie)
-			if err != nil {
-				return nil, common.Range[uint64]{}, nil, err
-			}
-			tableRootKey, err := getTableRootKey(stateDb, refHeader.Root, prover.reader.indexContract, tproof.FirstBlock, tproof.TableSize)
-			if err != nil {
-				return nil, common.Range[uint64]{}, nil, err
-			}
-			if err := strie.Prove(tableRootKey, proofDb); err != nil {
-				return nil, common.Range[uint64]{}, nil, err
-			}*/
 		}
-		/*for _, address := range proof.IndexContracts {
-			if err := trie.Prove(address.Bytes(), proofDb); err != nil { //TODO hashed address?
-				return nil, common.Range[uint64]{}, nil, err
-			}
-		}*/
-
-		/*for hash, node := range proofNodes {
-			dec, err := rlp.SplitListValues(node)
-			dlen := make([]int, len(dec))
-			for i, d := range dec {
-				dlen[i] = len(d)
-			}
-			fmt.Printf("state %x : %v %v\n", hash, dlen, err)
+		if proveParentBlock != (common.Hash{}) && proveParentBlock != refHeader.Hash() {
+			return nil, common.Range[uint64]{}, nil, errors.New("could not prove last block of last table")
 		}
-		for hash, code := range proofCodes {
-			fmt.Printf("code %x : %x\n", hash, code)
-		}*/
-
 		proof.ContractProofNodes = proofNodes.proofForStorage()
 		proof.ContractProofCodes = proofCodes.proofForStorage()
 		//proof.printStats()
@@ -967,13 +954,14 @@ func (ms *matcherSession) returnResults() {
 			lastResultCount = len(res.logs)
 			mp.proverInstance.connect(andNode, mp.proverInstance.addFinalResultNode())
 		}
+		_, lastBlockProven := mp.blockProofs[mp.tableReader.blockRange().Last()]
 		for i, log := range mp.allMatches {
 			if len(res.logs) == ms.maxResults {
-				lastLog := res.logs[resCount-1]
+				lastLog := res.logs[ms.maxResults-1]
 				trimBlockProofs(mp.blockProofs, lastLog.BlockNumber, uint32(lastLog.TxIndex), mp.session.direction)
 				mp.tableProver.addBlockProofs(mp.blockProofs, ms.maxResults-lastResultCount)
 				lastResultCount = ms.maxResults
-				return false
+				return lastBlockProven
 			}
 			mp.proverInstance.connect(mp.sectionNodes[i], andNode)
 			if len(log.Topics) >= ms.minTopicCount {
@@ -985,7 +973,7 @@ func (ms *matcherSession) returnResults() {
 		}
 		mp.tableProver.addBlockProofs(mp.blockProofs, len(res.logs)-lastResultCount)
 		lastResultCount = len(res.logs)
-		return len(res.logs) != ms.maxResults
+		return lastBlockProven || len(res.logs) != ms.maxResults
 	}
 
 	for mp := ms.first; mp != nil && addProcessResults(mp); mp = mp.next {
