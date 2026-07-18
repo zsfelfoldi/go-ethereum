@@ -166,13 +166,13 @@ func (qp *QueryProof) getProvenTableRoot(contractVerifier contractVerifier, inde
 // if total result count equals MaxResults then resultsLimited is true for the
 // first/last tableQueryProof (depending on direction)
 func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Hash, resultsLimited bool, results []*types.Log, reqParentBlockHash common.Hash) ([]*types.Log, common.Hash, error) {
-	//fmt.Println("** tqp.verify", tqp.FirstBlock, tqp.TableSize)
+	fmt.Println("** tqp.verify", tqp.FirstBlock, tqp.TableSize)
 	tqp.entries = tqp.ProvenEntries.toEntries()
 	ctr, err := tqp.calculateTableRoot()
 	if err != nil {
 		return nil, common.Hash{}, err
 	}
-	//fmt.Println(" * calc table root", common.Hash(ctr), "proven table root", provenTableRoot)
+	fmt.Println(" * calc table root", common.Hash(ctr), "proven table root", provenTableRoot)
 	if common.Hash(ctr) != provenTableRoot {
 		return nil, common.Hash{}, errors.New("table root mismatch")
 	}

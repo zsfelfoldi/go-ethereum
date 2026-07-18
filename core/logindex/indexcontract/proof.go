@@ -19,6 +19,7 @@ package indexcontract
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -30,7 +31,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/triedb"
-	"github.com/holiman/uint256"
 )
 
 type proverBackend interface {
@@ -47,7 +47,7 @@ func NewProver(backend proverBackend) Prover {
 }
 
 func (p Prover) ProveTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
-	//fmt.Println("ProveTableRoot", firstBlock, tableSize)
+	fmt.Println("ProveTableRoot", firstBlock, tableSize)
 	state, err := p.backend.StateProverAt(refHead, proofNodes, proofCodes)
 	if err != nil {
 		return common.Hash{}, err
@@ -62,27 +62,26 @@ func getTableRoot(state *state.StateDB, chainConfig *params.ChainConfig, refHead
 	var callData [64]byte
 	binary.BigEndian.PutUint64(callData[24:32], firstBlock)
 	binary.BigEndian.PutUint64(callData[56:64], tableSize)
-	baseFee := uint256.MustFromBig(refHead.BaseFee)
-	msg := &core.Message{
-		GasLimit:  10_000_000,
-		GasPrice:  baseFee,
-		GasFeeCap: baseFee,
-		GasTipCap: baseFee,
-		To:        &contract,
-		Data:      callData[:],
-	}
-	result, err := core.ApplyMessage(evm, msg, core.NewGasPool(math.MaxUint64))
+	/*	baseFee := uint256.MustFromBig(refHead.BaseFee)
+		msg := &core.Message{
+			GasLimit:  10_000_000,
+			GasPrice:  baseFee,
+			GasFeeCap: baseFee,
+			GasTipCap: baseFee,
+			To:        &contract,
+			Data:      callData[:],
+		}
+		result, err := core.ApplyMessage(evm, msg, core.NewGasPool(math.MaxUint64)) */
+	//result, _, err := evm.Call(common.Address{}, contract, callData[:], vm.NewGasBudget(math.MaxUint64, math.MaxUint64), common.U2560)
+	result, _, err := evm.Call(contract, contract, callData[:], vm.NewGasBudget(math.MaxUint64, math.MaxUint64), common.U2560)
 	if err != nil {
 		return common.Hash{}, err
 	}
-	if result.Err != nil {
-		return common.Hash{}, result.Err
-	}
-	if len(result.ReturnData) != common.HashLength {
+	if len(result) != common.HashLength {
 		return common.Hash{}, errors.New("invalid return data size")
 	}
 	var tableRoot common.Hash
-	copy(tableRoot[:], result.ReturnData)
+	copy(tableRoot[:], result)
 	return tableRoot, nil
 }
 
