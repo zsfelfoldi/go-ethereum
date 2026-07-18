@@ -275,12 +275,12 @@ func (tqp *tableQueryProof) getProvenEntries(query *FilterQuery, results []*type
 		validResult      []bool
 		reqLastBlockHash common.Hash
 	)
-	fmt.Println("getProvenEntries", tqp.FirstBlock, tqp.TableSize)
+	//fmt.Println("getProvenEntries", tqp.FirstBlock, tqp.TableSize)
 loop:
 	for _, entry := range tqp.entries {
 		switch entry.entryType {
 		case ieBlock:
-			fmt.Println(" block entry", entry.blockNumber, common.Hash(entry.value))
+			//fmt.Println(" block entry", entry.blockNumber, common.Hash(entry.value))
 			provenBlockEntries[entry.blockNumber] = entry.value
 		case ieTransaction:
 			provenTxEntries[txPosition{blockNumber: entry.blockNumber, txIndex: entry.txIndex}] = txInfo{txHash: entry.value, cumulativeLogIndex: entry.logIndex}
@@ -289,7 +289,7 @@ loop:
 		}
 	}
 	if reqParentBlockHash != (common.Hash{}) {
-		fmt.Println(" required parent block entry", tqp.FirstBlock-1, common.Hash(reqParentBlockHash))
+		//fmt.Println(" required parent block entry", tqp.FirstBlock-1, common.Hash(reqParentBlockHash))
 		if pbh, ok := provenBlockEntries[tqp.FirstBlock-1]; !ok {
 			return nil, nil, nil, common.Hash{}, errors.New("required proven parent block hash is missing")
 		} else if pbh != reqParentBlockHash {

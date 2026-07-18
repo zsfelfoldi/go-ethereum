@@ -102,7 +102,7 @@ func (tp *tableProver) getNode(node uint32) *logicNode {
 }
 
 func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, common.Hash, error) {
-	fmt.Println("tp.finalize", tp.reader.blockRange(), "proveParentBlock", proveParentBlock)
+	//fmt.Println("tp.finalize", tp.reader.blockRange(), "proveParentBlock", proveParentBlock)
 	var (
 		entryCount, allCount int
 		finalResult          *logicNode
