@@ -176,14 +176,15 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 	if common.Hash(ctr) != provenTableRoot {
 		return nil, common.Hash{}, errors.New("table root mismatch")
 	}
+	oldCount := len(results)
+	results, inclusionProven, validResult, reqLastBlockHash, err := tqp.getProvenEntries(query, results, reqParentBlockHash)
 	blockRange := common.NewRange[uint64](tqp.FirstBlock, tqp.TableSize).Intersection(common.NewRange[uint64](query.FirstBlock, query.LastBlock+1-query.FirstBlock))
 	if blockRange.IsEmpty() {
-		return nil, common.Hash{}, errors.New("useful block range is empty")
+		return results, reqLastBlockHash, nil
+		//return nil, common.Hash{}, errors.New("useful block range is empty")
 	}
 	begin := indexPosition{blockNumber: blockRange.First()}
 	end := indexPosition{blockNumber: blockRange.Last(), txIndex: math.MaxUint32, logIndex: math.MaxUint32}
-	oldCount := len(results)
-	results, inclusionProven, validResult, reqLastBlockHash, err := tqp.getProvenEntries(query, results, reqParentBlockHash)
 	//fmt.Println("getProvenEntries oldCount:", oldCount, "results:", len(results), "inclusionProven", len(inclusionProven))
 	if err != nil {
 		return nil, common.Hash{}, err

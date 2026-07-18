@@ -122,93 +122,91 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 			}
 		}
 	}
-	if finalResult == nil {
-		panic("no final result node found")
-	}
-	//fmt.Println("finalize", tp.reader.blockRange(), "entry nodes", entryCount, "all nodes", allCount, "table root", tp.reader.tableRoot)
-	entryNodes := make([]uint32, entryCount)
-	var entryPtr int
-	for _, chunk := range tp.nodeChunks {
-		for i := range chunk.count {
-			if chunk.nodes[i].nodeType() == ntProvenEntry {
-				entryNodes[entryPtr] = chunk.index*nodeChunkSize + 1 + uint32(i)
-				entryPtr++
+	if finalResult != nil {
+		//fmt.Println("finalize", tp.reader.blockRange(), "entry nodes", entryCount, "all nodes", allCount, "table root", tp.reader.tableRoot)
+		entryNodes := make([]uint32, entryCount)
+		var entryPtr int
+		for _, chunk := range tp.nodeChunks {
+			for i := range chunk.count {
+				if chunk.nodes[i].nodeType() == ntProvenEntry {
+					entryNodes[entryPtr] = chunk.index*nodeChunkSize + 1 + uint32(i)
+					entryPtr++
+				}
 			}
 		}
-	}
-	sort.Slice(entryNodes, func(i, j int) bool {
-		return tp.getNode(entryNodes[i]).nodeValue() < tp.getNode(entryNodes[j]).nodeValue()
-	})
-	pi := tp.newInstance()
-	var j int
-	for _, node := range entryNodes {
-		if j > 0 && tp.getNode(entryNodes[j-1]).nodeValue() == tp.getNode(node).nodeValue() {
-			pi.mergeEntryNodes(entryNodes[j-1], node)
-		} else {
-			entryNodes[j] = node
-			j++
+		sort.Slice(entryNodes, func(i, j int) bool {
+			return tp.getNode(entryNodes[i]).nodeValue() < tp.getNode(entryNodes[j]).nodeValue()
+		})
+		pi := tp.newInstance()
+		var j int
+		for _, node := range entryNodes {
+			if j > 0 && tp.getNode(entryNodes[j-1]).nodeValue() == tp.getNode(node).nodeValue() {
+				pi.mergeEntryNodes(entryNodes[j-1], node)
+			} else {
+				entryNodes[j] = node
+				j++
+			}
 		}
-	}
-	pi = nil
-	entryNodes = entryNodes[:j]
-	entryCount = j
-	tp.finalizeHeap = finalizeHeap{
-		getNode:    tp.getNode,
-		treeHeight: tp.treeHeight,
-		entryNodes: entryNodes,                      // ntProvenEntry logic nodes sorted by entry index
-		prevEntry:  make([]uint32, len(entryNodes)), // indices of entryNodes (sortedIndex)
-		nextEntry:  make([]uint32, len(entryNodes)), // indices of entryNodes (sortedIndex)
-		heapOrder:  make([]uint32, len(entryNodes)), // indices of entryNodes (sortedIndex)
-		heapIndex:  make([]uint32, len(entryNodes)), // indices of heapOrder
-	}
-	for i := range entryNodes {
-		if i > 0 {
-			tp.finalizeHeap.prevEntry[i] = uint32(i - 1)
-		} else {
-			tp.finalizeHeap.prevEntry[i] = math.MaxUint32
+		pi = nil
+		entryNodes = entryNodes[:j]
+		entryCount = j
+		tp.finalizeHeap = finalizeHeap{
+			getNode:    tp.getNode,
+			treeHeight: tp.treeHeight,
+			entryNodes: entryNodes,                      // ntProvenEntry logic nodes sorted by entry index
+			prevEntry:  make([]uint32, len(entryNodes)), // indices of entryNodes (sortedIndex)
+			nextEntry:  make([]uint32, len(entryNodes)), // indices of entryNodes (sortedIndex)
+			heapOrder:  make([]uint32, len(entryNodes)), // indices of entryNodes (sortedIndex)
+			heapIndex:  make([]uint32, len(entryNodes)), // indices of heapOrder
 		}
-		if i < len(entryNodes)-1 {
-			tp.finalizeHeap.nextEntry[i] = uint32(i + 1)
-		} else {
-			tp.finalizeHeap.nextEntry[i] = math.MaxUint32
+		for i := range entryNodes {
+			if i > 0 {
+				tp.finalizeHeap.prevEntry[i] = uint32(i - 1)
+			} else {
+				tp.finalizeHeap.prevEntry[i] = math.MaxUint32
+			}
+			if i < len(entryNodes)-1 {
+				tp.finalizeHeap.nextEntry[i] = uint32(i + 1)
+			} else {
+				tp.finalizeHeap.nextEntry[i] = math.MaxUint32
+			}
+			tp.finalizeHeap.heapOrder[i] = uint32(i)
+			tp.finalizeHeap.heapIndex[i] = uint32(i)
 		}
-		tp.finalizeHeap.heapOrder[i] = uint32(i)
-		tp.finalizeHeap.heapIndex[i] = uint32(i)
-	}
-	heap.Init(&tp.finalizeHeap)
-	for tp.finalizeHeap.Len() != 0 {
-		sortedIndex := heap.Pop(&tp.finalizeHeap).(uint32)
-		//fmt.Println("heap.Pop", sortedIndex)
-		//tp.finalizeHeap.print()
-		entryNode := tp.finalizeHeap.entryNodes[sortedIndex]
-		switch finalResult.logicState() {
-		case lsDecidedTrue:
-			tp.traverse(setFalse, entryNode)
-			tp.finalizeHeap.removedEntry(sortedIndex)
-			entryCount--
-		case lsAssumedTrue:
-			tp.traverse(trySetFalse, entryNode)
+		heap.Init(&tp.finalizeHeap)
+		for tp.finalizeHeap.Len() != 0 {
+			sortedIndex := heap.Pop(&tp.finalizeHeap).(uint32)
+			//fmt.Println("heap.Pop", sortedIndex)
+			//tp.finalizeHeap.print()
+			entryNode := tp.finalizeHeap.entryNodes[sortedIndex]
 			switch finalResult.logicState() {
-			case lsAssumedTrue:
-				tp.traverse(confirmSetFalse, entryNode)
+			case lsDecidedTrue:
+				tp.traverse(setFalse, entryNode)
 				tp.finalizeHeap.removedEntry(sortedIndex)
 				entryCount--
-			case lsAssumedFalse:
-				tp.traverse(revertSetFalse, entryNode)
-				tp.traverse(setTrue, entryNode)
+			case lsAssumedTrue:
+				tp.traverse(trySetFalse, entryNode)
+				switch finalResult.logicState() {
+				case lsAssumedTrue:
+					tp.traverse(confirmSetFalse, entryNode)
+					tp.finalizeHeap.removedEntry(sortedIndex)
+					entryCount--
+				case lsAssumedFalse:
+					tp.traverse(revertSetFalse, entryNode)
+					tp.traverse(setTrue, entryNode)
+				default:
+					panic("unexpected logic state for final result node after trySetFalse")
+				}
 			default:
-				panic("unexpected logic state for final result node after trySetFalse")
+				panic("unexpected logic state for final result node")
 			}
-		default:
-			panic("unexpected logic state for final result node")
 		}
+		if finalResult.logicState() != lsDecidedTrue {
+			panic("invalid final result logic state")
+		}
+		tp.finalizeHeap.prevEntry, tp.finalizeHeap.nextEntry, tp.finalizeHeap.heapOrder, tp.finalizeHeap.heapIndex = nil, nil, nil, nil
+		//fmt.Println(" optimized entry node count", entryCount)
 	}
-	if finalResult.logicState() != lsDecidedTrue {
-		panic("invalid final result logic state")
-	}
-	tp.finalizeHeap.prevEntry, tp.finalizeHeap.nextEntry, tp.finalizeHeap.heapOrder, tp.finalizeHeap.heapIndex = nil, nil, nil, nil
-	//fmt.Println(" optimized entry node count", entryCount)
-
 	blockNumbers := make([]uint64, 0, len(tp.blockProofs))
 	for number, proof := range tp.blockProofs {
 		blockNumbers = append(blockNumbers, number)

@@ -214,6 +214,10 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	//fmt.Println("+++ Runtime without proof generation:", time.Since(start))
 	var proof *QueryProof
 	if prove {
+		if lastBlockProver != nil && len(results.provers) > 0 &&
+			lastBlockProver.reader.blockRange().First() == results.provers[len(results.provers)-1].reader.blockRange().AfterLast() {
+			results.provers = append(results.provers, lastBlockProver)
+		}
 		proof = &QueryProof{
 			Query:            query,
 			RefHeader:        *refHeader,
@@ -229,10 +233,6 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		proofNodes := make(trieProofWriter)
 		proofCodes := make(trieProofWriter)
 		var proveParentBlock common.Hash
-		if lastBlockProver != nil && len(results.provers) > 0 &&
-			lastBlockProver.reader.blockRange().First() == results.provers[len(results.provers)-1].reader.blockRange().AfterLast() {
-			results.provers = append(results.provers, lastBlockProver)
-		}
 		for i, prover := range results.provers {
 			if i != 0 && prover.reader.blockRange().First() != results.provers[i-1].reader.blockRange().AfterLast() {
 				panic("prover block ranges are not continuous")
