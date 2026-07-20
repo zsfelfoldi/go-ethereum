@@ -159,20 +159,20 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			lastBlockProver = prover
 			break
 		}
-		proverInstance := prover.newInstance()
+		logicBuilder := prover.optimizer.newBuilderInstance()
 		mp := &matcherProcess{
 			indexer: ix,
 			matcher: matcher.newInstance(
 				ctx,
 				tr,
-				proverInstance,
+				logicBuilder,
 				indexPosition{blockNumber: br.First()},
 				indexPosition{blockNumber: br.Last(), txIndex: math.MaxUint32, logIndex: math.MaxUint32},
 				direction),
 			session:        session,
 			tableReader:    tr,
 			tableProver:    prover,
-			proverInstance: proverInstance,
+			logicBuilder:   logicBuilder,
 			blockRange:     br,
 			blockInResults: make(map[uint64]int),
 			blockProofs:    make(map[uint64]*blockProof),
@@ -319,7 +319,7 @@ type matcherResults struct {
 // matcher defines a general abstraction for any matcher configuration that
 // can instantiate a matcherInstance.
 type matcher interface {
-	newInstance(ctx context.Context, reader *tableReader, prover *proverInstance, first, last indexPosition, direction int) matcherInstance
+	newInstance(ctx context.Context, reader *tableReader, prover *logicBuilder, first, last indexPosition, direction int) matcherInstance
 }
 
 // matcherInstance defines a general abstraction for a matcher configuration
@@ -332,9 +332,9 @@ type matcher interface {
 // a result has been returned has no effect. Exactly one matcherResult is
 // returned per requested map index unless dropped.
 type matcherInstance interface {
-	next() (*indexPosition, uint32, error)
+	next() (*indexPosition, logicNodeID, error)
 	advance(*indexPosition) error
-	split(*proverInstance, *indexPosition) matcherInstance
+	split(*logicBuilder, *indexPosition) matcherInstance
 }
 
 // singleMatcher implements matcher by returning matches for a single log value hash.
@@ -349,17 +349,17 @@ type singleMatcherInstance struct {
 	ctx                                              context.Context
 	compare                                          indexEntry // value part is fixed, position part is used for comparisons
 	reader                                           *tableReader
-	prover                                           *proverInstance
+	logic                                            *logicBuilder
 	entryPtr                                         uint64
 	direction                                        int
 	initialized, isEmpty                             bool
 	first, last                                      indexPosition
 	currentPos                                       *indexPosition
-	lastEntryNode, currentEntryNode, lastSectionNode uint32
+	lastEntryNode, currentEntryNode, lastSectionNode logicNodeID
 }
 
 // newInstance creates a new instance of singleMatcher.
-func (m *singleMatcher) newInstance(ctx context.Context, reader *tableReader, prover *proverInstance, first, last indexPosition, direction int) matcherInstance {
+func (m *singleMatcher) newInstance(ctx context.Context, reader *tableReader, logic *logicBuilder, first, last indexPosition, direction int) matcherInstance {
 	mi := &singleMatcherInstance{
 		singleMatcher: m,
 		ctx:           ctx,
@@ -367,7 +367,7 @@ func (m *singleMatcher) newInstance(ctx context.Context, reader *tableReader, pr
 			indexValue: m.value,
 		},
 		reader:    reader,
-		prover:    prover,
+		logic:     logic,
 		direction: direction,
 		first:     first,
 		last:      last,
@@ -398,7 +398,7 @@ func (m *singleMatcherInstance) init() error {
 }
 
 // next implements matcherInstance.
-func (m *singleMatcherInstance) next() (dpos *indexPosition, dlsn uint32, derr error) {
+func (m *singleMatcherInstance) next() (dpos *indexPosition, dlsn logicNodeID, derr error) {
 	/*defer func() {
 		fmt.Println("singleMatcherInstance  pos", dpos, "lsn", dlsn, "err", derr)
 	}()*/
@@ -409,17 +409,17 @@ func (m *singleMatcherInstance) next() (dpos *indexPosition, dlsn uint32, derr e
 	}
 	if m.lastSectionNode == 0 {
 		if m.currentEntryNode == 0 {
-			m.currentEntryNode = m.prover.addProvenEntryNode(m.entryPtr)
+			m.currentEntryNode = m.logic.addInputNode(m.entryPtr)
 			//fmt.Println(" currentEntryNode ptr =", m.entryPtr)
 		}
 		if (m.direction == 1 && m.entryPtr != 0) || (m.direction == 1 && m.entryPtr < m.reader.entryCount-1) {
 			if m.lastEntryNode == 0 {
-				m.lastEntryNode = m.prover.addProvenEntryNode(uint64(int64(m.entryPtr) - int64(m.direction)))
+				m.lastEntryNode = m.logic.addInputNode(uint64(int64(m.entryPtr) - int64(m.direction)))
 				//fmt.Println(" lastEntryNode ptr =", uint64(int64(m.entryPtr)-int64(m.direction)))
 			}
-			m.lastSectionNode = m.prover.addAndGateNode()
-			m.prover.connect(m.lastEntryNode, m.lastSectionNode)
-			m.prover.connect(m.currentEntryNode, m.lastSectionNode)
+			m.lastSectionNode = m.logic.addAndGateNode()
+			m.logic.connect(m.lastEntryNode, m.lastSectionNode)
+			m.logic.connect(m.currentEntryNode, m.lastSectionNode)
 		} else {
 			m.lastSectionNode = m.currentEntryNode
 		}
@@ -545,7 +545,7 @@ func (m *singleMatcherInstance) advance(findPos *indexPosition) error {
 }
 
 // split implements matcherInstance.
-func (m *singleMatcherInstance) split(prover *proverInstance, splitPos *indexPosition) matcherInstance {
+func (m *singleMatcherInstance) split(logic *logicBuilder, splitPos *indexPosition) matcherInstance {
 	if !m.initialized {
 		panic("cannot split uninitialized single matcher")
 	}
@@ -554,7 +554,7 @@ func (m *singleMatcherInstance) split(prover *proverInstance, splitPos *indexPos
 		ctx:           m.ctx,
 		compare:       m.compare,
 		reader:        m.reader,
-		prover:        prover,
+		logic:         logic,
 		entryPtr:      m.entryPtr,
 		direction:     m.direction,
 		first:         m.first,
@@ -586,50 +586,50 @@ type matchAny []matcher
 // matchAnyInstance is an instance of matchAny.
 type matchAnyInstance struct {
 	children        []matcherInstance
-	prover          *proverInstance
+	logic           *logicBuilder
 	direction       int
 	currentPos      *indexPosition
-	lastSectionNode uint32
+	lastSectionNode logicNodeID
 	isEmpty         bool
 }
 
 // newInstance creates a new instance of matchAny.
-func (m matchAny) newInstance(ctx context.Context, reader *tableReader, prover *proverInstance, first, last indexPosition, direction int) matcherInstance {
+func (m matchAny) newInstance(ctx context.Context, reader *tableReader, logic *logicBuilder, first, last indexPosition, direction int) matcherInstance {
 	if len(m) == 0 {
 		panic("zero length matchAny")
 	}
 	if len(m) == 1 {
-		return m[0].newInstance(ctx, reader, prover, first, last, direction)
+		return m[0].newInstance(ctx, reader, logic, first, last, direction)
 	}
 	mi := &matchAnyInstance{
 		children:  make([]matcherInstance, len(m)),
-		prover:    prover,
+		logic:     logic,
 		direction: direction,
 	}
 	for i, mm := range m {
-		mi.children[i] = mm.newInstance(ctx, reader, prover, first, last, direction)
+		mi.children[i] = mm.newInstance(ctx, reader, logic, first, last, direction)
 	}
 	return mi
 }
 
 // next implements matcherInstance.
-func (m *matchAnyInstance) next() (dpos *indexPosition, dlsn uint32, derr error) {
+func (m *matchAnyInstance) next() (dpos *indexPosition, dlsn logicNodeID, derr error) {
 	/*defer func() {
 		fmt.Println("matchAnyInstance  pos", dpos, "lsn", dlsn, "err", derr)
 	}()*/
 	if m.isEmpty || m.currentPos != nil {
 		return m.currentPos, m.lastSectionNode, nil
 	}
-	if m.prover != nil {
-		m.lastSectionNode = m.prover.addAndGateNode()
+	if m.logic != nil {
+		m.lastSectionNode = m.logic.addAndGateNode()
 	}
 	for _, cm := range m.children {
 		pos, node, err := cm.next()
 		if err != nil {
 			return nil, 0, err
 		}
-		if m.prover != nil {
-			m.prover.connect(node, m.lastSectionNode)
+		if m.logic != nil {
+			m.logic.connect(node, m.lastSectionNode)
 		}
 		if pos != nil && (m.currentPos == nil || m.currentPos.compare(pos) == m.direction) {
 			m.currentPos = pos
@@ -676,14 +676,14 @@ func (m *matchAnyInstance) advance(findPos *indexPosition) error {
 }
 
 // split implements matcherInstance.
-func (m *matchAnyInstance) split(prover *proverInstance, splitPos *indexPosition) matcherInstance {
+func (m *matchAnyInstance) split(logic *logicBuilder, splitPos *indexPosition) matcherInstance {
 	c := &matchAnyInstance{
 		children:  make([]matcherInstance, len(m.children)),
-		prover:    prover,
+		logic:     logic,
 		direction: m.direction,
 	}
 	for i, cm := range m.children {
-		c.children[i] = cm.split(prover, splitPos)
+		c.children[i] = cm.split(logic, splitPos)
 	}
 	if m.currentPos != nil && (splitPos.compare(m.currentPos) == 1) != (m.direction == 1) {
 		m.currentPos, m.isEmpty = nil, true
@@ -696,34 +696,34 @@ type matchAll []matcher
 // matchAllInstance is an instance of matchAll.
 type matchAllInstance struct {
 	children        []matcherInstance
-	prover          *proverInstance
+	logic           *logicBuilder
 	direction       int
 	currentPos      *indexPosition
-	lastSectionNode uint32
+	lastSectionNode logicNodeID
 	isEmpty         bool
 }
 
 // newInstance creates a new instance of matchAll.
-func (m matchAll) newInstance(ctx context.Context, reader *tableReader, prover *proverInstance, first, last indexPosition, direction int) matcherInstance {
+func (m matchAll) newInstance(ctx context.Context, reader *tableReader, logic *logicBuilder, first, last indexPosition, direction int) matcherInstance {
 	if len(m) == 0 {
 		panic("zero length matchAll")
 	}
 	if len(m) == 1 {
-		return m[0].newInstance(ctx, reader, prover, first, last, direction)
+		return m[0].newInstance(ctx, reader, logic, first, last, direction)
 	}
 	mi := &matchAllInstance{
 		children:  make([]matcherInstance, len(m)),
-		prover:    prover,
+		logic:     logic,
 		direction: direction,
 	}
 	for i, mm := range m {
-		mi.children[i] = mm.newInstance(ctx, reader, prover, first, last, direction)
+		mi.children[i] = mm.newInstance(ctx, reader, logic, first, last, direction)
 	}
 	return mi
 }
 
 // next implements matcherInstance.
-func (m *matchAllInstance) next() (dpos *indexPosition, dlsn uint32, derr error) {
+func (m *matchAllInstance) next() (dpos *indexPosition, dlsn logicNodeID, derr error) {
 	/*defer func() {
 		fmt.Println("matchAllInstance  pos", dpos, "lsn", dlsn, "err", derr)
 	}()*/
@@ -731,15 +731,15 @@ func (m *matchAllInstance) next() (dpos *indexPosition, dlsn uint32, derr error)
 	if m.isEmpty || m.currentPos != nil {
 		return m.currentPos, m.lastSectionNode, nil
 	}
-	var andNode uint32
-	if m.prover != nil {
-		andNode = m.prover.addAndGateNode()
+	var andNode logicNodeID
+	if m.logic != nil {
+		andNode = m.logic.addAndGateNode()
 	}
 	for {
 		match := true
 		var (
 			next     *indexPosition
-			nextNode uint32
+			nextNode logicNodeID
 		)
 		for i, cm := range m.children {
 			pos, node, err := cm.next()
@@ -748,20 +748,20 @@ func (m *matchAllInstance) next() (dpos *indexPosition, dlsn uint32, derr error)
 			}
 			if pos == nil {
 				m.isEmpty = true
-				var orNode uint32
-				if m.prover != nil {
-					orNode = m.prover.addOrGateNode()
-					m.prover.connect(node, orNode)
+				var orNode logicNodeID
+				if m.logic != nil {
+					orNode = m.logic.addOrGateNode()
+					m.logic.connect(node, orNode)
 					for j := i + 1; j < len(m.children); j++ {
 						pos, node, err := cm.next()
 						if err != nil {
 							return nil, 0, err
 						}
 						if pos == nil {
-							m.prover.connect(node, orNode)
+							m.logic.connect(node, orNode)
 						}
 					}
-					m.prover.connect(orNode, andNode)
+					m.logic.connect(orNode, andNode)
 				}
 				m.currentPos, m.lastSectionNode = nil, andNode
 				return nil, andNode, nil
@@ -779,8 +779,8 @@ func (m *matchAllInstance) next() (dpos *indexPosition, dlsn uint32, derr error)
 				}
 			}
 		}
-		if m.prover != nil {
-			m.prover.connect(nextNode, andNode)
+		if m.logic != nil {
+			m.logic.connect(nextNode, andNode)
 		}
 		//fmt.Println(" match", match)
 		if match {
@@ -818,14 +818,14 @@ func (m *matchAllInstance) advance(findPos *indexPosition) error {
 }
 
 // split implements matcherInstance.
-func (m *matchAllInstance) split(prover *proverInstance, splitPos *indexPosition) matcherInstance {
+func (m *matchAllInstance) split(logic *logicBuilder, splitPos *indexPosition) matcherInstance {
 	c := &matchAllInstance{
 		children:  make([]matcherInstance, len(m.children)),
-		prover:    prover,
+		logic:     logic,
 		direction: m.direction,
 	}
 	for i, cm := range m.children {
-		c.children[i] = cm.split(prover, splitPos)
+		c.children[i] = cm.split(logic, splitPos)
 	}
 	if m.currentPos != nil && (splitPos.compare(m.currentPos) == 1) != (m.direction == 1) {
 		m.currentPos, m.isEmpty = nil, true
@@ -936,7 +936,7 @@ func (ms *matcherSession) returnResults() {
 	}
 	var (
 		currentProver   *tableProver
-		andNode         uint32
+		andNode         logicNodeID
 		lastResultCount int
 	)
 
@@ -950,9 +950,9 @@ func (ms *matcherSession) returnResults() {
 				res.provers = append(res.provers, currentProver)
 			}
 			currentProver = mp.tableProver
-			andNode = mp.proverInstance.addAndGateNode()
+			andNode = mp.logicBuilder.addAndGateNode()
 			lastResultCount = len(res.logs)
-			mp.proverInstance.connect(andNode, mp.proverInstance.addFinalResultNode())
+			mp.logicBuilder.connect(andNode, mp.logicBuilder.addOutputNode())
 		}
 		_, lastBlockProven := mp.blockProofs[mp.tableReader.blockRange().Last()]
 		for i, log := range mp.allMatches {
@@ -963,13 +963,13 @@ func (ms *matcherSession) returnResults() {
 				lastResultCount = ms.maxResults
 				return lastBlockProven
 			}
-			mp.proverInstance.connect(mp.sectionNodes[i], andNode)
+			mp.logicBuilder.connect(mp.sectionNodes[i], andNode)
 			if len(log.Topics) >= ms.minTopicCount {
 				res.logs = append(res.logs, log)
 			}
 		}
 		if len(mp.sectionNodes) > len(mp.allMatches) {
-			mp.proverInstance.connect(mp.sectionNodes[len(mp.allMatches)], andNode)
+			mp.logicBuilder.connect(mp.sectionNodes[len(mp.allMatches)], andNode)
 		}
 		mp.tableProver.addBlockProofs(mp.blockProofs, len(res.logs)-lastResultCount)
 		lastResultCount = len(res.logs)
@@ -1013,14 +1013,14 @@ const (
 )
 
 type matcherProcess struct {
-	indexer        *Indexer
-	matcher        matcherInstance
-	session        *matcherSession
-	tableReader    *tableReader
-	tableProver    *tableProver
-	proverInstance *proverInstance
-	prev, next     *matcherProcess
-	blockRange     common.Range[uint64]
+	indexer      *Indexer
+	matcher      matcherInstance
+	session      *matcherSession
+	tableReader  *tableReader
+	tableProver  *tableProver
+	logicBuilder *logicBuilder
+	prev, next   *matcherProcess
+	blockRange   common.Range[uint64]
 
 	// accessed by control thread only
 	status  int
@@ -1028,7 +1028,7 @@ type matcherProcess struct {
 
 	// accessed only by worker thread while status == mpRunning
 	positions                    []indexPosition
-	sectionNodes                 []uint32
+	sectionNodes                 []logicNodeID
 	completeUntil, completeValid int
 	finished, matcherFinished    bool
 	err                          error
@@ -1411,14 +1411,14 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 	if !ok {
 		return nil, nil
 	}
-	proverInstance := mp.tableProver.newInstance()
+	logicBuilder := mp.tableProver.optimizer.newBuilderInstance()
 	mp2 := &matcherProcess{
 		indexer:        mp.indexer,
-		matcher:        mp.matcher.split(proverInstance, &indexPosition{blockNumber: splitAt}),
+		matcher:        mp.matcher.split(logicBuilder, &indexPosition{blockNumber: splitAt}),
 		session:        mp.session,
 		tableReader:    mp.tableReader,
 		tableProver:    mp.tableProver,
-		proverInstance: proverInstance,
+		logicBuilder:   logicBuilder,
 		prev:           mp,
 		next:           mp.next,
 		blockRange:     mp.blockRange,
