@@ -71,10 +71,6 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	firstBlock := min(query.FirstBlock, headBlock)
 	lastBlock := min(query.LastBlock, headBlock)
 	blockRange := common.NewRange[uint64](firstBlock, lastBlock+1-firstBlock)
-	direction := 1
-	if query.Reverse {
-		direction = -1
-	}
 	readerRange := blockRange
 	if prove && lastBlock < headBlock {
 		readerRange.SetLast(lastBlock + 1)
@@ -82,26 +78,21 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	readers := ix.storage.getRangeReaders(readerRange)
 	ix.lock.Unlock()
 	sort.Slice(readers, func(i, j int) bool {
-		switch direction {
-		case 1:
-			return readers[i].meta.LastBlockNumber < readers[j].meta.LastBlockNumber
-		case -1:
-			return readers[i].meta.LastBlockNumber > readers[j].meta.LastBlockNumber
-		default:
-			panic("invalid search direction")
-		}
+		return readers[i].meta.LastBlockNumber < readers[j].meta.LastBlockNumber
 	})
-	for i := 1; i < len(readers); i++ {
-		var cont bool
-		switch direction {
-		case 1:
-			cont = readers[i-1].blockRange().AfterLast() == readers[i].blockRange().First()
-		case -1:
-			cont = readers[i].blockRange().AfterLast() == readers[i-1].blockRange().First()
+	if query.Reverse {
+		for i := len(readers) - 1; i > 0; i-- {
+			if readers[i-1].blockRange().AfterLast() != readers[i].blockRange().First() {
+				readers = readers[i:]
+				break
+			}
 		}
-		if !cont {
-			readers = readers[:i]
-			break
+	} else {
+		for i := 1; i < len(readers); i++ {
+			if readers[i-1].blockRange().AfterLast() != readers[i].blockRange().First() {
+				readers = readers[:i]
+				break
+			}
 		}
 	}
 	// build matcher according to the given filter criteria
@@ -145,16 +136,21 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		requestCounter: atomic.AddUint64(&ix.matcherControl.requestCounter, 1),
 		maxResults:     maxResults,
 		validUntil:     blockRange.Last(),
-		direction:      direction,
 		minTopicCount:  len(query.Topics),
 		resultsCh:      make(chan matcherResults, 1),
 	}
 	//fmt.Println("create session", firstBlock, lastBlock, query.Addresses, query.Topics)
 	var lastBlockProver *tableProver
-	for i, tr := range readers {
+	for i, reader := range readers {
+		var tr matcherTableReader
+		if query.Reverse {
+			tr = reverseTableReader(reader)
+		} else {
+			tr = reader
+		}
 		br := tr.blockRange().Intersection(blockRange) // can be empty in the last table because of readerRange extension
 		//fmt.Println(" ", br)
-		prover := newTableProver(tr)
+		prover := newTableProver(reader, query.Reverse)
 		if br.IsEmpty() {
 			lastBlockProver = prover
 			break
@@ -182,9 +178,15 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			session.first = mp
 			session.last = mp
 		} else {
-			mp.prev = session.last
-			session.last.next = mp
-			session.last = mp
+			if query.Reverse {
+				mp.next = session.first
+				session.first.prev = mp
+				session.first = mp
+			} else {
+				mp.prev = session.last
+				session.last.next = mp
+				session.last = mp
+			}
 		}
 	}
 	//session.print()
@@ -211,9 +213,22 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	if results.blockRange.IsEmpty() {
 		return nil, common.Range[uint64]{}, nil, errors.New("entire search range has been invalidated") //TODO
 	}
+	if query.Reverse {
+		results.blockRange = common.NewRange[uint64](math.MaxUint64-results.blockRange.Last(), results.blockRange.Count())
+		last := len(results.logs) - 1
+		for i := 0; i < last-i; i++ {
+			results.logs[i], results.logs[last-1] = results.logs[last-1], results.logs[i]
+		}
+	}
 	//fmt.Println("+++ Runtime without proof generation:", time.Since(start))
 	var proof *QueryProof
 	if prove {
+		if query.Reverse {
+			last := len(results.provers) - 1
+			for i := 0; i < last-i; i++ {
+				results.provers[i], results.provers[last-1] = results.provers[last-1], results.provers[i]
+			}
+		}
 		if lastBlockProver != nil && len(results.provers) > 0 &&
 			lastBlockProver.reader.blockRange().First() == results.provers[len(results.provers)-1].reader.blockRange().AfterLast() {
 			results.provers = append(results.provers, lastBlockProver)
@@ -305,10 +320,6 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	return res, err*/
 }
 
-func getTableRootKey(stateDb state.Database, stateRoot common.Hash, contract common.Address, firstBlock, tableSize uint64) ([]byte, error) {
-	return nil, nil //TODO
-}
-
 type matcherResults struct {
 	logs       []*types.Log
 	provers    []*tableProver
@@ -319,7 +330,12 @@ type matcherResults struct {
 // matcher defines a general abstraction for any matcher configuration that
 // can instantiate a matcherInstance.
 type matcher interface {
-	newInstance(ctx context.Context, reader *tableReader, prover *logicBuilder, first, last indexPosition, direction int) matcherInstance
+	newInstance(ctx context.Context, reader matcherTableReader, prover *logicBuilder, first, last indexPosition) matcherInstance
+}
+
+type matcherTableReader interface {
+	blockRange() common.Range[uint64]
+	seekEntry(target *indexEntry) (uint64, bool, error)
 }
 
 // matcherInstance defines a general abstraction for a matcher configuration
@@ -348,10 +364,9 @@ type singleMatcherInstance struct {
 	*singleMatcher
 	ctx                                              context.Context
 	compare                                          indexEntry // value part is fixed, position part is used for comparisons
-	reader                                           *tableReader
+	reader                                           matcherTableReader
 	logic                                            *logicBuilder
 	entryPtr                                         uint64
-	direction                                        int
 	initialized, isEmpty                             bool
 	first, last                                      indexPosition
 	currentPos                                       *indexPosition
@@ -359,18 +374,17 @@ type singleMatcherInstance struct {
 }
 
 // newInstance creates a new instance of singleMatcher.
-func (m *singleMatcher) newInstance(ctx context.Context, reader *tableReader, logic *logicBuilder, first, last indexPosition, direction int) matcherInstance {
+func (m *singleMatcher) newInstance(ctx context.Context, reader matcherTableReader, logic *logicBuilder, first, last indexPosition) matcherInstance {
 	mi := &singleMatcherInstance{
 		singleMatcher: m,
 		ctx:           ctx,
 		compare: indexEntry{
 			indexValue: m.value,
 		},
-		reader:    reader,
-		logic:     logic,
-		direction: direction,
-		first:     first,
-		last:      last,
+		reader: reader,
+		logic:  logic,
+		first:  first,
+		last:   last,
 	}
 	if reader.entryCount == 0 {
 		mi.isEmpty = true
@@ -587,14 +601,13 @@ type matchAny []matcher
 type matchAnyInstance struct {
 	children        []matcherInstance
 	logic           *logicBuilder
-	direction       int
 	currentPos      *indexPosition
 	lastSectionNode logicNodeID
 	isEmpty         bool
 }
 
 // newInstance creates a new instance of matchAny.
-func (m matchAny) newInstance(ctx context.Context, reader *tableReader, logic *logicBuilder, first, last indexPosition, direction int) matcherInstance {
+func (m matchAny) newInstance(ctx context.Context, reader matcherTableReader, logic *logicBuilder, first, last indexPosition) matcherInstance {
 	if len(m) == 0 {
 		panic("zero length matchAny")
 	}
@@ -697,14 +710,13 @@ type matchAll []matcher
 type matchAllInstance struct {
 	children        []matcherInstance
 	logic           *logicBuilder
-	direction       int
 	currentPos      *indexPosition
 	lastSectionNode logicNodeID
 	isEmpty         bool
 }
 
 // newInstance creates a new instance of matchAll.
-func (m matchAll) newInstance(ctx context.Context, reader *tableReader, logic *logicBuilder, first, last indexPosition, direction int) matcherInstance {
+func (m matchAll) newInstance(ctx context.Context, reader matcherTableReader, logic *logicBuilder, first, last indexPosition) matcherInstance {
 	if len(m) == 0 {
 		panic("zero length matchAll")
 	}
@@ -868,7 +880,6 @@ type matcherSession struct {
 	requestCounter uint64
 	maxResults     int
 	validUntil     uint64
-	direction      int
 	minTopicCount  int
 	resultsCh      chan matcherResults
 	first, last    *matcherProcess // ordered according to search direction
@@ -986,7 +997,7 @@ func (ms *matcherSession) returnResults() {
 	return
 }
 
-func trimBlockProofs(blockProofs map[uint64]*blockProof, lastBlock uint64, lastTx uint32, direction int) {
+func trimBlockProofs(blockProofs map[uint64]*blockProof, lastBlock uint64, lastTx uint32) {
 	for number, bp := range blockProofs {
 		if (number > lastBlock && direction == 1) || (number < lastBlock && direction == -1) {
 			delete(blockProofs, number)
@@ -1016,7 +1027,7 @@ type matcherProcess struct {
 	indexer      *Indexer
 	matcher      matcherInstance
 	session      *matcherSession
-	tableReader  *tableReader
+	tableReader  matcherTableReader
 	tableProver  *tableProver
 	logicBuilder *logicBuilder
 	prev, next   *matcherProcess
@@ -1090,15 +1101,7 @@ func (mp *matcherProcess) getSplitBlock() (uint64, bool) {
 	if s >= float64(remaining)/2 {
 		return 0, false
 	}
-	splitAfter := uint64(s)
-	switch mp.session.direction {
-	case 1:
-		return min(lastBlock+splitAfter+1, mp.blockRange.AfterLast()), true
-	case -1:
-		return max(lastBlock, mp.blockRange.First()+splitAfter) - splitAfter, true
-	default:
-		panic("invalid search direction")
-	}
+	return min(lastBlock+uint64(s)+1, mp.blockRange.AfterLast()), true
 }
 
 func (mp *matcherProcess) isRemoved() bool {
@@ -1111,14 +1114,7 @@ func (mp *matcherProcess) getProgress() (done, lastBlock, remaining uint64) {
 	} else {
 		lastBlock = mp.blockRange.First()
 	}
-	switch mp.session.direction {
-	case 1:
-		done, remaining = lastBlock+1-mp.blockRange.First(), mp.blockRange.Last()-lastBlock
-	case -1:
-		done, remaining = mp.blockRange.AfterLast()-lastBlock, lastBlock-mp.blockRange.First()
-	default:
-		panic("invalid search direction")
-	}
+	done, remaining = lastBlock+1-mp.blockRange.First(), mp.blockRange.Last()-lastBlock
 	return
 }
 
@@ -1430,24 +1426,11 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		mp.next.prev = mp2
 	}
 	mp.next = mp2
-	switch mp.session.direction {
-	case 1:
-		mp.blockRange.SetAfterLast(splitAt)
-		mp2.blockRange.SetFirst(splitAt)
-		if mp.session.last == mp {
-			mp.session.last = mp2
-		}
-	case -1:
-		mp.blockRange.SetFirst(splitAt)
-		mp2.blockRange.SetAfterLast(splitAt)
-		if mp.session.first == mp {
-			mp.session.first = mp2
-		}
-	default:
-		panic("invalid search direction")
+	mp.blockRange.SetAfterLast(splitAt)
+	mp2.blockRange.SetFirst(splitAt)
+	if mp.session.last == mp {
+		mp.session.last = mp2
 	}
-	//fmt.Println("*** split", splitAt)
-	//mp.session.print()
 	return mp2, nil
 }
 
@@ -1683,14 +1666,7 @@ func (pq processQueue) Less(i, j int) bool {
 	case pq[i].session.requestCounter > pq[j].session.requestCounter:
 		return false
 	}
-	switch pq[i].session.direction {
-	case 1:
-		return pq[i].blockRange.First() < pq[j].blockRange.First()
-	case -1:
-		return pq[i].blockRange.First() > pq[j].blockRange.First()
-	default:
-		panic("invalid search direction")
-	}
+	return pq[i].blockRange.First() < pq[j].blockRange.First()
 }
 
 func (pq processQueue) Swap(i, j int) {
@@ -1736,4 +1712,31 @@ func (fq *FilterQuery) matchSpecified(log *types.Log) bool {
 
 func (fq *FilterQuery) matchLength(log *types.Log) bool {
 	return len(fq.Topics) <= len(log.Topics)
+}
+
+type reverseTableReader *tableReader
+
+func (rt reverseTableReader) blockRange() common.Range[uint64] {
+	br := (*tableReader)(rt).blockRange()
+	return common.NewRange[uint64](math.MaxUint64-br.Last(), br.Count())
+}
+
+func (rt reverseTableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
+	t := indexEntry{
+		indexValue: target.indexValue,
+		indexPosition: indexPosition{
+			blockNumber: math.MaxUint64 - target.blockNumber,
+			txIndex:     math.MaxUint32 - target.txIndex,
+			logIndex:    math.MaxUint32 - target.logIndex,
+		},
+	}
+	pos, found, err := (*tableReader)(rt).seekEntry(&t)
+	if err != nil {
+		return 0, false, err
+	}
+	pos = (*tableReader)(rt).entryCount - pos
+	if found {
+		pos--
+	}
+	return pos, found, nil
 }
