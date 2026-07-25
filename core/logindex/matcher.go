@@ -160,15 +160,20 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			break
 		}
 		logicBuilder := prover.optimizer.newBuilderInstance()
+		firstPos := indexPosition{blockNumber: br.First()}
+		lastPos := indexPosition{blockNumber: br.Last(), txIndex: math.MaxUint32, logIndex: math.MaxUint32}
+		if query.Reverse {
+			firstPos, lastPos = lastPos, firstPos
+		}
 		mp := &matcherProcess{
 			indexer: ix,
 			matcher: matcher.newInstance(
 				ctx,
-				tr,
+				&directionalReader{reader: tr, reverse: query.Reverse},
 				logicBuilder,
-				indexPosition{blockNumber: br.First()},
-				indexPosition{blockNumber: br.Last(), txIndex: math.MaxUint32, logIndex: math.MaxUint32},
-				direction),
+				firstPos,
+				lastPos,
+			),
 			session:        session,
 			tableReader:    tr,
 			tableProver:    prover,
@@ -319,7 +324,7 @@ type matcherResults struct {
 // matcher defines a general abstraction for any matcher configuration that
 // can instantiate a matcherInstance.
 type matcher interface {
-	newInstance(ctx context.Context, reader *tableReader, prover *logicBuilder, first, last indexPosition, direction int) matcherInstance
+	newInstance(ctx context.Context, reader *directionalReader, logic *logicBuilder, first, last indexPosition) matcherInstance
 }
 
 // matcherInstance defines a general abstraction for a matcher configuration
@@ -334,7 +339,7 @@ type matcher interface {
 type matcherInstance interface {
 	next() (*indexPosition, logicNodeID, error)
 	advance(*indexPosition) error
-	split(*logicBuilder, *indexPosition) matcherInstance
+	split(*logicBuilder, uint64) matcherInstance
 }
 
 // singleMatcher implements matcher by returning matches for a single log value hash.
@@ -348,7 +353,7 @@ type singleMatcherInstance struct {
 	*singleMatcher
 	ctx                                              context.Context
 	compare                                          indexEntry // value part is fixed, position part is used for comparisons
-	reader                                           *tableReader
+	reader                                           *directionalReader
 	logic                                            *logicBuilder
 	entryPtr                                         uint64
 	direction                                        int
@@ -359,49 +364,37 @@ type singleMatcherInstance struct {
 }
 
 // newInstance creates a new instance of singleMatcher.
-func (m *singleMatcher) newInstance(ctx context.Context, reader *tableReader, logic *logicBuilder, first, last indexPosition, direction int) matcherInstance {
+func (m *singleMatcher) newInstance(ctx context.Context, reader *directionalReader, logic *logicBuilder, first, last indexPosition) matcherInstance {
 	mi := &singleMatcherInstance{
 		singleMatcher: m,
 		ctx:           ctx,
 		compare: indexEntry{
 			indexValue: m.value,
 		},
-		reader:    reader,
-		logic:     logic,
-		direction: direction,
-		first:     first,
-		last:      last,
+		reader: reader,
+		logic:  logic,
+		first:  first,
+		last:   last,
 	}
-	if reader.entryCount == 0 {
+	if firstEntry, firstExists := reader.firstEntry(); firstExists {
+		mi.entryPtr = firstEntry
+	} else {
 		mi.isEmpty = true
-	} else if direction == -1 {
-		mi.entryPtr = reader.entryCount - 1
 	}
 	return mi
 }
 
 func (m *singleMatcherInstance) init() error {
-	var findPos *indexPosition
-	switch m.direction {
-	case 1:
-		findPos = &m.first
-	case -1:
-		findPos = &m.last
-	}
 	m.initialized = true
-	if err := m.advance(findPos); err != nil {
+	if err := m.advance(&m.first); err != nil {
 		m.initialized = false
 		return err
 	}
-	//fmt.Println("init", m.value, "pos", *findPos, "entryPtr", m.entryPtr)
 	return nil
 }
 
 // next implements matcherInstance.
 func (m *singleMatcherInstance) next() (dpos *indexPosition, dlsn logicNodeID, derr error) {
-	/*defer func() {
-		fmt.Println("singleMatcherInstance  pos", dpos, "lsn", dlsn, "err", derr)
-	}()*/
 	if !m.initialized {
 		if err := m.init(); err != nil {
 			return nil, 0, err
@@ -412,10 +405,9 @@ func (m *singleMatcherInstance) next() (dpos *indexPosition, dlsn logicNodeID, d
 			m.currentEntryNode = m.logic.addInputNode(m.entryPtr)
 			//fmt.Println(" currentEntryNode ptr =", m.entryPtr)
 		}
-		if (m.direction == 1 && m.entryPtr != 0) || (m.direction == 1 && m.entryPtr < m.reader.entryCount-1) {
+		if prevEntry, ok := m.reader.prevNextEntry(m.entryPtr, false); ok {
 			if m.lastEntryNode == 0 {
-				m.lastEntryNode = m.logic.addInputNode(uint64(int64(m.entryPtr) - int64(m.direction)))
-				//fmt.Println(" lastEntryNode ptr =", uint64(int64(m.entryPtr)-int64(m.direction)))
+				m.lastEntryNode = m.logic.addInputNode(prevEntry)
 			}
 			m.lastSectionNode = m.logic.addAndGateNode()
 			m.logic.connect(m.lastEntryNode, m.lastSectionNode)
@@ -432,22 +424,13 @@ func (m *singleMatcherInstance) next() (dpos *indexPosition, dlsn logicNodeID, d
 		if err != nil {
 			return nil, 0, err
 		}
-		var comparePos *indexPosition
-		switch m.direction {
-		case 1:
-			comparePos = &m.last
-		case -1:
-			comparePos = &m.first
-		}
-		if entry.indexValue != m.value || entry.indexPosition.compare(comparePos) == m.direction {
+		if entry.indexValue != m.value || m.reader.comparePosition(&entry.indexPosition, &m.last) == 1 {
 			m.isEmpty = true
 			m.currentPos = nil
-			//fmt.Println("sm", m.value, "next (empty)")
 			return nil, m.lastSectionNode, nil
 		}
 		m.currentPos = &entry.indexPosition
 	}
-	//fmt.Println("sm", m.value, "next", *m.currentPos)
 	return m.currentPos, m.lastSectionNode, nil
 }
 
@@ -468,74 +451,36 @@ func (m *singleMatcherInstance) advance(findPos *indexPosition) error {
 	}
 	m.currentPos = nil
 	if findPos == nil {
-		//fmt.Println("sm", m.value, "advance (next)")
 		// move on to the next entry
-		switch m.direction {
-		case 1:
-			if m.entryPtr+1 < m.reader.entryCount {
-				m.entryPtr++
-			} else {
-				m.isEmpty = true
-			}
-		case -1:
-			if m.entryPtr > 0 {
-				m.entryPtr--
-			} else {
-				m.isEmpty = true
-			}
+		if nextEntry, ok := m.reader.prevNextEntry(m.entryPtr, true); ok {
+			m.entryPtr = nextEntry
+		} else {
+			m.isEmpty = true
 		}
 		m.lastEntryNode = m.currentEntryNode
 		m.currentEntryNode, m.lastSectionNode = 0, 0
 		return nil
 	}
-	//fmt.Println("sm", m.value, "advance", *findPos)
-	//fmt.Println("singleMatcherInstance", m.value, "advance", *findPos)
 	// ensure that we are not moving beyond the position range limit
-	var limitPos *indexPosition
-	switch m.direction {
-	case 1:
-		limitPos = &m.last
-	case -1:
-		limitPos = &m.first
-	}
-	if findPos.compare(limitPos) == m.direction {
-		findPos = limitPos
+	if m.reader.comparePosition(findPos, &m.last) == 1 {
+		findPos = &m.last
 	}
 	// move to the entry at or beyond findPos
 	m.compare.indexPosition = *findPos
-	pos, found, err := m.reader.seekEntry(&m.compare)
-	//fmt.Println("sm", m.value, "seek", *findPos, "pos", pos, "found", found)
+	newEntryPtr, valid, err := m.reader.entryAtOrAfter(&m.compare)
 	if err != nil {
 		return err
 	}
-	/*fmt.Println(" seekEntry  pos", pos, "found", found)
-	//----
-	for p := max(pos, 1) - 1; p < min(pos+2, m.reader.entryCount); p++ {
-		entry, _ := m.reader.getEntry(p)
-		fmt.Println("  pos", p, entry.indexValue, entry.indexPosition)
-	}*/
-	//----
 	oldEntryPtr := m.entryPtr
-	switch m.direction {
-	case 1:
-		if pos < m.reader.entryCount {
-			m.entryPtr = pos
-		} else {
-			m.isEmpty = true
-		}
-	case -1:
-		if !found {
-			if pos > 0 {
-				pos--
-			} else {
-				m.isEmpty = true
-			}
-		}
-		m.entryPtr = pos
+	nextEntryPtr, nextExists := m.reader.prevNextEntry(m.entryPtr, true)
+	if valid {
+		m.entryPtr = newEntryPtr
+	} else {
+		m.isEmpty = true
 	}
-	switch m.entryPtr {
-	case oldEntryPtr:
-	case uint64(int64(oldEntryPtr) + int64(m.direction)):
+	switch {
+	case m.entryPtr == oldEntryPtr:
+	case nextExists && m.entryPtr == nextEntryPtr:
 		m.lastEntryNode = m.currentEntryNode
 		m.currentEntryNode, m.lastSectionNode = 0, 0
 	default:
@@ -545,7 +490,7 @@ func (m *singleMatcherInstance) advance(findPos *indexPosition) error {
 }
 
 // split implements matcherInstance.
-func (m *singleMatcherInstance) split(logic *logicBuilder, splitPos *indexPosition) matcherInstance {
+func (m *singleMatcherInstance) split(logic *logicBuilder, splitBlock uint64) matcherInstance {
 	if !m.initialized {
 		panic("cannot split uninitialized single matcher")
 	}
@@ -556,23 +501,11 @@ func (m *singleMatcherInstance) split(logic *logicBuilder, splitPos *indexPositi
 		reader:        m.reader,
 		logic:         logic,
 		entryPtr:      m.entryPtr,
-		direction:     m.direction,
 		first:         m.first,
 		last:          m.last,
 	}
-	switch m.direction {
-	case 1:
-		m.last = *splitPos
-		m.last.decrease()
-		m2.first = *splitPos
-	case -1:
-		m.first = *splitPos
-		m2.last = *splitPos
-		m2.last.decrease()
-	default:
-		panic("invalid search direction")
-	}
-	if m.currentPos != nil && (splitPos.compare(m.currentPos) == 1) != (m.direction == 1) {
+	m.last, m2.first = m.reader.splitBoundaries(splitBlock)
+	if m.currentPos != nil && m.reader.comparePosition(m.currentPos, &m.last) > 0 {
 		m.currentPos, m.isEmpty = nil, true
 	}
 	return m2
@@ -586,28 +519,28 @@ type matchAny []matcher
 // matchAnyInstance is an instance of matchAny.
 type matchAnyInstance struct {
 	children        []matcherInstance
+	reader          *directionalReader
 	logic           *logicBuilder
-	direction       int
 	currentPos      *indexPosition
 	lastSectionNode logicNodeID
 	isEmpty         bool
 }
 
 // newInstance creates a new instance of matchAny.
-func (m matchAny) newInstance(ctx context.Context, reader *tableReader, logic *logicBuilder, first, last indexPosition, direction int) matcherInstance {
+func (m matchAny) newInstance(ctx context.Context, reader *directionalReader, logic *logicBuilder, first, last indexPosition) matcherInstance {
 	if len(m) == 0 {
 		panic("zero length matchAny")
 	}
 	if len(m) == 1 {
-		return m[0].newInstance(ctx, reader, logic, first, last, direction)
+		return m[0].newInstance(ctx, reader, logic, first, last)
 	}
 	mi := &matchAnyInstance{
-		children:  make([]matcherInstance, len(m)),
-		logic:     logic,
-		direction: direction,
+		children: make([]matcherInstance, len(m)),
+		reader:   reader,
+		logic:    logic,
 	}
 	for i, mm := range m {
-		mi.children[i] = mm.newInstance(ctx, reader, logic, first, last, direction)
+		mi.children[i] = mm.newInstance(ctx, reader, logic, first, last)
 	}
 	return mi
 }
@@ -631,7 +564,7 @@ func (m *matchAnyInstance) next() (dpos *indexPosition, dlsn logicNodeID, derr e
 		if m.logic != nil {
 			m.logic.connect(node, m.lastSectionNode)
 		}
-		if pos != nil && (m.currentPos == nil || m.currentPos.compare(pos) == m.direction) {
+		if pos != nil && (m.currentPos == nil || m.reader.comparePosition(m.currentPos, pos) == 1) {
 			m.currentPos = pos
 		}
 	}
@@ -676,16 +609,17 @@ func (m *matchAnyInstance) advance(findPos *indexPosition) error {
 }
 
 // split implements matcherInstance.
-func (m *matchAnyInstance) split(logic *logicBuilder, splitPos *indexPosition) matcherInstance {
+func (m *matchAnyInstance) split(logic *logicBuilder, splitBlock uint64) matcherInstance {
 	c := &matchAnyInstance{
-		children:  make([]matcherInstance, len(m.children)),
-		logic:     logic,
-		direction: m.direction,
+		children: make([]matcherInstance, len(m.children)),
+		reader:   m.reader,
+		logic:    logic,
 	}
 	for i, cm := range m.children {
-		c.children[i] = cm.split(logic, splitPos)
+		c.children[i] = cm.split(logic, splitBlock)
 	}
-	if m.currentPos != nil && (splitPos.compare(m.currentPos) == 1) != (m.direction == 1) {
+	lastPos, _ := m.reader.splitBoundaries(splitBlock)
+	if m.currentPos != nil && m.reader.comparePosition(m.currentPos, &lastPos) > 0 {
 		m.currentPos, m.isEmpty = nil, true
 	}
 	return c
@@ -696,6 +630,7 @@ type matchAll []matcher
 // matchAllInstance is an instance of matchAll.
 type matchAllInstance struct {
 	children        []matcherInstance
+	reader          *directionalReader
 	logic           *logicBuilder
 	direction       int
 	currentPos      *indexPosition
@@ -704,20 +639,20 @@ type matchAllInstance struct {
 }
 
 // newInstance creates a new instance of matchAll.
-func (m matchAll) newInstance(ctx context.Context, reader *tableReader, logic *logicBuilder, first, last indexPosition, direction int) matcherInstance {
+func (m matchAll) newInstance(ctx context.Context, reader *directionalReader, logic *logicBuilder, first, last indexPosition) matcherInstance {
 	if len(m) == 0 {
 		panic("zero length matchAll")
 	}
 	if len(m) == 1 {
-		return m[0].newInstance(ctx, reader, logic, first, last, direction)
+		return m[0].newInstance(ctx, reader, logic, first, last)
 	}
 	mi := &matchAllInstance{
-		children:  make([]matcherInstance, len(m)),
-		logic:     logic,
-		direction: direction,
+		children: make([]matcherInstance, len(m)),
+		reader:   reader,
+		logic:    logic,
 	}
 	for i, mm := range m {
-		mi.children[i] = mm.newInstance(ctx, reader, logic, first, last, direction)
+		mi.children[i] = mm.newInstance(ctx, reader, logic, first, last)
 	}
 	return mi
 }
@@ -770,10 +705,10 @@ func (m *matchAllInstance) next() (dpos *indexPosition, dlsn logicNodeID, derr e
 			if i == 0 {
 				next, nextNode = pos, node
 			} else {
-				switch next.compare(pos) {
-				case m.direction:
+				switch m.reader.comparePosition(next, pos) {
+				case 1:
 					match = false
-				case -m.direction:
+				case -1:
 					next, nextNode = pos, node
 					match = false
 				}
@@ -818,50 +753,21 @@ func (m *matchAllInstance) advance(findPos *indexPosition) error {
 }
 
 // split implements matcherInstance.
-func (m *matchAllInstance) split(logic *logicBuilder, splitPos *indexPosition) matcherInstance {
+func (m *matchAllInstance) split(logic *logicBuilder, splitBlock uint64) matcherInstance {
 	c := &matchAllInstance{
-		children:  make([]matcherInstance, len(m.children)),
-		logic:     logic,
-		direction: m.direction,
+		children: make([]matcherInstance, len(m.children)),
+		reader:   m.reader,
+		logic:    logic,
 	}
 	for i, cm := range m.children {
-		c.children[i] = cm.split(logic, splitPos)
+		c.children[i] = cm.split(logic, splitBlock)
 	}
-	if m.currentPos != nil && (splitPos.compare(m.currentPos) == 1) != (m.direction == 1) {
+	lastPos, _ := m.reader.splitBoundaries(splitBlock)
+	if m.currentPos != nil && m.reader.comparePosition(m.currentPos, &lastPos) > 0 {
 		m.currentPos, m.isEmpty = nil, true
 	}
 	return c
 }
-
-/*
-var stNames = []string{"", "fetchFirst", "fetchMore", "process", "getLog", "other"}
-
-// set sets the processing state to one of the pre-defined constants.
-// Processing time spent in each state is measured separately.
-
-	func (ts *runtimeStats) setState(state *int, newState int) {
-		if !doRuntimeStats || newState == *state {
-			return
-		}
-		now := int64(mclock.Now())
-		atomic.AddInt64(&ts.dt[*state], now)
-		atomic.AddInt64(&ts.dt[newState], -now)
-		atomic.AddInt64(&ts.cnt[newState], 1)
-		*state = newState
-	}
-
-	func (ts *runtimeStats) addAmount(state int, amount int64) {
-		atomic.AddInt64(&ts.amount[state], amount)
-	}
-
-// print prints the collected statistics.
-
-	func (ts *runtimeStats) print() {
-		for i := 1; i < stCount; i++ {
-			log.Info("Matcher stats", "name", stNames[i], "dt", time.Duration(ts.dt[i]), "count", ts.cnt[i], "amount", ts.amount[i])
-		}
-	}
-*/
 
 type matcherSession struct {
 	ctx            context.Context
@@ -1414,7 +1320,7 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 	logicBuilder := mp.tableProver.optimizer.newBuilderInstance()
 	mp2 := &matcherProcess{
 		indexer:        mp.indexer,
-		matcher:        mp.matcher.split(logicBuilder, &indexPosition{blockNumber: splitAt}),
+		matcher:        mp.matcher.split(logicBuilder, splitAt),
 		session:        mp.session,
 		tableReader:    mp.tableReader,
 		tableProver:    mp.tableProver,
@@ -1736,4 +1642,75 @@ func (fq *FilterQuery) matchSpecified(log *types.Log) bool {
 
 func (fq *FilterQuery) matchLength(log *types.Log) bool {
 	return len(fq.Topics) <= len(log.Topics)
+}
+
+type directionalReader struct {
+	reader  *tableReader
+	reverse bool
+}
+
+func (dr *directionalReader) firstEntry() (uint64, bool) {
+	if dr.reader.entryCount == 0 {
+		return 0, false
+	}
+	if dr.reverse {
+		return dr.reader.entryCount - 1, true
+	}
+	return 0, true
+}
+
+func (dr *directionalReader) prevNextEntry(entryIndex uint64, next bool) (uint64, bool) {
+	if dr.reverse == next {
+		if entryIndex == 0 {
+			return 0, false
+		}
+		return entryIndex - 1, true
+	}
+	if entryIndex+1 >= dr.reader.entryCount {
+		return 0, false
+	}
+	return entryIndex + 1, true
+}
+
+func (dr *directionalReader) entryAtOrAfter(target *indexEntry) (uint64, bool, error) {
+	pos, found, err := dr.reader.seekEntry(target)
+	if err != nil {
+		return 0, false, err
+	}
+	if dr.reverse {
+		if !found {
+			if pos == 0 {
+				return 0, false, nil
+			}
+			pos--
+		}
+		return pos, true, nil
+	}
+	if pos >= dr.reader.entryCount {
+		return 0, false, nil
+	}
+	return pos, true, nil
+}
+
+func (dr *directionalReader) splitBoundaries(blockNumber uint64) (before, after indexPosition) {
+	before.blockNumber = blockNumber
+	after.blockNumber = blockNumber
+	if dr.reverse {
+		after.decrease()
+	} else {
+		before.decrease()
+	}
+	return
+}
+
+func (dr *directionalReader) comparePosition(a, b *indexPosition) int {
+	cmp := a.compare(b)
+	if dr.reverse {
+		return -cmp
+	}
+	return cmp
+}
+
+func (dr *directionalReader) getEntry(index uint64) (*indexEntry, error) {
+	return dr.reader.getEntry(index)
 }
