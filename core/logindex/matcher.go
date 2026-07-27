@@ -71,10 +71,6 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	firstBlock := min(query.FirstBlock, headBlock)
 	lastBlock := min(query.LastBlock, headBlock)
 	blockRange := common.NewRange[uint64](firstBlock, lastBlock+1-firstBlock)
-	direction := 1
-	if query.Reverse {
-		direction = -1
-	}
 	readerRange := blockRange
 	if prove && lastBlock < headBlock {
 		readerRange.SetLast(lastBlock + 1)
@@ -82,25 +78,22 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	readers := ix.storage.getRangeReaders(readerRange)
 	ix.lock.Unlock()
 	sort.Slice(readers, func(i, j int) bool {
-		switch direction {
-		case 1:
-			return readers[i].meta.LastBlockNumber < readers[j].meta.LastBlockNumber
-		case -1:
+		if query.Reverse {
 			return readers[i].meta.LastBlockNumber > readers[j].meta.LastBlockNumber
-		default:
-			panic("invalid search direction")
+		} else {
+			return readers[i].meta.LastBlockNumber < readers[j].meta.LastBlockNumber
 		}
 	})
 	for i := 1; i < len(readers); i++ {
+		// check if the available tables cover a continuous range
 		var cont bool
-		switch direction {
-		case 1:
-			cont = readers[i-1].blockRange().AfterLast() == readers[i].blockRange().First()
-		case -1:
+		if query.Reverse {
 			cont = readers[i].blockRange().AfterLast() == readers[i-1].blockRange().First()
+		} else {
+			cont = readers[i-1].blockRange().AfterLast() == readers[i].blockRange().First()
 		}
 		if !cont {
-			readers = readers[:i]
+			readers = readers[:i] // drop tables after a gap/overlap
 			break
 		}
 	}
@@ -144,10 +137,10 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		ctx:            ctx,
 		requestCounter: atomic.AddUint64(&ix.matcherControl.requestCounter, 1),
 		maxResults:     maxResults,
+		reverse:        query.Reverse,
 		validUntil:     blockRange.Last(),
-		direction:      direction,
 		minTopicCount:  len(query.Topics),
-		resultsCh:      make(chan matcherResults, 1),
+		resultsCh:      make(chan *matcherResults, 1),
 	}
 	//fmt.Println("create session", firstBlock, lastBlock, query.Addresses, query.Topics)
 	var lastBlockProver *tableProver
@@ -162,8 +155,11 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		logicBuilder := prover.optimizer.newBuilderInstance()
 		firstPos := indexPosition{blockNumber: br.First()}
 		lastPos := indexPosition{blockNumber: br.Last(), txIndex: math.MaxUint32, logIndex: math.MaxUint32}
+		firstBlock := br.First()
+		lastBlock := br.Last()
 		if query.Reverse {
 			firstPos, lastPos = lastPos, firstPos
+			firstBlock, lastBlock = lastBlock, firstBlock
 		}
 		mp := &matcherProcess{
 			indexer: ix,
@@ -178,7 +174,8 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			tableReader:    tr,
 			tableProver:    prover,
 			logicBuilder:   logicBuilder,
-			blockRange:     br,
+			firstBlock:     firstBlock,
+			lastBlock:      lastBlock,
 			blockInResults: make(map[uint64]int),
 			blockProofs:    make(map[uint64]*blockProof),
 			deliverCh:      make(chan struct{}, 1),
@@ -207,18 +204,29 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	case <-ctx.Done():
 		return nil, common.Range[uint64]{}, nil, ctx.Err()
 	}
-	var results matcherResults
+	var results *matcherResults
 	select {
 	case results = <-session.resultsCh:
 	case <-ctx.Done():
 		return nil, common.Range[uint64]{}, nil, ctx.Err()
 	}
-	if results.blockRange.IsEmpty() {
+	if results == nil {
 		return nil, common.Range[uint64]{}, nil, errors.New("entire search range has been invalidated") //TODO
 	}
 	//fmt.Println("+++ Runtime without proof generation:", time.Since(start))
 	var proof *QueryProof
 	if prove {
+		if query.Reverse {
+			last := len(results.provers) - 1
+			for i := 0; i < last-i; i++ {
+				results.provers[i], results.provers[last-i] = results.provers[last-i], results.provers[i]
+			}
+			last = len(results.logs) - 1
+			for i := 0; i < last-i; i++ {
+				results.logs[i], results.logs[last-i] = results.logs[last-i], results.logs[i]
+			}
+			results.firstBlock, results.lastBlock = results.lastBlock, results.firstBlock
+		}
 		if lastBlockProver != nil && len(results.provers) > 0 &&
 			lastBlockProver.reader.blockRange().First() == results.provers[len(results.provers)-1].reader.blockRange().AfterLast() {
 			results.provers = append(results.provers, lastBlockProver)
@@ -228,13 +236,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			RefHeader:        *refHeader,
 			TableQueryProofs: make([]tableQueryProof, len(results.provers)),
 		}
-		proof.Query.FirstBlock = results.blockRange.First()
-		proof.Query.LastBlock = results.blockRange.Last()
-		/*		stateDb := state.Database()
-				trie, err := stateDb.OpenTrie(refHeader.Root)
-				if err != nil {
-					return nil, common.Range[uint64]{}, nil, err
-				}*/
+		proof.Query.FirstBlock, proof.Query.LastBlock = results.firstBlock, results.lastBlock
 		proofNodes := make(trieProofWriter)
 		proofCodes := make(trieProofWriter)
 		var proveParentBlock common.Hash
@@ -290,24 +292,7 @@ func (ix *Indexer) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	}
 	//fmt.Println(" results", len(results.logs), "error", results.err)
 	//fmt.Println("+++ Runtime with proof generation:", time.Since(start))
-	return results.logs, results.blockRange, proof, results.err
-
-	/*start := time.Now()
-	res, err := m.process()
-	matchRequestTimer.Update(time.Since(start))
-
-	if doRuntimeStats {
-		log.Info("Log search finished", "elapsed", time.Since(start))
-		for i, ma := range matchers {
-			for j, m := range ma.(matchAny) {
-				log.Info("Single matcher stats", "matchSequence", i, "matchAny", j)
-				m.(*singleMatcher).stats.print()
-			}
-		}
-		log.Info("Get log stats")
-		m.getLogStats.print()
-	}
-	return res, err*/
+	return results.logs, common.NewRange[uint64](results.firstBlock, results.lastBlock+1-results.firstBlock), proof, results.err
 }
 
 func getTableRootKey(stateDb state.Database, stateRoot common.Hash, contract common.Address, firstBlock, tableSize uint64) ([]byte, error) {
@@ -315,10 +300,10 @@ func getTableRootKey(stateDb state.Database, stateRoot common.Hash, contract com
 }
 
 type matcherResults struct {
-	logs       []*types.Log
-	provers    []*tableProver
-	blockRange common.Range[uint64]
-	err        error
+	logs                  []*types.Log
+	provers               []*tableProver
+	firstBlock, lastBlock uint64 // firstBlock >= lastBlock in case of reverse search
+	err                   error
 }
 
 // matcher defines a general abstraction for any matcher configuration that
@@ -773,10 +758,10 @@ type matcherSession struct {
 	ctx            context.Context
 	requestCounter uint64
 	maxResults     int
+	reverse        bool
 	validUntil     uint64
-	direction      int
 	minTopicCount  int
-	resultsCh      chan matcherResults
+	resultsCh      chan *matcherResults
 	first, last    *matcherProcess // ordered according to search direction
 	finished       bool
 	err            error
@@ -785,16 +770,16 @@ type matcherSession struct {
 func (ms *matcherSession) print() {
 	for mp := ms.first; mp != nil; mp = mp.next {
 		mp.blockDataLock.Lock()
-		var prevRange, nextRange common.Range[uint64]
+		var prevFirst, prevLast, nextFirst, nextLast uint64
 		if mp.prev != nil {
-			prevRange = mp.prev.blockRange
+			prevFirst, prevLast = mp.prev.firstBlock, mp.prev.lastBlock
 		}
 		if mp.next != nil {
-			nextRange = mp.next.blockRange
+			nextFirst, nextLast = mp.next.firstBlock, mp.next.lastBlock
 		}
-		fmt.Println(" range", mp.blockRange, "len(pos)", len(mp.positions), "len(allMatches)", len(mp.allMatches), "validMatches", mp.validMatches,
+		fmt.Println(" range", mp.firstBlock, mp.lastBlock, "len(pos)", len(mp.positions), "len(allMatches)", len(mp.allMatches), "validMatches", mp.validMatches,
 			"completeUntil", mp.completeUntil, "completeValid", mp.completeValid, "matcherFinished", mp.matcherFinished, "finished", mp.finished, "status", mp.status,
-			"prevRange", prevRange, "nextRange", nextRange)
+			"prevRange", prevFirst, prevLast, "nextRange", nextFirst, nextLast)
 		mp.blockDataLock.Unlock()
 	}
 }
@@ -803,7 +788,7 @@ func (ms *matcherSession) returnResults() {
 	//fmt.Println("*** returnResults")
 	//ms.print()
 	if ms.err != nil {
-		ms.resultsCh <- matcherResults{err: ms.err}
+		ms.resultsCh <- &matcherResults{err: ms.err}
 		return
 	}
 	var resCount int
@@ -833,12 +818,13 @@ func (ms *matcherSession) returnResults() {
 	}
 	if ms.first == nil {
 		//fmt.Println("  ms.first == nil")
-		ms.resultsCh <- matcherResults{}
+		ms.resultsCh <- nil
 		return
 	}
-	res := matcherResults{
+	res := &matcherResults{
 		logs:       make([]*types.Log, 0, resCount),
-		blockRange: common.NewRange[uint64](ms.first.blockRange.First(), ms.last.blockRange.AfterLast()-ms.first.blockRange.First()), //TODO reverse ???
+		firstBlock: ms.first.firstBlock,
+		lastBlock:  ms.last.lastBlock,
 	}
 	var (
 		currentProver   *tableProver
@@ -864,7 +850,7 @@ func (ms *matcherSession) returnResults() {
 		for i, log := range mp.allMatches {
 			if len(res.logs) == ms.maxResults {
 				lastLog := res.logs[ms.maxResults-1]
-				trimBlockProofs(mp.blockProofs, lastLog.BlockNumber, uint32(lastLog.TxIndex), mp.session.direction)
+				trimBlockProofs(mp.blockProofs, lastLog.BlockNumber, uint32(lastLog.TxIndex), mp.session.reverse)
 				mp.tableProver.addBlockProofs(mp.blockProofs, ms.maxResults-lastResultCount)
 				lastResultCount = ms.maxResults
 				return lastBlockProven
@@ -892,15 +878,15 @@ func (ms *matcherSession) returnResults() {
 	return
 }
 
-func trimBlockProofs(blockProofs map[uint64]*blockProof, lastBlock uint64, lastTx uint32, direction int) {
+func trimBlockProofs(blockProofs map[uint64]*blockProof, lastBlock uint64, lastTx uint32, reverse bool) {
 	for number, bp := range blockProofs {
-		if (number > lastBlock && direction == 1) || (number < lastBlock && direction == -1) {
+		if (!reverse && number > lastBlock) || (reverse && number < lastBlock) {
 			delete(blockProofs, number)
 			continue
 		}
 		if number == lastBlock {
 			for txi := range bp.matchingTxs {
-				if (txi > lastTx && direction == 1) || (txi < lastTx && direction == -1) {
+				if (!reverse && txi > lastTx) || (reverse && txi < lastTx) {
 					delete(bp.matchingTxs, txi)
 				}
 			}
@@ -919,14 +905,14 @@ const (
 )
 
 type matcherProcess struct {
-	indexer      *Indexer
-	matcher      matcherInstance
-	session      *matcherSession
-	tableReader  *tableReader
-	tableProver  *tableProver
-	logicBuilder *logicBuilder
-	prev, next   *matcherProcess
-	blockRange   common.Range[uint64]
+	indexer               *Indexer
+	matcher               matcherInstance
+	session               *matcherSession
+	tableReader           *tableReader
+	tableProver           *tableProver
+	logicBuilder          *logicBuilder
+	prev, next            *matcherProcess
+	firstBlock, lastBlock uint64 // can be a subset of tableReader.blockRange after split; firstBlock > lastblock when doing reverse search
 
 	// accessed by control thread only
 	status  int
@@ -997,33 +983,27 @@ func (mp *matcherProcess) getSplitBlock() (uint64, bool) {
 		return 0, false
 	}
 	splitAfter := uint64(s)
-	switch mp.session.direction {
-	case 1:
-		return min(lastBlock+splitAfter+1, mp.blockRange.AfterLast()), true
-	case -1:
-		return max(lastBlock, mp.blockRange.First()+splitAfter) - splitAfter, true
-	default:
-		panic("invalid search direction")
+	if mp.session.reverse {
+		return max(lastBlock, mp.lastBlock+splitAfter) - splitAfter, true
+	} else {
+		return min(lastBlock+splitAfter+1, mp.lastBlock), true
 	}
 }
 
 func (mp *matcherProcess) isRemoved() bool {
-	return mp.blockRange.Last() > atomic.LoadUint64(&mp.session.validUntil)
+	return max(mp.firstBlock, mp.lastBlock) > atomic.LoadUint64(&mp.session.validUntil)
 }
 
 func (mp *matcherProcess) getProgress() (done, lastBlock, remaining uint64) {
 	if len(mp.positions) > 0 {
-		lastBlock = max(mp.blockRange.First(), mp.positions[len(mp.positions)-1].blockNumber)
+		lastBlock = mp.positions[len(mp.positions)-1].blockNumber
 	} else {
-		lastBlock = mp.blockRange.First()
+		lastBlock = mp.firstBlock
 	}
-	switch mp.session.direction {
-	case 1:
-		done, remaining = lastBlock+1-mp.blockRange.First(), mp.blockRange.Last()-lastBlock
-	case -1:
-		done, remaining = mp.blockRange.AfterLast()-lastBlock, lastBlock-mp.blockRange.First()
-	default:
-		panic("invalid search direction")
+	if mp.session.reverse {
+		done, remaining = mp.firstBlock+1-lastBlock, lastBlock-mp.lastBlock
+	} else {
+		done, remaining = lastBlock+1-mp.firstBlock, mp.lastBlock-lastBlock
 	}
 	return
 }
@@ -1143,7 +1123,7 @@ func (mp *matcherProcess) deliverBlockData(req blockRequest, header *types.Heade
 	if mp.tableProver != nil {
 		blockProof = mp.blockProofs[req.number]
 		if blockProof == nil {
-			if req.number == mp.tableReader.blockRange().Last() { //TODO
+			if req.number == mp.tableReader.blockRange().Last() {
 				blockProof = newBlockProof(header, math.MaxUint64)
 			} else {
 				blockEntry := indexEntry{
@@ -1327,7 +1307,8 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		logicBuilder:   logicBuilder,
 		prev:           mp,
 		next:           mp.next,
-		blockRange:     mp.blockRange,
+		firstBlock:     mp.firstBlock,
+		lastBlock:      mp.lastBlock,
 		blockInResults: make(map[uint64]int),
 		blockProofs:    make(map[uint64]*blockProof),
 		deliverCh:      make(chan struct{}, 1),
@@ -1336,24 +1317,16 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		mp.next.prev = mp2
 	}
 	mp.next = mp2
-	switch mp.session.direction {
-	case 1:
-		mp.blockRange.SetAfterLast(splitAt)
-		mp2.blockRange.SetFirst(splitAt)
-		if mp.session.last == mp {
-			mp.session.last = mp2
-		}
-	case -1:
-		mp.blockRange.SetFirst(splitAt)
-		mp2.blockRange.SetAfterLast(splitAt)
-		if mp.session.first == mp {
-			mp.session.first = mp2
-		}
-	default:
-		panic("invalid search direction")
+	if mp.session.last == mp {
+		mp.session.last = mp2
 	}
-	//fmt.Println("*** split", splitAt)
-	//mp.session.print()
+	if mp.firstBlock <= mp.lastBlock {
+		mp.lastBlock = splitAt - 1
+		mp2.firstBlock = splitAt
+	} else {
+		mp.lastBlock = splitAt
+		mp2.firstBlock = splitAt - 1
+	}
 	return mp2, nil
 }
 
@@ -1589,13 +1562,10 @@ func (pq processQueue) Less(i, j int) bool {
 	case pq[i].session.requestCounter > pq[j].session.requestCounter:
 		return false
 	}
-	switch pq[i].session.direction {
-	case 1:
-		return pq[i].blockRange.First() < pq[j].blockRange.First()
-	case -1:
-		return pq[i].blockRange.First() > pq[j].blockRange.First()
-	default:
-		panic("invalid search direction")
+	if pq[i].session.reverse {
+		return pq[i].firstBlock > pq[j].firstBlock
+	} else {
+		return pq[i].firstBlock < pq[j].firstBlock
 	}
 }
 
