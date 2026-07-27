@@ -169,7 +169,7 @@ func (b *testBackend) NewMatcherBackend() filtermaps.MatcherBackend {
 	return b.fm.NewMatcherBackend()
 }
 
-func (b *testBackend) LogIndexer() *logindex.Indexer {
+func (b *testBackend) LogQuery() *logquery.Matcher {
 	panic("implement me")
 }
 

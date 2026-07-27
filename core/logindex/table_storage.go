@@ -39,7 +39,7 @@ type tableStorage struct {
 	lock                       sync.Mutex
 	params                     *Params
 	tf                         *tableFiles
-	readers                    map[tableID]*tableReader
+	readers                    map[tableID]*TableReader
 	writers                    map[tableID]*tableWriter
 	triggers                   map[tableID]chan struct{}
 	lockedWriters              map[*tableWriter]chan struct{}
@@ -58,7 +58,7 @@ func newTableStorage(params *Params, tf *tableFiles) (*tableStorage, error) {
 	ts := &tableStorage{
 		params:              params,
 		tf:                  tf,
-		readers:             make(map[tableID]*tableReader),
+		readers:             make(map[tableID]*TableReader),
 		writers:             make(map[tableID]*tableWriter),
 		triggers:            make(map[tableID]chan struct{}),
 		lockedWriters:       make(map[*tableWriter]chan struct{}),
@@ -82,7 +82,7 @@ loop:
 				tf.deleteFile(name)
 				continue loop
 			}
-			fmt.Println("table", reader.blockRange(), "root", common.Hash(reader.tableRoot))
+			fmt.Println("table", reader.BlockRange(), "root", common.Hash(reader.tableRoot))
 			ts.readers[id] = reader
 		case fnWriteState:
 			writer, err := newTableWriter(params, tf, params.tableName(id), true, 0, id.level == 0)
@@ -151,7 +151,7 @@ func (ts *tableStorage) tables() (tableSet, tableSet, bool) {
 	return complete, partial, ts.preInit != nil
 }
 
-func (ts *tableStorage) getTableReader(id tableID) (*tableReader, error) {
+func (ts *tableStorage) getTableReader(id tableID) (*TableReader, error) {
 	ts.lock.Lock()
 	defer ts.lock.Unlock()
 
@@ -161,7 +161,7 @@ func (ts *tableStorage) getTableReader(id tableID) (*tableReader, error) {
 	return nil, errTableNotFound
 }
 
-func (ts *tableStorage) waitForTableReader(id tableID) (*tableReader, error) {
+func (ts *tableStorage) waitForTableReader(id tableID) (*TableReader, error) {
 	ts.lock.Lock()
 	defer ts.lock.Unlock()
 
@@ -182,7 +182,7 @@ func (ts *tableStorage) waitForTableReader(id tableID) (*tableReader, error) {
 	return nil, errTableNotFound
 }
 
-func (ts *tableStorage) getRangeReaders(blockRange common.Range[uint64]) (readers []*tableReader) {
+func (ts *tableStorage) getRangeReaders(blockRange common.Range[uint64]) (readers []*TableReader) {
 	ts.lock.Lock()
 	defer ts.lock.Unlock()
 
@@ -428,12 +428,12 @@ func (ts *tableStorage) deliverInitBlockHash(number uint64, hash common.Hash) bo
 	for len(hashes) > 0 {
 		for number, hash := range hashes {
 			for id, tr := range ts.readers {
-				if tr.meta.LastBlockNumber != number || !ts.preInit.includes(id) {
+				if tr.Meta.LastBlockNumber != number || !ts.preInit.includes(id) {
 					continue
 				}
-				if tr.meta.LastBlockHash == hash {
-					if tr.meta.LastBlockNumber >= tr.meta.BlockCount {
-						hashes[tr.meta.LastBlockNumber-tr.meta.BlockCount] = tr.meta.ParentHash
+				if tr.Meta.LastBlockHash == hash {
+					if tr.Meta.LastBlockNumber >= tr.Meta.BlockCount {
+						hashes[tr.Meta.LastBlockNumber-tr.Meta.BlockCount] = tr.Meta.ParentHash
 					}
 				} else {
 					ts.complete.remove(id)

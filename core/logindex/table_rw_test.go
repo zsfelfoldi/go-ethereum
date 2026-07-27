@@ -40,15 +40,15 @@ func testValue(blockNumber uint64, txIndex, logIndex, entryType uint32) (result 
 	return
 }
 
-func makeIndexEntries(blockCount uint64) indexEntries {
-	var ies indexEntries
+func makeIndexEntries(blockCount uint64) IndexEntries {
+	var ies IndexEntries
 	for blockNumber := range blockCount {
 		for txIndex := range uint32(10) {
 			for logIndex := range uint32(10) {
 				for entryType := range uint32(10) {
-					ies = append(ies, indexEntry{
+					ies = append(ies, IndexEntry{
 						entryType:   entryType,
-						indexValue:  testValue(blockNumber, txIndex, logIndex, entryType),
+						IndexValue:  testValue(blockNumber, txIndex, logIndex, entryType),
 						blockNumber: blockNumber,
 						txIndex:     txIndex,
 						logIndex:    logIndex,
@@ -149,9 +149,9 @@ func testTableRW(t *testing.T, blockCount uint64, maxFileSize int64) {
 		txIndex := uint32(rand.Intn(10))
 		logIndex := uint32(rand.Intn(10))
 		entryType := uint32(rand.Intn(10))
-		target := &indexEntry{
+		target := &IndexEntry{
 			entryType:  entryType,
-			indexValue: testValue(blockNumber, txIndex, logIndex, entryType),
+			IndexValue: testValue(blockNumber, txIndex, logIndex, entryType),
 		}
 		pos, _, err := tr.seekEntry(target)
 		if err != nil {

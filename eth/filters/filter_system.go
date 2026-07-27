@@ -66,7 +66,6 @@ type Backend interface {
 	GetBody(ctx context.Context, hash common.Hash, number rpc.BlockNumber) (*types.Body, error)
 	GetReceipts(ctx context.Context, blockHash common.Hash) (types.Receipts, error)
 	GetLogs(ctx context.Context, blockHash common.Hash, number uint64) ([][]*types.Log, error)
-	StateProverAt(header *types.Header, proofNodes, proofCodes map[common.Hash][]byte) (*state.StateDB, error)
 
 	CurrentHeader() *types.Header
 	ChainConfig() *params.ChainConfig
@@ -78,7 +77,7 @@ type Backend interface {
 
 	CurrentView() *filtermaps.ChainView
 	NewMatcherBackend() filtermaps.MatcherBackend
-	LogIndexer() *logindex.Indexer
+	LogQuery() *logquery.Matcher
 }
 
 // FilterSystem holds resources shared by all filters.

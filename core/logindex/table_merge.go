@@ -79,7 +79,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 		panic("cannot merge table on the lowest level")
 	}
 	sourceIndices := shiftRangeLevel(common.NewRange[uint64](id.index, 1), ix.params.tableLevels[id.level], ix.params.tableLevels[id.level-1], false)
-	readers := make([]*tableReader, sourceIndices.Count())
+	readers := make([]*TableReader, sourceIndices.Count())
 	var entryCount uint64
 	for i := range readers {
 		tr, err := ix.storage.getTableReader(tableID{level: id.level - 1, index: sourceIndices.First() + uint64(i)})
@@ -109,8 +109,8 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 		tw.setMeta(tableMeta{
 			LastBlockNumber: r.Last(),
 			BlockCount:      r.Count(),
-			LastBlockHash:   readers[len(readers)-1].meta.LastBlockHash,
-			ParentHash:      readers[0].meta.ParentHash,
+			LastBlockHash:   readers[len(readers)-1].Meta.LastBlockHash,
+			ParentHash:      readers[0].Meta.ParentHash,
 		})
 	}
 	if err != nil {
@@ -147,7 +147,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 			//fmt.Println("lastAndNextEntry", *lastEntry, nextEntry)
 		}
 		nextReadPosition := make([]uint64, len(readers))
-		nextReadEntry := make([]*indexEntry, len(readers))
+		nextReadEntry := make([]*IndexEntry, len(readers))
 		if nextEntry != 0 {
 			// find next read position in each source reader
 			if lastEntry == nil {
@@ -187,7 +187,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 			}
 			var (
 				bestIndex int
-				bestEntry *indexEntry
+				bestEntry *IndexEntry
 			)
 			for i, entry := range nextReadEntry {
 				if entry != nil && (bestEntry == nil || entry.compare(bestEntry) < 0) {

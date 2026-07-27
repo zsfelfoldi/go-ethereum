@@ -35,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/history"
 	"github.com/ethereum/go-ethereum/core/logindex"
+	"github.com/ethereum/go-ethereum/core/logindex/logquery"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/pruner"
 	"github.com/ethereum/go-ethereum/core/txpool"
@@ -101,6 +102,7 @@ type Ethereum struct {
 	localTxTracker *locals.TxTracker
 	blockchain     *core.BlockChain
 	logIndex       *logindex.Indexer
+	logQuery       *logquery.Matcher
 
 	handler *handler
 	discmix *enode.FairMix
@@ -304,6 +306,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		HashScheme:     scheme == rawdb.HashScheme,
 	}
 	eth.logIndex = logindex.NewIndexer(logindex.DefaultParams, logIndexConfig, stack.ResolvePath("logindex"))
+	eth.logQuery = logquery.NewMatcher(eth.logIndex)
 	eth.blockchain, err = core.NewBlockChain(chainDb, config.Genesis, eth.engine, eth.logIndex, options)
 	eth.blockchain.RegisterIndexer(eth.logIndex, "log index")
 	if err != nil {
