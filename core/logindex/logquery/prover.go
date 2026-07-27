@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package logindex
+package logquery
 
 import (
 	"errors"
@@ -26,6 +26,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/logindex"
 )
 
 const (
@@ -34,14 +35,14 @@ const (
 )
 
 type tableProver struct {
-	reader       *tableReader
+	reader       *logindex.TableReader
 	optimizer    logicOptimizer
 	treeHeight   int
 	blockProofs  map[uint64]*blockProof
 	validResults int
 }
 
-func newTableProver(reader *tableReader) *tableProver {
+func newTableProver(reader *logindex.TableReader) *tableProver {
 	return &tableProver{
 		reader:     reader,
 		treeHeight: 64 - bits.LeadingZeros64(max(reader.entryCount, 1)-1),
@@ -91,7 +92,7 @@ func (tp *tableProver) savedInputCost(a, b, c uint64) int {
 }
 
 func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, common.Hash, error) {
-	//fmt.Println("tp.finalize", tp.reader.blockRange(), "proveParentBlock", proveParentBlock)
+	//fmt.Println("tp.finalize", tp.reader.BlockRange(), "proveParentBlock", proveParentBlock)
 	var proveLastBlock common.Hash
 	blockNumbers := make([]uint64, 0, len(tp.blockProofs))
 	for number := range tp.blockProofs {
@@ -101,8 +102,8 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 		return blockNumbers[i] < blockNumbers[j]
 	})
 	proof := tableQueryProof{
-		FirstBlock:   tp.reader.blockRange().First(),
-		TableSize:    tp.reader.blockRange().Count(),
+		FirstBlock:   tp.reader.BlockRange().First(),
+		TableSize:    tp.reader.BlockRange().Count(),
 		EntryCount:   tp.reader.entryCount,
 		ResultCount:  uint64(tp.validResults),
 		BlockResults: make([]blockResults, len(blockNumbers)),
@@ -115,13 +116,13 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 		}
 	}
 	if proveParentBlock != (common.Hash{}) {
-		entryIndex, found, err := tp.reader.seekEntry(&indexEntry{
-			indexValue: indexValue{
+		entryIndex, found, err := tp.reader.seekEntry(&logindex.IndexEntry{
+			logindex.IndexValue: logindex.IndexValue{
 				entryType: ieBlock,
 				value:     proveParentBlock,
 			},
-			indexPosition: indexPosition{
-				blockNumber: tp.reader.blockRange().First() - 1,
+			logindex.IndexPosition: logindex.IndexPosition{
+				blockNumber: tp.reader.BlockRange().First() - 1,
 			},
 		})
 		fmt.Println(" fetch parent block entry", found, err)
@@ -135,7 +136,7 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 	}
 	for blockNumber, bp := range tp.blockProofs {
 		//fmt.Println("block entry", bp.blockEntryIndex)
-		if blockNumber != tp.reader.blockRange().Last() {
+		if blockNumber != tp.reader.BlockRange().Last() {
 			proof.EntryIndices = append(proof.EntryIndices, bp.blockEntryIndex)
 		} else {
 			proveLastBlock = bp.header.Hash()
@@ -165,7 +166,7 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 		proof.BlockResults[i] = br
 	}
 
-	entries := make(indexEntries, len(proof.EntryIndices))
+	entries := make(IndexEntries, len(proof.EntryIndices))
 	lastIndex := uint64(math.MaxUint64)
 	//fmt.Println("proof.EntryIndices", len(proof.EntryIndices))
 	for i, entryIndex := range proof.EntryIndices {

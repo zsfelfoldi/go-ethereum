@@ -118,22 +118,22 @@ func (tf *tableFormat) baseHeight(level uint) uint {
 	}
 }
 
-type indexEntry struct {
-	indexValue
-	indexPosition
+type IndexEntry struct {
+	IndexValue
+	IndexPosition
 }
 
-type indexValue struct {
+type IndexValue struct {
 	value     [32]byte
 	entryType uint32
 }
 
-type indexPosition struct {
+type IndexPosition struct {
 	blockNumber       uint64
 	txIndex, logIndex uint32
 }
 
-func (ip *indexPosition) decrease() {
+func (ip *IndexPosition) decrease() {
 	if ip.logIndex > 0 {
 		ip.logIndex--
 		return
@@ -151,9 +151,9 @@ func (ip *indexPosition) decrease() {
 	panic("cannot decrease null index position")
 }
 
-type indexEntries []indexEntry
+type IndexEntries []IndexEntry
 
-func (ie *indexEntry) hash() (result merkle.Value) {
+func (ie *IndexEntry) hash() (result merkle.Value) {
 	var (
 		enc    [50]byte
 		encLen int
@@ -183,14 +183,14 @@ func (ie *indexEntry) hash() (result merkle.Value) {
 	return
 }
 
-func (ie *indexEntry) compare(i2 *indexEntry) int {
-	if c := ie.indexValue.compare(&i2.indexValue); c != 0 {
+func (ie *IndexEntry) compare(i2 *IndexEntry) int {
+	if c := ie.IndexValue.compare(&i2.IndexValue); c != 0 {
 		return c
 	}
-	return ie.indexPosition.compare(&i2.indexPosition)
+	return ie.IndexPosition.compare(&i2.IndexPosition)
 }
 
-func (iv *indexValue) compare(i2 *indexValue) int {
+func (iv *IndexValue) compare(i2 *IndexValue) int {
 	if iv.entryType != i2.entryType {
 		if iv.entryType < i2.entryType {
 			return -1
@@ -200,7 +200,7 @@ func (iv *indexValue) compare(i2 *indexValue) int {
 	return bytes.Compare(iv.value[:], i2.value[:])
 }
 
-func (ip *indexPosition) compare(i2 *indexPosition) int {
+func (ip *IndexPosition) compare(i2 *IndexPosition) int {
 	if ip.blockNumber != i2.blockNumber {
 		if ip.blockNumber < i2.blockNumber {
 			return -1
@@ -223,7 +223,7 @@ func (ip *indexPosition) compare(i2 *indexPosition) int {
 	return 0
 }
 
-type entriesForStorage []entryForStorage
+type EntriesForStorage []entryForStorage
 
 type entryForStorage struct {
 	TypeAndValueDiff []byte
@@ -232,7 +232,7 @@ type entryForStorage struct {
 }
 
 // ies[pos] >= ie; == if found is true
-func (ies indexEntries) find(ie *indexEntry) (int, bool) {
+func (ies IndexEntries) find(ie *IndexEntry) (int, bool) {
 	min, max := 0, len(ies)
 	for min < max {
 		mid := (min + max) / 2
@@ -248,8 +248,8 @@ func (ies indexEntries) find(ie *indexEntry) (int, bool) {
 	return min, false
 }
 
-func (ies indexEntries) toStorage() entriesForStorage {
-	ess := make(entriesForStorage, 0, len(ies))
+func (ies IndexEntries) toStorage() EntriesForStorage {
+	ess := make(EntriesForStorage, 0, len(ies))
 	var (
 		typeAndValue, lastTypeAndValue [36]byte
 		lastBlockNumber                uint64
@@ -288,7 +288,7 @@ func (ies indexEntries) toStorage() entriesForStorage {
 }
 
 type entryChunk struct {
-	entries indexEntries
+	entries IndexEntries
 	height  uint
 	hashes  []merkle.Value // 2^(height+1)
 	hasHash []bool         // 2^(height+1)
@@ -323,8 +323,8 @@ func (ec *entryChunk) getHash(gti uint64) (result merkle.Value) {
 	return
 }
 
-func (ess entriesForStorage) toEntries() indexEntries {
-	ies := make(indexEntries, 0, len(ess))
+func (ess EntriesForStorage) toEntries() IndexEntries {
+	ies := make(IndexEntries, 0, len(ess))
 	var (
 		lastTypeAndValue          [36]byte
 		lastBlockNumber           uint64
@@ -344,11 +344,11 @@ func (ess entriesForStorage) toEntries() indexEntries {
 			lastLogIndex = 0
 		}
 		lastLogIndex += es.LogDiff
-		ie := indexEntry{
-			indexValue: indexValue{
+		ie := IndexEntry{
+			IndexValue: IndexValue{
 				entryType: binary.BigEndian.Uint32(lastTypeAndValue[:4]),
 			},
-			indexPosition: indexPosition{
+			IndexPosition: IndexPosition{
 				blockNumber: lastBlockNumber,
 				txIndex:     lastTxIndex,
 				logIndex:    lastLogIndex,
@@ -361,13 +361,13 @@ func (ess entriesForStorage) toEntries() indexEntries {
 }
 
 type subtreesForStorage struct {
-	BoundaryEntries entriesForStorage // N-1
+	BoundaryEntries EntriesForStorage // N-1
 	BoundaryFilePos []uint64          // N+1
 	Hashes          []merkle.Value    //N
 }
 
 type subtreeChunk struct {
-	boundaryEntries         indexEntries // N-1
+	boundaryEntries         IndexEntries // N-1
 	boundaryFilePos         []uint64     // N+1
 	height, above, branches uint
 	hashes                  []merkle.Value // 2^(height+1)
@@ -424,7 +424,7 @@ func (sc *subtreeChunk) getHash(gti uint64) (result merkle.Value) {
 	return
 }
 
-type tableReader struct {
+type TableReader struct {
 	reader            io.ReaderAt
 	fileSize          int64
 	entryChunkCache   *lru.Cache[uint64, *entryChunk]
@@ -434,7 +434,7 @@ type tableReader struct {
 	format            tableFormat
 	tableRoot         merkle.Value
 	indexContract     common.Address //TODO
-	meta              tableMeta
+	Meta              tableMeta
 }
 
 type subtreePos struct {
@@ -442,7 +442,7 @@ type subtreePos struct {
 	index uint64
 }
 
-func newTableReader(p *Params, tf *tableFiles, name string) (*tableReader, error) {
+func newTableReader(p *Params, tf *tableFiles, name string) (*TableReader, error) {
 	ioReader, fileSize, err := tf.getReaderAt(name)
 	if err != nil {
 		return nil, err
@@ -461,7 +461,7 @@ func newTableReader(p *Params, tf *tableFiles, name string) (*tableReader, error
 	if err := rlp.DecodeBytes(headerEnc, &header); err != nil {
 		return nil, err
 	}
-	tr := &tableReader{
+	tr := &TableReader{
 		reader:            ioReader,
 		fileSize:          fileSize,
 		entryChunkCache:   lru.NewCache[uint64, *entryChunk](entryCacheSize),
@@ -471,7 +471,7 @@ func newTableReader(p *Params, tf *tableFiles, name string) (*tableReader, error
 		levelPointers:     make([]int64, len(header.LevelPointers)),
 		tableRoot:         header.TableRoot,
 		indexContract:     params.IndexContractAddress, //TODO
-		meta:              header.Meta,
+		Meta:              header.Meta,
 	}
 	for i, p := range header.LevelPointers {
 		tr.levelPointers[i] = int64(p)
@@ -479,11 +479,11 @@ func newTableReader(p *Params, tf *tableFiles, name string) (*tableReader, error
 	return tr, nil
 }
 
-func (tr *tableReader) blockRange() common.Range[uint64] {
-	return common.NewRange[uint64](tr.meta.LastBlockNumber+1-tr.meta.BlockCount, tr.meta.BlockCount)
+func (tr *TableReader) BlockRange() common.Range[uint64] {
+	return common.NewRange[uint64](tr.Meta.LastBlockNumber+1-tr.Meta.BlockCount, tr.Meta.BlockCount)
 }
 
-func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk, error) {
+func (tr *TableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk, error) {
 	sp := subtreePos{level, index}
 	if sc, ok := tr.subtreeChunkCache.Get(sp); ok {
 		return sc, nil
@@ -513,7 +513,7 @@ func (tr *tableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 	return sc, nil
 }
 
-func (tr *tableReader) getEntryChunk(index uint64) (*entryChunk, error) {
+func (tr *TableReader) getEntryChunk(index uint64) (*entryChunk, error) {
 	if ec, ok := tr.entryChunkCache.Get(index); ok {
 		return ec, nil
 	}
@@ -528,7 +528,7 @@ func (tr *tableReader) getEntryChunk(index uint64) (*entryChunk, error) {
 	if err != nil {
 		return nil, err
 	}
-	var ess entriesForStorage
+	var ess EntriesForStorage
 	if err := rlp.DecodeBytes(enc, &ess); err != nil {
 		return nil, err
 	}
@@ -540,7 +540,7 @@ func (tr *tableReader) getEntryChunk(index uint64) (*entryChunk, error) {
 	return ec, nil
 }
 
-func (tr *tableReader) getHash(gti uint64) (merkle.Value, error) {
+func (tr *TableReader) getHash(gti uint64) (merkle.Value, error) {
 	gtiHeight := uint(63 - bits.LeadingZeros64(gti))
 	chunkLevel := tr.format.getChunkLevel(gtiHeight)
 	chunkBaseHeight := tr.format.baseHeight(chunkLevel)
@@ -561,7 +561,7 @@ func (tr *tableReader) getHash(gti uint64) (merkle.Value, error) {
 	return sc.getHash(chunkGti), nil
 }
 
-func (tr *tableReader) getEntry(index uint64) (*indexEntry, error) {
+func (tr *TableReader) getEntry(index uint64) (*IndexEntry, error) {
 	ec, err := tr.getEntryChunk(index / entryChunkSize)
 	if err != nil {
 		return nil, err
@@ -569,7 +569,7 @@ func (tr *tableReader) getEntry(index uint64) (*indexEntry, error) {
 	return &ec.entries[index%entryChunkSize], nil
 }
 
-func (tr *tableReader) seekEntry(target *indexEntry) (uint64, bool, error) {
+func (tr *TableReader) seekEntry(target *IndexEntry) (uint64, bool, error) {
 	var (
 		chunkLevel               uint
 		chunkIndex, chunkEntries uint64
@@ -636,7 +636,7 @@ const (
 type writeState struct {
 	Phase             uint
 	NextEntry         uint64
-	LastEntryChunk    entriesForStorage
+	LastEntryChunk    EntriesForStorage
 	LastSubtreeChunks []subtreesForStorage
 	CopyLevel         uint
 	CopyReadPointer   uint64
@@ -881,7 +881,7 @@ func (tw *tableWriter) newSubtreeChunk(level uint) *subtreeChunk {
 	}
 }
 
-func (tw *tableWriter) lastAndNextEntry() (*indexEntry, uint64) {
+func (tw *tableWriter) lastAndNextEntry() (*IndexEntry, uint64) {
 	tw.lock.Lock()
 	defer tw.lock.Unlock()
 
@@ -896,7 +896,7 @@ func (tw *tableWriter) lastAndNextEntry() (*indexEntry, uint64) {
 	return nil, tw.nextEntry
 }
 
-func (tw *tableWriter) addEntry(ie *indexEntry) error {
+func (tw *tableWriter) addEntry(ie *IndexEntry) error {
 	tw.lock.Lock()
 	defer tw.lock.Unlock()
 
@@ -934,7 +934,7 @@ func (tw *tableWriter) addEntry(ie *indexEntry) error {
 	return nil
 }
 
-func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *indexEntry, beforePos, afterPos int64, hash merkle.Value) error {
+func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *IndexEntry, beforePos, afterPos int64, hash merkle.Value) error {
 	sc := tw.lastSubtreeChunks[level]
 	//fmt.Println("addSubtreeEntry", tw.format, sc.height, sc.above, level, beforePos, afterPos)
 	if sc.branches < subtreeChunkSize-1 {

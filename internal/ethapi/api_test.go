@@ -704,7 +704,7 @@ func (b testBackend) NewMatcherBackend() filtermaps.MatcherBackend {
 	panic("implement me")
 }
 
-func (b *backendMock) LogIndexer() *logindex.Indexer {
+func (b *backendMock) LogQuery() *logquery.Matcher {
 	panic("implement me")
 }
 

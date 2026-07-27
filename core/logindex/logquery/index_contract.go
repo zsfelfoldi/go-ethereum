@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package indexcontract
+package logquery
 
 import (
 	"encoding/binary"
@@ -33,21 +33,17 @@ import (
 	"github.com/ethereum/go-ethereum/triedb"
 )
 
-type proverBackend interface {
+type contractProverBackend interface {
 	ChainConfig() *params.ChainConfig
 	StateProverAt(header *types.Header, proofNodes, proofCodes map[common.Hash][]byte) (*state.StateDB, error)
 }
 
-type Prover struct {
-	backend proverBackend
+type contractProver struct {
+	backend contractProverBackend
 }
 
-func NewProver(backend proverBackend) Prover {
-	return Prover{backend: backend}
-}
-
-func (p Prover) ProveTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
-	fmt.Println("ProveTableRoot", firstBlock, tableSize)
+func (p contractProver) proveTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
+	fmt.Println("proveTableRoot", firstBlock, tableSize)
 	state, err := p.backend.StateProverAt(refHead, proofNodes, proofCodes)
 	if err != nil {
 		return common.Hash{}, err
@@ -124,19 +120,12 @@ func (c *chainContext) GetHeaderByHash(hash common.Hash) *types.Header {
 	return nil
 }
 
-type Verifier struct {
+type contractVerifier struct {
 	chainConfig *params.ChainConfig
 	trieConfig  *triedb.Config
 }
 
-func NewVerifier(chainConfig *params.ChainConfig, trieConfig *triedb.Config) Verifier {
-	return Verifier{
-		chainConfig: chainConfig,
-		trieConfig:  trieConfig,
-	}
-}
-
-func (v Verifier) GetProvenTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
+func (v contractVerifier) getProvenTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
 	proofDb := triedb.NewProofReader(proofNodes, v.trieConfig)
 	codeDb := state.NewProofCodeReader(proofCodes)
 	state, err := state.New(refHead.Root, state.NewMPTDatabase(proofDb, codeDb)) //TODO UBT

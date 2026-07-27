@@ -29,8 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/history"
-	"github.com/ethereum/go-ethereum/core/logindex"
-	"github.com/ethereum/go-ethereum/core/logindex/indexcontract"
+	"github.com/ethereum/go-ethereum/core/logindex/logquery"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -385,9 +384,9 @@ func (s *searchSession) doSearchIteration() error {
 }
 
 func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([]*types.Log, error) {
-	if indexer := f.sys.backend.LogIndexer(); indexer != nil {
+	if matcher := f.sys.backend.LogQuery(); matcher != nil {
 		fmt.Println("Starting search with log indexer")
-		query := logindex.FilterQuery{
+		query := logquery.FilterQuery{
 			FirstBlock: firstBlock,
 			LastBlock:  lastBlock,
 			MaxResults: math.MaxUint64,
@@ -396,8 +395,7 @@ func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([
 			Topics:     f.topics,
 		}
 		refHeader := f.sys.backend.CurrentHeader() //TODO also try with parent
-		trieConfig := &triedb.Config{}             //TODO
-		logs, resultsRange, _, err := indexer.GetMatches(ctx, query, true, refHeader, indexcontract.NewProver(f.sys.backend), indexcontract.NewVerifier(f.sys.backend.ChainConfig(), trieConfig))
+		logs, resultsRange, _, err := matcher.GetMatches(ctx, query, true, refHeader)
 		if err != logindex.ErrMatchAll {
 			fmt.Println("Search first/last block:", firstBlock, lastBlock, "results range:", resultsRange, "result count:", len(logs), "error:", err)
 			/*for i, log := range logs {

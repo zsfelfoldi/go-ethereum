@@ -36,7 +36,6 @@ import (
 const (
 	headerCacheSize            = 100
 	blockRequestLevels         = 2        // priority levels where block requests are processed
-	maxMatcherThreads          = 8        //TODO config
 	maxMergeThreads            = 4        //TODO config
 	memFileLowThreshold        = 10000000 //TODO config
 	memFileHighThreshold       = 15000000 //TODO config
@@ -97,6 +96,7 @@ type Indexer struct {
 	config             Config
 	requestBlock       func(uint64, bool, bool, int) bool
 	setIndexerPriority func(int)
+	revertSub          func(uint64)
 
 	files                                     *tableFiles
 	storage                                   *tableStorage
@@ -106,16 +106,14 @@ type Indexer struct {
 	indexerPriority                           int
 	headBlock, finalBlock, cutoffBlock        uint64
 	headBlockHash                             common.Hash
-	blockRequests                             map[blockRequest][]blockDeliverFn
-	queuedBlockRequests                       [blockRequestLevels][]blockRequest
+	blockRequests                             map[BlockRequest][]DeliverBlockFn
+	queuedBlockRequests                       [blockRequestLevels][]BlockRequest
 	requestedInitBlock                        uint64
 
 	hasProcessedBlock    bool
 	processedBlockNumber uint64
 	processedBlockId     common.Hash
 	recentHeaders        *lru.Cache[uint64, *types.Header]
-
-	matcherControl matcherControl
 
 	shutdown       bool
 	updateMergeCh  []chan struct{}
@@ -145,7 +143,7 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 		updateMergeCh:      make([]chan struct{}, maxMergeThreads),
 		currentOps:         make([]tableOperation, maxMergeThreads),
 		recentHeaders:      lru.NewCache[uint64, *types.Header](headerCacheSize),
-		blockRequests:      make(map[blockRequest][]blockDeliverFn),
+		blockRequests:      make(map[BlockRequest][]DeliverBlockFn),
 	}
 	for i := range ix.updateMergeCh {
 		ix.updateMergeCh[i] = make(chan struct{}, 1)
@@ -154,20 +152,38 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 	for i := range maxMergeThreads {
 		go ix.mergeLoop(i)
 	}
-	ix.matcherControl.init(maxMatcherThreads)
 	return ix
 }
 
-type blockRequest struct {
+type BlockRequest struct {
 	number                 uint64
 	needBody, needReceipts bool
 }
 
-type blockDeliverFn = func(blockRequest, *types.Header, *types.Body, types.Receipts)
+type DeliverBlockFn = func(BlockRequest, *types.Header, *types.Body, types.Receipts)
+
+func (ix *Indexer) RequestBlock(number uint64, deliverFn DeliverBlockFn) {
+	ix.lock.Lock()
+	ix.getBlockData(number, true, true, 0 /*TODO*/, deliverFn)
+	ix.lock.Unlock()
+}
+
+func (ix *Indexer) GetRangeReaders(blockRange common.Range[uint64]) []*TableReader {
+	ix.lock.Lock()
+	defer ix.lock.Unlock()
+
+	return ix.storage.getRangeReaders(blockRange)
+}
+
+func (ix *Indexer) SubscribeRevert(revertSub func(uint64)) {
+	ix.lock.Lock()
+	ix.revertSub = revertSub
+	ix.lock.Unlock()
+}
 
 // needs ix.lock
-func (ix *Indexer) getBlockData(number uint64, needBody, needReceipts bool, priority int, deliverFn blockDeliverFn) {
-	req := blockRequest{
+func (ix *Indexer) getBlockData(number uint64, needBody, needReceipts bool, priority int, deliverFn DeliverBlockFn) {
+	req := BlockRequest{
 		number:       number,
 		needBody:     needBody,
 		needReceipts: needReceipts,
@@ -178,14 +194,8 @@ func (ix *Indexer) getBlockData(number uint64, needBody, needReceipts bool, prio
 	}
 }
 
-func (ix *Indexer) getBlockDataLocked(number uint64, needBody, needReceipts bool, priority int, deliverFn blockDeliverFn) {
-	ix.lock.Lock()
-	ix.getBlockData(number, needBody, needReceipts, priority, deliverFn)
-	ix.lock.Unlock()
-}
-
 func (ix *Indexer) processBlockRequests(header *types.Header, body *types.Body, receipts types.Receipts) {
-	req := blockRequest{
+	req := BlockRequest{
 		number:       header.Number.Uint64(),
 		needBody:     body != nil,
 		needReceipts: receipts != nil,
@@ -245,7 +255,7 @@ func (ix *Indexer) updateTableOperations() {
 			return
 		}
 		fmt.Println("requesting init block", reqNumber)
-		ix.getBlockData(reqNumber, false, false, 0, func(req blockRequest, header *types.Header, body *types.Body, receipts types.Receipts) {
+		ix.getBlockData(reqNumber, false, false, 0, func(req BlockRequest, header *types.Header, body *types.Body, receipts types.Receipts) {
 			if header != nil {
 				ix.storage.deliverInitBlockHash(reqNumber, header.Hash())
 			} else {
@@ -345,7 +355,7 @@ func (ix *Indexer) makeTargetSet(complete tableSet) tableSet {
 	return target
 }
 
-func getBlockEntries(blockNumber uint64, parentHash common.Hash, txs types.Transactions, receipts types.Receipts) indexEntries {
+func getBlockEntries(blockNumber uint64, parentHash common.Hash, txs types.Transactions, receipts types.Receipts) IndexEntries {
 	entryCount := len(txs) + 1
 	for _, receipt := range receipts {
 		for _, log := range receipt.Logs {
@@ -353,27 +363,27 @@ func getBlockEntries(blockNumber uint64, parentHash common.Hash, txs types.Trans
 		}
 	}
 
-	entries := make(indexEntries, 0, entryCount)
+	entries := make(IndexEntries, 0, entryCount)
 
 	if blockNumber > 0 {
-		entries = append(entries, indexEntry{
-			indexValue: indexValue{
+		entries = append(entries, IndexEntry{
+			IndexValue: IndexValue{
 				entryType: ieBlock,
 				value:     ([32]byte)(parentHash),
 			},
-			indexPosition: indexPosition{
+			IndexPosition: IndexPosition{
 				blockNumber: blockNumber - 1,
 			},
 		})
 	}
 	var cli uint32
 	for txi, tx := range txs {
-		entries = append(entries, indexEntry{
-			indexValue: indexValue{
+		entries = append(entries, IndexEntry{
+			IndexValue: IndexValue{
 				entryType: ieTransaction,
 				value:     ([32]byte)(tx.Hash()),
 			},
-			indexPosition: indexPosition{
+			IndexPosition: IndexPosition{
 				blockNumber: blockNumber,
 				txIndex:     uint32(txi),
 				logIndex:    cli,
@@ -385,24 +395,24 @@ func getBlockEntries(blockNumber uint64, parentHash common.Hash, txs types.Trans
 		for li, log := range receipt.Logs {
 			var addr32 [32]byte
 			copy(addr32[32-common.AddressLength:], log.Address[:])
-			entries = append(entries, indexEntry{
-				indexValue: indexValue{
+			entries = append(entries, IndexEntry{
+				IndexValue: IndexValue{
 					entryType: ieAddress,
 					value:     addr32,
 				},
-				indexPosition: indexPosition{
+				IndexPosition: IndexPosition{
 					blockNumber: blockNumber,
 					txIndex:     uint32(txi),
 					logIndex:    uint32(li),
 				},
 			})
 			for ti, topic := range log.Topics {
-				entries = append(entries, indexEntry{
-					indexValue: indexValue{
+				entries = append(entries, IndexEntry{
+					IndexValue: IndexValue{
 						entryType: ieTopic0 + uint32(ti),
 						value:     ([32]byte)(topic),
 					},
-					indexPosition: indexPosition{
+					IndexPosition: IndexPosition{
 						blockNumber: blockNumber,
 						txIndex:     uint32(txi),
 						logIndex:    uint32(li),
@@ -480,7 +490,7 @@ func (ix *Indexer) GetAsyncTableRoot(parentHash common.Hash, firstBlock, tableSi
 		parentHeader, ok := ix.recentHeaders.Get(blockNumber - 1)
 		for !ok {
 			headerCh := make(chan *types.Header, 1)
-			ix.getBlockDataLocked(blockNumber-1, false, false, 0, func(req blockRequest, header *types.Header, body *types.Body, receipts types.Receipts) {
+			ix.getBlockDataLocked(blockNumber-1, false, false, 0, func(req BlockRequest, header *types.Header, body *types.Body, receipts types.Receipts) {
 				headerCh <- header
 			})
 			parentHeader = <-headerCh
@@ -742,7 +752,9 @@ func (ix *Indexer) Revert(header *types.Header) {
 	ix.headBlockHash = header.Hash()
 	ix.cutoffBlock = min(ix.cutoffBlock, ix.headBlock+1)
 	ix.filterBlockRequests()
-	ix.matcherControl.revert(blockNumber)
+	if ix.revertSub != nil {
+		ix.revertSub(blockNumber)
+	}
 	ix.storage.deleteTablesFromBlock(blockNumber + 1)
 	ix.updateTableOperations()
 }
