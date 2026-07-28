@@ -96,7 +96,6 @@ type Indexer struct {
 	config             Config
 	requestBlock       func(uint64, bool, bool, int) bool
 	setIndexerPriority func(int)
-	revertSub          func(uint64)
 
 	files                                     *tableFiles
 	storage                                   *tableStorage
@@ -162,23 +161,19 @@ type BlockRequest struct {
 
 type DeliverBlockFn = func(BlockRequest, *types.Header, *types.Body, types.Receipts)
 
-func (ix *Indexer) RequestBlock(number uint64, deliverFn DeliverBlockFn) {
+func (ix *Indexer) RequestBlock(refBlockHash common.Hash, number uint64, deliverFn DeliverBlockFn) {
+	//TODO refBlockHash
 	ix.lock.Lock()
 	ix.getBlockData(number, true, true, 0 /*TODO*/, deliverFn)
 	ix.lock.Unlock()
 }
 
-func (ix *Indexer) GetRangeReaders(blockRange common.Range[uint64]) []*TableReader {
+func (ix *Indexer) GetRangeReaders(refBlockHash common.Hash, blockRange common.Range[uint64]) []*TableReader {
+	//TODO refBlockHash
 	ix.lock.Lock()
 	defer ix.lock.Unlock()
 
 	return ix.storage.getRangeReaders(blockRange)
-}
-
-func (ix *Indexer) SubscribeRevert(revertSub func(uint64)) {
-	ix.lock.Lock()
-	ix.revertSub = revertSub
-	ix.lock.Unlock()
 }
 
 // needs ix.lock
@@ -752,9 +747,6 @@ func (ix *Indexer) Revert(header *types.Header) {
 	ix.headBlockHash = header.Hash()
 	ix.cutoffBlock = min(ix.cutoffBlock, ix.headBlock+1)
 	ix.filterBlockRequests()
-	if ix.revertSub != nil {
-		ix.revertSub(blockNumber)
-	}
 	ix.storage.deleteTablesFromBlock(blockNumber + 1)
 	ix.updateTableOperations()
 }
