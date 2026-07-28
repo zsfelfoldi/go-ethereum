@@ -45,7 +45,7 @@ type tableProver struct {
 func newTableProver(reader *logindex.TableReader) *tableProver {
 	return &tableProver{
 		reader:     reader,
-		treeHeight: 64 - bits.LeadingZeros64(max(reader.entryCount, 1)-1),
+		treeHeight: 64 - bits.LeadingZeros64(max(reader.EntryCount, 1)-1),
 	}
 }
 
@@ -104,7 +104,7 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 	proof := tableQueryProof{
 		FirstBlock:   tp.reader.BlockRange().First(),
 		TableSize:    tp.reader.BlockRange().Count(),
-		EntryCount:   tp.reader.entryCount,
+		EntryCount:   tp.reader.EntryCount,
 		ResultCount:  uint64(tp.validResults),
 		BlockResults: make([]blockResults, len(blockNumbers)),
 	}
@@ -116,13 +116,13 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 		}
 	}
 	if proveParentBlock != (common.Hash{}) {
-		entryIndex, found, err := tp.reader.seekEntry(&logindex.IndexEntry{
-			logindex.IndexValue: logindex.IndexValue{
-				entryType: ieBlock,
-				value:     proveParentBlock,
+		entryIndex, found, err := tp.reader.SeekEntry(&logindex.IndexEntry{
+			IndexValue: logindex.IndexValue{
+				EntryType: logindex.IeBlock,
+				Value:     proveParentBlock,
 			},
-			logindex.IndexPosition: logindex.IndexPosition{
-				blockNumber: tp.reader.BlockRange().First() - 1,
+			IndexPosition: logindex.IndexPosition{
+				BlockNumber: tp.reader.BlockRange().First() - 1,
 			},
 		})
 		fmt.Println(" fetch parent block entry", found, err)
@@ -166,15 +166,15 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 		proof.BlockResults[i] = br
 	}
 
-	entries := make(IndexEntries, len(proof.EntryIndices))
+	entries := make(logindex.IndexEntries, len(proof.EntryIndices))
 	lastIndex := uint64(math.MaxUint64)
 	//fmt.Println("proof.EntryIndices", len(proof.EntryIndices))
 	for i, entryIndex := range proof.EntryIndices {
-		entry, err := tp.reader.getEntry(entryIndex)
+		entry, err := tp.reader.GetEntry(entryIndex)
 		if err != nil {
 			return tableQueryProof{}, common.Hash{}, err
 		}
-		//fmt.Println("entry", entryIndex, "hash", common.Hash(entry.hash()))
+		//fmt.Println("entry", entryIndex, "hash", common.Hash(entry.Hash()))
 		entries[i] = *entry
 		if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, entryIndex); err != nil {
 			return tableQueryProof{}, common.Hash{}, err
@@ -185,7 +185,7 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 	if proof.ProofHashes, err = tp.makeProofHashes(proof.ProofHashes, lastIndex, uint64(math.MaxUint64)); err != nil {
 		return tableQueryProof{}, common.Hash{}, err
 	}
-	proof.ProvenEntries = entries.toStorage()
+	proof.ProvenEntries = entries.ToStorage()
 	//treeRoot, _ := tp.reader.getHash(1)
 	//fmt.Println("tree root", common.Hash(treeRoot))
 	return proof, proveLastBlock, nil
@@ -193,7 +193,7 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 
 func (tp *tableProver) makeProofHashes(hashes []merkle.Value, a, b uint64) ([]merkle.Value, error) {
 	if err := iterateProofIndices(tp.treeHeight, a, b, func(gti uint64) error {
-		hash, err := tp.reader.getHash(gti)
+		hash, err := tp.reader.GetHash(gti)
 		if err != nil {
 			return err
 		}

@@ -168,7 +168,7 @@ func (qp *QueryProof) getProvenTableRoot(contractVerifier contractVerifier, inde
 // first/last tableQueryProof (depending on direction)
 func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Hash, resultsLimited bool, results []*types.Log, reqParentBlockHash common.Hash) ([]*types.Log, common.Hash, error) {
 	fmt.Println("** tqp.verify", tqp.FirstBlock, tqp.TableSize)
-	tqp.entries = tqp.ProvenEntries.toEntries()
+	tqp.entries = tqp.ProvenEntries.ToEntries()
 	ctr, err := tqp.calculateTableRoot()
 	if err != nil {
 		return nil, common.Hash{}, err
@@ -184,8 +184,8 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 		return results, reqLastBlockHash, nil
 		//return nil, common.Hash{}, errors.New("useful block range is empty")
 	}
-	begin := logindex.IndexPosition{blockNumber: blockRange.First()}
-	end := logindex.IndexPosition{blockNumber: blockRange.Last(), txIndex: math.MaxUint32, logIndex: math.MaxUint32}
+	begin := logindex.IndexPosition{BlockNumber: blockRange.First()}
+	end := logindex.IndexPosition{BlockNumber: blockRange.Last(), TxIndex: math.MaxUint32, LogIndex: math.MaxUint32}
 	//fmt.Println("getProvenEntries oldCount:", oldCount, "results:", len(results), "inclusionProven", len(inclusionProven))
 	if err != nil {
 		return nil, common.Hash{}, err
@@ -279,12 +279,12 @@ func (tqp *tableQueryProof) getProvenEntries(query *FilterQuery, results []*type
 	//fmt.Println("getProvenEntries", tqp.FirstBlock, tqp.TableSize)
 loop:
 	for _, entry := range tqp.entries {
-		switch entry.entryType {
-		case ieBlock:
-			//fmt.Println(" block entry", entry.blockNumber, common.Hash(entry.value))
-			provenBlockEntries[entry.blockNumber] = entry.value
-		case ieTransaction:
-			provenTxEntries[txPosition{blockNumber: entry.blockNumber, txIndex: entry.txIndex}] = txInfo{txHash: entry.value, cumulativeLogIndex: entry.logIndex}
+		switch entry.EntryType {
+		case logindex.IeBlock:
+			//fmt.Println(" block entry", entry.BlockNumber, common.Hash(entry.value))
+			provenBlockEntries[entry.BlockNumber] = entry.Value
+		case logindex.IeTransaction:
+			provenTxEntries[txPosition{blockNumber: entry.BlockNumber, txIndex: entry.TxIndex}] = txInfo{txHash: entry.Value, cumulativeLogIndex: entry.LogIndex}
 		default:
 			break loop // block/tx entries come first in the sorted list
 		}
@@ -329,7 +329,7 @@ loop:
 			}
 			for i, log := range receipt.Logs {
 				if query.matchSpecified(log) {
-					inclusionProven = append(inclusionProven, logindex.IndexPosition{blockNumber: number, txIndex: txIndex, logIndex: uint32(i)})
+					inclusionProven = append(inclusionProven, logindex.IndexPosition{BlockNumber: number, TxIndex: txIndex, LogIndex: uint32(i)})
 					valid := query.matchLength(log)
 					validResult = append(validResult, valid)
 					if valid {
@@ -378,7 +378,7 @@ func (tqp *tableQueryProof) calculateTableRoot() (merkle.Value, error) {
 		if (i > 0 && entryIndex <= lastIndex) || entryIndex >= tqp.EntryCount {
 			return merkle.Value{}, errors.New("invalid entry index")
 		}
-		hashes[leafOffset+entryIndex] = tqp.entries[i].hash()
+		hashes[leafOffset+entryIndex] = tqp.entries[i].Hash()
 		//fmt.Println("entry", entryIndex, "hash", common.Hash(hashes[leafOffset+entryIndex]))
 		if err := loadProofHashes(lastIndex, entryIndex); err != nil {
 			return merkle.Value{}, err
@@ -424,7 +424,7 @@ func (tqp *tableQueryProof) getPotentialMatches(query *FilterQuery, begin, end l
 	for i, address := range query.Addresses {
 		var addressValue [32]byte
 		copy(addressValue[12:], address.Bytes())
-		addressMatch[i] = tqp.getValueMatches(logindex.IndexValue{entryType: ieAddress, value: addressValue}, begin, end)
+		addressMatch[i] = tqp.getValueMatches(logindex.IndexValue{EntryType: logindex.IeAddress, Value: addressValue}, begin, end)
 	}
 	if len(addressMatch) > 0 {
 		matchAll = append(matchAll, ipsUnion(addressMatch))
@@ -432,7 +432,7 @@ func (tqp *tableQueryProof) getPotentialMatches(query *FilterQuery, begin, end l
 	for j, topics := range query.Topics {
 		topicMatch := make([]indexPositionSet, len(topics))
 		for i, topic := range topics {
-			topicMatch[i] = tqp.getValueMatches(logindex.IndexValue{entryType: ieTopic0 + uint32(j), value: topic}, begin, end)
+			topicMatch[i] = tqp.getValueMatches(logindex.IndexValue{EntryType: logindex.IeTopic0 + uint32(j), Value: topic}, begin, end)
 		}
 		if len(topicMatch) > 0 {
 			matchAll = append(matchAll, ipsUnion(topicMatch))
@@ -461,12 +461,12 @@ func (tqp *tableQueryProof) getValueMatches(value logindex.IndexValue, begin, en
 		fmt.Println(" ", idx, tqp.entries[i])
 	}*/
 	boundary := logindex.IndexEntry{
-		logindex.IndexValue:    value,
-		logindex.IndexPosition: begin,
+		IndexValue:    value,
+		IndexPosition: begin,
 	}
-	firstInRange, _ := tqp.entries.find(&boundary)
-	boundary.logindex.IndexPosition = end
-	afterLastInRange, lastFound := tqp.entries.find(&boundary)
+	firstInRange, _ := tqp.entries.Find(&boundary)
+	boundary.IndexPosition = end
+	afterLastInRange, lastFound := tqp.entries.Find(&boundary)
 	if lastFound {
 		afterLastInRange++
 	}
@@ -474,7 +474,7 @@ func (tqp *tableQueryProof) getValueMatches(value logindex.IndexValue, begin, en
 	var ips indexPositionSet
 	if tqp.excludeBefore(firstInRange) {
 		if firstInRange < afterLastInRange {
-			ips = append(ips, indexPositionBoundary{p: tqp.entries[firstInRange].logindex.IndexPosition, d: 1})
+			ips = append(ips, indexPositionBoundary{p: tqp.entries[firstInRange].IndexPosition, d: 1})
 		}
 	} else {
 		ips = append(ips, indexPositionBoundary{p: begin, d: 1})
@@ -482,13 +482,13 @@ func (tqp *tableQueryProof) getValueMatches(value logindex.IndexValue, begin, en
 	for i := firstInRange + 1; i < afterLastInRange; i++ {
 		if tqp.excludeBefore(i) {
 			ips = append(ips,
-				indexPositionBoundary{p: tqp.entries[i-1].logindex.IndexPosition, d: -1},
-				indexPositionBoundary{p: tqp.entries[i].logindex.IndexPosition, d: 1})
+				indexPositionBoundary{p: tqp.entries[i-1].IndexPosition, d: -1},
+				indexPositionBoundary{p: tqp.entries[i].IndexPosition, d: 1})
 		}
 	}
 	if tqp.excludeBefore(afterLastInRange) {
 		if firstInRange < afterLastInRange {
-			ips = append(ips, indexPositionBoundary{p: tqp.entries[afterLastInRange-1].logindex.IndexPosition, d: -1})
+			ips = append(ips, indexPositionBoundary{p: tqp.entries[afterLastInRange-1].IndexPosition, d: -1})
 		}
 	} else {
 		ips = append(ips, indexPositionBoundary{p: end, d: -1})
@@ -517,7 +517,7 @@ func (ips indexPositionSet) iter() iter.Seq[logindex.IndexPosition] {
 					if !yield(last) {
 						return
 					}
-					last.logIndex++
+					last.LogIndex++
 				}
 			} else {
 				last = bound.p
@@ -532,7 +532,7 @@ func (ips indexPositionSet) iter() iter.Seq[logindex.IndexPosition] {
 
 func (ips indexPositionSet) filter(threshold int) indexPositionSet {
 	sort.Slice(ips, func(i, j int) bool {
-		switch ips[i].p.compare(&ips[j].p) {
+		switch ips[i].p.Compare(&ips[j].p) {
 		case -1:
 			return true
 		case 1:

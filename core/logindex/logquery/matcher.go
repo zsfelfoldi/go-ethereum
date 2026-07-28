@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/big"
 	"slices"
 	"sort"
 	"sync"
@@ -30,14 +29,9 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/mclock"
-	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
 	"github.com/ethereum/go-ethereum/core/logindex"
-	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/trie"
 )
 
 var ErrMatchAll = errors.New("match-all queries not allowed")
@@ -65,15 +59,16 @@ type indexer interface {
 }
 
 type Matcher struct {
+	lock                       sync.Mutex
 	indexer                    indexer
 	contractProver             contractProver
 	threadCount, activeThreads int
 	requestCounter             uint64
-	sessions                   map[*matcherSession]struct{}
-	processing                 []*matcherProcess      // status == mpRunning
-	startProcessCh             []chan *matcherProcess // control -> worker
-	stoppedProcessCh           chan int               // worker -> control (thread index)
-	sessionCh                  chan *matcherSession   // GetMatches -> control
+	sessions                   map[*matcherSession]struct{} // accessed under lock mutex
+	processing                 []*matcherProcess            // status == mpRunning
+	startProcessCh             []chan *matcherProcess       // control -> worker
+	stoppedProcessCh           chan int                     // worker -> control (thread index)
+	sessionCh                  chan *matcherSession         // GetMatches -> control
 	suspended, updateSort      processQueue
 	updateTicker               *time.Ticker
 	stopCh                     chan struct{}
@@ -149,7 +144,7 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		for i, address := range query.Addresses {
 			var addr32 [32]byte
 			copy(addr32[32-common.AddressLength:], address[:])
-			matchAddress[i] = &singleMatcher{value: logindex.IndexValue{entryType: ieAddress, value: addr32}}
+			matchAddress[i] = &singleMatcher{value: logindex.IndexValue{EntryType: logindex.IeAddress, Value: addr32}}
 		}
 		matcher = append(matcher, matchAddress)
 	}
@@ -161,7 +156,7 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		if len(topicList) > 0 {
 			matchTopic := make(matchAny, len(topicList))
 			for j, topic := range topicList {
-				matchTopic[j] = &singleMatcher{value: logindex.IndexValue{entryType: ieTopic0 + uint32(i), value: ([32]byte)(topic)}}
+				matchTopic[j] = &singleMatcher{value: logindex.IndexValue{EntryType: logindex.IeTopic0 + uint32(i), Value: ([32]byte)(topic)}}
 			}
 			matcher = append(matcher, matchTopic)
 		}
@@ -169,7 +164,7 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	if len(matcher) == 0 {
 		return nil, common.Range[uint64]{}, nil, ErrMatchAll
 	}
-	session := ix.Matcher.newSession(ctx, query)
+	session := mc.newSession(ctx, query)
 	//fmt.Println("create session", firstBlock, lastBlock, query.Addresses, query.Topics)
 	var lastBlockProver *tableProver
 	for i, tr := range readers {
@@ -181,8 +176,8 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			break
 		}
 		logicBuilder := prover.optimizer.newBuilderInstance()
-		firstPos := logindex.IndexPosition{blockNumber: br.First()}
-		lastPos := logindex.IndexPosition{blockNumber: br.Last(), txIndex: math.MaxUint32, logIndex: math.MaxUint32}
+		firstPos := logindex.IndexPosition{BlockNumber: br.First()}
+		lastPos := logindex.IndexPosition{BlockNumber: br.Last(), TxIndex: math.MaxUint32, LogIndex: math.MaxUint32}
 		firstBlock := br.First()
 		lastBlock := br.Last()
 		if query.Reverse {
@@ -190,7 +185,7 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			firstBlock, lastBlock = lastBlock, firstBlock
 		}
 		mp := &matcherProcess{
-			indexer: ix,
+			indexer: mc.indexer,
 			matcher: matcher.newInstance(
 				ctx,
 				&directionalReader{reader: tr, reverse: query.Reverse},
@@ -218,17 +213,17 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		}
 	}
 	//session.print()
-	ix.lock.Lock()
-	ix.Matcher.sessions[session] = struct{}{}
-	ix.lock.Unlock()
+	mc.lock.Lock()
+	mc.sessions[session] = struct{}{}
+	mc.lock.Unlock()
 	defer func() {
-		ix.lock.Lock()
-		delete(ix.Matcher.sessions, session)
-		ix.lock.Unlock()
+		mc.lock.Lock()
+		delete(mc.sessions, session)
+		mc.lock.Unlock()
 	}()
 
 	select {
-	case ix.Matcher.sessionCh <- session:
+	case mc.sessionCh <- session:
 	case <-ctx.Done():
 		return nil, common.Range[uint64]{}, nil, ctx.Err()
 	}
@@ -280,15 +275,15 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 				return nil, common.Range[uint64]{}, nil, err
 			}
 			proveParentBlock = proveLastBlock
-			tproof.IndexContract = proof.addOrGetIndexContract(prover.reader.indexContract)
+			tproof.IndexContract = proof.addOrGetIndexContract(prover.reader.IndexContract)
 			proof.TableQueryProofs[i] = tproof
 			// generate state proof nodes for table root
-			tableRoot, err := mc.contractProver.proveTableRoot(refHeader, prover.reader.indexContract, prover.reader.BlockRange().First(), prover.reader.BlockRange().Count(), proofNodes, proofCodes)
+			tableRoot, err := mc.contractProver.proveTableRoot(refHeader, prover.reader.IndexContract, prover.reader.BlockRange().First(), prover.reader.BlockRange().Count(), proofNodes, proofCodes)
 			//fmt.Println("GetTableRoot", prover.reader.BlockRange(), tableRoot, err)
 			if err != nil {
 				return nil, common.Range[uint64]{}, nil, err
 			}
-			if tableRoot != common.Hash(prover.reader.tableRoot) {
+			if tableRoot != common.Hash(prover.reader.TableRoot) {
 				return nil, common.Range[uint64]{}, nil, errors.New("local table root does not match index contract")
 			}
 		}
@@ -345,7 +340,7 @@ func (mc *Matcher) newSession(ctx context.Context, query FilterQuery) *matcherSe
 		requestCounter: atomic.AddUint64(&mc.requestCounter, 1),
 		maxResults:     maxResults,
 		reverse:        query.Reverse,
-		validUntil:     blockRange.Last(),
+		validUntil:     query.LastBlock,
 		minTopicCount:  len(query.Topics),
 		resultsCh:      make(chan *matcherResults, 1),
 	}
@@ -677,7 +672,7 @@ func (ms *matcherSession) returnResults() {
 		mp.blockDataLock.Lock()
 		defer mp.blockDataLock.Unlock()
 
-		//fmt.Println("addProcessResults", mp.TableReader.BlockRange(), "len(mp.allMatches)", len(mp.allMatches), "len(mp.sectionNodes)", len(mp.sectionNodes))
+		//fmt.Println("addProcessResults", mp.tableReader.BlockRange(), "len(mp.allMatches)", len(mp.allMatches), "len(mp.sectionNodes)", len(mp.sectionNodes))
 		if mp.tableProver != nil && mp.tableProver != currentProver {
 			if currentProver != nil {
 				res.provers = append(res.provers, currentProver)
@@ -687,7 +682,7 @@ func (ms *matcherSession) returnResults() {
 			lastResultCount = len(res.logs)
 			mp.logicBuilder.connect(andNode, mp.logicBuilder.addOutputNode())
 		}
-		_, lastBlockProven := mp.blockProofs[mp.TableReader.BlockRange().Last()]
+		_, lastBlockProven := mp.blockProofs[mp.tableReader.BlockRange().Last()]
 		for i, log := range mp.allMatches {
 			if len(res.logs) == ms.maxResults {
 				lastLog := res.logs[ms.maxResults-1]

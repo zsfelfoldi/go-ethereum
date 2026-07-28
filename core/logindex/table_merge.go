@@ -86,7 +86,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 		if err != nil {
 			return false, err
 		}
-		entryCount += tr.entryCount
+		entryCount += tr.EntryCount
 		readers[i] = tr
 	}
 	tw, err := ix.storage.getTableWriter(id)
@@ -155,7 +155,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 			}
 			var checkNextEntry uint64
 			for i, tr := range readers {
-				pos, found, err := tr.seekEntry(lastEntry)
+				pos, found, err := tr.SeekEntry(lastEntry)
 				if err != nil {
 					return false, err
 				}
@@ -173,9 +173,9 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 			}
 		}
 		for i, tr := range readers {
-			if nextReadPosition[i] < tr.entryCount {
+			if nextReadPosition[i] < tr.EntryCount {
 				var err error
-				nextReadEntry[i], err = tr.getEntry(nextReadPosition[i])
+				nextReadEntry[i], err = tr.GetEntry(nextReadPosition[i])
 				if err != nil {
 					return false, err
 				}
@@ -190,7 +190,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 				bestEntry *IndexEntry
 			)
 			for i, entry := range nextReadEntry {
-				if entry != nil && (bestEntry == nil || entry.compare(bestEntry) < 0) {
+				if entry != nil && (bestEntry == nil || entry.Compare(bestEntry) < 0) {
 					bestIndex, bestEntry = i, entry
 				}
 			}
@@ -200,9 +200,9 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 			ix.mergeStatCount++
 			nextEntry++
 			nextReadPosition[bestIndex]++
-			if nextReadPosition[bestIndex] < readers[bestIndex].entryCount {
+			if nextReadPosition[bestIndex] < readers[bestIndex].EntryCount {
 				var err error
-				nextReadEntry[bestIndex], err = readers[bestIndex].getEntry(nextReadPosition[bestIndex])
+				nextReadEntry[bestIndex], err = readers[bestIndex].GetEntry(nextReadPosition[bestIndex])
 				if err != nil {
 					return false, err
 				}

@@ -17,14 +17,10 @@
 package logquery
 
 import (
-	"container/heap"
-	"context"
 	"errors"
-	"fmt"
 	"math"
 	"math/big"
 	"slices"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,7 +29,6 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
 	"github.com/ethereum/go-ethereum/core/logindex"
-	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -136,11 +131,11 @@ func (mp *matcherProcess) run() {
 		} else {
 			for len(mp.positions) > len(mp.allMatches) {
 				pos := mp.positions[len(mp.allMatches)]
-				if _, ok := mp.blockInResults[pos.blockNumber]; !ok {
-					mp.blockInResults[pos.blockNumber] = len(mp.allMatches)
-					//fmt.Println("*** getBlockData", pos.blockNumber)
-					//fmt.Println(" len(mp.positions)", len(mp.positions), "len(mp.logs)", len(mp.logs), "blockInResults[", pos.blockNumber, "] = ", len(mp.logs))
-					requestBlocks = append(requestBlocks, pos.blockNumber)
+				if _, ok := mp.blockInResults[pos.BlockNumber]; !ok {
+					mp.blockInResults[pos.BlockNumber] = len(mp.allMatches)
+					//fmt.Println("*** getBlockData", pos.BlockNumber)
+					//fmt.Println(" len(mp.positions)", len(mp.positions), "len(mp.logs)", len(mp.logs), "blockInResults[", pos.BlockNumber, "] = ", len(mp.logs))
+					requestBlocks = append(requestBlocks, pos.BlockNumber)
 				}
 				mp.allMatches = append(mp.allMatches, nil)
 			}
@@ -157,7 +152,7 @@ func (mp *matcherProcess) run() {
 		mp.blockDataLock.Unlock()
 		for _, blockNumber := range requestBlocks {
 			// start requests outside blockDataLock to avoid wrong locking order
-			mp.indexer.getBlockDataLocked(blockNumber, true, true, 0 /*TODO*/, mp.deliverBlockData)
+			mp.indexer.RequestBlock(blockNumber, mp.deliverBlockData)
 		}
 		if suspendNow || cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
 			return
@@ -166,13 +161,13 @@ func (mp *matcherProcess) run() {
 }
 
 func (mp *matcherProcess) deliverBlockData(req logindex.BlockRequest, header *types.Header, body *types.Body, receipts types.Receipts) {
-	//fmt.Println("*** deliverBlockData", req.number)
+	//fmt.Println("*** deliverBlockData", req.Number)
 	mp.blockDataLock.Lock()
 	defer mp.blockDataLock.Unlock()
 
-	firstInResults, ok := mp.blockInResults[req.number]
+	firstInResults, ok := mp.blockInResults[req.Number]
 	if ok {
-		delete(mp.blockInResults, req.number)
+		delete(mp.blockInResults, req.Number)
 	} else {
 		return
 	}
@@ -187,21 +182,21 @@ func (mp *matcherProcess) deliverBlockData(req logindex.BlockRequest, header *ty
 
 	var blockProof *blockProof
 	if mp.tableProver != nil {
-		blockProof = mp.blockProofs[req.number]
+		blockProof = mp.blockProofs[req.Number]
 		if blockProof == nil {
-			if req.number == mp.TableReader.BlockRange().Last() {
+			if req.Number == mp.tableReader.BlockRange().Last() {
 				blockProof = newBlockProof(header, math.MaxUint64)
 			} else {
 				blockEntry := logindex.IndexEntry{
-					logindex.IndexValue: logindex.IndexValue{
-						entryType: ieBlock,
-						value:     ([32]byte)(header.Hash()),
+					IndexValue: logindex.IndexValue{
+						EntryType: logindex.IeBlock,
+						Value:     ([32]byte)(header.Hash()),
 					},
-					logindex.IndexPosition: logindex.IndexPosition{
-						blockNumber: req.number,
+					IndexPosition: logindex.IndexPosition{
+						BlockNumber: req.Number,
 					},
 				}
-				blockEntryIndex, found, err := mp.TableReader.seekEntry(&blockEntry)
+				blockEntryIndex, found, err := mp.tableReader.SeekEntry(&blockEntry)
 				if err != nil {
 					mp.deliveryErr = err
 					return
@@ -212,22 +207,22 @@ func (mp *matcherProcess) deliverBlockData(req logindex.BlockRequest, header *ty
 				}
 				blockProof = newBlockProof(header, blockEntryIndex)
 			}
-			mp.blockProofs[req.number] = blockProof
+			mp.blockProofs[req.Number] = blockProof
 		}
 	}
 
 loop:
 	for ; firstInResults < len(mp.allMatches); firstInResults++ {
 		pos := mp.positions[firstInResults]
-		if pos.blockNumber != req.number || uint32(len(receipts)) <= pos.txIndex || uint32(len(receipts[pos.txIndex].Logs)) <= pos.logIndex {
+		if pos.BlockNumber != req.Number || uint32(len(receipts)) <= pos.TxIndex || uint32(len(receipts[pos.TxIndex].Logs)) <= pos.LogIndex {
 			break loop
 		}
 		var logOffset uint
-		for i := range pos.txIndex {
+		for i := range pos.TxIndex {
 			logOffset += uint(len(receipts[i].Logs)) //TODO different position encoding?
 		}
-		txHash := body.Transactions[pos.txIndex].Hash()
-		l := receipts[pos.txIndex].Logs[pos.logIndex]
+		txHash := body.Transactions[pos.TxIndex].Hash()
+		l := receipts[pos.TxIndex].Logs[pos.LogIndex]
 		if len(l.Topics) >= mp.session.minTopicCount {
 			mp.validMatches++
 		}
@@ -235,26 +230,26 @@ loop:
 			Address:        l.Address,
 			Topics:         l.Topics,
 			Data:           l.Data,
-			BlockNumber:    pos.blockNumber,
+			BlockNumber:    pos.BlockNumber,
 			TxHash:         txHash,
-			TxIndex:        uint(pos.txIndex),
+			TxIndex:        uint(pos.TxIndex),
 			BlockHash:      header.Hash(),
 			BlockTimestamp: header.Time,
-			Index:          logOffset + uint(pos.logIndex),
+			Index:          logOffset + uint(pos.LogIndex),
 		}
 		if blockProof != nil {
 			txEntry := logindex.IndexEntry{
-				logindex.IndexValue: logindex.IndexValue{
-					entryType: ieTransaction,
-					value:     ([32]byte)(txHash),
+				IndexValue: logindex.IndexValue{
+					EntryType: logindex.IeTransaction,
+					Value:     ([32]byte)(txHash),
 				},
-				logindex.IndexPosition: logindex.IndexPosition{
-					blockNumber: pos.blockNumber,
-					txIndex:     pos.txIndex,
-					logIndex:    uint32(logOffset),
+				IndexPosition: logindex.IndexPosition{
+					BlockNumber: pos.BlockNumber,
+					TxIndex:     pos.TxIndex,
+					LogIndex:    uint32(logOffset),
 				},
 			}
-			txEntryIndex, found, err := mp.TableReader.seekEntry(&txEntry)
+			txEntryIndex, found, err := mp.tableReader.SeekEntry(&txEntry)
 			if err != nil {
 				mp.deliveryErr = err
 				return
@@ -263,7 +258,7 @@ loop:
 				mp.deliveryErr = errors.New("could not find transaction entry index")
 				return
 			}
-			blockProof.addMatchingTx(pos.txIndex, txEntryIndex)
+			blockProof.addMatchingTx(pos.TxIndex, txEntryIndex)
 		}
 	}
 	if blockProof != nil {
@@ -335,7 +330,7 @@ func (mp *matcherProcess) isRemoved() bool {
 
 func (mp *matcherProcess) getProgress() (done, lastBlock, remaining uint64) {
 	if len(mp.positions) > 0 {
-		lastBlock = mp.positions[len(mp.positions)-1].blockNumber
+		lastBlock = mp.positions[len(mp.positions)-1].BlockNumber
 	} else {
 		lastBlock = mp.firstBlock
 	}
@@ -448,7 +443,7 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		indexer:        mp.indexer,
 		matcher:        mp.matcher.split(logicBuilder, splitAt),
 		session:        mp.session,
-		TableReader:    mp.TableReader,
+		tableReader:    mp.tableReader,
 		tableProver:    mp.tableProver,
 		logicBuilder:   logicBuilder,
 		prev:           mp,

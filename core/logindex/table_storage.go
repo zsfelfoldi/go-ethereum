@@ -82,7 +82,7 @@ loop:
 				tf.deleteFile(name)
 				continue loop
 			}
-			fmt.Println("table", reader.BlockRange(), "root", common.Hash(reader.tableRoot))
+			fmt.Println("table", reader.BlockRange(), "root", common.Hash(reader.TableRoot))
 			ts.readers[id] = reader
 		case fnWriteState:
 			writer, err := newTableWriter(params, tf, params.tableName(id), true, 0, id.level == 0)

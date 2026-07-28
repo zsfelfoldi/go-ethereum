@@ -17,27 +17,9 @@
 package logquery
 
 import (
-	"container/heap"
 	"context"
-	"errors"
-	"fmt"
-	"math"
-	"math/big"
-	"slices"
-	"sort"
-	"sync"
-	"sync/atomic"
-	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/mclock"
-	"github.com/ethereum/go-ethereum/consensus/misc/eip4844"
 	"github.com/ethereum/go-ethereum/core/logindex"
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/trie"
 )
 
 // matcher defines a general abstraction for any matcher configuration that
@@ -88,7 +70,7 @@ func (m *singleMatcher) newInstance(ctx context.Context, reader *directionalRead
 		singleMatcher: m,
 		ctx:           ctx,
 		compare: logindex.IndexEntry{
-			logindex.IndexValue: m.value,
+			IndexValue: m.value,
 		},
 		reader: reader,
 		logic:  logic,
@@ -143,12 +125,12 @@ func (m *singleMatcherInstance) next() (dpos *logindex.IndexPosition, dlsn logic
 		if err != nil {
 			return nil, 0, err
 		}
-		if entry.logindex.IndexValue != m.value || m.reader.comparePosition(&entry.logindex.IndexPosition, &m.last) == 1 {
+		if entry.IndexValue != m.value || m.reader.comparePosition(&entry.IndexPosition, &m.last) == 1 {
 			m.isEmpty = true
 			m.currentPos = nil
 			return nil, m.lastSectionNode, nil
 		}
-		m.currentPos = &entry.logindex.IndexPosition
+		m.currentPos = &entry.IndexPosition
 	}
 	return m.currentPos, m.lastSectionNode, nil
 }
@@ -185,7 +167,7 @@ func (m *singleMatcherInstance) advance(findPos *logindex.IndexPosition) error {
 		findPos = &m.last
 	}
 	// move to the entry at or beyond findPos
-	m.compare.logindex.IndexPosition = *findPos
+	m.compare.IndexPosition = *findPos
 	newEntryPtr, valid, err := m.reader.entryAtOrAfter(&m.compare)
 	if err != nil {
 		return err
@@ -494,11 +476,11 @@ type directionalReader struct {
 }
 
 func (dr *directionalReader) firstEntry() (uint64, bool) {
-	if dr.reader.entryCount == 0 {
+	if dr.reader.EntryCount == 0 {
 		return 0, false
 	}
 	if dr.reverse {
-		return dr.reader.entryCount - 1, true
+		return dr.reader.EntryCount - 1, true
 	}
 	return 0, true
 }
@@ -510,14 +492,14 @@ func (dr *directionalReader) prevNextEntry(entryIndex uint64, next bool) (uint64
 		}
 		return entryIndex - 1, true
 	}
-	if entryIndex+1 >= dr.reader.entryCount {
+	if entryIndex+1 >= dr.reader.EntryCount {
 		return 0, false
 	}
 	return entryIndex + 1, true
 }
 
 func (dr *directionalReader) entryAtOrAfter(target *logindex.IndexEntry) (uint64, bool, error) {
-	pos, found, err := dr.reader.seekEntry(target)
+	pos, found, err := dr.reader.SeekEntry(target)
 	if err != nil {
 		return 0, false, err
 	}
@@ -530,25 +512,25 @@ func (dr *directionalReader) entryAtOrAfter(target *logindex.IndexEntry) (uint64
 		}
 		return pos, true, nil
 	}
-	if pos >= dr.reader.entryCount {
+	if pos >= dr.reader.EntryCount {
 		return 0, false, nil
 	}
 	return pos, true, nil
 }
 
 func (dr *directionalReader) splitBoundaries(blockNumber uint64) (before, after logindex.IndexPosition) {
-	before.blockNumber = blockNumber
-	after.blockNumber = blockNumber
+	before.BlockNumber = blockNumber
+	after.BlockNumber = blockNumber
 	if dr.reverse {
-		after.decrease()
+		after.Decrease()
 	} else {
-		before.decrease()
+		before.Decrease()
 	}
 	return
 }
 
 func (dr *directionalReader) comparePosition(a, b *logindex.IndexPosition) int {
-	cmp := a.compare(b)
+	cmp := a.Compare(b)
 	if dr.reverse {
 		return -cmp
 	}
@@ -556,5 +538,5 @@ func (dr *directionalReader) comparePosition(a, b *logindex.IndexPosition) int {
 }
 
 func (dr *directionalReader) getEntry(index uint64) (*logindex.IndexEntry, error) {
-	return dr.reader.getEntry(index)
+	return dr.reader.GetEntry(index)
 }
