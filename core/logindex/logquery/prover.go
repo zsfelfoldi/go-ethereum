@@ -27,6 +27,9 @@ import (
 	"github.com/ethereum/go-ethereum/beacon/merkle"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/logindex"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 )
 
 const (
@@ -283,4 +286,82 @@ func (t trieProofWriter) proofForStorage() [][]byte {
 		proof[i] = t[hash]
 	}
 	return proof
+}
+
+type blockProof struct {
+	header          *types.Header
+	blockEntryIndex uint64 // MaxUint64 if block is last in table
+	matchingTxs     map[uint32]matchingTx
+	receiptsProof   trieProofWriter
+}
+
+type matchingTx struct {
+	txEntryIndex      uint64
+	receiptProofAdded bool
+}
+
+func newBlockProof(header *types.Header, blockEntryIndex uint64) *blockProof {
+	return &blockProof{
+		header:          header,
+		blockEntryIndex: blockEntryIndex,
+		matchingTxs:     make(map[uint32]matchingTx),
+		receiptsProof:   make(trieProofWriter),
+	}
+}
+
+func (bp *blockProof) merge(bp2 *blockProof) {
+	if bp.header.Hash() != bp2.header.Hash() || bp.blockEntryIndex != bp2.blockEntryIndex {
+		panic("invalid block proof merge")
+	}
+	for txi, mtx2 := range bp2.matchingTxs {
+		if mtx, ok := bp.matchingTxs[txi]; ok {
+			if mtx.txEntryIndex != mtx2.txEntryIndex {
+				panic("invalid matching tx proof merge")
+			}
+			if mtx2.receiptProofAdded && !mtx.receiptProofAdded {
+				bp.matchingTxs[txi] = mtx2
+			}
+		} else {
+			bp.matchingTxs[txi] = mtx2
+		}
+	}
+	for hash, blob := range bp2.receiptsProof {
+		bp.receiptsProof[hash] = blob
+	}
+}
+
+func (bp *blockProof) addMatchingTx(txIndex uint32, entryIndex uint64) {
+	if _, ok := bp.matchingTxs[txIndex]; !ok {
+		bp.matchingTxs[txIndex] = matchingTx{txEntryIndex: entryIndex}
+	}
+}
+
+func (bp *blockProof) createProof(receipts types.Receipts) {
+	proveHexKeys := make(map[string]struct{})
+	proveHexKeys[""] = struct{}{}
+	var indexBuf, indexHex []byte
+	for txi, mtx := range bp.matchingTxs {
+		if mtx.receiptProofAdded {
+			continue
+		}
+		indexBuf = rlp.AppendUint64(indexBuf[:0], uint64(txi))
+		indexHex = indexHex[:0]
+		for _, b := range indexBuf {
+			indexHex = append(indexHex, b/16)
+			proveHexKeys[string(indexHex)] = struct{}{}
+			indexHex = append(indexHex, b%16)
+			proveHexKeys[string(indexHex)] = struct{}{}
+		}
+		mtx.receiptProofAdded = true
+		bp.matchingTxs[txi] = mtx
+	}
+	//fmt.Println("DeriveSha")
+	types.DeriveSha(receipts, trie.NewStackTrie(func(path []byte, hash common.Hash, blob []byte) {
+		if _, ok := proveHexKeys[string(path)]; ok {
+			//fmt.Println(" path", path, "hash", hash, "node", blob)
+			bp.receiptsProof[hash] = slices.Clone(blob)
+			delete(proveHexKeys, string(path))
+		}
+	}))
+	//fmt.Println("DeriveSha:", rh, "header receipts root:", bp.header.ReceiptHash)
 }
