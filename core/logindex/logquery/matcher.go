@@ -53,9 +53,8 @@ type FilterQuery struct {
 }
 
 type indexer interface {
-	GetRangeReaders(common.Range[uint64]) []*logindex.TableReader
-	SubscribeRevert(func(uint64))
-	RequestBlock(uint64, logindex.DeliverBlockFn)
+	GetRangeReaders(common.Hash, common.Range[uint64]) []*logindex.TableReader
+	RequestBlock(common.Hash, uint64, logindex.DeliverBlockFn)
 }
 
 type Matcher struct {
@@ -89,7 +88,6 @@ func NewMatcher(indexer indexer, contractProverBackend contractProverBackend) *M
 		stopCh:           make(chan struct{}),
 		updateTicker:     time.NewTicker(updateEstimatesFrequency),
 	}
-	indexer.SubscribeRevert(mc.revert)
 	for i := range maxMatcherThreads {
 		mc.startProcessCh[i] = make(chan *matcherProcess, 1)
 	}
@@ -104,7 +102,7 @@ func NewMatcher(indexer indexer, contractProverBackend contractProverBackend) *M
 
 func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
 	start := time.Now()
-	headBlock := refHeader.Number.Uint64() //TODO check whether refHeader is part of the indexed chain (common ancestor if not?)
+	headBlock, refBlockHash := refHeader.Number.Uint64(), refHeader.Hash()
 	firstBlock := min(query.FirstBlock, headBlock)
 	lastBlock := min(query.LastBlock, headBlock)
 	blockRange := common.NewRange[uint64](firstBlock, lastBlock+1-firstBlock)
@@ -112,7 +110,7 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	if prove && lastBlock < headBlock {
 		readerRange.SetLast(lastBlock + 1)
 	}
-	readers := mc.indexer.GetRangeReaders(readerRange)
+	readers := mc.indexer.GetRangeReaders(refBlockHash, readerRange)
 	sort.Slice(readers, func(i, j int) bool {
 		if query.Reverse {
 			return readers[i].Meta.LastBlockNumber > readers[j].Meta.LastBlockNumber
@@ -164,7 +162,7 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	if len(matcher) == 0 {
 		return nil, common.Range[uint64]{}, nil, ErrMatchAll
 	}
-	session := mc.newSession(ctx, query)
+	session := mc.newSession(ctx, refBlockHash, query)
 	//fmt.Println("create session", firstBlock, lastBlock, query.Addresses, query.Topics)
 	var lastBlockProver *tableProver
 	for i, tr := range readers {
@@ -330,28 +328,19 @@ func (mc *Matcher) Stop() {
 	mc.wg.Wait()
 }
 
-func (mc *Matcher) newSession(ctx context.Context, query FilterQuery) *matcherSession {
+func (mc *Matcher) newSession(ctx context.Context, refBlockHash common.Hash, query FilterQuery) *matcherSession {
 	maxResults := math.MaxInt
 	if uint64(maxResults) > query.MaxResults {
 		maxResults = int(query.MaxResults)
 	}
 	return &matcherSession{
 		ctx:            ctx,
+		refBlockHash:   refBlockHash,
 		requestCounter: atomic.AddUint64(&mc.requestCounter, 1),
 		maxResults:     maxResults,
 		reverse:        query.Reverse,
-		validUntil:     query.LastBlock,
 		minTopicCount:  len(query.Topics),
 		resultsCh:      make(chan *matcherResults, 1),
-	}
-}
-
-// called under Indexer.lock
-func (mc *Matcher) revert(blockNumber uint64) {
-	for session := range mc.sessions {
-		if blockNumber < session.validUntil {
-			atomic.StoreUint64(&session.validUntil, blockNumber)
-		}
 	}
 }
 
@@ -388,7 +377,7 @@ func (mc *Matcher) controlLoop() {
 						mc.start(mp2)
 					}
 				} else {
-					if !mp.isRemoved() && !mp.session.finished {
+					if !mp.session.finished {
 						mp.session.finished, mp.session.err = true, err
 						mp.session.returnResults()
 					}
@@ -438,7 +427,7 @@ func (mc *Matcher) stopped(threadIndex int) {
 	if mc.activeThreads == 0 {
 		mc.updateTicker.Stop()
 	}
-	if mp.err != nil && !mp.isRemoved() && !mp.session.finished {
+	if mp.err != nil && !mp.session.finished {
 		mp.session.finished, mp.session.err = true, mp.err
 		mp.session.returnResults()
 	}
@@ -592,10 +581,10 @@ func (fq *FilterQuery) matchLength(log *types.Log) bool {
 
 type matcherSession struct {
 	ctx            context.Context
+	refBlockHash   common.Hash
 	requestCounter uint64
 	maxResults     int
 	reverse        bool
-	validUntil     uint64
 	minTopicCount  int
 	resultsCh      chan *matcherResults
 	first, last    *matcherProcess // ordered according to search direction
@@ -628,23 +617,8 @@ func (ms *matcherSession) returnResults() {
 		return
 	}
 	var resCount int
-	for mp := ms.first; mp != nil; mp = mp.next { //TODO reverse ???
+	for mp := ms.first; mp != nil; mp = mp.next {
 		//fmt.Println(" mp", mp.blockRange)
-		if mp.isRemoved() {
-			//fmt.Println("  removed")
-			if mp.prev == nil {
-				ms.first = mp.next
-				if mp.next != nil {
-					mp.next.prev = nil
-				} else {
-					ms.last = nil
-				}
-				continue
-			} else {
-				mp.prev.next = nil
-				ms.last = mp.prev
-			}
-		}
 		resCount += mp.validMatches
 		//fmt.Println("  resCount", len(mp.positions), mp.droppedResults, resCount)
 		if resCount >= ms.maxResults {

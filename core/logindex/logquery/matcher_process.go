@@ -148,7 +148,7 @@ func (mp *matcherProcess) run() {
 		mp.blockDataLock.Unlock()
 		for _, blockNumber := range requestBlocks {
 			// start requests outside blockDataLock to avoid wrong locking order
-			mp.indexer.RequestBlock(blockNumber, mp.deliverBlockData)
+			mp.indexer.RequestBlock(mp.session.refBlockHash, blockNumber, mp.deliverBlockData)
 		}
 		if suspendNow || cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
 			return
@@ -318,10 +318,6 @@ func (mp *matcherProcess) getSplitBlock() (uint64, bool) {
 	} else {
 		return min(lastBlock+splitAfter+1, mp.lastBlock), true
 	}
-}
-
-func (mp *matcherProcess) isRemoved() bool {
-	return max(mp.firstBlock, mp.lastBlock) > atomic.LoadUint64(&mp.session.validUntil)
 }
 
 func (mp *matcherProcess) getProgress() (done, lastBlock, remaining uint64) {
