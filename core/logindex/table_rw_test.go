@@ -47,11 +47,15 @@ func makeIndexEntries(blockCount uint64) IndexEntries {
 			for logIndex := range uint32(10) {
 				for entryType := range uint32(10) {
 					ies = append(ies, IndexEntry{
-						EntryType:   entryType,
-						IndexValue:  testValue(blockNumber, txIndex, logIndex, EntryType),
-						blockNumber: blockNumber,
-						txIndex:     txIndex,
-						logIndex:    logIndex,
+						IndexValue: IndexValue{
+							EntryType: entryType,
+							Value:     testValue(blockNumber, txIndex, logIndex, entryType),
+						},
+						IndexPosition: IndexPosition{
+							BlockNumber: blockNumber,
+							TxIndex:     txIndex,
+							LogIndex:    logIndex,
+						},
 					})
 				}
 			}
@@ -150,8 +154,10 @@ func testTableRW(t *testing.T, blockCount uint64, maxFileSize int64) {
 		logIndex := uint32(rand.Intn(10))
 		entryType := uint32(rand.Intn(10))
 		target := &IndexEntry{
-			EntryType:  entryType,
-			IndexValue: testValue(blockNumber, txIndex, logIndex, entryType),
+			IndexValue: IndexValue{
+				EntryType: entryType,
+				Value:     testValue(blockNumber, txIndex, logIndex, entryType),
+			},
 		}
 		pos, _, err := tr.SeekEntry(target)
 		if err != nil {
