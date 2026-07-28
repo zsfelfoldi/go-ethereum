@@ -33,7 +33,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
-	"github.com/ethereum/go-ethereum/triedb"
 )
 
 // Filter can be used to retrieve and filter logs.
@@ -396,7 +395,7 @@ func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([
 		}
 		refHeader := f.sys.backend.CurrentHeader() //TODO also try with parent
 		logs, resultsRange, _, err := matcher.GetMatches(ctx, query, true, refHeader)
-		if err != logindex.ErrMatchAll {
+		if err != logquery.ErrMatchAll {
 			fmt.Println("Search first/last block:", firstBlock, lastBlock, "results range:", resultsRange, "result count:", len(logs), "error:", err)
 			/*for i, log := range logs {
 				if log != nil {

@@ -306,7 +306,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		HashScheme:     scheme == rawdb.HashScheme,
 	}
 	eth.logIndex = logindex.NewIndexer(logindex.DefaultParams, logIndexConfig, stack.ResolvePath("logindex"))
-	eth.logQuery = logquery.NewMatcher(eth.logIndex)
+	eth.logQuery = logquery.NewMatcher(eth.logIndex, eth.APIBackend)
 	eth.blockchain, err = core.NewBlockChain(chainDb, config.Genesis, eth.engine, eth.logIndex, options)
 	eth.blockchain.RegisterIndexer(eth.logIndex, "log index")
 	if err != nil {

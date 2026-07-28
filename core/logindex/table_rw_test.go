@@ -28,12 +28,12 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-func testValue(blockNumber uint64, txIndex, logIndex, entryType uint32) (result [32]byte) {
+func testValue(blockNumber uint64, txIndex, logIndex, EntryType uint32) (result [32]byte) {
 	var data [20]byte
 	binary.LittleEndian.PutUint64(data[0:8], blockNumber)
 	binary.LittleEndian.PutUint32(data[8:12], txIndex)
 	binary.LittleEndian.PutUint32(data[12:16], logIndex)
-	binary.LittleEndian.PutUint32(data[16:20], entryType)
+	binary.LittleEndian.PutUint32(data[16:20], EntryType)
 	hasher := sha256.New()
 	hasher.Write(data[:])
 	hasher.Sum(result[:0])
@@ -47,8 +47,8 @@ func makeIndexEntries(blockCount uint64) IndexEntries {
 			for logIndex := range uint32(10) {
 				for entryType := range uint32(10) {
 					ies = append(ies, IndexEntry{
-						entryType:   entryType,
-						IndexValue:  testValue(blockNumber, txIndex, logIndex, entryType),
+						EntryType:   entryType,
+						IndexValue:  testValue(blockNumber, txIndex, logIndex, EntryType),
 						blockNumber: blockNumber,
 						txIndex:     txIndex,
 						logIndex:    logIndex,
@@ -58,7 +58,7 @@ func makeIndexEntries(blockCount uint64) IndexEntries {
 		}
 	}
 	sort.Slice(ies, func(i, j int) bool {
-		return ies[i].compare(&ies[j]) < 0
+		return ies[i].Compare(&ies[j]) < 0
 	})
 	return ies
 }
@@ -150,26 +150,26 @@ func testTableRW(t *testing.T, blockCount uint64, maxFileSize int64) {
 		logIndex := uint32(rand.Intn(10))
 		entryType := uint32(rand.Intn(10))
 		target := &IndexEntry{
-			entryType:  entryType,
+			EntryType:  entryType,
 			IndexValue: testValue(blockNumber, txIndex, logIndex, entryType),
 		}
-		pos, _, err := tr.seekEntry(target)
+		pos, _, err := tr.SeekEntry(target)
 		if err != nil {
-			t.Fatalf("Error during tableWriter.seekEntry: %v", err)
+			t.Fatalf("Error during tableReader.SeekEntry: %v", err)
 		}
-		ie, err := tr.getEntry(pos)
+		ie, err := tr.GetEntry(pos)
 		if err != nil {
-			t.Fatalf("Error during tableWriter.getEntry: %v", err)
+			t.Fatalf("Error during tableReader.GetEntry: %v", err)
 		}
-		if ie.blockNumber != blockNumber || ie.txIndex != txIndex || ie.logIndex != logIndex {
-			t.Fatalf("Could not find entry position by type/value (expected: %d %d %d, got: %d %d %d)", blockNumber, txIndex, logIndex, ie.blockNumber, ie.txIndex, ie.logIndex)
+		if ie.BlockNumber != blockNumber || ie.TxIndex != txIndex || ie.LogIndex != logIndex {
+			t.Fatalf("Could not find entry position by type/value (expected: %d %d %d, got: %d %d %d)", blockNumber, txIndex, logIndex, ie.BlockNumber, ie.TxIndex, ie.LogIndex)
 		}
-		_, found, err := tr.seekEntry(ie)
+		_, found, err := tr.SeekEntry(ie)
 		if err != nil {
-			t.Fatalf("Error during tableWriter.seekEntry: %v", err)
+			t.Fatalf("Error during tableReader.SeekEntry: %v", err)
 		}
 		if !found {
-			t.Fatalf("Could not find exact entry by type/value/position (%d %d %d)", ie.blockNumber, ie.txIndex, ie.logIndex)
+			t.Fatalf("Could not find exact entry by type/value/position (%d %d %d)", ie.BlockNumber, ie.TxIndex, ie.LogIndex)
 		}
 	}
 }
