@@ -306,7 +306,6 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		HashScheme:     scheme == rawdb.HashScheme,
 	}
 	eth.logIndex = logindex.NewIndexer(logindex.DefaultParams, logIndexConfig, stack.ResolvePath("logindex"))
-	eth.logQuery = logquery.NewMatcher(eth.logIndex, eth.APIBackend)
 	eth.blockchain, err = core.NewBlockChain(chainDb, config.Genesis, eth.engine, eth.logIndex, options)
 	eth.blockchain.RegisterIndexer(eth.logIndex, "log index")
 	if err != nil {
@@ -389,6 +388,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		log.Info("Unprotected transactions allowed")
 	}
 	eth.APIBackend.gpo = gasprice.NewOracle(eth.APIBackend, config.GPO, config.Miner.GasPrice)
+	eth.logQuery = logquery.NewMatcher(eth.logIndex, eth.APIBackend)
 
 	// Start the RPC service
 	eth.netRPCService = ethapi.NewNetAPI(eth.p2pServer, networkID)
