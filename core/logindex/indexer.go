@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	headerCacheSize            = 100
+	headCacheSize              = 4
 	blockRequestLevels         = 2        // priority levels where block requests are processed
 	maxMergeThreads            = 4        //TODO config
 	memFileLowThreshold        = 10000000 //TODO config
@@ -112,7 +112,7 @@ type Indexer struct {
 	hasProcessedBlock    bool
 	processedBlockNumber uint64
 	processedBlockId     common.Hash
-	recentHeaders        *lru.Cache[uint64, *types.Header]
+	recentHeads          *lru.Cache[common.Hash, *cachedBlockData]
 
 	shutdown       bool
 	updateMergeCh  []chan struct{}
@@ -141,7 +141,7 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 		requestedInitBlock: math.MaxUint64,
 		updateMergeCh:      make([]chan struct{}, maxMergeThreads),
 		currentOps:         make([]tableOperation, maxMergeThreads),
-		recentHeaders:      lru.NewCache[uint64, *types.Header](headerCacheSize),
+		recentHeads:        lru.NewCache[common.Hash, *cachedBlockData](headCacheSize),
 		blockRequests:      make(map[BlockRequest][]DeliverBlockFn),
 	}
 	for i := range ix.updateMergeCh {
@@ -159,20 +159,58 @@ type BlockRequest struct {
 	NeedBody, NeedReceipts bool
 }
 
+type cachedBlockData struct {
+	header         *types.Header
+	body           *types.Body
+	receipts       types.Receipts
+	canonicalUntil uint64
+}
+
 type DeliverBlockFn = func(BlockRequest, *types.Header, *types.Body, types.Receipts)
 
 func (ix *Indexer) RequestBlock(refBlockHash common.Hash, number uint64, deliverFn DeliverBlockFn) {
-	//TODO refBlockHash
-	ix.lock.Lock()
-	ix.getBlockData(number, true, true, 0 /*TODO*/, deliverFn)
-	ix.lock.Unlock()
-}
-
-func (ix *Indexer) GetRangeReaders(refBlockHash common.Hash, blockRange common.Range[uint64]) []*TableReader {
-	//TODO refBlockHash
 	ix.lock.Lock()
 	defer ix.lock.Unlock()
 
+	refBd, ok := ix.recentHeads.Get(refBlockHash)
+	if !ok || number > refBd.header.Number.Uint64() {
+		deliverFn(BlockRequest{Number: number, NeedBody: true, NeedReceipts: true}, nil, nil, nil) //TODO van olyan, hogy nem kell minden?
+		return
+	}
+	if number+headCacheSize > refBd.header.Number.Uint64() {
+		// look up in cache
+		bd := refBd
+		for bd != nil && bd.header.Number.Uint64() != number {
+			bd, _ = ix.recentHeads.Get(bd.header.ParentHash)
+		}
+		if bd != nil {
+			deliverFn(BlockRequest{Number: number, NeedBody: true, NeedReceipts: true},
+				bd.header, bd.body, bd.receipts) //TODO van olyan, hogy nem kell minden?
+			return
+		}
+	}
+	if number > refBd.canonicalUntil {
+		// not canonical anymore, also not cached
+		deliverFn(BlockRequest{Number: number, NeedBody: true, NeedReceipts: true}, nil, nil, nil) //TODO van olyan, hogy nem kell minden?
+		return
+	}
+	ix.getBlockData(number, true, true, 0 /*TODO*/, deliverFn)
+}
+
+func (ix *Indexer) GetRangeReaders(refBlockHash common.Hash, blockRange common.Range[uint64]) []*TableReader {
+	ix.lock.Lock()
+	defer ix.lock.Unlock()
+
+	refBd, ok := ix.recentHeads.Get(refBlockHash)
+	if !ok {
+		return nil
+	}
+	if refBd.canonicalUntil < blockRange.Last() {
+		blockRange.SetLast(refBd.canonicalUntil) //TODO keep non-canonical tables for a short time?
+	}
+	if blockRange.IsEmpty() {
+		return nil
+	}
 	return ix.storage.getRangeReaders(blockRange)
 }
 
@@ -603,7 +641,7 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 	if blockNumber >= ix.headBlock {
 		ix.headBlock = blockNumber
 		ix.headBlockHash = header.Hash()
-		ix.recentHeaders.Add(blockNumber, header)
+		ix.recentHeads.Add(header.Hash(), &cachedBlockData{header: header, body: body, receipts: receipts, canonicalUntil: blockNumber})
 	}
 	//fmt.Println(" processBlockRequests")
 	ix.processBlockRequests(header, body, receipts)
@@ -745,10 +783,17 @@ func (ix *Indexer) Revert(header *types.Header) {
 	}
 	ix.headBlock = blockNumber
 	ix.headBlockHash = header.Hash()
+	//ix.recentHeads.Add(blockHash, cachedBlockData{header: header, body: body, receipts: receipts, canonicalUntil: blockNumber})
 	ix.cutoffBlock = min(ix.cutoffBlock, ix.headBlock+1)
 	ix.filterBlockRequests()
 	ix.storage.deleteTablesFromBlock(blockNumber + 1)
 	ix.updateTableOperations()
+	for _, key := range ix.recentHeads.Keys() {
+		bd, _ := ix.recentHeads.Get(key)
+		if bd.canonicalUntil > blockNumber {
+			bd.canonicalUntil = blockNumber
+		}
+	}
 }
 
 func (ix *Indexer) tailBlock() uint64 {
