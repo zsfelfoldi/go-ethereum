@@ -52,14 +52,14 @@ type FilterQuery struct {
 	Topics                            [][]common.Hash
 }
 
-type indexer interface {
+type logIndex interface {
 	GetRangeReaders(common.Hash, common.Range[uint64]) []*logindex.TableReader
 	RequestBlock(common.Hash, uint64, logindex.DeliverBlockFn)
 }
 
 type Matcher struct {
 	lock                       sync.Mutex
-	indexer                    indexer
+	logIndex                    logIndex
 	contractProver             contractProver
 	threadCount, activeThreads int
 	requestCounter             uint64
@@ -74,9 +74,9 @@ type Matcher struct {
 	wg                         sync.WaitGroup
 }
 
-func NewMatcher(indexer indexer, contractProverBackend contractProverBackend) *Matcher {
+func NewMatcher(logIndex logIndex, contractProverBackend contractProverBackend) *Matcher {
 	mc := &Matcher{
-		indexer:          indexer,
+		logIndex:          logIndex,
 		contractProver:   contractProver{backend: contractProverBackend},
 		threadCount:      maxMatcherThreads,
 		sessions:         make(map[*matcherSession]struct{}),
@@ -110,7 +110,7 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	if prove && lastBlock < headBlock {
 		readerRange.SetLast(lastBlock + 1)
 	}
-	readers := mc.indexer.GetRangeReaders(refBlockHash, readerRange)
+	readers := mc.logIndex.GetRangeReaders(refBlockHash, readerRange)
 	sort.Slice(readers, func(i, j int) bool {
 		if query.Reverse {
 			return readers[i].Meta.LastBlockNumber > readers[j].Meta.LastBlockNumber
@@ -183,7 +183,7 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			firstBlock, lastBlock = lastBlock, firstBlock
 		}
 		mp := &matcherProcess{
-			indexer: mc.indexer,
+			logIndex: mc.logIndex,
 			matcher: matcher.newInstance(
 				ctx,
 				&directionalReader{reader: tr, reverse: query.Reverse},

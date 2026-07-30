@@ -42,7 +42,7 @@ const (
 )
 
 type matcherProcess struct {
-	indexer               indexer
+	logIndex              logIndex
 	matcher               matcherInstance
 	session               *matcherSession
 	tableReader           *logindex.TableReader
@@ -76,12 +76,21 @@ type matcherProcess struct {
 	// atomic flags accessed by both threads during processing
 	estimatedResults  uint64 // set by worker thread; MSB is "can split" flag
 	cumulativeResults uint64 // set by control thread; MSB is "suspend now" flag
+
+	testRegisterHook func(*matcherProcess)
+	testHook         chan bool
 }
 
 func (mp *matcherProcess) run() {
+	if mp.testRegisterHook != nil {
+		mp.testRegisterHook(mp)
+	}
 	mp.started = mclock.Now()
 	defer func() {
 		mp.runTime += time.Duration(mclock.Now() - mp.started)
+		if mp.testHook != nil {
+			close(mp.testHook)
+		}
 	}()
 
 	//fmt.Println("matcherProcess", mp.blockRange, "started")
@@ -90,6 +99,9 @@ func (mp *matcherProcess) run() {
 	for !mp.finished {
 		if !mp.matcherFinished && len(mp.positions) < mp.completeUntil+maxIncompleteResults {
 			//fmt.Println(" mp.matcher.next()")
+			if mp.testHook != nil {
+				mp.testHook <- true
+			}
 			pos, node, err := mp.matcher.next()
 			if err != nil {
 				//fmt.Println("matcherProcess", mp.blockRange, "error (next)", err)
@@ -104,6 +116,9 @@ func (mp *matcherProcess) run() {
 				//fmt.Println("matcherProcess", mp.blockRange, "found", *pos)
 				mp.positions = append(mp.positions, *pos)
 				//fmt.Println(" mp.matcher.advance(nil)")
+				if mp.testHook != nil {
+					mp.testHook <- true
+				}
 				if err := mp.matcher.advance(nil); err != nil {
 					//fmt.Println("matcherProcess", mp.blockRange, "error (advance)", err)
 					mp.finished, mp.err = true, err
@@ -112,6 +127,9 @@ func (mp *matcherProcess) run() {
 			}
 		} else {
 			//fmt.Println(" <-mp.deliverCh")
+			if mp.testHook != nil {
+				mp.testHook <- false
+			}
 			select {
 			case <-mp.deliverCh:
 			case <-mp.session.ctx.Done():
@@ -148,7 +166,7 @@ func (mp *matcherProcess) run() {
 		mp.blockDataLock.Unlock()
 		for _, blockNumber := range requestBlocks {
 			// start requests outside blockDataLock to avoid wrong locking order
-			mp.indexer.RequestBlock(mp.session.refBlockHash, blockNumber, mp.deliverBlockData)
+			mp.logIndex.RequestBlock(mp.session.refBlockHash, blockNumber, mp.deliverBlockData)
 		}
 		if suspendNow || cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
 			return
@@ -354,7 +372,7 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 	}
 	logicBuilder := mp.tableProver.optimizer.newBuilderInstance()
 	mp2 := &matcherProcess{
-		indexer:        mp.indexer,
+		logIndex:       mp.logIndex,
 		matcher:        mp.matcher.split(logicBuilder, splitAt),
 		session:        mp.session,
 		tableReader:    mp.tableReader,
