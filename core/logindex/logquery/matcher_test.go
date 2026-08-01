@@ -35,8 +35,66 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+const (
+	testBlockCount    = 1024
+	testMaxTxCount    = 2
+	testMaxLogCount   = 2
+	testMaxTopicCount = 1
+	testMatchDensity  = 64 // 0..256
+)
+
 func TestSingleMatcherProcess(t *testing.T) {
-	ts := newTestScheduler()
+	for reverse := range bool {
+		for limited := range bool {
+			for minTopicCount := range 2 {
+				testSingleMatcherProcess(t, reverse, limited, minTopicCount)
+			}
+		}
+	}
+}
+
+func testSingleMatcherProcess(t *testing.T, reverse, limited bool, minTopicCount int) {
+	ts := newTestScheduler(t)
+	positions, valid := ts.getMatches(0, testBlockCount-1, reverse, minTopicCount)
+	matcher := &testMatcher{pos: positions}
+	if len(matcher.pos) == 0 {
+		limited = false
+	}
+	maxResults := math.MaxInt
+	if limited {
+		maxResults = len(matcher.pos) / 2
+	}
+	session := newSession(context.Background(), nil, common.Hash{}, minTopicCount, 1000000, false)
+	mp := newMatcherProcess(ts, matcher, session, ts.readers[0], 0, testBlockCount-1)
+	mp.run()
+	if len(mp.positions) > len(positions) {
+		ts.t.Fatalf("Too many matching positions returned (expected max %d, got %d)", len(positions), len(mp.positions))
+	}
+	if limited && len(valid) > 0 && !valid[len(valid)-1] {
+		ts.t.Fatalf("Last position returned for limited search is an invalid match")
+	}
+	var validCount int
+	for i, pos := range mp.positions {
+		if pos != positions[i] {
+			ts.t.Fatalf("Invalid position #%d (expected max %v, got %v)", i, positions[i], pos)
+		}
+		if valid[i] {
+			validCount++
+			if mp.allMatches[i] == nil {
+				ts.t.Fatalf("Returned nil log at valid match position #%d", i)
+			}
+		} else {
+			if mp.allMatches[i] != nil {
+				ts.t.Fatalf("Returned non-nil log at invalid match position #%d", i)
+			}
+		}
+	}
+	if limited && validCount != maxResults {
+		ts.t.Fatalf("Invalid number of valid matches for limited search (expected %v, got %v)", maxResults, validCount)
+	}
+	if !limited && len(mp.positions) != len(positions) {
+		ts.t.Fatalf("Invalid number of returned positions for unlimited search (expected %v, got %v)", len(positions), len(mp.positions))
+	}
 }
 
 type testMatcher struct {
@@ -69,12 +127,6 @@ type testMatcherInstance struct {
 type testBlockRequest struct {
 	number uint64
 	fn     logindex.DeliverBlockFn
-}
-
-type testBlockData struct {
-	header   *types.Header
-	body     *types.Body
-	receipts types.Receipts
 }
 
 func (tmi *testMatcherInstance) next() (*logindex.IndexPosition, logicNodeID, error) {
@@ -115,28 +167,98 @@ func (tmi *testMatcherInstance) split(lb *logicBuilder, blockNumber uint64) matc
 }
 
 type testScheduler struct {
+	t          *testing.T
 	lock       sync.Mutex
 	processes  map[*matcherProcess]*testProcessState
-	blockData  map[uint64]testBlockData
+	blocks     []*types.Block
+	receipts   []types.Receipts
+	readers    []*logindex.TableReader
 	registerCh chan *matcherProcess
 	stopCh     chan struct{}
 }
 
-func newTestScheduler() {
-	return &testScheduler{
+func newTestScheduler(t *testing.T) {
+	ts := &testScheduler{
+		t:          t,
 		processes:  make(map[*matcherProcess]*testProcessState),
-		blockData:  make(map[uint64]testBlockData),
 		registerCh: make(chan *matcherProcess),
 		stopCh:     make(chan struct{}),
 	}
+	gspec := &core.Genesis{
+		Alloc:   types.GenesisAlloc{},
+		BaseFee: big.NewInt(params.InitialBaseFee),
+		Config:  params.TestChainConfig,
+	}
+	blockGen := func(i int, gen *core.BlockGen) {
+		txCount := rand.Intn(testMaxTxCount + 1)
+		for k := txCount; k > 0; k-- {
+			receipt := types.NewReceipt(nil, false, 0)
+			logCount := rand.Intn(testMaxLogCount + 1)
+			receipt.Logs = make([]*types.Log, logCount)
+			for i := range receipt.Logs {
+				log := &types.Log{}
+				receipt.Logs[i] = log
+				crand.Read(log.Address[:])
+				log.Topics = make([]common.Hash, rand.Intn(testMaxTopicCount+1))
+			}
+			gen.AddUncheckedReceipt(receipt)
+			gen.AddUncheckedTx(types.NewTransaction(999, common.HexToAddress("0x999"), big.NewInt(999), 999, gen.BaseFee(), nil))
+		}
+	}
+	_, blocks, receipts := core.GenerateChainWithGenesis(gspec, ethash.NewFaker(), testBlockCount-1, blockGen)
+	ts.blocks = append([]*types.Block{gspec.ToBlock()}, blocks...)
+	ts.receipts = append([]types.Receipts{types.Receipts{}}, receipts...)
+	ts.readers = make([]*logindex.TableReader, testTableCount)
+	for i := range ts.readers {
+		ts.readers[i] = &logindex.TableReader{
+			IndexContract: testIndexContract,
+			Meta: logindex.TableMeta{
+				LastBlockNumber: (i+1)*testTableSize - 1,
+				BlockCount:      testTableSize,
+			},
+		}
+	}
+	return ts
 }
 
-type testProcessState struct {
-	waitOnMatcher bool // waits on block delivery if false
-	priority      [bool]int
+func (ts *testScheduler) isMatch(log *types.Log) bool {
+	return log.Address[0] < testMatchDensity
 }
 
-func (ts *testScheduler) GetRangeReaders(common.Hash, common.Range[uint64]) []*logindex.TableReader {}
+func (ts *testScheduler) getMatches(firstBlock, lastBlock int, reverse bool) []logindex.IndexPosition {
+	var pos []logindex.IndexPosition
+	for i := firstBlock; i <= lastBlock; i++ {
+		receipts := ts.receipts[i]
+		for txi, receipt := range receipts {
+			for li, log := range receipt.Logs {
+				if ts.isMatch(log) {
+					pos = append(pos, logindex.IndexPosition{
+						BlockNumber: uint64(i),
+						TxIndex:     uint32(txi),
+						LogIndex:    uint32(li),
+					})
+				}
+			}
+		}
+	}
+	if reverse {
+		last := len(pos) - 1
+		for i := 0; i < last-i; i++ {
+			pos[i], pos[last-i] = pos[last-i], pos[i]
+		}
+	}
+	return pos
+}
+
+func (ts *testScheduler) GetRangeReaders(refBlockHash common.Hash, readerRange common.Range[uint64]) []*logindex.TableReader {
+	var res []*logindex.TableReader
+	for _, reader := range ts.readers {
+		if !reader.BlockRange().InterSection(readerRange).IsEmpty {
+			res = append(res, reader)
+		}
+	}
+	return res
+}
 
 func (ts *testScheduler) RequestBlock(refBlockHash common.Hash, blockNumber uint64, deliverFn logindex.DeliverBlockFn) {
 	ts.lock.Lock()
@@ -173,11 +295,12 @@ func (ts *testScheduler) deliverBlockTo(mp *matcherProcess) {
 	}
 	req := tmi.blockRequests[0]
 	tmi.blockRequests = tmi.blockRequests[1:]
-	bd, ok := ts.blockData[req.number]
-	if !ok {
-		ts.t.Fatalf("Requested block data not available", "number", req.number)
-	}
-	req.fn(logindex.BlockRequest{BlockNumber: req.number, NeedBody: true, NeedReceipts: true}, bd.header, bd.body, bd.receipts)
+	req.fn(logindex.BlockRequest{BlockNumber: req.number, NeedBody: true, NeedReceipts: true}, ts.blocks[req.number].Header(), ts.blocks[req.number].Body(), ts.receipts[req.number])
+}
+
+type testProcessState struct {
+	waitOnMatcher bool // waits on block delivery if false
+	priority      [bool]int
 }
 
 func (ts *testScheduler) run() {

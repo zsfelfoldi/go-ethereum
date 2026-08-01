@@ -68,7 +68,7 @@ type matcherProcess struct {
 	blockDataLock  sync.Mutex
 	deliverCh      chan struct{}
 	blockInResults map[uint64]int
-	allMatches     []*types.Log // including invalid matches where len(log.Topics) < len(query.Topics)
+	allMatches     []*types.Log // including nil at invalid matches where len(log.Topics) < len(query.Topics)
 	validMatches   int          // number of valid matches
 	blockProofs    map[uint64]*blockProof
 	deliveryErr    error
@@ -79,6 +79,31 @@ type matcherProcess struct {
 
 	testRegisterHook func(*matcherProcess)
 	testHook         chan bool
+}
+
+func newMatcherProcess(
+	logIndex logIndex,
+	matcher matcherInstance,
+	session *matcherSession,
+	tableReader *logindex.TableReader,
+	firstBlock, lastBlock uint64,
+) *matcherProcess {
+	return &matcherProcess{
+		logIndex:       logIndex,
+		matcher:        matcher,
+		session:        session,
+		tableReader:    tableReader,
+		firstBlock:     firstBlock,
+		lastBlock:      lastBlock,
+		blockInResults: make(map[uint64]int),
+		blockProofs:    make(map[uint64]*blockProof),
+		deliverCh:      make(chan struct{}, 1),
+	}
+}
+
+func (mp *matcherProcess) setProver(tableProver *tableProver, logicBuilder *logicBuilder) {
+	mp.tableProver = tableProver
+	mp.logicBuilder = logicBuilder
 }
 
 func (mp *matcherProcess) run() {
@@ -371,21 +396,8 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		return nil, nil
 	}
 	logicBuilder := mp.tableProver.optimizer.newBuilderInstance()
-	mp2 := &matcherProcess{
-		logIndex:       mp.logIndex,
-		matcher:        mp.matcher.split(logicBuilder, splitAt),
-		session:        mp.session,
-		tableReader:    mp.tableReader,
-		tableProver:    mp.tableProver,
-		logicBuilder:   logicBuilder,
-		prev:           mp,
-		next:           mp.next,
-		firstBlock:     mp.firstBlock,
-		lastBlock:      mp.lastBlock,
-		blockInResults: make(map[uint64]int),
-		blockProofs:    make(map[uint64]*blockProof),
-		deliverCh:      make(chan struct{}, 1),
-	}
+	mp2 := newMatcherProcess(mp.logIndex, mp.matcher.split(logicBuilder, splitAt), mp.session, mp.tableReader, mp.firstBlock, mp.lastBlock)
+	mp2.setProver(mp.tableProver, logicBuilder)
 	if mp.next != nil {
 		mp.next.prev = mp2
 	}

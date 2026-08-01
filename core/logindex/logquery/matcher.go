@@ -59,7 +59,7 @@ type logIndex interface {
 
 type Matcher struct {
 	lock                       sync.Mutex
-	logIndex                    logIndex
+	logIndex                   logIndex
 	contractProver             contractProver
 	threadCount, activeThreads int
 	requestCounter             uint64
@@ -76,7 +76,7 @@ type Matcher struct {
 
 func NewMatcher(logIndex logIndex, contractProverBackend contractProverBackend) *Matcher {
 	mc := &Matcher{
-		logIndex:          logIndex,
+		logIndex:         logIndex,
 		contractProver:   contractProver{backend: contractProverBackend},
 		threadCount:      maxMatcherThreads,
 		sessions:         make(map[*matcherSession]struct{}),
@@ -162,7 +162,11 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	if len(matcher) == 0 {
 		return nil, common.Range[uint64]{}, nil, ErrMatchAll
 	}
-	session := mc.newSession(ctx, refBlockHash, query)
+	maxResults := math.MaxInt
+	if uint64(maxResults) < query.MaxResults {
+		maxResults = int(query.MaxResults)
+	}
+	session := newSession(ctx, mc, refBlockHash, len(query.Topics), maxResults, query.Reverse)
 	//fmt.Println("create session", firstBlock, lastBlock, query.Addresses, query.Topics)
 	var lastBlockProver *tableProver
 	for i, tr := range readers {
@@ -182,25 +186,15 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			firstPos, lastPos = lastPos, firstPos
 			firstBlock, lastBlock = lastBlock, firstBlock
 		}
-		mp := &matcherProcess{
-			logIndex: mc.logIndex,
-			matcher: matcher.newInstance(
-				ctx,
-				&directionalReader{reader: tr, reverse: query.Reverse},
-				logicBuilder,
-				firstPos,
-				lastPos,
-			),
-			session:        session,
-			tableReader:    tr,
-			tableProver:    prover,
-			logicBuilder:   logicBuilder,
-			firstBlock:     firstBlock,
-			lastBlock:      lastBlock,
-			blockInResults: make(map[uint64]int),
-			blockProofs:    make(map[uint64]*blockProof),
-			deliverCh:      make(chan struct{}, 1),
-		}
+		matcher := matcher.newInstance(
+			ctx,
+			&directionalReader{reader: tr, reverse: query.Reverse},
+			logicBuilder,
+			firstPos,
+			lastPos,
+		)
+		mp := newMatcherProcess(mc.logIndex, matcher, session, tr, firstBlock, lastBlock)
+		mp.setProver(prover, logicBuilder)
 		if i == 0 {
 			session.first = mp
 			session.last = mp
@@ -328,20 +322,19 @@ func (mc *Matcher) Stop() {
 	mc.wg.Wait()
 }
 
-func (mc *Matcher) newSession(ctx context.Context, refBlockHash common.Hash, query FilterQuery) *matcherSession {
-	maxResults := math.MaxInt
-	if uint64(maxResults) > query.MaxResults {
-		maxResults = int(query.MaxResults)
+func newSession(ctx context.Context, mc *Matcher, refBlockHash common.Hash, minTopicCount int, maxResults int, reverse bool) *matcherSession {
+	ms := &matcherSession{
+		ctx:           ctx,
+		refBlockHash:  refBlockHash,
+		maxResults:    maxResults,
+		reverse:       reverse,
+		minTopicCount: minTopicCount,
+		resultsCh:     make(chan *matcherResults, 1),
 	}
-	return &matcherSession{
-		ctx:            ctx,
-		refBlockHash:   refBlockHash,
-		requestCounter: atomic.AddUint64(&mc.requestCounter, 1),
-		maxResults:     maxResults,
-		reverse:        query.Reverse,
-		minTopicCount:  len(query.Topics),
-		resultsCh:      make(chan *matcherResults, 1),
+	if mc != nil {
+		ms.requestCounter = atomic.AddUint64(&mc.requestCounter, 1)
 	}
+	return ms
 }
 
 func (mc *Matcher) workerLoop(threadIndex int) {

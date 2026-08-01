@@ -744,7 +744,7 @@ func (ix *Indexer) processBlockTable(tw *tableWriter, header *types.Header, body
 			}
 		}
 	}
-	tw.setMeta(tableMeta{
+	tw.setMeta(TableMeta{
 		LastBlockNumber: blockNumber,
 		BlockCount:      1,
 		LastBlockHash:   header.Hash(),
