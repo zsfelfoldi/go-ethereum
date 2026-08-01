@@ -163,7 +163,7 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 		return nil, common.Range[uint64]{}, nil, ErrMatchAll
 	}
 	maxResults := math.MaxInt
-	if uint64(maxResults) < query.MaxResults {
+	if uint64(maxResults) > query.MaxResults {
 		maxResults = int(query.MaxResults)
 	}
 	session := newSession(ctx, mc, refBlockHash, len(query.Topics), maxResults, query.Reverse)
@@ -659,6 +659,9 @@ func (ms *matcherSession) returnResults() {
 				return lastBlockProven
 			}
 			mp.logicBuilder.connect(mp.sectionNodes[i], andNode)
+			if log == nil {
+				fmt.Println(mp.firstBlock, mp.lastBlock, "*** nil log at", i, "mp.finished", mp.finished, "len(mp.allMatches)", len(mp.allMatches), "mp.completeUntil", mp.completeUntil, "mp.completeValid", mp.completeValid)
+			}
 			if len(log.Topics) >= ms.minTopicCount {
 				res.logs = append(res.logs, log)
 			}

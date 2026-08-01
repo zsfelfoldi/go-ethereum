@@ -18,6 +18,7 @@ package logquery
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"sync"
@@ -68,7 +69,7 @@ type matcherProcess struct {
 	blockDataLock  sync.Mutex
 	deliverCh      chan struct{}
 	blockInResults map[uint64]int
-	allMatches     []*types.Log // including nil at invalid matches where len(log.Topics) < len(query.Topics)
+	allMatches     []*types.Log // including invalid matches where len(log.Topics) < len(query.Topics)
 	validMatches   int          // number of valid matches
 	blockProofs    map[uint64]*blockProof
 	deliveryErr    error
@@ -136,6 +137,7 @@ func (mp *matcherProcess) run() {
 			if err != nil {
 				//fmt.Println("matcherProcess", mp.blockRange, "error (next)", err)
 				mp.finished, mp.err = true, err
+				fmt.Println(mp.firstBlock, mp.lastBlock, "*** return next err", err)
 				return
 			}
 			mp.sectionNodes = append(mp.sectionNodes, node)
@@ -152,6 +154,7 @@ func (mp *matcherProcess) run() {
 				if err := mp.matcher.advance(nil); err != nil {
 					//fmt.Println("matcherProcess", mp.blockRange, "error (advance)", err)
 					mp.finished, mp.err = true, err
+					fmt.Println(mp.firstBlock, mp.lastBlock, "*** return advance err", err)
 					return
 				}
 			}
@@ -163,6 +166,7 @@ func (mp *matcherProcess) run() {
 			select {
 			case <-mp.deliverCh:
 			case <-mp.session.ctx.Done():
+				fmt.Println(mp.firstBlock, mp.lastBlock, "*** return ctx.Done")
 				return
 			}
 		}
@@ -199,9 +203,11 @@ func (mp *matcherProcess) run() {
 			mp.logIndex.RequestBlock(mp.session.refBlockHash, blockNumber, mp.deliverBlockData)
 		}
 		if suspendNow || cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
+			fmt.Println(mp.firstBlock, mp.lastBlock, "*** return suspendNow", suspendNow, "cumulativeResults", cumulativeResults, "mp.completeValid", mp.completeValid, "mp.session.maxResults", mp.session.maxResults)
 			return
 		}
 	}
+	fmt.Println(mp.firstBlock, mp.lastBlock, "*** return finished", mp.finished, "len(mp.allMatches)", len(mp.allMatches), "mp.completeValid", mp.completeValid)
 }
 
 func (mp *matcherProcess) deliverBlockData(req logindex.BlockRequest, header *types.Header, body *types.Body, receipts types.Receipts) {
@@ -400,9 +406,11 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 	if !ok {
 		return nil, nil
 	}
+	fmt.Println(mp.firstBlock, mp.lastBlock, "*** split at", splitAt)
 	logicBuilder := mp.tableProver.optimizer.newBuilderInstance()
 	mp2 := newMatcherProcess(mp.logIndex, mp.matcher.split(logicBuilder, splitAt), mp.session, mp.tableReader, mp.firstBlock, mp.lastBlock)
 	mp2.setProver(mp.tableProver, logicBuilder)
+	mp2.prev, mp2.next = mp, mp.next
 	if mp.next != nil {
 		mp.next.prev = mp2
 	}
@@ -417,5 +425,7 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		mp.lastBlock = splitAt
 		mp2.firstBlock = splitAt - 1
 	}
+	fmt.Println(" mp:", mp.firstBlock, mp.lastBlock)
+	fmt.Println(" mp2:", mp2.firstBlock, mp2.lastBlock)
 	return mp2, nil
 }
