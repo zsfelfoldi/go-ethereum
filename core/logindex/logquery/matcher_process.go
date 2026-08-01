@@ -18,6 +18,7 @@ package logquery
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"sync"
@@ -188,6 +189,9 @@ func (mp *matcherProcess) run() {
 					mp.completeValid++
 				}
 				mp.completeUntil++
+				if cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
+					break
+				}
 			}
 			if mp.matcherFinished && mp.completeUntil == len(mp.allMatches) {
 				mp.finished = true
@@ -198,7 +202,14 @@ func (mp *matcherProcess) run() {
 			// start requests outside blockDataLock to avoid wrong locking order
 			mp.logIndex.RequestBlock(mp.session.refBlockHash, blockNumber, mp.deliverBlockData)
 		}
-		if suspendNow || cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
+		if suspendNow {
+			return
+		}
+		if cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
+			fmt.Println("xxx", cumulativeResults, len(mp.allMatches), mp.completeUntil, mp.completeValid, mp.session.maxResults)
+			mp.allMatches = mp.allMatches[:mp.completeUntil]
+			mp.positions = mp.positions[:mp.completeUntil]
+			mp.finished = true
 			return
 		}
 	}
@@ -383,7 +394,7 @@ func (mp *matcherProcess) getProgress() (done, lastBlock, remaining uint64) {
 }
 
 func (mp *matcherProcess) getCumulativeResults() (uint64, bool) {
-	v := atomic.LoadUint64(&mp.estimatedResults)
+	v := atomic.LoadUint64(&mp.cumulativeResults)
 	return v & (uint64msb - 1), (v & uint64msb) != 0
 }
 
