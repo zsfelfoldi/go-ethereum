@@ -106,7 +106,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 		}
 		// initialize table metadata
 		r := ix.params.blockRange(id)
-		tw.setMeta(tableMeta{
+		tw.setMeta(TableMeta{
 			LastBlockNumber: r.Last(),
 			BlockCount:      r.Count(),
 			LastBlockHash:   readers[len(readers)-1].Meta.LastBlockHash,

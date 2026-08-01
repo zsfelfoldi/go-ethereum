@@ -92,7 +92,7 @@ func testTableRW(t *testing.T, blockCount uint64, maxFileSize int64) {
 	if err != nil {
 		t.Fatalf("Error during tableWriter.open: %v", err)
 	}
-	tw.setMeta(tableMeta{LastBlockHash: common.Hash{1}})
+	tw.setMeta(TableMeta{LastBlockHash: common.Hash{1}})
 	for i := range ies {
 		err := tw.addEntry(&ies[i])
 		if err != nil {
