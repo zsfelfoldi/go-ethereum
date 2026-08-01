@@ -18,7 +18,6 @@ package logquery
 
 import (
 	"errors"
-	"fmt"
 	"math"
 	"math/big"
 	"sync"
@@ -189,9 +188,6 @@ func (mp *matcherProcess) run() {
 					mp.completeValid++
 				}
 				mp.completeUntil++
-				if cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
-					break
-				}
 			}
 			if mp.matcherFinished && mp.completeUntil == len(mp.allMatches) {
 				mp.finished = true
@@ -202,14 +198,7 @@ func (mp *matcherProcess) run() {
 			// start requests outside blockDataLock to avoid wrong locking order
 			mp.logIndex.RequestBlock(mp.session.refBlockHash, blockNumber, mp.deliverBlockData)
 		}
-		if suspendNow {
-			return
-		}
-		if cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
-			fmt.Println("xxx", cumulativeResults, len(mp.allMatches), mp.completeUntil, mp.completeValid, mp.session.maxResults)
-			mp.allMatches = mp.allMatches[:mp.completeUntil]
-			mp.positions = mp.positions[:mp.completeUntil]
-			mp.finished = true
+		if suspendNow || cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
 			return
 		}
 	}
