@@ -19,6 +19,7 @@ package logquery
 import (
 	"context"
 	crand "crypto/rand"
+	"fmt"
 	"math"
 	"math/big"
 	"math/rand"
@@ -41,9 +42,9 @@ const (
 )
 
 func TestSingleMatcherProcess(t *testing.T) {
-	for _, reverse := range []bool{false, true} {
-		for _, limited := range []bool{false, true} {
-			for minTopicCount := range 2 {
+	for minTopicCount := range 2 {
+		for _, reverse := range []bool{false, true} {
+			for _, limited := range []bool{false, true} {
 				testSingleMatcherProcess(t, reverse, limited, minTopicCount)
 			}
 		}
@@ -52,8 +53,9 @@ func TestSingleMatcherProcess(t *testing.T) {
 
 func testSingleMatcherProcess(t *testing.T, reverse, limited bool, minTopicCount int) {
 	blockCount := uint64(1024)
-	ts := newTestScheduler(t, blockCount, blockCount, 64, minTopicCount, reverse)
-	positions, valid := ts.getMatches(0, blockCount-1)
+	desc := fmt.Sprintf("[reverse %v, limited %v, minTopicCount %d]", reverse, limited, minTopicCount)
+	ts := newTestScheduler(t, desc, blockCount, blockCount, 64, minTopicCount, reverse)
+	positions, logs := ts.getMatches(0, blockCount-1)
 	matcher := &testMatcher{pos: positions}
 	if len(matcher.pos) == 0 {
 		limited = false
@@ -79,32 +81,28 @@ func testSingleMatcherProcess(t *testing.T, reverse, limited bool, minTopicCount
 	mp.run()
 	ts.stop()
 	if len(mp.positions) > len(positions) {
-		ts.t.Fatalf("Too many matching positions returned (expected max %d, got %d)", len(positions), len(mp.positions))
+		ts.t.Fatalf("%s: too many matching positions returned (expected max %d, got %d)", ts.desc, len(positions), len(mp.positions))
 	}
-	if limited && len(valid) > 0 && !valid[len(valid)-1] {
-		ts.t.Fatalf("Last position returned for limited search is an invalid match")
+	if limited && len(logs) > 0 && !ts.isValidMatch(logs[len(logs)-1]) {
+		ts.t.Fatalf("%s: last position returned for limited search is an invalid match", ts.desc)
 	}
 	var validCount int
 	for i, pos := range mp.positions {
 		if pos != positions[i] {
-			ts.t.Fatalf("Invalid position #%d (expected max %v, got %v)", i, positions[i], pos)
+			ts.t.Fatalf("%s: invalid position #%d (expected max %v, got %v)", ts.desc, i, positions[i], pos)
 		}
-		if valid[i] {
+		if !ts.isMatch(logs[i]) {
+			ts.t.Fatalf("%s: non-matching log returned", ts.desc)
+		}
+		if ts.isValidMatch(logs[i]) {
 			validCount++
-			if mp.allMatches[i] == nil {
-				ts.t.Fatalf("Returned nil log at valid match position #%d", i)
-			}
-		} else {
-			if mp.allMatches[i] != nil {
-				ts.t.Fatalf("Returned non-nil log at invalid match position #%d", i)
-			}
 		}
 	}
 	if limited && validCount != maxResults {
-		ts.t.Fatalf("Invalid number of valid matches for limited search (expected %v, got %v)", maxResults, validCount)
+		ts.t.Fatalf("%s: invalid number of valid matches for limited search (expected %v, got %v)", ts.desc, maxResults, validCount)
 	}
 	if !limited && len(mp.positions) != len(positions) {
-		ts.t.Fatalf("Invalid number of returned positions for unlimited search (expected %v, got %v)", len(positions), len(mp.positions))
+		ts.t.Fatalf("%s: invalid number of returned positions for unlimited search (expected %v, got %v)", ts.desc, len(positions), len(mp.positions))
 	}
 }
 
@@ -179,6 +177,7 @@ func (tmi *testMatcherInstance) split(lb *logicBuilder, blockNumber uint64) matc
 
 type testScheduler struct {
 	t                           *testing.T
+	desc                        string
 	lock                        sync.Mutex
 	matchDensity, minTopicCount int
 	reverse                     bool
@@ -190,9 +189,10 @@ type testScheduler struct {
 	stopCh                      chan struct{}
 }
 
-func newTestScheduler(t *testing.T, blockCount, tableSize uint64, matchDensity, minTopicCount int, reverse bool) *testScheduler {
+func newTestScheduler(t *testing.T, desc string, blockCount, tableSize uint64, matchDensity, minTopicCount int, reverse bool) *testScheduler {
 	ts := &testScheduler{
 		t:             t,
+		desc:          desc,
 		matchDensity:  matchDensity,
 		minTopicCount: minTopicCount,
 		reverse:       reverse,
@@ -241,10 +241,14 @@ func (ts *testScheduler) isMatch(log *types.Log) bool {
 	return int(log.Address[0]) < ts.matchDensity
 }
 
-func (ts *testScheduler) getMatches(firstBlock, lastBlock uint64) ([]logindex.IndexPosition, []bool) {
+func (ts *testScheduler) isValidMatch(log *types.Log) bool {
+	return len(log.Topics) >= ts.minTopicCount
+}
+
+func (ts *testScheduler) getMatches(firstBlock, lastBlock uint64) ([]logindex.IndexPosition, []*types.Log) {
 	var (
-		pos   []logindex.IndexPosition
-		valid []bool
+		pos  []logindex.IndexPosition
+		logs []*types.Log
 	)
 	for i := firstBlock; i <= lastBlock; i++ {
 		receipts := ts.receipts[i]
@@ -256,7 +260,7 @@ func (ts *testScheduler) getMatches(firstBlock, lastBlock uint64) ([]logindex.In
 						TxIndex:     uint32(txi),
 						LogIndex:    uint32(li),
 					})
-					valid = append(valid, len(log.Topics) >= ts.minTopicCount)
+					logs = append(logs, log)
 				}
 			}
 		}
@@ -267,7 +271,7 @@ func (ts *testScheduler) getMatches(firstBlock, lastBlock uint64) ([]logindex.In
 			pos[i], pos[last-i] = pos[last-i], pos[i]
 		}
 	}
-	return pos, valid
+	return pos, logs
 }
 
 func (ts *testScheduler) GetRangeReaders(refBlockHash common.Hash, readerRange common.Range[uint64]) []*logindex.TableReader {
@@ -304,14 +308,14 @@ func (ts *testScheduler) returnMatcher(mp *matcherProcess) {
 	select {
 	case tmi.returnCh <- struct{}{}:
 	default:
-		ts.t.Fatalf("Test matcher to be returned was not waiting")
+		ts.t.Fatalf("%s: test matcher to be returned was not waiting", ts.desc)
 	}
 }
 
 func (ts *testScheduler) deliverBlockTo(mp *matcherProcess) {
 	tmi := mp.matcher.(*testMatcherInstance)
 	if len(tmi.blockRequests) == 0 {
-		ts.t.Fatalf("No block requests waiting for delivery")
+		ts.t.Fatalf("%s: no block requests waiting for delivery", ts.desc)
 	}
 	req := tmi.blockRequests[0]
 	tmi.blockRequests = tmi.blockRequests[1:]
