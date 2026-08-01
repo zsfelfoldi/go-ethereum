@@ -17,26 +17,95 @@
 package logquery
 
 import (
-	"container/heap"
 	"context"
-	"errors"
-	"fmt"
+	crand "crypto/rand"
 	"math"
-	"slices"
-	"sort"
+	"math/big"
+	"math/rand"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/consensus/ethash"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/logindex"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/params"
+)
+
+const (
+	testMaxTxCount    = 2
+	testMaxLogCount   = 2
+	testMaxTopicCount = 1
 )
 
 func TestSingleMatcherProcess(t *testing.T) {
-	ts := newTestScheduler()
+	for _, reverse := range []bool{false, true} {
+		for _, limited := range []bool{false, true} {
+			for minTopicCount := range 2 {
+				testSingleMatcherProcess(t, reverse, limited, minTopicCount)
+			}
+		}
+	}
+}
+
+func testSingleMatcherProcess(t *testing.T, reverse, limited bool, minTopicCount int) {
+	blockCount := uint64(1024)
+	ts := newTestScheduler(t, blockCount, blockCount, 64, minTopicCount, reverse)
+	positions, valid := ts.getMatches(0, blockCount-1)
+	matcher := &testMatcher{pos: positions}
+	if len(matcher.pos) == 0 {
+		limited = false
+	}
+	maxResults := math.MaxInt
+	if limited {
+		maxResults = len(matcher.pos) / 2
+	}
+	first := logindex.IndexPosition{}
+	last := logindex.IndexPosition{
+		BlockNumber: blockCount - 1,
+		TxIndex:     math.MaxUint32,
+		LogIndex:    math.MaxUint32,
+	}
+	if reverse {
+		first, last = last, first
+	}
+	instance := matcher.newInstance(context.Background(), &directionalReader{reader: ts.readers[0], reverse: reverse}, nil, first, last)
+	session := newSession(context.Background(), nil, common.Hash{}, minTopicCount, 1000000, false)
+	mp := newMatcherProcess(ts, instance, session, ts.readers[0], 0, blockCount-1)
+	mp.testRegisterHook = ts.registerHook
+	go ts.run()
+	mp.run()
+	ts.stop()
+	if len(mp.positions) > len(positions) {
+		ts.t.Fatalf("Too many matching positions returned (expected max %d, got %d)", len(positions), len(mp.positions))
+	}
+	if limited && len(valid) > 0 && !valid[len(valid)-1] {
+		ts.t.Fatalf("Last position returned for limited search is an invalid match")
+	}
+	var validCount int
+	for i, pos := range mp.positions {
+		if pos != positions[i] {
+			ts.t.Fatalf("Invalid position #%d (expected max %v, got %v)", i, positions[i], pos)
+		}
+		if valid[i] {
+			validCount++
+			if mp.allMatches[i] == nil {
+				ts.t.Fatalf("Returned nil log at valid match position #%d", i)
+			}
+		} else {
+			if mp.allMatches[i] != nil {
+				ts.t.Fatalf("Returned non-nil log at invalid match position #%d", i)
+			}
+		}
+	}
+	if limited && validCount != maxResults {
+		ts.t.Fatalf("Invalid number of valid matches for limited search (expected %v, got %v)", maxResults, validCount)
+	}
+	if !limited && len(mp.positions) != len(positions) {
+		ts.t.Fatalf("Invalid number of returned positions for unlimited search (expected %v, got %v)", len(positions), len(mp.positions))
+	}
 }
 
 type testMatcher struct {
@@ -45,11 +114,11 @@ type testMatcher struct {
 
 func (tm *testMatcher) newInstance(ctx context.Context, reader *directionalReader, logic *logicBuilder, first, last logindex.IndexPosition) matcherInstance {
 	var start int
-	for start < len(tm.pos) && reader.comparePosition(tm.pos[start], first) < 0 {
+	for start < len(tm.pos) && reader.comparePosition(&tm.pos[start], &first) < 0 {
 		start++
 	}
 	stop := start
-	for stop < len(tm.pos) && reader.comparePosition(tm.pos[stop], last) <= 0 {
+	for stop < len(tm.pos) && reader.comparePosition(&tm.pos[stop], &last) <= 0 {
 		stop++
 	}
 	return &testMatcherInstance{
@@ -71,18 +140,12 @@ type testBlockRequest struct {
 	fn     logindex.DeliverBlockFn
 }
 
-type testBlockData struct {
-	header   *types.Header
-	body     *types.Body
-	receipts types.Receipts
-}
-
 func (tmi *testMatcherInstance) next() (*logindex.IndexPosition, logicNodeID, error) {
 	<-tmi.returnCh
 	if len(tmi.pos) == 0 {
-		return nil, logicNodeID{}, nil
+		return nil, 0, nil
 	}
-	return &tmi.pos[0], logicNodeID{}, nil
+	return &tmi.pos[0], 0, nil
 }
 
 func (tmi *testMatcherInstance) advance(pos *logindex.IndexPosition) error {
@@ -92,7 +155,7 @@ func (tmi *testMatcherInstance) advance(pos *logindex.IndexPosition) error {
 			tmi.pos = tmi.pos[1:]
 		}
 	} else {
-		for len(tmi.pos) != 0 && tmi.reader.comparePosition(tmi.pos[0], pos) < 0 {
+		for len(tmi.pos) != 0 && tmi.reader.comparePosition(&tmi.pos[0], pos) < 0 {
 			tmi.pos = tmi.pos[1:]
 		}
 	}
@@ -102,7 +165,7 @@ func (tmi *testMatcherInstance) advance(pos *logindex.IndexPosition) error {
 func (tmi *testMatcherInstance) split(lb *logicBuilder, blockNumber uint64) matcherInstance {
 	splitPos := logindex.IndexPosition{BlockNumber: blockNumber}
 	var splitAt int
-	for splitAt < len(tmi.pos) && tmi.reader.comparePosition(tmi.pos[splitAt], splitPos) < 0 {
+	for splitAt < len(tmi.pos) && tmi.reader.comparePosition(&tmi.pos[splitAt], &splitPos) < 0 {
 		splitAt++
 	}
 	newPos := tmi.pos[splitAt:]
@@ -115,28 +178,107 @@ func (tmi *testMatcherInstance) split(lb *logicBuilder, blockNumber uint64) matc
 }
 
 type testScheduler struct {
-	lock       sync.Mutex
-	processes  map[*matcherProcess]*testProcessState
-	blockData  map[uint64]testBlockData
-	registerCh chan *matcherProcess
-	stopCh     chan struct{}
+	t                           *testing.T
+	lock                        sync.Mutex
+	matchDensity, minTopicCount int
+	reverse                     bool
+	processes                   map[*matcherProcess]*testProcessState
+	blocks                      []*types.Block
+	receipts                    []types.Receipts
+	readers                     []*logindex.TableReader
+	registerCh                  chan *matcherProcess
+	stopCh                      chan struct{}
 }
 
-func newTestScheduler() {
-	return &testScheduler{
-		processes:  make(map[*matcherProcess]*testProcessState),
-		blockData:  make(map[uint64]testBlockData),
-		registerCh: make(chan *matcherProcess),
-		stopCh:     make(chan struct{}),
+func newTestScheduler(t *testing.T, blockCount, tableSize uint64, matchDensity, minTopicCount int, reverse bool) *testScheduler {
+	ts := &testScheduler{
+		t:             t,
+		matchDensity:  matchDensity,
+		minTopicCount: minTopicCount,
+		reverse:       reverse,
+		processes:     make(map[*matcherProcess]*testProcessState),
+		registerCh:    make(chan *matcherProcess),
+		stopCh:        make(chan struct{}),
 	}
+	gspec := &core.Genesis{
+		Alloc:   types.GenesisAlloc{},
+		BaseFee: big.NewInt(params.InitialBaseFee),
+		Config:  params.TestChainConfig,
+	}
+	blockGen := func(i int, gen *core.BlockGen) {
+		txCount := rand.Intn(testMaxTxCount + 1)
+		for k := txCount; k > 0; k-- {
+			receipt := types.NewReceipt(nil, false, 0)
+			logCount := rand.Intn(testMaxLogCount + 1)
+			receipt.Logs = make([]*types.Log, logCount)
+			for i := range receipt.Logs {
+				log := &types.Log{}
+				receipt.Logs[i] = log
+				crand.Read(log.Address[:])
+				log.Topics = make([]common.Hash, rand.Intn(testMaxTopicCount+1))
+			}
+			gen.AddUncheckedReceipt(receipt)
+			gen.AddUncheckedTx(types.NewTransaction(999, common.HexToAddress("0x999"), big.NewInt(999), 999, gen.BaseFee(), nil))
+		}
+	}
+	_, blocks, receipts := core.GenerateChainWithGenesis(gspec, ethash.NewFaker(), int(blockCount-1), blockGen)
+	ts.blocks = append([]*types.Block{gspec.ToBlock()}, blocks...)
+	ts.receipts = append([]types.Receipts{types.Receipts{}}, receipts...)
+	ts.readers = make([]*logindex.TableReader, blockCount/tableSize)
+	for i := range ts.readers {
+		ts.readers[i] = &logindex.TableReader{
+			//IndexContract: testIndexContract,
+			Meta: logindex.TableMeta{
+				LastBlockNumber: uint64(i+1)*tableSize - 1,
+				BlockCount:      tableSize,
+			},
+		}
+	}
+	return ts
 }
 
-type testProcessState struct {
-	waitOnMatcher bool // waits on block delivery if false
-	priority      [bool]int
+func (ts *testScheduler) isMatch(log *types.Log) bool {
+	return int(log.Address[0]) < ts.matchDensity
 }
 
-func (ts *testScheduler) GetRangeReaders(common.Hash, common.Range[uint64]) []*logindex.TableReader {}
+func (ts *testScheduler) getMatches(firstBlock, lastBlock uint64) ([]logindex.IndexPosition, []bool) {
+	var (
+		pos   []logindex.IndexPosition
+		valid []bool
+	)
+	for i := firstBlock; i <= lastBlock; i++ {
+		receipts := ts.receipts[i]
+		for txi, receipt := range receipts {
+			for li, log := range receipt.Logs {
+				if ts.isMatch(log) {
+					pos = append(pos, logindex.IndexPosition{
+						BlockNumber: uint64(i),
+						TxIndex:     uint32(txi),
+						LogIndex:    uint32(li),
+					})
+					valid = append(valid, len(log.Topics) >= ts.minTopicCount)
+				}
+			}
+		}
+	}
+	if ts.reverse {
+		last := len(pos) - 1
+		for i := 0; i < last-i; i++ {
+			pos[i], pos[last-i] = pos[last-i], pos[i]
+		}
+	}
+	return pos, valid
+}
+
+func (ts *testScheduler) GetRangeReaders(refBlockHash common.Hash, readerRange common.Range[uint64]) []*logindex.TableReader {
+	var res []*logindex.TableReader
+	for _, reader := range ts.readers {
+		if !reader.BlockRange().Intersection(readerRange).IsEmpty() {
+			res = append(res, reader)
+		}
+	}
+	return res
+}
 
 func (ts *testScheduler) RequestBlock(refBlockHash common.Hash, blockNumber uint64, deliverFn logindex.DeliverBlockFn) {
 	ts.lock.Lock()
@@ -149,11 +291,11 @@ func (ts *testScheduler) RequestBlock(refBlockHash common.Hash, blockNumber uint
 			return
 		}
 	}
-	deliverFn(logindex.BlockRequest{BlockNumber: blockNumber, NeedBody: true, NeedReceipts: true}, nil, nil, nil)
+	deliverFn(logindex.BlockRequest{Number: blockNumber, NeedBody: true, NeedReceipts: true}, nil, nil, nil)
 }
 
-func (ts *testScheduler) registerHook(mp *matcherProcess) chan bool {
-	mp.testHook = make(chan bool)
+func (ts *testScheduler) registerHook(mp *matcherProcess) {
+	mp.testHook = make(chan int)
 	ts.registerCh <- mp
 }
 
@@ -173,11 +315,12 @@ func (ts *testScheduler) deliverBlockTo(mp *matcherProcess) {
 	}
 	req := tmi.blockRequests[0]
 	tmi.blockRequests = tmi.blockRequests[1:]
-	bd, ok := ts.blockData[req.number]
-	if !ok {
-		ts.t.Fatalf("Requested block data not available", "number", req.number)
-	}
-	req.fn(logindex.BlockRequest{BlockNumber: req.number, NeedBody: true, NeedReceipts: true}, bd.header, bd.body, bd.receipts)
+	req.fn(logindex.BlockRequest{Number: req.number, NeedBody: true, NeedReceipts: true}, ts.blocks[req.number].Header(), ts.blocks[req.number].Body(), ts.receipts[req.number])
+}
+
+type testProcessState struct {
+	waitingFor int
+	priority   [2]int
 }
 
 func (ts *testScheduler) run() {
@@ -185,9 +328,9 @@ func (ts *testScheduler) run() {
 		ts.lock.Lock()
 		select {
 		case mp := <-ts.registerCh:
-			waitOnMatcher, ok := <-mp.testHook
+			waitingFor, ok := <-mp.testHook
 			if ok {
-				ts.processes[mp] = testProcessState{waitOnMatcher: waitOnMatcher, priority: [bool]int{rand.Intn(1000000), rand.Intn(1000000)}}
+				ts.processes[mp] = &testProcessState{waitingFor: waitingFor, priority: [2]int{rand.Intn(1000000), rand.Intn(1000000)}}
 			}
 		case <-ts.stopCh:
 			return
@@ -195,25 +338,28 @@ func (ts *testScheduler) run() {
 		}
 		var (
 			bestMp    *matcherProcess
-			bestState testProcessState
+			bestState *testProcessState
 		)
 		bestPri := 1000000
 		for mp, state := range ts.processes {
-			if pri := state.priority[state.waitOnMatcher]; pri < bestPri {
+			if pri := state.priority[state.waitingFor]; pri < bestPri {
 				bestMp, bestState, bestPri = mp, state, pri
 			}
 		}
 		ts.lock.Unlock()
 		if bestMp != nil {
-			if bestState.waitOnMatcher {
+			switch bestState.waitingFor {
+			case testWaitMatcher:
 				ts.returnMatcher(bestMp)
-			} else {
+			case testWaitDeliver:
 				ts.deliverBlockTo(bestMp)
+			default:
+				panic(nil)
 			}
-			waitOnMatcher, ok := <-bestMp.testHook
+			waitingFor, ok := <-bestMp.testHook
 			ts.lock.Lock()
 			if ok {
-				bestState.waitOnMatcher = waitOnMatcher
+				bestState.waitingFor = waitingFor
 			} else {
 				delete(ts.processes, bestMp)
 			}

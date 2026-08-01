@@ -434,7 +434,7 @@ type TableReader struct {
 	format            tableFormat
 	TableRoot         merkle.Value
 	IndexContract     common.Address //TODO
-	Meta              tableMeta
+	Meta              TableMeta
 }
 
 type subtreePos struct {
@@ -607,7 +607,7 @@ type tableWriter struct {
 	name                                       string
 	entryCount                                 uint64
 	format                                     tableFormat
-	meta                                       tableMeta
+	meta                                       TableMeta
 	isOpen, isDeleted, hasStoredState, hasMeta bool
 	phase                                      uint
 	tableRoot                                  merkle.Value // after all entries added
@@ -980,12 +980,12 @@ func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *IndexEntry, be
 	return nil
 }
 
-func (tw *tableWriter) setMeta(meta tableMeta) {
+func (tw *tableWriter) setMeta(meta TableMeta) {
 	tw.lock.Lock()
 	defer tw.lock.Unlock()
 
 	if tw.hasMeta {
-		panic("tableMeta already exists")
+		panic("TableMeta already exists")
 	}
 	tw.meta, tw.hasMeta = meta, true
 }
@@ -1012,7 +1012,7 @@ func (tw *tableWriter) finalize() (bool, error) {
 			panic("not enough entries")
 		}
 		if !tw.hasMeta {
-			panic("tableMeta missing")
+			panic("TableMeta missing")
 		}
 		for i := range tw.format.subtreeLevels {
 			if err := tw.writers[i].Close(); err != nil {
@@ -1106,10 +1106,10 @@ type tableHeader struct {
 	LevelPointers []uint64
 	EntryCount    uint64
 	TableRoot     merkle.Value
-	Meta          tableMeta
+	Meta          TableMeta
 }
 
-type tableMeta struct {
+type TableMeta struct {
 	LastBlockNumber, BlockCount uint64
 	LastBlockHash, ParentHash   common.Hash
 }
