@@ -74,7 +74,7 @@ func testSingleMatcherProcess(t *testing.T, reverse, limited bool, minTopicCount
 		first, last = last, first
 	}
 	instance := matcher.newInstance(context.Background(), &directionalReader{reader: ts.readers[0], reverse: reverse}, nil, first, last)
-	session := newSession(context.Background(), nil, common.Hash{}, minTopicCount, 1000000, false)
+	session := newSession(context.Background(), nil, common.Hash{}, minTopicCount, maxResults, reverse)
 	mp := newMatcherProcess(ts, instance, session, ts.readers[0], 0, blockCount-1)
 	mp.testRegisterHook = ts.registerHook
 	go ts.run()
