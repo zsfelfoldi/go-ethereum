@@ -80,14 +80,17 @@ func testSingleMatcherProcess(t *testing.T, reverse, limited bool, minTopicCount
 	go ts.run()
 	mp.run()
 	ts.stop()
-	if len(mp.positions) > len(positions) {
-		ts.t.Fatalf("%s: too many matching positions returned (expected max %d, got %d)", ts.desc, len(positions), len(mp.positions))
-	}
-	if limited && len(logs) > 0 && !ts.isValidMatch(logs[len(logs)-1]) {
-		ts.t.Fatalf("%s: last position returned for limited search is an invalid match", ts.desc)
+	if !limited && len(mp.positions) != len(positions) {
+		ts.t.Fatalf("%s: invalid number of returned positions for unlimited search (expected %d, got %d)", ts.desc, len(positions), len(mp.positions))
 	}
 	var validCount int
 	for i, pos := range mp.positions {
+		if validCount == maxResults {
+			if i+maxIncompleteResults < len(mp.positions) {
+				ts.t.Fatalf("%s: too many extra positions returned after maxResults (expected between %d and %d, got %d)", ts.desc, i, i+maxIncompleteResults-1, len(mp.positions))
+			}
+			break
+		}
 		if pos != positions[i] {
 			ts.t.Fatalf("%s: invalid position #%d (expected max %v, got %v)", ts.desc, i, positions[i], pos)
 		}
@@ -97,12 +100,6 @@ func testSingleMatcherProcess(t *testing.T, reverse, limited bool, minTopicCount
 		if ts.isValidMatch(logs[i]) {
 			validCount++
 		}
-	}
-	if limited && validCount != maxResults {
-		ts.t.Fatalf("%s: invalid number of valid matches for limited search (expected %v, got %v)", ts.desc, maxResults, validCount)
-	}
-	if !limited && len(mp.positions) != len(positions) {
-		ts.t.Fatalf("%s: invalid number of returned positions for unlimited search (expected %v, got %v)", ts.desc, len(positions), len(mp.positions))
 	}
 }
 
@@ -269,6 +266,7 @@ func (ts *testScheduler) getMatches(firstBlock, lastBlock uint64) ([]logindex.In
 		last := len(pos) - 1
 		for i := 0; i < last-i; i++ {
 			pos[i], pos[last-i] = pos[last-i], pos[i]
+			logs[i], logs[last-i] = logs[last-i], logs[i]
 		}
 	}
 	return pos, logs
@@ -307,7 +305,7 @@ func (ts *testScheduler) returnMatcher(mp *matcherProcess) {
 	tmi := mp.matcher.(*testMatcherInstance)
 	select {
 	case tmi.returnCh <- struct{}{}:
-	default:
+	case <-time.After(time.Second * 10):
 		ts.t.Fatalf("%s: test matcher to be returned was not waiting", ts.desc)
 	}
 }
@@ -329,17 +327,19 @@ type testProcessState struct {
 
 func (ts *testScheduler) run() {
 	for {
-		ts.lock.Lock()
 		select {
 		case mp := <-ts.registerCh:
 			waitingFor, ok := <-mp.testHook
 			if ok {
+				ts.lock.Lock()
 				ts.processes[mp] = &testProcessState{waitingFor: waitingFor, priority: [2]int{rand.Intn(1000000), rand.Intn(1000000)}}
+				ts.lock.Unlock()
 			}
 		case <-ts.stopCh:
 			return
 		default:
 		}
+		ts.lock.Lock()
 		var (
 			bestMp    *matcherProcess
 			bestState *testProcessState
