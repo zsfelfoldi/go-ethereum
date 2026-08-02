@@ -128,6 +128,7 @@ func (mp *matcherProcess) run() {
 	//defer fmt.Println("matcherProcess", mp.blockRange, "stopped")
 
 	for !mp.finished {
+		//fmt.Println(" len(mp.positions)", len(mp.positions), "mp.completeUntil", mp.completeUntil, "mp.completeValid", mp.completeValid, "mp.session.maxResults", mp.session.maxResults)
 		if !mp.matcherFinished && len(mp.positions) < mp.completeUntil+maxIncompleteResults {
 			//fmt.Println(" mp.matcher.next()")
 			if mp.testHook != nil {
@@ -418,12 +419,12 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 	if mp.session.last == mp {
 		mp.session.last = mp2
 	}
-	if mp.firstBlock <= mp.lastBlock {
-		mp.lastBlock = splitAt - 1
-		mp2.firstBlock = splitAt
-	} else {
+	if mp.session.reverse {
 		mp.lastBlock = splitAt
 		mp2.firstBlock = splitAt - 1
+	} else {
+		mp.lastBlock = splitAt - 1
+		mp2.firstBlock = splitAt
 	}
 	fmt.Println(" mp:", mp.firstBlock, mp.lastBlock)
 	fmt.Println(" mp2:", mp2.firstBlock, mp2.lastBlock)
