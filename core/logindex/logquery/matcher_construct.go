@@ -19,28 +19,58 @@ package logquery
 import (
 	"context"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/logindex"
 )
 
-// matcher defines a general abstraction for any matcher configuration that
-// can instantiate a matcherInstance.
-type matcher interface {
+// positionMatcher defines a general abstraction for any matcher configuration
+// that can instantiate a matcherInstance.
+type positionMatcher interface {
 	newInstance(ctx context.Context, reader *directionalReader, logic *logicBuilder, first, last logindex.IndexPosition) matcherInstance
 }
 
-// matcherInstance defines a general abstraction for a matcher configuration
-// working on a specific set of map indices and eventually returning a list of
-// potentially matching log value indices.
-// Note that processing happens per mapping layer, each call returning a set
-// of results for the maps where the processing has been finished at the given
-// layer. Map indices can also be dropped before a result is returned for them
-// in case the result is no longer interesting. Dropping indices twice or after
-// a result has been returned has no effect. Exactly one matcherResult is
-// returned per requested map index unless dropped.
+// matcherInstance defines a general abstraction for a position matcher instance
+// that operates on a single index table and iterates over matching index
+// positions in the specified range.
 type matcherInstance interface {
 	next() (*logindex.IndexPosition, logicNodeID, error)
 	advance(*logindex.IndexPosition) error
 	split(*logicBuilder, uint64) matcherInstance
+}
+
+func newQueryMatcher(query *FilterQuery) (positionMatcher, error) {
+	// build matcher according to the given filter criteria
+	matcher := make(matchAll, 0, len(query.Topics)+1)
+	// matchAddress signals a match when there is a match for any of the given
+	// addresses.
+	// If the list of addresses is empty then it creates a "wild card" matcher
+	// that signals every index as a potential match.
+	if len(query.Addresses) > 0 {
+		matchAddress := make(matchAny, len(query.Addresses))
+		for i, address := range query.Addresses {
+			var addr32 [32]byte
+			copy(addr32[32-common.AddressLength:], address[:])
+			matchAddress[i] = &singleMatcher{value: logindex.IndexValue{EntryType: logindex.IeAddress, Value: addr32}}
+		}
+		matcher = append(matcher, matchAddress)
+	}
+	for i, topicList := range query.Topics {
+		// matchTopic signals a match when there is a match for any of the topics
+		// specified for the given position (topicList).
+		// If topicList is empty then it creates a "wild card" matcher that signals
+		// every index as a potential match.
+		if len(topicList) > 0 {
+			matchTopic := make(matchAny, len(topicList))
+			for j, topic := range topicList {
+				matchTopic[j] = &singleMatcher{value: logindex.IndexValue{EntryType: logindex.IeTopic0 + uint32(i), Value: ([32]byte)(topic)}}
+			}
+			matcher = append(matcher, matchTopic)
+		}
+	}
+	if len(matcher) > 0 {
+		return matcher, nil
+	}
+	return nil, ErrMatchAll
 }
 
 // singleMatcher implements matcher by returning matches for a single log value hash.
@@ -215,7 +245,7 @@ func (m *singleMatcherInstance) split(logic *logicBuilder, splitBlock uint64) ma
 // matchAny combinines a set of matchers and returns a match for every position
 // where any of the underlying matchers signaled a match. A zero-length matchAny
 // acts as a "wild card" that signals a potential match at every position.
-type matchAny []matcher
+type matchAny []positionMatcher
 
 // matchAnyInstance is an instance of matchAny.
 type matchAnyInstance struct {
@@ -326,7 +356,7 @@ func (m *matchAnyInstance) split(logic *logicBuilder, splitBlock uint64) matcher
 	return c
 }
 
-type matchAll []matcher
+type matchAll []positionMatcher
 
 // matchAllInstance is an instance of matchAll.
 type matchAllInstance struct {
