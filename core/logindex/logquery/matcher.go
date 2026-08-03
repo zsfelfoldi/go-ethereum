@@ -131,36 +131,9 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			break
 		}
 	}
-	// build matcher according to the given filter criteria
-	matcher := make(matchAll, 0, len(query.Topics)+1)
-	// matchAddress signals a match when there is a match for any of the given
-	// addresses.
-	// If the list of addresses is empty then it creates a "wild card" matcher
-	// that signals every index as a potential match.
-	if len(query.Addresses) > 0 {
-		matchAddress := make(matchAny, len(query.Addresses))
-		for i, address := range query.Addresses {
-			var addr32 [32]byte
-			copy(addr32[32-common.AddressLength:], address[:])
-			matchAddress[i] = &singleMatcher{value: logindex.IndexValue{EntryType: logindex.IeAddress, Value: addr32}}
-		}
-		matcher = append(matcher, matchAddress)
-	}
-	for i, topicList := range query.Topics {
-		// matchTopic signals a match when there is a match for any of the topics
-		// specified for the given position (topicList).
-		// If topicList is empty then it creates a "wild card" matcher that signals
-		// every index as a potential match.
-		if len(topicList) > 0 {
-			matchTopic := make(matchAny, len(topicList))
-			for j, topic := range topicList {
-				matchTopic[j] = &singleMatcher{value: logindex.IndexValue{EntryType: logindex.IeTopic0 + uint32(i), Value: ([32]byte)(topic)}}
-			}
-			matcher = append(matcher, matchTopic)
-		}
-	}
-	if len(matcher) == 0 {
-		return nil, common.Range[uint64]{}, nil, ErrMatchAll
+	matcher, err := newQueryMatcher(&query)
+	if err != nil {
+		return nil, common.Range[uint64]{}, nil, err
 	}
 	maxResults := math.MaxInt
 	if uint64(maxResults) > query.MaxResults {
@@ -186,14 +159,14 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			firstPos, lastPos = lastPos, firstPos
 			firstBlock, lastBlock = lastBlock, firstBlock
 		}
-		matcher := matcher.newInstance(
+		matcherInstance := matcher.newInstance(
 			ctx,
 			&directionalReader{reader: tr, reverse: query.Reverse},
 			logicBuilder,
 			firstPos,
 			lastPos,
 		)
-		mp := newMatcherProcess(mc.logIndex, matcher, session, tr, firstBlock, lastBlock)
+		mp := newMatcherProcess(mc.logIndex, matcherInstance, session, tr, firstBlock, lastBlock)
 		mp.setProver(prover, logicBuilder)
 		if i == 0 {
 			session.first = mp
@@ -228,6 +201,12 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	if results == nil {
 		return nil, common.Range[uint64]{}, nil, errors.New("entire search range has been invalidated") //TODO
 	}
+	if query.Reverse {
+		last := len(results.logs) - 1
+		for i := 0; i < last-i; i++ {
+			results.logs[i], results.logs[last-i] = results.logs[last-i], results.logs[i]
+		}
+	}
 	//fmt.Println("+++ Runtime without proof generation:", time.Since(start))
 	var proof *QueryProof
 	if prove {
@@ -236,74 +215,13 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			for i := 0; i < last-i; i++ {
 				results.provers[i], results.provers[last-i] = results.provers[last-i], results.provers[i]
 			}
-			last = len(results.logs) - 1
-			for i := 0; i < last-i; i++ {
-				results.logs[i], results.logs[last-i] = results.logs[last-i], results.logs[i]
-			}
 			results.firstBlock, results.lastBlock = results.lastBlock, results.firstBlock
 		}
 		if lastBlockProver != nil && len(results.provers) > 0 &&
 			lastBlockProver.reader.BlockRange().First() == results.provers[len(results.provers)-1].reader.BlockRange().AfterLast() {
 			results.provers = append(results.provers, lastBlockProver)
 		}
-		proof = &QueryProof{
-			Query:            query,
-			RefHeader:        *refHeader,
-			TableQueryProofs: make([]tableQueryProof, len(results.provers)),
-		}
-		proof.Query.FirstBlock, proof.Query.LastBlock = results.firstBlock, results.lastBlock
-		proofNodes := make(trieProofWriter)
-		proofCodes := make(trieProofWriter)
-		var proveParentBlock common.Hash
-		for i, prover := range results.provers {
-			if i != 0 && prover.reader.BlockRange().First() != results.provers[i-1].reader.BlockRange().AfterLast() {
-				panic("prover block ranges are not continuous")
-			}
-			if prover == lastBlockProver && proveParentBlock == (common.Hash{}) {
-				break
-			}
-			tproof, proveLastBlock, err := prover.finalize(proveParentBlock)
-			if err != nil {
-				return nil, common.Range[uint64]{}, nil, err
-			}
-			proveParentBlock = proveLastBlock
-			tproof.IndexContract = proof.addOrGetIndexContract(prover.reader.IndexContract)
-			proof.TableQueryProofs[i] = tproof
-			// generate state proof nodes for table root
-			tableRoot, err := mc.contractProver.proveTableRoot(refHeader, prover.reader.IndexContract, prover.reader.BlockRange().First(), prover.reader.BlockRange().Count(), proofNodes, proofCodes)
-			//fmt.Println("GetTableRoot", prover.reader.BlockRange(), tableRoot, err)
-			if err != nil {
-				return nil, common.Range[uint64]{}, nil, err
-			}
-			if tableRoot != common.Hash(prover.reader.TableRoot) {
-				return nil, common.Range[uint64]{}, nil, errors.New("local table root does not match index contract")
-			}
-		}
-		if proveParentBlock != (common.Hash{}) && proveParentBlock != refHeader.Hash() {
-			return nil, common.Range[uint64]{}, nil, errors.New("could not prove last block of last table")
-		}
-		proof.ContractProofNodes = proofNodes.proofForStorage()
-		proof.ContractProofCodes = proofCodes.proofForStorage()
-		//proof.printStats()
-		proofEnc, err := rlp.EncodeToBytes(proof)
-		if err != nil {
-			return nil, common.Range[uint64]{}, nil, err
-		}
-		proveTime := time.Since(start)
-		/*start = time.Now()
-		var proofDec QueryProof
-		if err := rlp.DecodeBytes(proofEnc, &proofDec); err != nil {
-			return nil, common.Range[uint64]{}, nil, err
-		}
-		//fmt.Println("decoded proof")
-		//proofDec.printStats()
-		if _, err := proof.Verify(contractVerifier); err != nil { //TODO only verify in dev mode
-			//fmt.Println("verify error:", err)
-			return nil, common.Range[uint64]{}, nil, err
-		} /* else {
-			fmt.Println("verified results:", len(res))
-		}*/
-		fmt.Println("[***] range length", blockRange.Count(), "result count", len(results.logs), "proof size", len(proofEnc), "prove time", proveTime)
+		proof = makeQueryProof(refHeader, &query, results.firstBlock, results.lastBlock, mc.contractProver, results.provers)
 	}
 	//fmt.Println(" results", len(results.logs), "error", results.err)
 	//fmt.Println("+++ Runtime with proof generation:", time.Since(start))

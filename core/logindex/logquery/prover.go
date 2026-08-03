@@ -365,3 +365,66 @@ func (bp *blockProof) createProof(receipts types.Receipts) {
 	}))
 	//fmt.Println("DeriveSha:", rh, "header receipts root:", bp.header.ReceiptHash)
 }
+
+// forward order (firstBlock <= lastBlock, provers sorted in increasing block order)
+func makeQueryProof(refHeader *types.Header, query *FilterQuery, firstBlock, lastBlock uint64, contractProver contractProver, provers []*tableProver) (*QueryProof, error) {
+	proof := &QueryProof{
+		Query:            *query,
+		RefHeader:        *refHeader,
+		TableQueryProofs: make([]tableQueryProof, len(provers)),
+	}
+	proof.Query.FirstBlock, proof.Query.LastBlock = firstBlock, lastBlock
+	proofNodes := make(trieProofWriter)
+	proofCodes := make(trieProofWriter)
+	var proveParentBlock common.Hash
+	for i, prover := range provers {
+		if i != 0 && prover.reader.BlockRange().First() != provers[i-1].reader.BlockRange().AfterLast() {
+			panic("prover block ranges are not continuous")
+		}
+		if prover == lastBlockProver && proveParentBlock == (common.Hash{}) {
+			break
+		}
+		tproof, proveLastBlock, err := prover.finalize(proveParentBlock)
+		if err != nil {
+			return nil, err
+		}
+		proveParentBlock = proveLastBlock
+		tproof.IndexContract = proof.addOrGetIndexContract(prover.reader.IndexContract)
+		proof.TableQueryProofs[i] = tproof
+		// generate state proof nodes for table root
+		tableRoot, err := contractProver.proveTableRoot(refHeader, prover.reader.IndexContract, prover.reader.BlockRange().First(), prover.reader.BlockRange().Count(), proofNodes, proofCodes)
+		//fmt.Println("GetTableRoot", prover.reader.BlockRange(), tableRoot, err)
+		if err != nil {
+			return nil, err
+		}
+		if tableRoot != common.Hash(prover.reader.TableRoot) {
+			return nil, errors.New("local table root does not match index contract")
+		}
+	}
+	if proveParentBlock != (common.Hash{}) && proveParentBlock != refHeader.Hash() {
+		return nil, errors.New("could not prove last block of last table")
+	}
+	proof.ContractProofNodes = proofNodes.proofForStorage()
+	proof.ContractProofCodes = proofCodes.proofForStorage()
+	//proof.printStats()
+	/*proofEnc, err := rlp.EncodeToBytes(proof)
+	if err != nil {
+		return nil, common.Range[uint64]{}, nil, err
+	}
+	proveTime := time.Since(start)*/
+	/*start = time.Now()
+	var proofDec QueryProof
+	if err := rlp.DecodeBytes(proofEnc, &proofDec); err != nil {
+		return nil, common.Range[uint64]{}, nil, err
+	}
+	//fmt.Println("decoded proof")
+	//proofDec.printStats()
+	if _, err := proof.Verify(contractVerifier); err != nil { //TODO only verify in dev mode
+		//fmt.Println("verify error:", err)
+		return nil, common.Range[uint64]{}, nil, err
+	} /* else {
+		fmt.Println("verified results:", len(res))
+	}*/
+	//fmt.Println("[***] range length", blockRange.Count(), "result count", len(results.logs), "proof size", len(proofEnc), "prove time", proveTime)
+	return proof, nil
+}
