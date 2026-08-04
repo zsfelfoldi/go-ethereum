@@ -33,22 +33,22 @@ import (
 	"github.com/ethereum/go-ethereum/triedb"
 )
 
-type contractProverBackend interface {
+type contractVerifierBackend interface {
 	ChainConfig() *params.ChainConfig
+}
+
+type contractProverBackend interface {
+	contractVerifierBackend
 	StateProverAt(header *types.Header, proofNodes, proofCodes map[common.Hash][]byte) (*state.StateDB, error)
 }
 
-type contractProver struct {
-	backend contractProverBackend
-}
-
-func (p contractProver) proveTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
+func proveTableRoot(backend contractProverBackend, refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
 	fmt.Println("proveTableRoot", firstBlock, tableSize)
-	state, err := p.backend.StateProverAt(refHead, proofNodes, proofCodes)
+	state, err := backend.StateProverAt(refHead, proofNodes, proofCodes)
 	if err != nil {
 		return common.Hash{}, err
 	}
-	return getTableRoot(state, p.backend.ChainConfig(), refHead, contract, firstBlock, tableSize)
+	return getTableRoot(state, backend.ChainConfig(), refHead, contract, firstBlock, tableSize)
 }
 
 func getTableRoot(state *state.StateDB, chainConfig *params.ChainConfig, refHead *types.Header, contract common.Address, firstBlock, tableSize uint64) (common.Hash, error) {
@@ -120,17 +120,12 @@ func (c *chainContext) GetHeaderByHash(hash common.Hash) *types.Header {
 	return nil
 }
 
-type contractVerifier struct {
-	chainConfig *params.ChainConfig
-	trieConfig  *triedb.Config
-}
-
-func (v contractVerifier) getProvenTableRoot(refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
-	proofDb := triedb.NewProofReader(proofNodes, v.trieConfig)
+func getProvenTableRoot(backend contractVerifierBackend, refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
+	proofDb := triedb.NewProofReader(proofNodes, &triedb.Config{ /*TODO UBT mode?*/ })
 	codeDb := state.NewProofCodeReader(proofCodes)
 	state, err := state.New(refHead.Root, state.NewMPTDatabase(proofDb, codeDb)) //TODO UBT
 	if err != nil {
 		return common.Hash{}, err
 	}
-	return getTableRoot(state, v.chainConfig, refHead, contract, firstBlock, tableSize)
+	return getTableRoot(state, backend.ChainConfig(), refHead, contract, firstBlock, tableSize)
 }

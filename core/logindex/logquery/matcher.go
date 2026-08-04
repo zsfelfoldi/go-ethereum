@@ -22,6 +22,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
+	"reflect"
 	"slices"
 	"sort"
 	"sync"
@@ -37,12 +39,14 @@ import (
 var ErrMatchAll = errors.New("match-all queries not allowed")
 
 const (
-	maxMatcherThreads        = 4 //TODO config
+	maxMatcherThreads        = 1 //TODO config
 	splitAfter               = time.Millisecond * 5
 	splitThreshold           = time.Millisecond * 20
 	splitTarget              = time.Millisecond * 10
 	updateEstimatesFrequency = time.Millisecond
 	maxIncompleteResults     = 8
+	testVerifyProofs         = false //TODO remove in production, implement in workload tester
+	testLimitedQuery         = true  //TODO remove in production, implement in workload tester
 )
 
 type FilterQuery struct {
@@ -60,7 +64,7 @@ type logIndex interface {
 type Matcher struct {
 	lock                       sync.Mutex
 	logIndex                   logIndex
-	contractProver             contractProver
+	contractProverBackend      contractProverBackend
 	threadCount, activeThreads int
 	requestCounter             uint64
 	sessions                   map[*matcherSession]struct{} // accessed under lock mutex
@@ -76,17 +80,17 @@ type Matcher struct {
 
 func NewMatcher(logIndex logIndex, contractProverBackend contractProverBackend) *Matcher {
 	mc := &Matcher{
-		logIndex:         logIndex,
-		contractProver:   contractProver{backend: contractProverBackend},
-		threadCount:      maxMatcherThreads,
-		sessions:         make(map[*matcherSession]struct{}),
-		processing:       make([]*matcherProcess, maxMatcherThreads),
-		updateSort:       make(processQueue, maxMatcherThreads+1),
-		startProcessCh:   make([]chan *matcherProcess, maxMatcherThreads),
-		stoppedProcessCh: make(chan int),
-		sessionCh:        make(chan *matcherSession),
-		stopCh:           make(chan struct{}),
-		updateTicker:     time.NewTicker(updateEstimatesFrequency),
+		logIndex:              logIndex,
+		contractProverBackend: contractProverBackend,
+		threadCount:           maxMatcherThreads,
+		sessions:              make(map[*matcherSession]struct{}),
+		processing:            make([]*matcherProcess, maxMatcherThreads),
+		updateSort:            make(processQueue, maxMatcherThreads+1),
+		startProcessCh:        make([]chan *matcherProcess, maxMatcherThreads),
+		stoppedProcessCh:      make(chan int),
+		sessionCh:             make(chan *matcherSession),
+		stopCh:                make(chan struct{}),
+		updateTicker:          time.NewTicker(updateEstimatesFrequency),
 	}
 	for i := range maxMatcherThreads {
 		mc.startProcessCh[i] = make(chan *matcherProcess, 1)
@@ -101,7 +105,35 @@ func NewMatcher(logIndex logIndex, contractProverBackend contractProverBackend) 
 }
 
 func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
-	start := time.Now()
+	if !testLimitedQuery {
+		return mc.getMatches(ctx, query, prove, refHeader)
+	}
+	limitedQuery := query
+	limitedQuery.MaxResults = uint64(rand.Intn(100) + 1)
+	//limitedQuery.Reverse = rand.Intn(2) == 1
+	limitedLogs, _, _, err := mc.getMatches(ctx, limitedQuery, prove, refHeader)
+	if err != nil {
+		return nil, common.Range[uint64]{}, nil, err
+	}
+	logs, resultRange, proof, err := mc.getMatches(ctx, query, prove, refHeader)
+	if err != nil {
+		return nil, common.Range[uint64]{}, nil, err
+	}
+	if uint64(len(limitedLogs)) != min(uint64(len(logs)), limitedQuery.MaxResults) {
+		return logs, resultRange, proof, errors.New("invalid number of logs returned by testLimitedQuery")
+	}
+	var offset int
+	if limitedQuery.Reverse {
+		offset = len(logs) - len(limitedLogs)
+	}
+	if !reflect.DeepEqual(logs[offset:offset+len(limitedLogs)], limitedLogs) {
+		return logs, resultRange, proof, errors.New("testLimitedQuery results mismatch")
+	}
+	return logs, resultRange, proof, nil
+}
+
+func (mc *Matcher) getMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
+	//start := time.Now()
 	headBlock, refBlockHash := refHeader.Number.Uint64(), refHeader.Hash()
 	firstBlock := min(query.FirstBlock, headBlock)
 	lastBlock := min(query.LastBlock, headBlock)
@@ -221,7 +253,29 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 			lastBlockProver.reader.BlockRange().First() == results.provers[len(results.provers)-1].reader.BlockRange().AfterLast() {
 			results.provers = append(results.provers, lastBlockProver)
 		}
-		proof = makeQueryProof(refHeader, &query, results.firstBlock, results.lastBlock, mc.contractProver, results.provers)
+		var err error
+		proof, err = makeQueryProof(refHeader, &query, results.firstBlock, results.lastBlock, mc.contractProverBackend, results.provers, lastBlockProver)
+		if err != nil {
+			return nil, common.Range[uint64]{}, nil, err
+		}
+		if testVerifyProofs {
+			proofEnc, err := rlp.EncodeToBytes(proof)
+			if err != nil {
+				return nil, common.Range[uint64]{}, nil, err
+			}
+			var proofDec QueryProof
+			if err := rlp.DecodeBytes(proofEnc, &proofDec); err != nil {
+				return nil, common.Range[uint64]{}, nil, err
+			}
+			//fmt.Println("decoded proof")
+			//proofDec.printStats()
+			if _, err := proof.Verify(mc.contractProverBackend); err != nil {
+				//fmt.Println("verify error:", err)
+				return nil, common.Range[uint64]{}, nil, err
+			} /* else {
+				fmt.Println("verified results:", len(res))
+			}*/
+		}
 	}
 	//fmt.Println(" results", len(results.logs), "error", results.err)
 	//fmt.Println("+++ Runtime with proof generation:", time.Since(start))
@@ -366,9 +420,11 @@ func (mc *Matcher) updateSessionFrom(start *matcherProcess, allowedSplits int) i
 		return allowedSplits
 	}
 	cumulativeResults, _ := start.getCumulativeResults()
+	//fmt.Println("/// updateSessionFrom", start.firstBlock, start.lastBlock, "cumulativeResults", cumulativeResults)
 	// iterate session process chain from first running process
 	for mp := start; mp != nil; mp = mp.next {
 		estimatedResults, canSplit := mp.getEstimatedResults()
+		//fmt.Println("///  ", mp.firstBlock, mp.lastBlock, "cumulativeResults", cumulativeResults, "estimatedResults", estimatedResults)
 		suspendNow := mp.session.finished
 		if !suspendNow && canSplit && allowedSplits > 0 && mp.status == mpRunning {
 			suspendNow = true
@@ -378,6 +434,7 @@ func (mc *Matcher) updateSessionFrom(start *matcherProcess, allowedSplits int) i
 		if mp.status != mpRunning {
 			mc.updateIdleStatus(mp, cumulativeResults)
 			if mp.next == nil && mp.status == mpFinishedAll && !mp.session.finished {
+				fmt.Println("+++ last mpFinishedAll; session finished", mp.firstBlock, mp.lastBlock)
 				mp.session.finished = true
 				mp.session.returnResults()
 			}
@@ -404,16 +461,19 @@ func (mc *Matcher) updateIdleStatus(mp *matcherProcess, cumulativeResults uint64
 
 func (mp *matcherProcess) newStatus(cumulativeResults uint64) int {
 	if mp.session.finished {
+		fmt.Println("+++ session finished", mp.firstBlock, mp.lastBlock)
 		return mpFinishedAll
 	}
 	if mp.finished {
 		if mp.prev == nil || mp.prev.status == mpFinishedAll {
+			fmt.Println("+++ prev nil or mpFinishedAll; mp finished", mp.firstBlock, mp.lastBlock)
 			return mpFinishedAll
 		}
 		return mpFinished
 	}
 	if cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
 		if mp.prev == nil || mp.prev.status == mpFinishedAll {
+			fmt.Println("+++ prev nil or mpFinishedAll; enough results", mp.firstBlock, mp.lastBlock, "cumulativeResults", cumulativeResults, "mp.completeValid", mp.completeValid, "mp.session.maxResults", mp.session.maxResults)
 			return mpFinishedAll
 		}
 		return mpInactive
@@ -521,7 +581,7 @@ func (ms *matcherSession) print() {
 }
 
 func (ms *matcherSession) returnResults() {
-	//fmt.Println("*** returnResults")
+	fmt.Println("*** returnResults  maxResults", ms.maxResults, "reverse", ms.reverse)
 	//ms.print()
 	if ms.err != nil {
 		ms.resultsCh <- &matcherResults{err: ms.err}
@@ -557,7 +617,7 @@ func (ms *matcherSession) returnResults() {
 		mp.blockDataLock.Lock()
 		defer mp.blockDataLock.Unlock()
 
-		//fmt.Println("addProcessResults", mp.tableReader.BlockRange(), "len(mp.allMatches)", len(mp.allMatches), "len(mp.sectionNodes)", len(mp.sectionNodes))
+		fmt.Println("addProcessResults", mp.tableReader.BlockRange(), "len(mp.allMatches)", len(mp.allMatches), "len(mp.sectionNodes)", len(mp.sectionNodes), "mp.completeUntil", mp.completeUntil, "mp.completeValid", mp.completeValid)
 		if mp.tableProver != nil && mp.tableProver != currentProver {
 			if currentProver != nil {
 				res.provers = append(res.provers, currentProver)
@@ -569,6 +629,7 @@ func (ms *matcherSession) returnResults() {
 		}
 		_, lastBlockProven := mp.blockProofs[mp.tableReader.BlockRange().Last()]
 		for i, log := range mp.allMatches {
+			mp.logicBuilder.connect(mp.sectionNodes[i], andNode)
 			if len(res.logs) == ms.maxResults {
 				lastLog := res.logs[ms.maxResults-1]
 				trimBlockProofs(mp.blockProofs, lastLog.BlockNumber, uint32(lastLog.TxIndex), mp.session.reverse)
@@ -576,7 +637,6 @@ func (ms *matcherSession) returnResults() {
 				lastResultCount = ms.maxResults
 				return lastBlockProven
 			}
-			mp.logicBuilder.connect(mp.sectionNodes[i], andNode)
 			if log == nil {
 				fmt.Println(mp.firstBlock, mp.lastBlock, "*** nil log at", i, "mp.finished", mp.finished, "len(mp.allMatches)", len(mp.allMatches), "mp.completeUntil", mp.completeUntil, "mp.completeValid", mp.completeValid)
 			}

@@ -171,7 +171,7 @@ func (mp *matcherProcess) run() {
 				return
 			}
 		}
-		mp.updateEstimatedResults(true)
+		mp.updateEstimatedResults()
 		cumulativeResults, suspendNow := mp.getCumulativeResults()
 		mp.blockDataLock.Lock()
 		var requestBlocks []uint64
@@ -196,6 +196,7 @@ func (mp *matcherProcess) run() {
 			}
 			if mp.matcherFinished && mp.completeUntil == len(mp.allMatches) {
 				mp.finished = true
+				mp.updateEstimatedResults()
 			}
 		}
 		mp.blockDataLock.Unlock()
@@ -327,7 +328,12 @@ loop:
 }
 
 // called by worker thread
-func (mp *matcherProcess) updateEstimatedResults(running bool) (uint64, bool) {
+func (mp *matcherProcess) updateEstimatedResults() (uint64, bool) {
+	if mp.finished {
+		// store final result count
+		atomic.StoreUint64(&mp.estimatedResults, uint64(mp.validMatches))
+		return uint64(mp.validMatches), false
+	}
 	var (
 		estimatedResults uint64
 		canSplit         bool
@@ -336,9 +342,7 @@ func (mp *matcherProcess) updateEstimatedResults(running bool) (uint64, bool) {
 		done, _, remaining := mp.getProgress()
 		ratio := float64(remaining) / float64(done) // remaining to done ratio; done >= 1
 		runTime := mp.runTime
-		if running {
-			runTime += time.Duration(max(0, mclock.Now()-mp.started))
-		}
+		runTime += time.Duration(max(0, mclock.Now()-mp.started))
 		remainingResults := uint64(float64(mp.validMatches) * ratio)
 		estimatedResults = uint64(mp.validMatches) + remainingResults
 		if runTime >= splitAfter {
