@@ -39,7 +39,7 @@ import (
 var ErrMatchAll = errors.New("match-all queries not allowed")
 
 const (
-	maxMatcherThreads        = 1 //TODO config
+	maxMatcherThreads        = 4 //TODO config
 	splitAfter               = time.Millisecond * 5
 	splitThreshold           = time.Millisecond * 20
 	splitTarget              = time.Millisecond * 10
@@ -110,7 +110,7 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	}
 	limitedQuery := query
 	limitedQuery.MaxResults = uint64(rand.Intn(100) + 1)
-	//limitedQuery.Reverse = rand.Intn(2) == 1
+	limitedQuery.Reverse = rand.Intn(2) == 1
 	limitedLogs, _, _, err := mc.getMatches(ctx, limitedQuery, prove, refHeader)
 	if err != nil {
 		return nil, common.Range[uint64]{}, nil, err
