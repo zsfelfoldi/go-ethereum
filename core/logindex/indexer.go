@@ -625,11 +625,6 @@ func abStatSet(s *mclock.AbsTime) {
 }
 
 func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts types.Receipts) {
-	if header == nil || body == nil || receipts == nil {
-		fmt.Println("AddBlockData with missing data")
-		return
-	}
-
 	abStatCount++
 	abStatSet(&abStatWaitLock)
 	defer abStatSet(nil)
@@ -637,6 +632,12 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 	ix.lock.Lock()
 	abStatSet(&abStatOther)
 	if ix.shutdown {
+		ix.lock.Unlock()
+		return
+	}
+	//fmt.Println(" processBlockRequests")
+	ix.processBlockRequests(header, body, receipts)
+	if body == nil || receipts == nil {
 		ix.lock.Unlock()
 		return
 	}
@@ -648,8 +649,6 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 		ix.headBlockHash = header.Hash()
 		ix.recentHeads.Add(header.Hash(), &cachedBlockData{header: header, body: body, receipts: receipts, canonicalUntil: blockNumber})
 	}
-	//fmt.Println(" processBlockRequests")
-	ix.processBlockRequests(header, body, receipts)
 	//fmt.Println(" processBlockTables")
 	if blockNumber < ix.headBlock && !ix.requiredBlockTables.Includes(blockNumber) {
 		//fmt.Println(" unexpected", blockNumber, "required", ix.requiredBlockTables)
