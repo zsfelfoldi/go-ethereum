@@ -189,6 +189,7 @@ func (lo *logicOptimizer) optimize(savedInputCost func(a, b, c uint64) int) ([]u
 		lo.finalizeHeap.heapIndex[i] = uint32(i)
 	}
 	heap.Init(&lo.finalizeHeap)
+	fmt.Println("*** lo.finalizeHeap.Len()", lo.finalizeHeap.Len())
 	for lo.finalizeHeap.Len() != 0 {
 		sortedIndex := heap.Pop(&lo.finalizeHeap).(uint32)
 		//fmt.Println("heap.Pop", sortedIndex)
@@ -216,6 +217,7 @@ func (lo *logicOptimizer) optimize(savedInputCost func(a, b, c uint64) int) ([]u
 			panic("unexpected logic state for final result node")
 		}
 	}
+	fmt.Println("*** outputNode.logicState()", outputNode.logicState())
 	if outputNode.logicState() != lsDecidedTrue {
 		panic("invalid final result logic state")
 	}

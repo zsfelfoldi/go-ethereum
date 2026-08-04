@@ -625,6 +625,11 @@ func abStatSet(s *mclock.AbsTime) {
 }
 
 func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts types.Receipts) {
+	if header == nil || body == nil || receipts == nil {
+		fmt.Println("AddBlockData with missing data")
+		return
+	}
+
 	abStatCount++
 	abStatSet(&abStatWaitLock)
 	defer abStatSet(nil)

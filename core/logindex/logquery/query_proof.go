@@ -99,7 +99,7 @@ func (qp *QueryProof) printStats() {
 	}
 }
 
-func (qp *QueryProof) Verify(contractVerifier contractVerifier) ([]*types.Log, error) {
+func (qp *QueryProof) Verify(backend contractVerifierBackend) ([]*types.Log, error) {
 	//fmt.Println("* qp.Verify")
 	//TODO check index contract whitelist
 	var resultCount, nextTableFirst uint64
@@ -140,7 +140,7 @@ func (qp *QueryProof) Verify(contractVerifier contractVerifier) ([]*types.Log, e
 	qp.contractProofCodes = makeProofMap(qp.ContractProofCodes)
 	var reqParentBlockHash common.Hash
 	for i, tqp := range qp.TableQueryProofs {
-		provenTableRoot, err := qp.getProvenTableRoot(contractVerifier, qp.IndexContracts[tqp.IndexContract], tqp.FirstBlock, tqp.TableSize)
+		provenTableRoot, err := qp.getProvenTableRoot(backend, qp.IndexContracts[tqp.IndexContract], tqp.FirstBlock, tqp.TableSize)
 		if err != nil {
 			return nil, err
 		}
@@ -160,8 +160,8 @@ func (qp *QueryProof) Verify(contractVerifier contractVerifier) ([]*types.Log, e
 	return results, nil
 }
 
-func (qp *QueryProof) getProvenTableRoot(contractVerifier contractVerifier, indexContract common.Address, firstBlock, tableSize uint64) (common.Hash, error) {
-	return contractVerifier.getProvenTableRoot(&qp.RefHeader, indexContract, firstBlock, tableSize, qp.contractProofNodes, qp.contractProofCodes)
+func (qp *QueryProof) getProvenTableRoot(backend contractVerifierBackend, indexContract common.Address, firstBlock, tableSize uint64) (common.Hash, error) {
+	return getProvenTableRoot(backend, &qp.RefHeader, indexContract, firstBlock, tableSize, qp.contractProofNodes, qp.contractProofCodes)
 }
 
 // if total result count equals MaxResults then resultsLimited is true for the
