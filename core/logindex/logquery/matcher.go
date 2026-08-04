@@ -110,7 +110,7 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	}
 	limitedQuery := query
 	limitedQuery.MaxResults = uint64(rand.Intn(100) + 1)
-	//limitedQuery.Reverse = rand.Intn(2) == 1
+	limitedQuery.Reverse = rand.Intn(2) == 1
 	limitedLogs, _, _, err := mc.getMatches(ctx, limitedQuery, prove, refHeader)
 	if err != nil {
 		return nil, common.Range[uint64]{}, nil, err

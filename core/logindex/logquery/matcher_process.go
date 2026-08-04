@@ -314,7 +314,6 @@ loop:
 		}
 	}
 	if blockProof != nil {
-		// Compute effective blob gas price.
 		var blobGasPrice *big.Int
 		if header.ExcessBlobGas != nil {
 			blobGasPrice = eip4844.CalcBlobFee(params.MainnetChainConfig, header) //TODO chain config
