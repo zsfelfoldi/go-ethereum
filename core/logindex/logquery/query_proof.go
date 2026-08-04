@@ -114,8 +114,9 @@ func (qp *QueryProof) Verify(backend contractVerifierBackend) ([]*types.Log, err
 		nextTableFirst = tqp.FirstBlock + tqp.TableSize
 	}
 	//fmt.Println("* no gap, no overlap")
-	if qp.TableQueryProofs[0].FirstBlock > qp.Query.FirstBlock ||
-		qp.TableQueryProofs[len(qp.TableQueryProofs)-1].FirstBlock+qp.TableQueryProofs[len(qp.TableQueryProofs)-1].TableSize <= qp.Query.LastBlock {
+	if (qp.TableQueryProofs[0].FirstBlock > qp.Query.FirstBlock && (resultCount < qp.Query.MaxResults || !qp.Query.Reverse)) ||
+		(qp.TableQueryProofs[len(qp.TableQueryProofs)-1].FirstBlock+qp.TableQueryProofs[len(qp.TableQueryProofs)-1].TableSize <= qp.Query.LastBlock &&
+			(resultCount < qp.Query.MaxResults || qp.Query.Reverse)) { //TODO make this nicer
 		return nil, errors.New("table proofs do not cover query range")
 	}
 	//fmt.Println("* fully covered")
@@ -191,7 +192,7 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 		return nil, common.Hash{}, err
 	}
 	count := len(results) - oldCount
-	if resultsLimited && uint64(count) > tqp.ResultCount {
+	if resultsLimited && uint64(count) >= tqp.ResultCount {
 		trimResults := count - int(tqp.ResultCount)
 		if query.Reverse {
 			// trim extra results from beginning of result list
@@ -238,6 +239,19 @@ func (tqp *tableQueryProof) verify(query *FilterQuery, provenTableRoot common.Ha
 	potentialMatches := tqp.getPotentialMatches(query, begin, end)
 	//fmt.Println(" * inclusion proven", inclusionProven)
 	//fmt.Println(" * potential matches", potentialMatches)
+	/*fmt.Println("--- query", query)
+	fmt.Println("--- range", begin, end)
+	for i, pos := range inclusionProven {
+		fmt.Println("--- ip", i, pos)
+	}
+	var ii int
+	for pos := range potentialMatches.iter() {
+		if ii >= len(inclusionProven)+10 {
+			break
+		}
+		fmt.Println("--- pm", ii, pos)
+		ii++
+	}*/
 	var i int
 	for pos := range potentialMatches.iter() {
 		if i >= len(inclusionProven) || inclusionProven[i] != pos {
