@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -44,6 +43,7 @@ const (
 
 type matcherProcess struct {
 	logIndex              logIndex
+	chainView             chainView
 	matcher               matcherInstance
 	session               *matcherSession
 	tableReader           *logindex.TableReader
@@ -57,22 +57,19 @@ type matcherProcess struct {
 	pqIndex int
 
 	// accessed only by worker thread while status == mpRunning
-	positions                    []logindex.IndexPosition
-	sectionNodes                 []logicNodeID
-	completeUntil, completeValid int
-	finished, matcherFinished    bool
-	err                          error
-	runTime                      time.Duration
-	started                      mclock.AbsTime
-
-	// accessed by block data delivery thread
-	blockDataLock  sync.Mutex
-	deliverCh      chan struct{}
-	blockInResults map[uint64]int
-	allMatches     []*types.Log // including invalid matches where len(log.Topics) < len(query.Topics)
+	positions      []logindex.IndexPosition //TODO is this required?
+	sectionNodes   []logicNodeID
+	allMatches     []*types.Log // including invalid matches where len(log.Topics) < session.minTopicCount
 	validMatches   int          // number of valid matches
 	blockProofs    map[uint64]*blockProof
-	deliveryErr    error
+	finished       bool
+	err            error
+	started        mclock.AbsTime
+	runTime        time.Duration
+	lastHeader     *types.Header
+	lastBody       *types.Body
+	lastReceipts   types.Receipts
+	lastBlockProof *blockProof
 
 	// atomic flags accessed by both threads during processing
 	estimatedResults  uint64 // set by worker thread; MSB is "can split" flag
@@ -89,21 +86,21 @@ const (
 
 func newMatcherProcess(
 	logIndex logIndex,
+	chainView chainView,
 	matcher matcherInstance,
 	session *matcherSession,
 	tableReader *logindex.TableReader,
 	firstBlock, lastBlock uint64,
 ) *matcherProcess {
 	return &matcherProcess{
-		logIndex:       logIndex,
-		matcher:        matcher,
-		session:        session,
-		tableReader:    tableReader,
-		firstBlock:     firstBlock,
-		lastBlock:      lastBlock,
-		blockInResults: make(map[uint64]int),
-		blockProofs:    make(map[uint64]*blockProof),
-		deliverCh:      make(chan struct{}, 1),
+		logIndex:    logIndex,
+		chainView:   chainView,
+		matcher:     matcher,
+		session:     session,
+		tableReader: tableReader,
+		firstBlock:  firstBlock,
+		lastBlock:   lastBlock,
+		blockProofs: make(map[uint64]*blockProof),
 	}
 }
 
@@ -128,168 +125,155 @@ func (mp *matcherProcess) run() {
 	//defer fmt.Println("matcherProcess", mp.blockRange, "stopped")
 
 	for !mp.finished {
-		//fmt.Println(" len(mp.positions)", len(mp.positions), "mp.completeUntil", mp.completeUntil, "mp.completeValid", mp.completeValid, "mp.session.maxResults", mp.session.maxResults)
-		if !mp.matcherFinished && len(mp.positions) < mp.completeUntil+maxIncompleteResults {
-			//fmt.Println(" mp.matcher.next()")
+		//fmt.Println(" mp.matcher.next()")
+		if mp.testHook != nil {
+			mp.testHook <- testWaitMatcher
+		}
+		pos, node, err := mp.matcher.next()
+		if err != nil {
+			//fmt.Println("matcherProcess", mp.blockRange, "error (next)", err)
+			mp.finished, mp.err = true, err
+			fmt.Println(mp.firstBlock, mp.lastBlock, "*** return next err", err)
+			return
+		}
+		mp.sectionNodes = append(mp.sectionNodes, node)
+		if pos == nil {
+			//fmt.Println("matcherProcess", mp.blockRange, "finished")
+			mp.finished = true
+		} else {
+			if err := mp.addMatch(pos); err != nil {
+				//fmt.Println("matcherProcess", mp.blockRange, "error (advance)", err)
+				mp.finished, mp.err = true, err
+				return
+			}
+			//fmt.Println(" mp.matcher.advance(nil)")
 			if mp.testHook != nil {
 				mp.testHook <- testWaitMatcher
 			}
-			pos, node, err := mp.matcher.next()
-			if err != nil {
-				//fmt.Println("matcherProcess", mp.blockRange, "error (next)", err)
+			if err := mp.matcher.advance(nil); err != nil {
+				//fmt.Println("matcherProcess", mp.blockRange, "error (advance)", err)
 				mp.finished, mp.err = true, err
-				fmt.Println(mp.firstBlock, mp.lastBlock, "*** return next err", err)
-				return
-			}
-			mp.sectionNodes = append(mp.sectionNodes, node)
-			if pos == nil {
-				//fmt.Println("matcherProcess", mp.blockRange, "finished")
-				mp.matcherFinished = true
-			} else {
-				//fmt.Println("matcherProcess", mp.blockRange, "found", *pos)
-				mp.positions = append(mp.positions, *pos)
-				//fmt.Println(" mp.matcher.advance(nil)")
-				if mp.testHook != nil {
-					mp.testHook <- testWaitMatcher
-				}
-				if err := mp.matcher.advance(nil); err != nil {
-					//fmt.Println("matcherProcess", mp.blockRange, "error (advance)", err)
-					mp.finished, mp.err = true, err
-					fmt.Println(mp.firstBlock, mp.lastBlock, "*** return advance err", err)
-					return
-				}
-			}
-		} else {
-			//fmt.Println(" <-mp.deliverCh")
-			if mp.testHook != nil {
-				mp.testHook <- testWaitDeliver
-			}
-			select {
-			case <-mp.deliverCh:
-			case <-mp.session.ctx.Done():
-				fmt.Println(mp.firstBlock, mp.lastBlock, "*** return ctx.Done")
+				fmt.Println(mp.firstBlock, mp.lastBlock, "*** return advance err", err)
 				return
 			}
 		}
 		mp.updateEstimatedResults()
 		cumulativeResults, suspendNow := mp.getCumulativeResults()
-		mp.blockDataLock.Lock()
-		var requestBlocks []uint64
-		if mp.deliveryErr != nil {
-			mp.finished, mp.err = true, mp.deliveryErr
-		} else {
-			for len(mp.positions) > len(mp.allMatches) {
-				pos := mp.positions[len(mp.allMatches)]
-				if _, ok := mp.blockInResults[pos.BlockNumber]; !ok {
-					mp.blockInResults[pos.BlockNumber] = len(mp.allMatches)
-					//fmt.Println("*** getBlockData", pos.BlockNumber)
-					//fmt.Println(" len(mp.positions)", len(mp.positions), "len(mp.logs)", len(mp.logs), "blockInResults[", pos.BlockNumber, "] = ", len(mp.logs))
-					requestBlocks = append(requestBlocks, pos.BlockNumber)
-				}
-				mp.allMatches = append(mp.allMatches, nil)
-			}
-			for mp.completeUntil < len(mp.allMatches) && mp.allMatches[mp.completeUntil] != nil {
-				if len(mp.allMatches[mp.completeUntil].Topics) >= mp.session.minTopicCount {
-					mp.completeValid++
-				}
-				mp.completeUntil++
-			}
-			if mp.matcherFinished && mp.completeUntil == len(mp.allMatches) {
-				mp.finished = true
-				mp.updateEstimatedResults()
-			}
-		}
-		mp.blockDataLock.Unlock()
-		for _, blockNumber := range requestBlocks {
-			// start requests outside blockDataLock to avoid wrong locking order
-			mp.logIndex.RequestBlock(mp.session.refBlockHash, blockNumber, mp.deliverBlockData)
-		}
-		if suspendNow || cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
-			fmt.Println(mp.firstBlock, mp.lastBlock, "*** return suspendNow", suspendNow, "cumulativeResults", cumulativeResults, "mp.completeValid", mp.completeValid, "mp.session.maxResults", mp.session.maxResults)
+		if suspendNow || cumulativeResults+uint64(mp.validMatches) >= uint64(mp.session.maxResults) {
+			fmt.Println(mp.firstBlock, mp.lastBlock, "*** return suspendNow", suspendNow, "cumulativeResults", cumulativeResults, "mp.validMatches", mp.validMatches, "mp.session.maxResults", mp.session.maxResults)
 			return
 		}
 	}
-	fmt.Println(mp.firstBlock, mp.lastBlock, "*** return finished", mp.finished, "len(mp.allMatches)", len(mp.allMatches), "mp.completeValid", mp.completeValid)
+	fmt.Println(mp.firstBlock, mp.lastBlock, "*** return finished", mp.finished, "len(mp.allMatches)", len(mp.allMatches), "mp.validMatches", mp.validMatches)
 }
 
-func (mp *matcherProcess) deliverBlockData(req logindex.BlockRequest, header *types.Header, body *types.Body, receipts types.Receipts) {
-	//fmt.Println("*** deliverBlockData", req.Number)
-	mp.blockDataLock.Lock()
-	defer mp.blockDataLock.Unlock()
-
-	firstInResults, ok := mp.blockInResults[req.Number]
-	if ok {
-		delete(mp.blockInResults, req.Number)
-	} else {
-		return
+func (mp *matcherProcess) updateLastMatchBlock(number uint64) error {
+	if mp.lastHeader != nil {
+		if mp.lastHeader.Number.Uint64() == number {
+			return nil
+		}
+		if err := mp.finalizeLastMatchBlock(); err != nil {
+			return err
+		}
 	}
-	if header == nil || body == nil || receipts == nil {
-		mp.deliveryErr = errors.New("block data not delivered")
-		return
+	if mp.lastHeader = mp.chainView.Header(number); mp.lastHeader == nil {
+		return fmt.Errorf("header of block #%d not found", number)
 	}
-	select {
-	case mp.deliverCh <- struct{}{}:
-	default:
+	if mp.lastBody = mp.chainView.Body(number); mp.lastBody == nil {
+		return fmt.Errorf("body of block #%d not found", number)
 	}
-
-	var blockProof *blockProof
+	if mp.lastReceipts = mp.chainView.Receipts(number); mp.lastReceipts == nil {
+		return fmt.Errorf("body of block #%d not found", number)
+	}
 	if mp.tableProver != nil {
-		blockProof = mp.blockProofs[req.Number]
-		if blockProof == nil {
-			if req.Number == mp.tableReader.BlockRange().Last() {
-				blockProof = newBlockProof(header, math.MaxUint64)
-			} else {
-				blockEntry := logindex.IndexEntry{
-					IndexValue: logindex.IndexValue{
-						EntryType: logindex.IeBlock,
-						Value:     ([32]byte)(header.Hash()),
-					},
-					IndexPosition: logindex.IndexPosition{
-						BlockNumber: req.Number,
-					},
-				}
-				blockEntryIndex, found, err := mp.tableReader.SeekEntry(&blockEntry)
-				if err != nil {
-					mp.deliveryErr = err
-					return
-				}
-				if !found {
-					mp.deliveryErr = errors.New("could not find block entry index")
-					return
-				}
-				blockProof = newBlockProof(header, blockEntryIndex)
+		// result found in a block that is not proven yet; initialize new block proof
+		if number == mp.tableReader.BlockRange().Last() {
+			mp.lastBlockProof = newBlockProof(mp.lastHeader, math.MaxUint64)
+		} else {
+			blockEntry := logindex.IndexEntry{
+				IndexValue: logindex.IndexValue{
+					EntryType: logindex.IeBlock,
+					Value:     ([32]byte)(mp.lastHeader.Hash()),
+				},
+				IndexPosition: logindex.IndexPosition{
+					BlockNumber: number,
+				},
 			}
-			mp.blockProofs[req.Number] = blockProof
+			blockEntryIndex, found, err := mp.tableReader.SeekEntry(&blockEntry)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return errors.New("could not find block entry index")
+			}
+			mp.lastBlockProof = newBlockProof(mp.lastHeader, blockEntryIndex)
 		}
 	}
+	return nil
+}
 
-loop:
-	for ; firstInResults < len(mp.allMatches); firstInResults++ {
-		pos := mp.positions[firstInResults]
-		if pos.BlockNumber != req.Number || uint32(len(receipts)) <= pos.TxIndex || uint32(len(receipts[pos.TxIndex].Logs)) <= pos.LogIndex {
-			break loop
-		}
-		var logOffset uint
-		for i := range pos.TxIndex {
-			logOffset += uint(len(receipts[i].Logs)) //TODO different position encoding?
-		}
-		txHash := body.Transactions[pos.TxIndex].Hash()
-		l := receipts[pos.TxIndex].Logs[pos.LogIndex]
-		if len(l.Topics) >= mp.session.minTopicCount {
-			mp.validMatches++
-		}
-		mp.allMatches[firstInResults] = &types.Log{
-			Address:        l.Address,
-			Topics:         l.Topics,
-			Data:           l.Data,
-			BlockNumber:    pos.BlockNumber,
-			TxHash:         txHash,
-			TxIndex:        uint(pos.TxIndex),
-			BlockHash:      header.Hash(),
-			BlockTimestamp: header.Time,
-			Index:          logOffset + uint(pos.LogIndex),
-		}
-		if blockProof != nil {
+func (mp *matcherProcess) finalizeLastMatchBlock() error {
+	if mp.lastHeader == nil {
+		return nil
+	}
+	header, body, receipts := mp.lastHeader, mp.lastBody, mp.lastReceipts
+	number := header.Number.Uint64()
+	var blobGasPrice *big.Int
+	if header.ExcessBlobGas != nil {
+		blobGasPrice = eip4844.CalcBlobFee(params.MainnetChainConfig, header) //TODO chain config
+	}
+	if err := receipts.DeriveFields(params.MainnetChainConfig, header.Hash(), header.Number.Uint64(), header.Time, header.BaseFee, blobGasPrice, body.Transactions); err != nil { //TODO chain config
+		return err
+	}
+	if mp.lastBlockProof != nil {
+		mp.lastBlockProof.createProof(receipts)
+		mp.blockProofs[number] = mp.lastBlockProof
+		mp.lastBlockProof = nil
+	}
+	mp.lastHeader, mp.lastBody, mp.lastReceipts = nil, nil, nil
+	return nil
+}
+
+func (mp *matcherProcess) addMatch(pos *logindex.IndexPosition) error {
+	if err := mp.updateLastMatchBlock(pos.BlockNumber); err != nil {
+		return err
+	}
+	mp.positions = append(mp.positions, *pos)
+	header, body, receipts := mp.lastHeader, mp.lastBody, mp.lastReceipts
+	if pos.TxIndex >= uint32(len(body.Transactions)) {
+		return fmt.Errorf("block #%d transaction #%d is out of range", pos.BlockNumber, pos.TxIndex)
+	}
+	txHash := body.Transactions[pos.TxIndex].Hash()
+	if pos.TxIndex >= uint32(len(receipts)) {
+		return fmt.Errorf("block #%d receipt #%d is out of range", pos.BlockNumber, pos.TxIndex)
+	}
+	receipt := receipts[pos.TxIndex]
+	if pos.LogIndex >= uint32(len(receipt.Logs)) {
+		return fmt.Errorf("block #%d receipt #%d log #%d is out of range", pos.BlockNumber, pos.TxIndex, pos.LogIndex)
+	}
+	log := receipt.Logs[pos.LogIndex]
+	var logOffset uint
+	for i := range pos.TxIndex {
+		logOffset += uint(len(receipts[i].Logs)) //TODO different position encoding?
+	}
+	mp.allMatches = append(mp.allMatches, &types.Log{
+		Address:        log.Address,
+		Topics:         log.Topics,
+		Data:           log.Data,
+		BlockNumber:    pos.BlockNumber,
+		TxHash:         txHash,
+		TxIndex:        uint(pos.TxIndex),
+		BlockHash:      header.Hash(),
+		BlockTimestamp: header.Time,
+		Index:          logOffset + uint(pos.LogIndex),
+	})
+	if len(log.Topics) >= mp.session.minTopicCount {
+		mp.validMatches++
+	}
+	if mp.tableProver != nil {
+		blockProof := mp.lastBlockProof
+		if _, ok := blockProof.matchingTxs[pos.TxIndex]; !ok {
+			// result found in a transaction that is not proven yet; initialize new transaction proof
 			txEntry := logindex.IndexEntry{
 				IndexValue: logindex.IndexValue{
 					EntryType: logindex.IeTransaction,
@@ -303,27 +287,15 @@ loop:
 			}
 			txEntryIndex, found, err := mp.tableReader.SeekEntry(&txEntry)
 			if err != nil {
-				mp.deliveryErr = err
-				return
+				return err
 			}
 			if !found {
-				mp.deliveryErr = errors.New("could not find transaction entry index")
-				return
+				return errors.New("could not find transaction entry index")
 			}
-			blockProof.addMatchingTx(pos.TxIndex, txEntryIndex)
+			blockProof.matchingTxs[pos.TxIndex] = matchingTx{txEntryIndex: txEntryIndex}
 		}
 	}
-	if blockProof != nil {
-		var blobGasPrice *big.Int
-		if header.ExcessBlobGas != nil {
-			blobGasPrice = eip4844.CalcBlobFee(params.MainnetChainConfig, header) //TODO chain config
-		}
-		if err := receipts.DeriveFields(params.MainnetChainConfig, header.Hash(), header.Number.Uint64(), header.Time, header.BaseFee, blobGasPrice, body.Transactions); err != nil { //TODO chain config
-			mp.deliveryErr = err
-			return
-		}
-		blockProof.createProof(receipts)
-	}
+	return nil
 }
 
 // called by worker thread
@@ -412,7 +384,7 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 	}
 	fmt.Println(mp.firstBlock, mp.lastBlock, "*** split at", splitAt)
 	logicBuilder := mp.tableProver.optimizer.newBuilderInstance()
-	mp2 := newMatcherProcess(mp.logIndex, mp.matcher.split(logicBuilder, splitAt), mp.session, mp.tableReader, mp.firstBlock, mp.lastBlock)
+	mp2 := newMatcherProcess(mp.logIndex, mp.chainView, mp.matcher.split(logicBuilder, splitAt), mp.session, mp.tableReader, mp.firstBlock, mp.lastBlock)
 	mp2.setProver(mp.tableProver, logicBuilder)
 	mp2.prev, mp2.next = mp, mp.next
 	if mp.next != nil {

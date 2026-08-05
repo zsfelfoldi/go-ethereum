@@ -44,7 +44,6 @@ const (
 	splitThreshold           = time.Millisecond * 20
 	splitTarget              = time.Millisecond * 10
 	updateEstimatesFrequency = time.Millisecond
-	maxIncompleteResults     = 8
 	testVerifyProofs         = true //TODO remove in production, implement in workload tester
 	testLimitedQuery         = true //TODO remove in production, implement in workload tester
 )
@@ -58,12 +57,19 @@ type FilterQuery struct {
 
 type logIndex interface {
 	GetRangeReaders(common.Hash, common.Range[uint64]) []*logindex.TableReader
-	RequestBlock(common.Hash, uint64, logindex.DeliverBlockFn)
+}
+
+type chainView interface {
+	HeadNumber() uint64
+	Header(uint64) *types.Header
+	Body(uint64) *types.Body
+	Receipts(uint64) types.Receipts
 }
 
 type Matcher struct {
 	lock                       sync.Mutex
 	logIndex                   logIndex
+	chainView                  chainView
 	contractProverBackend      contractProverBackend
 	threadCount, activeThreads int
 	requestCounter             uint64
@@ -78,9 +84,10 @@ type Matcher struct {
 	wg                         sync.WaitGroup
 }
 
-func NewMatcher(logIndex logIndex, contractProverBackend contractProverBackend) *Matcher {
+func NewMatcher(logIndex logIndex, chainView chainView, contractProverBackend contractProverBackend) *Matcher {
 	mc := &Matcher{
 		logIndex:              logIndex,
+		chainView:             chainView,
 		contractProverBackend: contractProverBackend,
 		threadCount:           maxMatcherThreads,
 		sessions:              make(map[*matcherSession]struct{}),
@@ -198,7 +205,7 @@ func (mc *Matcher) getMatches(ctx context.Context, query FilterQuery, prove bool
 			firstPos,
 			lastPos,
 		)
-		mp := newMatcherProcess(mc.logIndex, matcherInstance, session, tr, firstBlock, lastBlock)
+		mp := newMatcherProcess(mc.logIndex, mc.chainView, matcherInstance, session, tr, firstBlock, lastBlock)
 		mp.setProver(prover, logicBuilder)
 		if i == 0 {
 			session.first = mp
@@ -471,9 +478,9 @@ func (mp *matcherProcess) newStatus(cumulativeResults uint64) int {
 		}
 		return mpFinished
 	}
-	if cumulativeResults+uint64(mp.completeValid) >= uint64(mp.session.maxResults) {
+	if cumulativeResults+uint64(mp.validMatches) >= uint64(mp.session.maxResults) {
 		if mp.prev == nil || mp.prev.status == mpFinishedAll {
-			fmt.Println("+++ prev nil or mpFinishedAll; enough results", mp.firstBlock, mp.lastBlock, "cumulativeResults", cumulativeResults, "mp.completeValid", mp.completeValid, "mp.session.maxResults", mp.session.maxResults)
+			fmt.Println("+++ prev nil or mpFinishedAll; enough results", mp.firstBlock, mp.lastBlock, "cumulativeResults", cumulativeResults, "mp.validMatches", mp.validMatches, "mp.session.maxResults", mp.session.maxResults)
 			return mpFinishedAll
 		}
 		return mpInactive
@@ -565,7 +572,6 @@ type matcherSession struct {
 
 func (ms *matcherSession) print() {
 	for mp := ms.first; mp != nil; mp = mp.next {
-		mp.blockDataLock.Lock()
 		var prevFirst, prevLast, nextFirst, nextLast uint64
 		if mp.prev != nil {
 			prevFirst, prevLast = mp.prev.firstBlock, mp.prev.lastBlock
@@ -574,9 +580,7 @@ func (ms *matcherSession) print() {
 			nextFirst, nextLast = mp.next.firstBlock, mp.next.lastBlock
 		}
 		fmt.Println(" range", mp.firstBlock, mp.lastBlock, "len(pos)", len(mp.positions), "len(allMatches)", len(mp.allMatches), "validMatches", mp.validMatches,
-			"completeUntil", mp.completeUntil, "completeValid", mp.completeValid, "matcherFinished", mp.matcherFinished, "finished", mp.finished, "status", mp.status,
-			"prevRange", prevFirst, prevLast, "nextRange", nextFirst, nextLast)
-		mp.blockDataLock.Unlock()
+			"finished", mp.finished, "status", mp.status, "prevRange", prevFirst, prevLast, "nextRange", nextFirst, nextLast)
 	}
 }
 
@@ -614,10 +618,8 @@ func (ms *matcherSession) returnResults() {
 	)
 
 	addProcessResults := func(mp *matcherProcess) bool {
-		mp.blockDataLock.Lock()
-		defer mp.blockDataLock.Unlock()
-
-		fmt.Println("addProcessResults", mp.tableReader.BlockRange(), "len(mp.allMatches)", len(mp.allMatches), "len(mp.sectionNodes)", len(mp.sectionNodes), "mp.completeUntil", mp.completeUntil, "mp.completeValid", mp.completeValid)
+		mp.finalizeLastMatchBlock()
+		fmt.Println("addProcessResults", mp.tableReader.BlockRange(), "len(mp.allMatches)", len(mp.allMatches), "len(mp.sectionNodes)", len(mp.sectionNodes), "mp.validMatches", mp.validMatches)
 		if mp.tableProver != nil && mp.tableProver != currentProver {
 			if currentProver != nil {
 				res.provers = append(res.provers, currentProver)
@@ -638,7 +640,7 @@ func (ms *matcherSession) returnResults() {
 				return lastBlockProven
 			}
 			if log == nil {
-				fmt.Println(mp.firstBlock, mp.lastBlock, "*** nil log at", i, "mp.finished", mp.finished, "len(mp.allMatches)", len(mp.allMatches), "mp.completeUntil", mp.completeUntil, "mp.completeValid", mp.completeValid)
+				fmt.Println(mp.firstBlock, mp.lastBlock, "*** nil log at", i, "mp.finished", mp.finished, "len(mp.allMatches)", len(mp.allMatches), "mp.validMatches", mp.validMatches)
 			}
 			if len(log.Topics) >= ms.minTopicCount {
 				res.logs = append(res.logs, log)

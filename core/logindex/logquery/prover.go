@@ -333,12 +333,6 @@ func (bp *blockProof) merge(bp2 *blockProof) {
 	fmt.Println("::: after merge", bp.header.Number.Uint64(), len(bp.receiptsProof))
 }
 
-func (bp *blockProof) addMatchingTx(txIndex uint32, entryIndex uint64) {
-	if _, ok := bp.matchingTxs[txIndex]; !ok {
-		bp.matchingTxs[txIndex] = matchingTx{txEntryIndex: entryIndex}
-	}
-}
-
 func (bp *blockProof) createProof(receipts types.Receipts) {
 	proveHexKeys := make(map[string]struct{})
 	proveHexKeys[""] = struct{}{}
