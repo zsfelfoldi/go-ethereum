@@ -69,7 +69,6 @@ type chainView interface {
 type Matcher struct {
 	lock                       sync.Mutex
 	logIndex                   logIndex
-	chainView                  chainView
 	contractProverBackend      contractProverBackend
 	threadCount, activeThreads int
 	requestCounter             uint64
@@ -84,10 +83,9 @@ type Matcher struct {
 	wg                         sync.WaitGroup
 }
 
-func NewMatcher(logIndex logIndex, chainView chainView, contractProverBackend contractProverBackend) *Matcher {
+func NewMatcher(logIndex logIndex, contractProverBackend contractProverBackend) *Matcher {
 	mc := &Matcher{
 		logIndex:              logIndex,
-		chainView:             chainView,
 		contractProverBackend: contractProverBackend,
 		threadCount:           maxMatcherThreads,
 		sessions:              make(map[*matcherSession]struct{}),
@@ -111,18 +109,18 @@ func NewMatcher(logIndex logIndex, chainView chainView, contractProverBackend co
 	return mc
 }
 
-func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
+func (mc *Matcher) GetMatches(ctx context.Context, chainView chainView, query FilterQuery, prove bool) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
 	if !testLimitedQuery {
-		return mc.getMatches(ctx, query, prove, refHeader)
+		return mc.getMatches(ctx, chainView, query, prove)
 	}
 	limitedQuery := query
 	limitedQuery.MaxResults = uint64(rand.Intn(100) + 1)
 	limitedQuery.Reverse = rand.Intn(2) == 1
-	limitedLogs, _, _, err := mc.getMatches(ctx, limitedQuery, prove, refHeader)
+	limitedLogs, _, _, err := mc.getMatches(ctx, chainView, limitedQuery, prove)
 	if err != nil {
 		return nil, common.Range[uint64]{}, nil, err
 	}
-	logs, resultRange, proof, err := mc.getMatches(ctx, query, prove, refHeader)
+	logs, resultRange, proof, err := mc.getMatches(ctx, chainView, query, prove)
 	if err != nil {
 		return nil, common.Range[uint64]{}, nil, err
 	}
@@ -139,9 +137,11 @@ func (mc *Matcher) GetMatches(ctx context.Context, query FilterQuery, prove bool
 	return logs, resultRange, proof, nil
 }
 
-func (mc *Matcher) getMatches(ctx context.Context, query FilterQuery, prove bool, refHeader *types.Header) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
+func (mc *Matcher) getMatches(ctx context.Context, chainView chainView, query FilterQuery, prove bool) ([]*types.Log, common.Range[uint64], *QueryProof, error) {
 	//start := time.Now()
-	headBlock, refBlockHash := refHeader.Number.Uint64(), refHeader.Hash()
+	headBlock := chainView.HeadNumber()
+	refHeader := chainView.Header(headBlock)
+	refBlockHash := refHeader.Hash()
 	firstBlock := min(query.FirstBlock, headBlock)
 	lastBlock := min(query.LastBlock, headBlock)
 	blockRange := common.NewRange[uint64](firstBlock, lastBlock+1-firstBlock)
@@ -205,7 +205,7 @@ func (mc *Matcher) getMatches(ctx context.Context, query FilterQuery, prove bool
 			firstPos,
 			lastPos,
 		)
-		mp := newMatcherProcess(mc.logIndex, mc.chainView, matcherInstance, session, tr, firstBlock, lastBlock)
+		mp := newMatcherProcess(mc.logIndex, chainView, matcherInstance, session, tr, firstBlock, lastBlock)
 		mp.setProver(prover, logicBuilder)
 		if i == 0 {
 			session.first = mp

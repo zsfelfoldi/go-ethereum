@@ -388,7 +388,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		log.Info("Unprotected transactions allowed")
 	}
 	eth.APIBackend.gpo = gasprice.NewOracle(eth.APIBackend, config.GPO, config.Miner.GasPrice)
-	eth.logQuery = logquery.NewMatcher(eth.logIndex, nil, eth.APIBackend)
+	eth.logQuery = logquery.NewMatcher(eth.logIndex, eth.APIBackend)
 
 	// Start the RPC service
 	eth.netRPCService = ethapi.NewNetAPI(eth.p2pServer, networkID)
