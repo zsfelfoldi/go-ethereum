@@ -529,6 +529,10 @@ func (b *EthAPIBackend) LogQuery() *logquery.Matcher {
 	return b.eth.logQuery
 }
 
+func (b *EthAPIBackend) ChainView(hash common.Hash, number uint64) *core.ChainView {
+	return b.eth.blockchain.NewChainView(hash, number)
+}
+
 func (b *EthAPIBackend) Engine() consensus.Engine {
 	return b.eth.engine
 }

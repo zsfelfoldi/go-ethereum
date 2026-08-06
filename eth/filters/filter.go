@@ -394,7 +394,11 @@ func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([
 			Topics:     f.topics,
 		}
 		refHeader := f.sys.backend.CurrentHeader() //TODO also try with parent
-		logs, resultsRange, _, err := matcher.GetMatches(ctx, query, true, refHeader)
+		chainView := f.sys.backend.ChainView(refHeader.Hash(), refHeader.Number.Uint64())
+		if chainView == nil {
+			return nil, errors.New("could not create chain view for reference header")
+		}
+		logs, resultsRange, _, err := matcher.GetMatches(ctx, chainView, query, true)
 		if err != logquery.ErrMatchAll {
 			fmt.Println("Search first/last block:", firstBlock, lastBlock, "results range:", resultsRange, "result count:", len(logs), "error:", err)
 			/*for i, log := range logs {

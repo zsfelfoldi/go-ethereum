@@ -76,7 +76,9 @@ type Backend interface {
 
 	CurrentView() *filtermaps.ChainView
 	NewMatcherBackend() filtermaps.MatcherBackend
+
 	LogQuery() *logquery.Matcher
+	ChainView(hash common.Hash, number uint64) *core.ChainView
 }
 
 // FilterSystem holds resources shared by all filters.

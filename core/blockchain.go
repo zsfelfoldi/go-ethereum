@@ -348,6 +348,7 @@ type BlockChain struct {
 	scope            event.SubscriptionScope
 	genesisBlock     *types.Block
 	indexServers     indexServers
+	chainViewTracker chainViewTracker
 
 	// This mutex synchronizes chain write operations.
 	// Readers don't need to take it, they can just read the database.
@@ -1152,6 +1153,7 @@ func (bc *BlockChain) setHeadBeyondRoot(head uint64, time uint64, root common.Ha
 	bc.receiptsCache.Purge()
 	bc.blockCache.Purge()
 	bc.txLookupCache.Purge()
+	bc.chainViewTracker.addReorg(bc.CurrentBlock().NumberU64())
 	bc.indexServers.revert(bc.CurrentBlock())
 
 	// Clear safe block, finalized block if needed
@@ -1254,6 +1256,7 @@ func (bc *BlockChain) Reset() error {
 // ResetWithGenesisBlock purges the entire blockchain, restoring it to the
 // specified genesis state.
 func (bc *BlockChain) ResetWithGenesisBlock(genesis *types.Block) error {
+	bc.chainViewTracker.addReorg(0)
 	bc.indexServers.revert(genesis.Header())
 	// Dump the entire block chain and purge the caches
 	if err := bc.SetHead(0); err != nil {
@@ -2670,6 +2673,7 @@ func (bc *BlockChain) reorg(oldHead *types.Header, newHead *types.Header) error 
 			return errInvalidNewChain
 		}
 	}
+	bc.chainViewTracker.addReorg(commonBlock.Number.Uint64())
 	bc.indexServers.revert(commonBlock)
 	// Ensure the user sees large reorgs
 	if len(oldChain) > 0 && len(newChain) > 0 {
