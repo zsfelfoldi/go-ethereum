@@ -26,11 +26,14 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-const chainViewReorgCapacity = 256
+const (
+	chainViewReorgCapacity = 256
+	maxChainViewDiff       = 1024
+)
 
 type chainViewTracker struct {
-	reorgCount uint64
-	reorgs     [chainViewReorgCapacity]uint64
+	reorgCount, postReorgCount uint64
+	reorgs                     [chainViewReorgCapacity]uint64
 }
 
 // Note that addReorg may be called concurrently with reorgSince but never with
@@ -38,6 +41,10 @@ type chainViewTracker struct {
 func (ct *chainViewTracker) addReorg(reorgBlock uint64) {
 	ct.reorgs[ct.reorgCount%chainViewReorgCapacity] = reorgBlock
 	atomic.AddUint64(&ct.reorgCount, 1)
+}
+
+func (ct *chainViewTracker) postReorg() {
+	atomic.AddUint64(&ct.postReorgCount, 1)
 }
 
 func (ct *chainViewTracker) reorgSince(prevReorgCount uint64) (reorgCount, oldestReorg uint64) {
@@ -74,32 +81,36 @@ type ChainView struct {
 // NewChainView creates a new ChainView.
 func (bc *BlockChain) NewChainView(hash common.Hash, number uint64) *ChainView {
 	cv := &ChainView{
-		chain:              bc,
-		headNumber:         number,
-		lastProcessedReorg: atomic.LoadUint64(&bc.chainViewTracker.reorgCount),
-		hashes:             []common.Hash{hash},
+		chain:      bc,
+		headNumber: number,
 	}
-	for {
-		if bc.GetCanonicalHash(number) == hash {
-			reorgCount := atomic.LoadUint64(&bc.chainViewTracker.reorgCount)
-			if reorgCount == cv.lastProcessedReorg {
-				cv.canonicalUntil = number
-				return cv
-			}
-			cv.lastProcessedReorg = reorgCount
-			continue
+	// find common ancestor, add diff hashes in reverse order
+	chainPtr := bc.CurrentHeader()
+	viewPtr := bc.GetHeader(hash, number)
+	for chainPtr != nil && viewPtr != nil {
+		chainNumber, chainHash := chainPtr.Number.Uint64(), chainPtr.Hash()
+		viewNumber, viewHash := viewPtr.Number.Uint64(), viewPtr.Hash()
+		if viewHash == chainHash {
+			break
 		}
-		if number == 0 {
+		if chainNumber > viewNumber+maxChainViewDiff || viewNumber > chainNumber+maxChainViewDiff {
 			return nil
 		}
-		header := bc.GetHeader(hash, number)
-		if header == nil {
-			return nil
+		if chainNumber > viewNumber {
+			chainPtr = bc.GetHeader(chainPtr.ParentHash, chainNumber-1)
 		}
-		hash = header.ParentHash
-		number--
-		cv.hashes = append(cv.hashes, hash)
+		if viewNumber > chainNumber {
+			cv.hashes = append(cv.hashes, viewHash)
+			viewPtr = bc.GetHeader(viewPtr.ParentHash, viewNumber-1)
+		}
 	}
+	if chainPtr == nil || viewPtr == nil {
+		return nil
+	}
+	cv.hashes = append(cv.hashes, viewPtr.Hash())
+	cv.canonicalUntil = viewPtr.Number.Uint64()
+	cv.lastProcessedReorg = atomic.LoadUint64(&bc.chainViewTracker.postReorgCount)
+	return cv
 }
 
 // HeadNumber returns the head block number of the chain view.
@@ -111,26 +122,27 @@ func (cv *ChainView) HeadNumber() uint64 {
 // Note that the hash of the head block is not returned because ChainView might
 // represent a view where the head block is currently being created.
 func (cv *ChainView) CanonicalHash(number uint64) common.Hash {
+
 	cv.lock.Lock()
 	defer cv.lock.Unlock()
 
 	if number > cv.headNumber {
 		return common.Hash{}
 	}
-	if number > cv.canonicalUntil {
+	if number >= cv.canonicalUntil {
 		return cv.hashes[cv.headNumber-number]
 	}
 	if !cv.updateCanonical() {
 		return common.Hash{}
 	}
-	if number > cv.canonicalUntil {
+	if number >= cv.canonicalUntil {
 		return cv.hashes[cv.headNumber-number]
 	}
 	hash := cv.chain.GetCanonicalHash(number)
 	if !cv.updateCanonical() {
 		return common.Hash{}
 	}
-	if number > cv.canonicalUntil {
+	if number >= cv.canonicalUntil {
 		return cv.hashes[cv.headNumber-number]
 	}
 	return hash
@@ -139,16 +151,20 @@ func (cv *ChainView) CanonicalHash(number uint64) common.Hash {
 func (cv *ChainView) updateCanonical() bool {
 	var oldestReorg uint64
 	cv.lastProcessedReorg, oldestReorg = cv.chain.chainViewTracker.reorgSince(cv.lastProcessedReorg)
+	if cv.headNumber > maxChainViewDiff && oldestReorg < cv.headNumber-maxChainViewDiff {
+		return false
+	}
 	hash := cv.hashes[cv.headNumber-cv.canonicalUntil]
 	for oldestReorg < cv.canonicalUntil {
-		header := bc.GetHeader(hash, cv.canonicalUntil)
+		header := cv.chain.GetHeader(hash, cv.canonicalUntil)
 		if header == nil {
-			return nil
+			return false
 		}
 		hash = header.ParentHash
-		number--
+		cv.canonicalUntil--
 		cv.hashes = append(cv.hashes, hash)
 	}
+	return true
 }
 
 // Header returns the block header at the given block number.

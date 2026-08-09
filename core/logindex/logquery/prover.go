@@ -160,7 +160,7 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 			ProvenReceipts: make([]uint32, 0, len(bp.matchingTxs)),
 			ReceiptsProof:  bp.receiptsProof.proofForStorage(),
 		}
-		fmt.Println("::: finalize", number, len(bp.receiptsProof), len(br.ReceiptsProof))
+		//fmt.Println("::: finalize", number, len(bp.receiptsProof), len(br.ReceiptsProof))
 		for txi := range bp.matchingTxs {
 			br.ProvenReceipts = append(br.ProvenReceipts, uint32(txi))
 		}
@@ -326,11 +326,11 @@ func (bp *blockProof) merge(bp2 *blockProof) {
 			bp.matchingTxs[txi] = mtx2
 		}
 	}
-	fmt.Println("::: merge", bp.header.Number.Uint64(), len(bp.receiptsProof), len(bp2.receiptsProof))
+	//fmt.Println("::: merge", bp.header.Number.Uint64(), len(bp.receiptsProof), len(bp2.receiptsProof))
 	for hash, blob := range bp2.receiptsProof {
 		bp.receiptsProof[hash] = blob
 	}
-	fmt.Println("::: after merge", bp.header.Number.Uint64(), len(bp.receiptsProof))
+	//fmt.Println("::: after merge", bp.header.Number.Uint64(), len(bp.receiptsProof))
 }
 
 func (bp *blockProof) createProof(receipts types.Receipts) {
@@ -341,7 +341,7 @@ func (bp *blockProof) createProof(receipts types.Receipts) {
 		if mtx.receiptProofAdded {
 			continue
 		}
-		fmt.Println("::: createProof", bp.header.Number.Uint64(), txi)
+		//fmt.Println("::: createProof", bp.header.Number.Uint64(), txi)
 		indexBuf = rlp.AppendUint64(indexBuf[:0], uint64(txi))
 		indexHex = indexHex[:0]
 		for _, b := range indexBuf {
@@ -361,7 +361,7 @@ func (bp *blockProof) createProof(receipts types.Receipts) {
 			delete(proveHexKeys, string(path))
 		}
 	}))
-	fmt.Println("::: after createProof", bp.header.Number.Uint64(), len(bp.receiptsProof))
+	//fmt.Println("::: after createProof", bp.header.Number.Uint64(), len(bp.receiptsProof))
 	//fmt.Println("DeriveSha:", rh, "header receipts root:", bp.header.ReceiptHash)
 }
 

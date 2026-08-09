@@ -44,8 +44,8 @@ const (
 	splitThreshold           = time.Millisecond * 20
 	splitTarget              = time.Millisecond * 10
 	updateEstimatesFrequency = time.Millisecond
-	testVerifyProofs         = true //TODO remove in production, implement in workload tester
-	testLimitedQuery         = true //TODO remove in production, implement in workload tester
+	testVerifyProofs         = false //TODO remove in production, implement in workload tester
+	testLimitedQuery         = false //TODO remove in production, implement in workload tester
 )
 
 type FilterQuery struct {
@@ -63,7 +63,7 @@ type chainView interface {
 	HeadNumber() uint64
 	Header(uint64) *types.Header
 	Body(uint64) *types.Body
-	Receipts(uint64) types.Receipts
+	RawReceipts(uint64) types.Receipts
 }
 
 type Matcher struct {
@@ -150,6 +150,9 @@ func (mc *Matcher) getMatches(ctx context.Context, chainView chainView, query Fi
 		readerRange.SetLast(lastBlock + 1)
 	}
 	readers := mc.logIndex.GetRangeReaders(refBlockHash, readerRange)
+	if len(readers) == 0 {
+		return nil, common.Range[uint64]{}, nil, errors.New("required block range is not indexed")
+	}
 	sort.Slice(readers, func(i, j int) bool {
 		if query.Reverse {
 			return readers[i].Meta.LastBlockNumber > readers[j].Meta.LastBlockNumber
@@ -179,11 +182,11 @@ func (mc *Matcher) getMatches(ctx context.Context, chainView chainView, query Fi
 		maxResults = int(query.MaxResults)
 	}
 	session := newSession(ctx, mc, refBlockHash, len(query.Topics), maxResults, query.Reverse)
-	//fmt.Println("create session", firstBlock, lastBlock, query.Addresses, query.Topics)
+	//fmt.Println("create session", firstBlock, lastBlock, "readers", len(readers))
 	var lastBlockProver *tableProver
 	for i, tr := range readers {
 		br := tr.BlockRange().Intersection(blockRange) // can be empty in the last table because of readerRange extension
-		//fmt.Println(" ", br)
+		//fmt.Println(" ", i, "range", br)
 		prover := newTableProver(tr)
 		if br.IsEmpty() {
 			lastBlockProver = prover
@@ -231,6 +234,7 @@ func (mc *Matcher) getMatches(ctx context.Context, chainView chainView, query Fi
 	case <-ctx.Done():
 		return nil, common.Range[uint64]{}, nil, ctx.Err()
 	}
+	//fmt.Println("mc.sessionCh <- session")
 	var results *matcherResults
 	select {
 	case results = <-session.resultsCh:
@@ -324,6 +328,7 @@ func (mc *Matcher) workerLoop(threadIndex int) {
 		case <-mc.stopCh:
 			return
 		case mp := <-mc.startProcessCh[threadIndex]:
+			//fmt.Println("workerLoop start", mp.firstBlock, mp.lastBlock)
 			mp.run()
 			select {
 			case <-mc.stopCh:
@@ -338,6 +343,7 @@ func (mc *Matcher) controlLoop() {
 	defer mc.wg.Done()
 
 	for {
+		//fmt.Println("controlLoop  mc.activeThreads", mc.activeThreads, "mc.suspended.Len()", mc.suspended.Len())
 		for mc.activeThreads < mc.threadCount && mc.suspended.Len() != 0 {
 			//fmt.Println("controlLoop  total", mc.threadCount, "active", mc.activeThreads, "suspended", mc.suspended.Len())
 			mp := heap.Pop(&mc.suspended).(*matcherProcess)
@@ -366,7 +372,7 @@ func (mc *Matcher) controlLoop() {
 			//fmt.Println("  ... stopped worker", stopped)
 			mc.stopped(stopped)
 		case session := <-mc.sessionCh:
-			//fmt.Println("  ... starting session", session.requestCounter)
+			//fmt.Println("  ... starting session", session.requestCounter, session.first)
 			mc.updateSessions(session.first)
 		case <-mc.updateTicker.C:
 			mc.updateSessions(nil)
@@ -379,7 +385,7 @@ func (mc *Matcher) start(mp *matcherProcess) {
 		if running == nil {
 			mc.processing[i] = mp
 			mp.status = mpRunning
-			//fmt.Println("starting process", mp.blockRange, "on worker", i)
+			//fmt.Println("starting process", mp.firstBlock, mp.lastBlock, "on worker", i)
 			mc.startProcessCh[i] <- mp
 			if mc.activeThreads == 0 {
 				mc.updateTicker.Reset(updateEstimatesFrequency)
@@ -411,6 +417,7 @@ func (mc *Matcher) updateSessions(notRunning *matcherProcess) {
 	copy(mc.updateSort[1:], mc.processing)
 	sort.Sort(mc.updateSort)
 	allowedSplits := mc.threadCount - mc.activeThreads
+	//fmt.Println("/// updateSessions", len(mc.updateSort), notRunning != nil)
 	for i, mp := range mc.updateSort {
 		if mp == nil {
 			return
@@ -431,7 +438,7 @@ func (mc *Matcher) updateSessionFrom(start *matcherProcess, allowedSplits int) i
 	// iterate session process chain from first running process
 	for mp := start; mp != nil; mp = mp.next {
 		estimatedResults, canSplit := mp.getEstimatedResults()
-		//fmt.Println("///  ", mp.firstBlock, mp.lastBlock, "cumulativeResults", cumulativeResults, "estimatedResults", estimatedResults)
+		//fmt.Println("///  ", mp.firstBlock, mp.lastBlock, "cumulativeResults", cumulativeResults, "estimatedResults", estimatedResults, "status", mp.status)
 		suspendNow := mp.session.finished
 		if !suspendNow && canSplit && allowedSplits > 0 && mp.status == mpRunning {
 			suspendNow = true
@@ -441,7 +448,7 @@ func (mc *Matcher) updateSessionFrom(start *matcherProcess, allowedSplits int) i
 		if mp.status != mpRunning {
 			mc.updateIdleStatus(mp, cumulativeResults)
 			if mp.next == nil && mp.status == mpFinishedAll && !mp.session.finished {
-				fmt.Println("+++ last mpFinishedAll; session finished", mp.firstBlock, mp.lastBlock)
+				//fmt.Println("+++ last mpFinishedAll; session finished", mp.firstBlock, mp.lastBlock)
 				mp.session.finished = true
 				mp.session.returnResults()
 			}
@@ -456,7 +463,7 @@ func (mc *Matcher) updateIdleStatus(mp *matcherProcess, cumulativeResults uint64
 	if newStatus == mp.status {
 		return
 	}
-	//fmt.Println("updateIdleStatus", mp.blockRange, "old", mp.status, "new", newStatus)
+	//fmt.Println("updateIdleStatus", mp.firstBlock, mp.lastBlock, "old", mp.status, "new", newStatus)
 	if mp.status == mpSuspended {
 		heap.Remove(&mc.suspended, mp.pqIndex)
 	}
@@ -468,19 +475,19 @@ func (mc *Matcher) updateIdleStatus(mp *matcherProcess, cumulativeResults uint64
 
 func (mp *matcherProcess) newStatus(cumulativeResults uint64) int {
 	if mp.session.finished {
-		fmt.Println("+++ session finished", mp.firstBlock, mp.lastBlock)
+		//fmt.Println("+++ session finished", mp.firstBlock, mp.lastBlock)
 		return mpFinishedAll
 	}
 	if mp.finished {
 		if mp.prev == nil || mp.prev.status == mpFinishedAll {
-			fmt.Println("+++ prev nil or mpFinishedAll; mp finished", mp.firstBlock, mp.lastBlock)
+			//fmt.Println("+++ prev nil or mpFinishedAll; mp finished", mp.firstBlock, mp.lastBlock)
 			return mpFinishedAll
 		}
 		return mpFinished
 	}
 	if cumulativeResults+uint64(mp.validMatches) >= uint64(mp.session.maxResults) {
 		if mp.prev == nil || mp.prev.status == mpFinishedAll {
-			fmt.Println("+++ prev nil or mpFinishedAll; enough results", mp.firstBlock, mp.lastBlock, "cumulativeResults", cumulativeResults, "mp.validMatches", mp.validMatches, "mp.session.maxResults", mp.session.maxResults)
+			//fmt.Println("+++ prev nil or mpFinishedAll; enough results", mp.firstBlock, mp.lastBlock, "cumulativeResults", cumulativeResults, "mp.validMatches", mp.validMatches, "mp.session.maxResults", mp.session.maxResults)
 			return mpFinishedAll
 		}
 		return mpInactive
@@ -585,7 +592,7 @@ func (ms *matcherSession) print() {
 }
 
 func (ms *matcherSession) returnResults() {
-	fmt.Println("*** returnResults  maxResults", ms.maxResults, "reverse", ms.reverse)
+	//fmt.Println("*** returnResults  maxResults", ms.maxResults, "reverse", ms.reverse)
 	//ms.print()
 	if ms.err != nil {
 		ms.resultsCh <- &matcherResults{err: ms.err}
@@ -619,7 +626,7 @@ func (ms *matcherSession) returnResults() {
 
 	addProcessResults := func(mp *matcherProcess) bool {
 		mp.finalizeLastMatchBlock()
-		fmt.Println("addProcessResults", mp.tableReader.BlockRange(), "len(mp.allMatches)", len(mp.allMatches), "len(mp.sectionNodes)", len(mp.sectionNodes), "mp.validMatches", mp.validMatches)
+		//fmt.Println("addProcessResults", mp.tableReader.BlockRange(), "len(mp.allMatches)", len(mp.allMatches), "len(mp.sectionNodes)", len(mp.sectionNodes), "mp.validMatches", mp.validMatches)
 		if mp.tableProver != nil && mp.tableProver != currentProver {
 			if currentProver != nil {
 				res.provers = append(res.provers, currentProver)

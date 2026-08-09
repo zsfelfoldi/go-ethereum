@@ -19,7 +19,6 @@ package logquery
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"math"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -43,7 +42,7 @@ type contractProverBackend interface {
 }
 
 func proveTableRoot(backend contractProverBackend, refHead *types.Header, contract common.Address, firstBlock, tableSize uint64, proofNodes, proofCodes map[common.Hash][]byte) (common.Hash, error) {
-	fmt.Println("proveTableRoot", firstBlock, tableSize)
+	//fmt.Println("proveTableRoot", firstBlock, tableSize)
 	state, err := backend.StateProverAt(refHead, proofNodes, proofCodes)
 	if err != nil {
 		return common.Hash{}, err

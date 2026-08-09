@@ -121,8 +121,8 @@ func (mp *matcherProcess) run() {
 		}
 	}()
 
-	//fmt.Println("matcherProcess", mp.blockRange, "started")
-	//defer fmt.Println("matcherProcess", mp.blockRange, "stopped")
+	//fmt.Println("matcherProcess", mp.firstBlock, mp.lastBlock, "started")
+	//defer fmt.Println("matcherProcess", mp.firstBlock, mp.lastBlock, "stopped")
 
 	for !mp.finished {
 		//fmt.Println(" mp.matcher.next()")
@@ -131,18 +131,18 @@ func (mp *matcherProcess) run() {
 		}
 		pos, node, err := mp.matcher.next()
 		if err != nil {
-			//fmt.Println("matcherProcess", mp.blockRange, "error (next)", err)
+			//fmt.Println("matcherProcess", mp.firstBlock, mp.lastBlock, "error (next)", err)
 			mp.finished, mp.err = true, err
-			fmt.Println(mp.firstBlock, mp.lastBlock, "*** return next err", err)
+			//fmt.Println(mp.firstBlock, mp.lastBlock, "*** return next err", err)
 			return
 		}
 		mp.sectionNodes = append(mp.sectionNodes, node)
 		if pos == nil {
-			//fmt.Println("matcherProcess", mp.blockRange, "finished")
+			//fmt.Println("matcherProcess", mp.firstBlock, mp.lastBlock, "finished")
 			mp.finished = true
 		} else {
 			if err := mp.addMatch(pos); err != nil {
-				//fmt.Println("matcherProcess", mp.blockRange, "error (advance)", err)
+				fmt.Println("matcherProcess", mp.firstBlock, mp.lastBlock, "error (advance)", err)
 				mp.finished, mp.err = true, err
 				return
 			}
@@ -151,20 +151,20 @@ func (mp *matcherProcess) run() {
 				mp.testHook <- testWaitMatcher
 			}
 			if err := mp.matcher.advance(nil); err != nil {
-				//fmt.Println("matcherProcess", mp.blockRange, "error (advance)", err)
+				//fmt.Println("matcherProcess", mp.firstBlock, mp.lastBlock, "error (advance)", err)
 				mp.finished, mp.err = true, err
-				fmt.Println(mp.firstBlock, mp.lastBlock, "*** return advance err", err)
+				//fmt.Println(mp.firstBlock, mp.lastBlock, "*** return advance err", err)
 				return
 			}
 		}
 		mp.updateEstimatedResults()
 		cumulativeResults, suspendNow := mp.getCumulativeResults()
 		if suspendNow || cumulativeResults+uint64(mp.validMatches) >= uint64(mp.session.maxResults) {
-			fmt.Println(mp.firstBlock, mp.lastBlock, "*** return suspendNow", suspendNow, "cumulativeResults", cumulativeResults, "mp.validMatches", mp.validMatches, "mp.session.maxResults", mp.session.maxResults)
+			//fmt.Println(mp.firstBlock, mp.lastBlock, "*** return suspendNow", suspendNow, "cumulativeResults", cumulativeResults, "mp.validMatches", mp.validMatches, "mp.session.maxResults", mp.session.maxResults)
 			return
 		}
 	}
-	fmt.Println(mp.firstBlock, mp.lastBlock, "*** return finished", mp.finished, "len(mp.allMatches)", len(mp.allMatches), "mp.validMatches", mp.validMatches)
+	//fmt.Println(mp.firstBlock, mp.lastBlock, "*** return finished", mp.finished, "len(mp.allMatches)", len(mp.allMatches), "mp.validMatches", mp.validMatches)
 }
 
 func (mp *matcherProcess) updateLastMatchBlock(number uint64) error {
@@ -182,7 +182,7 @@ func (mp *matcherProcess) updateLastMatchBlock(number uint64) error {
 	if mp.lastBody = mp.chainView.Body(number); mp.lastBody == nil {
 		return fmt.Errorf("body of block #%d not found", number)
 	}
-	if mp.lastReceipts = mp.chainView.Receipts(number); mp.lastReceipts == nil {
+	if mp.lastReceipts = mp.chainView.RawReceipts(number); mp.lastReceipts == nil {
 		return fmt.Errorf("body of block #%d not found", number)
 	}
 	if mp.tableProver != nil {
@@ -382,7 +382,7 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 	if !ok {
 		return nil, nil
 	}
-	fmt.Println(mp.firstBlock, mp.lastBlock, "*** split at", splitAt)
+	//fmt.Println(mp.firstBlock, mp.lastBlock, "*** split at", splitAt)
 	logicBuilder := mp.tableProver.optimizer.newBuilderInstance()
 	mp2 := newMatcherProcess(mp.logIndex, mp.chainView, mp.matcher.split(logicBuilder, splitAt), mp.session, mp.tableReader, mp.firstBlock, mp.lastBlock)
 	mp2.setProver(mp.tableProver, logicBuilder)
@@ -401,7 +401,7 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		mp.lastBlock = splitAt - 1
 		mp2.firstBlock = splitAt
 	}
-	fmt.Println(" mp:", mp.firstBlock, mp.lastBlock)
-	fmt.Println(" mp2:", mp2.firstBlock, mp2.lastBlock)
+	//fmt.Println(" mp:", mp.firstBlock, mp.lastBlock)
+	//fmt.Println(" mp2:", mp2.firstBlock, mp2.lastBlock)
 	return mp2, nil
 }

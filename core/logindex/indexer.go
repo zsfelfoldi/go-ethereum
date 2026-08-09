@@ -201,6 +201,7 @@ func (ix *Indexer) GetRangeReaders(refBlockHash common.Hash, blockRange common.R
 	ix.lock.Lock()
 	defer ix.lock.Unlock()
 
+	//fmt.Println("GetRangeReaders", blockRange, refBlockHash)
 	refBd, ok := ix.recentHeads.Get(refBlockHash)
 	if !ok {
 		return nil

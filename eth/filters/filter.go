@@ -398,7 +398,7 @@ func (f *Filter) rangeLogs(ctx context.Context, firstBlock, lastBlock uint64) ([
 		if chainView == nil {
 			return nil, errors.New("could not create chain view for reference header")
 		}
-		logs, resultsRange, _, err := matcher.GetMatches(ctx, chainView, query, true)
+		logs, resultsRange, _, err := matcher.GetMatches(ctx, chainView, query, false)
 		if err != logquery.ErrMatchAll {
 			fmt.Println("Search first/last block:", firstBlock, lastBlock, "results range:", resultsRange, "result count:", len(logs), "error:", err)
 			/*for i, log := range logs {

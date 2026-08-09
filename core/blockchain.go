@@ -1042,6 +1042,9 @@ func (bc *BlockChain) setHeadBeyondRoot(head uint64, time uint64, root common.Ha
 		if currentBlock := bc.CurrentBlock(); currentBlock != nil && header.Number.Uint64() <= currentBlock.Number.Uint64() {
 			var newHeadBlock *types.Header
 			newHeadBlock, rootNumber = bc.rewindHead(header, root)
+			bc.chainViewTracker.addReorg(newHeadBlock.Number.Uint64())
+			defer bc.chainViewTracker.postReorg()
+			bc.indexServers.revert(newHeadBlock)
 			rawdb.WriteHeadBlockHash(db, newHeadBlock.Hash())
 
 			// Degrade the chain markers if they are explicitly reverted.
@@ -1153,8 +1156,6 @@ func (bc *BlockChain) setHeadBeyondRoot(head uint64, time uint64, root common.Ha
 	bc.receiptsCache.Purge()
 	bc.blockCache.Purge()
 	bc.txLookupCache.Purge()
-	bc.chainViewTracker.addReorg(bc.CurrentBlock().NumberU64())
-	bc.indexServers.revert(bc.CurrentBlock())
 
 	// Clear safe block, finalized block if needed
 	headBlock := bc.CurrentBlock()
@@ -1257,6 +1258,7 @@ func (bc *BlockChain) Reset() error {
 // specified genesis state.
 func (bc *BlockChain) ResetWithGenesisBlock(genesis *types.Block) error {
 	bc.chainViewTracker.addReorg(0)
+	defer bc.chainViewTracker.postReorg()
 	bc.indexServers.revert(genesis.Header())
 	// Dump the entire block chain and purge the caches
 	if err := bc.SetHead(0); err != nil {
@@ -2674,6 +2676,7 @@ func (bc *BlockChain) reorg(oldHead *types.Header, newHead *types.Header) error 
 		}
 	}
 	bc.chainViewTracker.addReorg(commonBlock.Number.Uint64())
+	defer bc.chainViewTracker.postReorg()
 	bc.indexServers.revert(commonBlock)
 	// Ensure the user sees large reorgs
 	if len(oldChain) > 0 && len(newChain) > 0 {

@@ -332,14 +332,14 @@ loop:
 			reqLastBlockHash = blockHash
 		}
 		br.proofMap = makeProofMap(br.ReceiptsProof)
-		fmt.Println("::: makeProofMap", number, len(br.ReceiptsProof), len(br.proofMap))
+		//fmt.Println("::: makeProofMap", number, len(br.ReceiptsProof), len(br.proofMap))
 		for _, txIndex := range br.ProvenReceipts {
 			txInfo, ok := provenTxEntries[txPosition{blockNumber: number, txIndex: txIndex}]
 			if !ok {
 				return nil, nil, nil, common.Hash{}, errors.New("transaction entry missing")
 			}
 			receipt, err := br.getProvenReceipt(txIndex)
-			fmt.Println("::: getProvenReceipt", number, txIndex, err)
+			//fmt.Println("::: getProvenReceipt", number, txIndex, err)
 			if err != nil {
 				return nil, nil, nil, common.Hash{}, err
 			}
