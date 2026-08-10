@@ -68,7 +68,7 @@ func (p *StateProcessor) chainConfig() *params.ChainConfig {
 // transactions failed to execute due to insufficient gas it will return an error.
 func (p *StateProcessor) Process(ctx context.Context, block *types.Block, statedb *state.StateDB, logIndex *logindex.Indexer, jumpDestCache vm.JumpDestCache, precompileCache *vm.PrecompileCache, cfg vm.Config, execIndex *atomic.Int64) (*ProcessResult, error) {
 	if supportsParallelExecution(block, p.chainConfig(), statedb.Witness() != nil, cfg.Tracer != nil, cfg.DisableParallelExecution) {
-		return p.processParallel(ctx, block, statedb, jumpDestCache, precompileCache, cfg)
+		return p.processParallel(ctx, block, statedb, logIndex, jumpDestCache, precompileCache, cfg)
 	}
 	var (
 		config      = p.chainConfig()
