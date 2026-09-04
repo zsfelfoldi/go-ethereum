@@ -35,8 +35,9 @@ import (
 
 const (
 	headCacheSize              = 4
-	blockRequestLevels         = 2        // priority levels where block requests are processed
-	maxMergeThreads            = 1        //TODO config
+	blockRequestLevels         = 2 // priority levels where block requests are processed
+	maxMergeThreads            = 1 //TODO config
+	mergeEntryPrefetch         = 20000
 	memFileLowThreshold        = 10000000 //TODO config
 	memFileHighThreshold       = 15000000 //TODO config
 	memFileSuspendThreshold    = 20000000 //TODO config
@@ -123,7 +124,7 @@ type Indexer struct {
 
 func NewIndexer(params *Params, config Config, path string) *Indexer {
 	fmt.Println("*** PATH", path)
-	files, err := newTableFiles(path, 2000000000, 96) //TODO
+	files, err := newTableFiles(path, 2000000000, 16) //TODO
 	if err != nil {
 		log.Crit("Could not open index table file manager", "error", err) //TODO return?
 	}

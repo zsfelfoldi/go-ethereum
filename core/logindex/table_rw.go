@@ -584,6 +584,41 @@ func (tr *TableReader) GetEntry(index uint64) (*IndexEntry, error) {
 	return &ec.entries[index%entryChunkSize], nil
 }
 
+// batch read entry chunk (not cached, optimized for table merge linear read)
+func (tr *TableReader) getEntries(indexRange common.Range[uint64]) (IndexEntries, error) {
+	if indexRange.IsEmpty() {
+		return nil, nil
+	}
+	firstEC, lastEC := indexRange.First()/entryChunkSize, indexRange.Last()/entryChunkSize
+	firstSC, lastSC := firstEC/subtreeChunkSize, lastEC/subtreeChunkSize
+	scs := make([]*subtreeChunk, lastSC+1-firstSC)
+	for i := range scs {
+		sc, err := tr.getSubtreeChunk(tr.format.subtreeLevels-1, firstSC+uint64(i))
+		if err != nil {
+			return nil, err
+		}
+		scs[i] = sc
+	}
+	start, stop := scs[0].boundaryFilePos[firstEC%subtreeChunkSize], scs[lastSC-firstSC].boundaryFilePos[lastEC%subtreeChunkSize+1]
+	enc := make([]byte, stop-start)
+	_, err := tr.reader.ReadAt(enc, int64(start))
+	if err != nil {
+		return nil, err
+	}
+	entries := make(IndexEntries, indexRange.Count())
+	for ec := firstEC; ec <= lastEC; ec++ {
+		sc := scs[ec/subtreeChunkSize]
+		firstByte := sc.boundaryFilePos[ec%subtreeChunkSize] - start
+		afterLastByte := sc.boundaryFilePos[ec%subtreeChunkSize+1] - start
+		firstEntry := max(ec*entryChunkSize, indexRange.First()) - indexRange.First()
+		afterLastEntry := min((ec+1)*entryChunkSize, indexRange.AfterLast()) - indexRange.First()
+		if err := rlp.DecodeBytes(enc[firstByte:afterLastByte], entries[firstEntry:afterLastEntry]); err != nil {
+			return nil, err
+		}
+	}
+	return entries, nil
+}
+
 func (tr *TableReader) SeekEntry(target *IndexEntry) (uint64, bool, error) {
 	var (
 		chunkLevel               uint

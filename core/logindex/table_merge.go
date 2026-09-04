@@ -147,7 +147,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 			//fmt.Println("lastAndNextEntry", *lastEntry, nextEntry)
 		}
 		nextReadPosition := make([]uint64, len(readers))
-		nextReadEntry := make([]*IndexEntry, len(readers))
+		nextReadEntries := make([]IndexEntries, len(readers))
 		if nextEntry != 0 {
 			// find next read position in each source reader
 			if lastEntry == nil {
@@ -175,7 +175,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 		for i, tr := range readers {
 			if nextReadPosition[i] < tr.EntryCount {
 				var err error
-				nextReadEntry[i], err = tr.GetEntry(nextReadPosition[i])
+				nextReadEntries[i], err = tr.getEntries(common.NewRange[uint64](nextReadPosition[i], min(mergeEntryPrefetch, tr.EntryCount-nextReadPosition[i])))
 				if err != nil {
 					return false, err
 				}
@@ -189,9 +189,9 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 				bestIndex int
 				bestEntry *IndexEntry
 			)
-			for i, entry := range nextReadEntry {
-				if entry != nil && (bestEntry == nil || entry.Compare(bestEntry) < 0) {
-					bestIndex, bestEntry = i, entry
+			for i, entries := range nextReadEntries {
+				if len(entries) > 0 && (bestEntry == nil || entries[0].Compare(bestEntry) < 0) {
+					bestIndex, bestEntry = i, &entries[0]
 				}
 			}
 			if err := tw.addEntry(bestEntry); err != nil {
@@ -200,14 +200,17 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 			ix.mergeStatCount++
 			nextEntry++
 			nextReadPosition[bestIndex]++
-			if nextReadPosition[bestIndex] < readers[bestIndex].EntryCount {
-				var err error
-				nextReadEntry[bestIndex], err = readers[bestIndex].GetEntry(nextReadPosition[bestIndex])
-				if err != nil {
-					return false, err
+			if tr, pos := readers[bestIndex], nextReadPosition[bestIndex]; pos < tr.EntryCount {
+				nextReadEntries[bestIndex] = nextReadEntries[bestIndex][1:]
+				if len(nextReadEntries[bestIndex]) == 0 {
+					var err error
+					nextReadEntries[bestIndex], err = tr.getEntries(common.NewRange[uint64](pos, min(mergeEntryPrefetch, tr.EntryCount-pos)))
+					if err != nil {
+						return false, err
+					}
 				}
 			} else {
-				nextReadEntry[bestIndex] = nil
+				nextReadEntries[bestIndex] = nil
 			}
 			//fmt.Println("merge", id, "write", nextEntry, "read", nextReadPosition, "entry", *bestEntry)
 		}
