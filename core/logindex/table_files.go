@@ -67,6 +67,7 @@ type osFileID struct {
 
 type osFileInfo struct {
 	file          *os.File
+	writer        *bufio.Writer // only in write mode
 	accessCounter uint64
 }
 
@@ -76,8 +77,6 @@ type tableFileInfo struct {
 	fileCount, maxFileIndex int
 	size                    int64
 	memData                 []byte
-	file                    *os.File // only in write mode; append to memData if nil
-	writer                  *bufio.Writer
 	chunkSize               int64  // size of currently written os file chunk
 	locked, deleted         uint32 // atomic
 }
@@ -275,7 +274,7 @@ func (fi *tableFileInfo) isLocked() bool {
 	return atomic.LoadUint32(&fi.locked) != 0
 }
 
-func (tf *tableFiles) getOsFileForReading(fi *tableFileInfo, fileIndex int) (*os.File, error) {
+func (tf *tableFiles) getOsFileInfo(fi *tableFileInfo, fileIndex int, write bool) (*osFileInfo, error) {
 	tf.lock.Lock()
 	defer tf.lock.Unlock()
 
@@ -286,7 +285,7 @@ func (tf *tableFiles) getOsFileForReading(fi *tableFileInfo, fileIndex int) (*os
 	id := osFileID{tfInfo: fi, fileIndex: fileIndex}
 	if of, ok := tf.osFiles[id]; ok {
 		of.accessCounter = tf.accessCounter
-		return of.file, nil
+		return of, nil
 	}
 	for len(tf.osFiles) >= tf.maxOpenFiles {
 		// close least recently accessed os file
@@ -298,19 +297,53 @@ func (tf *tableFiles) getOsFileForReading(fi *tableFileInfo, fileIndex int) (*os
 				closeId = id
 			}
 		}
-		if err := tf.osFiles[closeId].file.Close(); err != nil {
+		if err := tf.closeOsFileIdLocked(closeId); err != nil {
 			log.Error("Could not close index table file", "name", tf.osFileName(closeId.tfInfo.name, closeId.fileIndex), "error", err)
 		}
-		delete(tf.osFiles, closeId)
 	}
-	file, err := os.Open(tf.osFileName(id.tfInfo.name, id.fileIndex))
+	var (
+		of  = &osFileInfo{accessCounter: tf.accessCounter}
+		err error
+	)
+	if write {
+		of.file, err = os.OpenFile(tf.osFileName(id.tfInfo.name, id.fileIndex), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	} else {
+		of.file, err = os.Open(tf.osFileName(id.tfInfo.name, id.fileIndex))
+	}
 	if err != nil {
 		return nil, err
 	}
+	if write {
+		of.writer = bufio.NewWriter(of.file)
+	}
 	/*stats, _ := file.Stat()
 	fmt.Println("opened os file", id.tfInfo.name, "size", stats.Size())*/
-	tf.osFiles[id] = &osFileInfo{file: file, accessCounter: tf.accessCounter}
-	return file, nil
+	tf.osFiles[id] = of
+	return of, nil
+}
+
+func (tf *tableFiles) closeOsFile(fi *tableFileInfo, fileIndex int) error {
+	tf.lock.Lock()
+	defer tf.lock.Unlock()
+
+	return tf.closeOsFileIdLocked(osFileID{tfInfo: fi, fileIndex: fileIndex})
+}
+
+func (tf *tableFiles) closeOsFileIdLocked(id osFileID) error {
+	of := tf.osFiles[id]
+	if of == nil {
+		return nil
+	}
+	if of.writer != nil {
+		if err := of.writer.Flush(); err != nil {
+			return err
+		}
+	}
+	if err := of.file.Close(); err != nil {
+		return err
+	}
+	delete(tf.osFiles, id)
+	return nil
 }
 
 func (fi *tableFileInfo) ReadAt(p []byte, offset int64) (n int, err error) {
@@ -340,16 +373,16 @@ func (fi *tableFileInfo) ReadAt(p []byte, offset int64) (n int, err error) {
 	if fileIndex >= fi.fileCount {
 		return 0, errors.New("invalid read offset")
 	}
-	file, err := fi.tf.getOsFileForReading(fi, fileIndex)
+	of, err := fi.tf.getOsFileInfo(fi, fileIndex, false)
 	if err != nil {
 		return 0, err
 	}
 	filePos := offset % fi.tf.maxFileSize
 	maxLen := fi.tf.maxFileSize - filePos
 	if int64(len(p)) <= maxLen {
-		return file.ReadAt(p, filePos)
+		return of.file.ReadAt(p, filePos)
 	}
-	n, err = file.ReadAt(p[:maxLen], filePos)
+	n, err = of.file.ReadAt(p[:maxLen], filePos)
 	if err != nil {
 		return n, err
 	}
@@ -382,18 +415,6 @@ func (tf *tableFiles) getAppendWriter(name string, memory bool) (io.WriteCloser,
 		return nil, errors.New("table file opened for writing is currently locked")
 	}
 	atomic.StoreUint32(&fi.locked, 1)
-	if !memory {
-		file, err := os.OpenFile(fi.tf.osFileName(fi.name, fi.fileCount-1), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			//fmt.Println(" file open error", err)
-			return nil, err
-		}
-		/*stats, _ := file.Stat()
-		/fmt.Println("opened file for writing", fi.name, "size", stats.Size())*/
-		fi.file = file
-		fi.writer = bufio.NewWriter(file)
-	}
-	//fmt.Println(" success")
 	return fi, nil
 }
 
@@ -412,29 +433,25 @@ func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
 		return
 	}
 	// table file stored on disk
+	of, err := fi.tf.getOsFileInfo(fi, fi.fileCount-1, true)
+	if err != nil {
+		return 0, err
+	}
 	maxLen := fi.tf.maxFileSize - fi.chunkSize
 	if int64(len(p)) <= maxLen {
-		n, err = fi.writer.Write(p)
+		n, err = of.writer.Write(p)
 		fi.size += int64(n)
 		fi.chunkSize += int64(n)
 		return
 	}
-	n, err = fi.writer.Write(p[:maxLen])
+	n, err = of.writer.Write(p[:maxLen])
 	fi.size += int64(n)
 	if err != nil {
 		return n, err
 	}
-	if err := fi.writer.Flush(); err != nil {
+	if err := fi.tf.closeOsFile(fi, fi.fileCount-1); err != nil {
 		return n, err
 	}
-	if err := fi.file.Close(); err != nil {
-		return n, err
-	}
-	fi.file, err = os.OpenFile(fi.tf.osFileName(fi.name, fi.fileCount), os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return n, err
-	}
-	fi.writer = bufio.NewWriter(fi.file)
 	fi.fileCount++
 	fi.chunkSize = 0
 	n, err = fi.Write(p[maxLen:])
@@ -448,15 +465,9 @@ func (fi *tableFileInfo) Close() error {
 		return errors.New("table file was not open for writing")
 	}
 	if fi.fileCount != 0 {
-		if err := fi.writer.Flush(); err != nil {
-			//fmt.Println(" flush error", err)
+		if err := fi.tf.closeOsFile(fi, fi.fileCount-1); err != nil {
 			return err
 		}
-		if err := fi.file.Close(); err != nil {
-			//fmt.Println(" close error", err)
-			return err
-		}
-		fi.file, fi.writer = nil, nil
 	}
 	atomic.StoreUint32(&fi.locked, 0)
 	//fmt.Println(" success")
