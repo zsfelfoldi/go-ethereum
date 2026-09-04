@@ -21,6 +21,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+
+	//"fmt"
 	"io"
 	"math"
 	"math/bits"
@@ -591,32 +593,39 @@ func (tr *TableReader) getEntries(indexRange common.Range[uint64]) (IndexEntries
 	}
 	firstEC, lastEC := indexRange.First()/entryChunkSize, indexRange.Last()/entryChunkSize
 	firstSC, lastSC := firstEC/subtreeChunkSize, lastEC/subtreeChunkSize
+	/*fmt.Println("getEntries", indexRange.First(), indexRange.Last(), tr.EntryCount)
+	fmt.Println(" EC", firstEC, lastEC)
+	fmt.Println(" SC", firstSC, lastSC)*/
 	scs := make([]*subtreeChunk, lastSC+1-firstSC)
 	for i := range scs {
 		sc, err := tr.getSubtreeChunk(tr.format.subtreeLevels-1, firstSC+uint64(i))
 		if err != nil {
 			return nil, err
 		}
+		//fmt.Println("scs", i, "bfp", sc.boundaryFilePos)
 		scs[i] = sc
 	}
 	start, stop := scs[0].boundaryFilePos[firstEC%subtreeChunkSize], scs[lastSC-firstSC].boundaryFilePos[lastEC%subtreeChunkSize+1]
+	//fmt.Println(" read", start, stop, stop-start)
 	enc := make([]byte, stop-start)
 	_, err := tr.reader.ReadAt(enc, int64(start))
 	if err != nil {
 		return nil, err
 	}
-	entries := make(IndexEntries, indexRange.Count())
+	entries := make(IndexEntries, 0, (lastEC+1-firstEC)*entryChunkSize)
 	for ec := firstEC; ec <= lastEC; ec++ {
-		sc := scs[ec/subtreeChunkSize]
+		sc := scs[ec/subtreeChunkSize-firstSC]
 		firstByte := sc.boundaryFilePos[ec%subtreeChunkSize] - start
 		afterLastByte := sc.boundaryFilePos[ec%subtreeChunkSize+1] - start
-		firstEntry := max(ec*entryChunkSize, indexRange.First()) - indexRange.First()
-		afterLastEntry := min((ec+1)*entryChunkSize, indexRange.AfterLast()) - indexRange.First()
-		if err := rlp.DecodeBytes(enc[firstByte:afterLastByte], entries[firstEntry:afterLastEntry]); err != nil {
+		//fmt.Println(" enc range", firstByte, afterLastByte)
+		var dec IndexEntries
+		if err := rlp.DecodeBytes(enc[firstByte:afterLastByte], &dec); err != nil {
 			return nil, err
 		}
+		entries = append(entries, dec...)
 	}
-	return entries, nil
+	offset := indexRange.First() % entryChunkSize
+	return entries[offset : offset+indexRange.Count()], nil
 }
 
 func (tr *TableReader) SeekEntry(target *IndexEntry) (uint64, bool, error) {
