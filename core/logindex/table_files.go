@@ -67,7 +67,6 @@ type osFileID struct {
 
 type osFileInfo struct {
 	file          *os.File
-	writer        *bufio.Writer // only in write mode
 	accessCounter uint64
 }
 
@@ -313,9 +312,6 @@ func (tf *tableFiles) getOsFileInfo(fi *tableFileInfo, fileIndex int, write bool
 	if err != nil {
 		return nil, err
 	}
-	if write {
-		of.writer = bufio.NewWriter(of.file)
-	}
 	/*stats, _ := file.Stat()
 	fmt.Println("opened os file", id.tfInfo.name, "size", stats.Size())*/
 	tf.osFiles[id] = of
@@ -333,11 +329,6 @@ func (tf *tableFiles) closeOsFileIdLocked(id osFileID) error {
 	of := tf.osFiles[id]
 	if of == nil {
 		return nil
-	}
-	if of.writer != nil {
-		if err := of.writer.Flush(); err != nil {
-			return err
-		}
 	}
 	if err := of.file.Close(); err != nil {
 		return err
@@ -415,7 +406,7 @@ func (tf *tableFiles) getAppendWriter(name string, memory bool) (io.WriteCloser,
 		return nil, errors.New("table file opened for writing is currently locked")
 	}
 	atomic.StoreUint32(&fi.locked, 1)
-	return fi, nil
+	return &bufferedWriteCloser{writer: bufio.NewWriter(fi), closer: fi}, nil
 }
 
 func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
@@ -439,12 +430,12 @@ func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
 	}
 	maxLen := fi.tf.maxFileSize - fi.chunkSize
 	if int64(len(p)) <= maxLen {
-		n, err = of.writer.Write(p)
+		n, err = of.file.Write(p)
 		fi.size += int64(n)
 		fi.chunkSize += int64(n)
 		return
 	}
-	n, err = of.writer.Write(p[:maxLen])
+	n, err = of.file.Write(p[:maxLen])
 	fi.size += int64(n)
 	if err != nil {
 		return n, err
@@ -563,4 +554,20 @@ func (tf *tableFiles) deleteFile(name string) error {
 
 func (tf *tableFiles) osFileName(tfName string, fileIndex int) string {
 	return filepath.Join(tf.path, fmt.Sprintf("%s.%04x", tfName, fileIndex))
+}
+
+type bufferedWriteCloser struct {
+	writer *bufio.Writer
+	closer io.Closer
+}
+
+func (bwc *bufferedWriteCloser) Write(p []byte) (n int, err error) {
+	return bwc.writer.Write(p)
+}
+
+func (bwc *bufferedWriteCloser) Close() error {
+	if err := bwc.writer.Flush(); err != nil {
+		return err
+	}
+	return bwc.closer.Close()
 }
