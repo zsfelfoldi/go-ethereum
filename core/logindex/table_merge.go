@@ -76,7 +76,7 @@ func (ix *Indexer) mergeLoop(threadIndex int) {
 	}
 }
 
-func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, finalErr error) {
+func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (bool, error) {
 	//fmt.Println("mergeTable", id)
 	if id.level == 0 {
 		panic("cannot merge table on the lowest level")
@@ -119,26 +119,6 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (finalized bool, f
 	if err != nil {
 		return false, err
 	}
-	defer func() {
-		if !finalized {
-			err := ix.storage.releaseTableWriter(id)
-			if finalErr == nil {
-				finalErr = err
-			}
-		}
-		/*if id.level > 4 {
-			switch {
-			case finalized:
-				fmt.Println("*** Finished merge", id)
-			case err != nil:
-				fmt.Println("*** Failed merge", id, finalErr)
-			default:
-				fmt.Println("*** Suspending merge", id)
-			}
-			ix.mergeStatTime += mclock.Now()
-			fmt.Println(" dt", time.Duration(ix.mergeStatTime), "entries", ix.mergeStatCount, "entries/sec", ix.mergeStatCount*1000000000/max(1, uint64(ix.mergeStatTime)))
-		}*/
-	}()
 	if tw.entryCount != entryCount {
 		return false, errors.New("entry count mismatch")
 	}

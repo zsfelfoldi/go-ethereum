@@ -19,10 +19,8 @@ package logindex
 import (
 	"errors"
 	"fmt"
-	"math"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
@@ -42,9 +40,6 @@ type tableStorage struct {
 	readers                    map[tableID]*TableReader
 	writers                    map[tableID]*tableWriter
 	triggers                   map[tableID]chan struct{}
-	lockedWriters              map[*tableWriter]chan struct{}
-	unlockedOpenWriters        map[*tableWriter]uint64
-	openWriterCounter          uint64
 	complete, partial, preInit tableSet
 	initRequest                bool
 	initNumber                 uint64
@@ -56,16 +51,14 @@ func writeTempSuffix(level uint) string {
 
 func newTableStorage(params *Params, tf *tableFiles) (*tableStorage, error) {
 	ts := &tableStorage{
-		params:              params,
-		tf:                  tf,
-		readers:             make(map[tableID]*TableReader),
-		writers:             make(map[tableID]*tableWriter),
-		triggers:            make(map[tableID]chan struct{}),
-		lockedWriters:       make(map[*tableWriter]chan struct{}),
-		unlockedOpenWriters: make(map[*tableWriter]uint64),
-		complete:            params.newTableSet(),
-		partial:             params.newTableSet(),
-		preInit:             params.newTableSet(),
+		params:   params,
+		tf:       tf,
+		readers:  make(map[tableID]*TableReader),
+		writers:  make(map[tableID]*tableWriter),
+		triggers: make(map[tableID]chan struct{}),
+		complete: params.newTableSet(),
+		partial:  params.newTableSet(),
+		preInit:  params.newTableSet(),
 	}
 	allFiles := tf.allFiles()
 loop:
@@ -213,9 +206,6 @@ func (ts *tableStorage) addNewTableWriter(id tableID, entryCount uint64) (*table
 	if err != nil {
 		return nil, err
 	}
-	if err := ts.openAndLockTableWriter(tw); err != nil {
-		return nil, err
-	}
 	ts.writers[id] = tw
 	//fmt.Println("+++ add tw 1", id)
 	ts.partial.add(id)
@@ -227,86 +217,11 @@ func (ts *tableStorage) getTableWriter(id tableID) (*tableWriter, error) {
 	ts.lock.Lock()
 	defer ts.lock.Unlock()
 
-	for {
-		tw, ok := ts.writers[id]
-		if !ok {
-			return nil, errTableNotFound
-		}
-		if ch, ok := ts.lockedWriters[tw]; ok {
-			ts.lock.Unlock()
-			select {
-			case <-ch:
-			case <-time.After(time.Second * 10):
-				fmt.Println("wait for table writer lock too long", id)
-				time.Sleep(time.Second * 1)
-				panic("wait for table writer lock too long") //TODO
-			}
-			ts.lock.Lock()
-		} else {
-			if err := ts.openAndLockTableWriter(tw); err != nil {
-				return nil, err
-			}
-			return tw, nil
-		}
-	}
-}
-
-func (ts *tableStorage) releaseTableWriter(id tableID) error {
-	ts.lock.Lock()
-	defer ts.lock.Unlock()
-
 	tw, ok := ts.writers[id]
 	if !ok {
-		return errTableNotFound
+		return nil, errTableNotFound
 	}
-	//fmt.Println("+++ releaseTableWriter", tw.name)
-	ch, ok := ts.lockedWriters[tw]
-	if !ok {
-		fmt.Println(" err: not locked")
-		return errors.New("table is not locked")
-	}
-	delete(ts.lockedWriters, tw)
-	ts.openWriterCounter++
-	ts.unlockedOpenWriters[tw] = ts.openWriterCounter
-	//fmt.Println(" + unlockedOpenWriters")
-	close(ch)
-	return nil
-}
-
-func (ts *tableStorage) openAndLockTableWriter(tw *tableWriter) error {
-	//fmt.Println("+++ openAndLockTableWriter", tw.name)
-	if _, ok := ts.lockedWriters[tw]; ok {
-		panic("cannot lock already locked writer")
-	}
-	if _, ok := ts.unlockedOpenWriters[tw]; ok {
-		//fmt.Println(" unlockedOpenWriters found")
-		delete(ts.unlockedOpenWriters, tw)
-		ts.lockedWriters[tw] = make(chan struct{})
-		return nil
-	}
-	//fmt.Println(" unlockedOpenWriters not found")
-	if len(ts.lockedWriters)+len(ts.unlockedOpenWriters) >= maxOpenWriters {
-		if len(ts.unlockedOpenWriters) == 0 {
-			return errors.New("too many locked table writers")
-		}
-		var closeTw *tableWriter
-		minCounter := uint64(math.MaxUint64)
-		for tw, counter := range ts.unlockedOpenWriters {
-			if counter < minCounter {
-				closeTw, minCounter = tw, counter
-			}
-		}
-		if err := closeTw.close(); err != nil {
-			return err
-		}
-		//fmt.Println(" - unlockedOpenWriters", closeTw.name)
-		delete(ts.unlockedOpenWriters, closeTw)
-	}
-	if err := tw.open(); err != nil {
-		return err
-	}
-	ts.lockedWriters[tw] = make(chan struct{})
-	return nil
+	return tw, nil
 }
 
 func (ts *tableStorage) finalizeTableWriter(id tableID) error {
@@ -321,12 +236,6 @@ func (ts *tableStorage) finalizeTableWriter(id tableID) error {
 	if tw.getPhase() != wpFinalized {
 		return errors.New("table writer not finalized yet")
 	}
-	if ch, ok := ts.lockedWriters[tw]; ok {
-		delete(ts.lockedWriters, tw)
-		close(ch)
-	}
-	delete(ts.unlockedOpenWriters, tw)
-	//fmt.Println(" - unlockedOpenWriters", tw.name)
 	delete(ts.writers, id)
 	//fmt.Println("+++ delete tw 2", id)
 	ts.partial.remove(id)
@@ -358,17 +267,8 @@ func (ts *tableStorage) deleteTableLocked(id tableID) error {
 		return ts.tf.deleteFile(ts.params.tableName(id))
 	}
 	if tw, ok := ts.writers[id]; ok {
-		//fmt.Println("+++ deleteTable", tw.name)
-		if ch, ok := ts.lockedWriters[tw]; ok {
-			delete(ts.lockedWriters, tw)
-			close(ch)
-		}
-		delete(ts.unlockedOpenWriters, tw)
-		//fmt.Println(" - unlockedOpenWriters", tw.name)
 		delete(ts.writers, id)
-		//fmt.Println("+++ delete tw 3", id)
 		ts.partial.remove(id)
-		//fmt.Println("+++ delete partial 3", id)
 		return tw.delete()
 	}
 	return errTableNotFound
@@ -477,12 +377,7 @@ func (ts *tableStorage) close() {
 	for _, ch := range ts.triggers {
 		close(ch)
 	}
-	for tw := range ts.lockedWriters {
-		if err := tw.delete(); err != nil {
-			log.Error("Failed to delete index table writer", "error", err)
-		}
-	}
-	for tw := range ts.unlockedOpenWriters {
+	for _, tw := range ts.writers {
 		if err := tw.close(); err != nil {
 			log.Error("Failed to close index table writer", "error", err)
 		}
