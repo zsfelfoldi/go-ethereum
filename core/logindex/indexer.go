@@ -36,7 +36,7 @@ import (
 const (
 	headCacheSize              = 4
 	blockRequestLevels         = 2 // priority levels where block requests are processed
-	maxMergeThreads            = 1 //TODO config
+	maxMergeThreads            = 4 //TODO config
 	mergeEntryPrefetch         = 20000
 	memFileLowThreshold        = 10000000 //TODO config
 	memFileHighThreshold       = 15000000 //TODO config
@@ -101,7 +101,6 @@ type Indexer struct {
 	files                                     *tableFiles
 	storage                                   *tableStorage
 	mergeThreads, lowLevelMergeThreads        int
-	currentOps                                []tableOperation
 	requiredBlockTables, requestedBlockTables common.RangeSet[uint64]
 	indexerPriority                           int
 	headBlock, finalBlock, cutoffBlock        uint64
@@ -117,6 +116,8 @@ type Indexer struct {
 
 	shutdown       bool
 	updateMergeCh  []chan struct{}
+	updateOps      []tableOperation // set by updateTableOperations before sending to updateMergeCh
+	currentOps     []tableOperation // set by mergeLoop after receiving from updateMergeCh and stopping previous operation
 	mergeWg        sync.WaitGroup
 	mergeStatTime  mclock.AbsTime
 	mergeStatCount uint64
@@ -141,6 +142,7 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 		mergeThreads:       maxMergeThreads,
 		requestedInitBlock: math.MaxUint64,
 		updateMergeCh:      make([]chan struct{}, maxMergeThreads),
+		updateOps:          make([]tableOperation, maxMergeThreads),
 		currentOps:         make([]tableOperation, maxMergeThreads),
 		recentHeads:        lru.NewCache[common.Hash, *cachedBlockData](headCacheSize),
 		blockRequests:      make(map[BlockRequest][]DeliverBlockFn),
@@ -319,37 +321,49 @@ func (ix *Indexer) updateTableOperations() {
 			ix.setIndexerPriority(indexerPriority)
 		}
 	}
-	updateOps := make([]bool, ix.mergeThreads)
-	for i, co := range ix.currentOps {
-		var found bool
-	innerLoop:
-		for j, to := range tableOps {
-			if co == to {
-				tableOps[j] = tableOperation{}
-				found = true
-				break innerLoop
-			}
-		}
-		if !found {
-			ix.currentOps[i] = tableOperation{}
-			updateOps[i] = true
-		}
+	canUpdate := make([]bool, ix.mergeThreads)
+	for i, uo := range ix.updateOps {
+		canUpdate[i] = uo == (tableOperation{})
 	}
-	var i int
-	for _, to := range tableOps {
+loop:
+	for i, to := range tableOps {
 		if to == (tableOperation{}) {
 			continue
 		}
-		for ix.currentOps[i] != (tableOperation{}) {
-			i++
+		for j, co := range ix.currentOps {
+			if co == to {
+				tableOps[i] = tableOperation{}
+				canUpdate[j] = false
+				continue loop
+			}
 		}
-		ix.currentOps[i] = to
-		updateOps[i] = true
-		i++
+		for _, uo := range ix.updateOps {
+			if uo == to {
+				tableOps[i] = tableOperation{}
+				continue loop
+			}
+		}
 	}
-	for i, update := range updateOps {
-		if update {
-			//fmt.Println("currentOp:", currentOp)
+	var i int
+loop2:
+	for _, to := range tableOps {
+		if to == (tableOperation{}) {
+			continue loop2
+		}
+		for !canUpdate[i] {
+			i++
+			if i == ix.mergeThreads {
+				break loop2
+			}
+		}
+		ix.updateOps[i] = to
+		i++
+		if i == ix.mergeThreads {
+			break loop2
+		}
+	}
+	for i, uo := range ix.updateOps {
+		if uo != (tableOperation{}) && canUpdate[i] {
 			select {
 			case ix.updateMergeCh[i] <- struct{}{}:
 			default:

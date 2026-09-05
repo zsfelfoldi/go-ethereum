@@ -29,16 +29,16 @@ import (
 func (ix *Indexer) mergeLoop(threadIndex int) {
 	defer ix.mergeWg.Done()
 
+	var triggered bool
 	for {
-		ix.lock.Lock()
-		currentOp, shutdown := ix.currentOps[threadIndex], ix.shutdown
-		ix.lock.Unlock()
-		for !shutdown && currentOp.operation == opNone {
+		if !triggered {
 			<-ix.updateMergeCh[threadIndex]
-			ix.lock.Lock()
-			currentOp, shutdown = ix.currentOps[threadIndex], ix.shutdown
-			ix.lock.Unlock()
 		}
+		triggered = false
+		ix.lock.Lock()
+		currentOp, shutdown := ix.updateOps[threadIndex], ix.shutdown
+		ix.currentOps[threadIndex], ix.updateOps[threadIndex] = currentOp, tableOperation{}
+		ix.lock.Unlock()
 		if shutdown {
 			return
 		}
@@ -49,12 +49,14 @@ func (ix *Indexer) mergeLoop(threadIndex int) {
 				log.Error("Failed to delete index table", "start", r.First(), "count", r.Count(), "error", err)
 			}
 			ix.lock.Lock()
+			ix.currentOps[threadIndex] = tableOperation{}
 			ix.updateTableOperations()
 			ix.lock.Unlock()
 		case opMerge:
-			done, err := ix.mergeTable(currentOp.id, func() bool {
+			_, err := ix.mergeTable(currentOp.id, func() bool {
 				select {
 				case <-ix.updateMergeCh[threadIndex]:
+					triggered = true
 					return true
 				default:
 					return false
@@ -64,8 +66,9 @@ func (ix *Indexer) mergeLoop(threadIndex int) {
 				r := ix.params.blockRange(currentOp.id)
 				log.Error("Failed to merge index table", "start", r.First(), "count", r.Count(), "error", err)
 			}
-			if done {
+			if !triggered {
 				ix.lock.Lock()
+				ix.currentOps[threadIndex] = tableOperation{}
 				ix.updateTableOperations()
 				ix.lock.Unlock()
 			}
