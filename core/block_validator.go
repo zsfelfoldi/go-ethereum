@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/consensus"
+	"github.com/ethereum/go-ethereum/core/logindex"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
@@ -32,15 +33,17 @@ import (
 //
 // BlockValidator implements Validator.
 type BlockValidator struct {
-	config *params.ChainConfig // Chain configuration options
-	bc     *BlockChain         // Canonical block chain
+	config   *params.ChainConfig // Chain configuration options
+	bc       *BlockChain         // Canonical block chain
+	logIndex *logindex.Indexer
 }
 
 // NewBlockValidator returns a new block validator which is safe for re-use
-func NewBlockValidator(config *params.ChainConfig, blockchain *BlockChain) *BlockValidator {
+func NewBlockValidator(config *params.ChainConfig, blockchain *BlockChain, logIndex *logindex.Indexer) *BlockValidator {
 	validator := &BlockValidator{
-		config: config,
-		bc:     blockchain,
+		config:   config,
+		bc:       blockchain,
+		logIndex: logIndex,
 	}
 	return validator
 }

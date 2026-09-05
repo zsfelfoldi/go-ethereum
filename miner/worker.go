@@ -218,13 +218,8 @@ func (miner *Miner) generateWork(ctx context.Context, genParam *generateParams, 
 		}
 	}
 
-	allLogs := make([]*types.Log, 0)
-	for _, r := range work.receipts {
-		allLogs = append(allLogs, r.Logs...)
-	}
-
 	// Collect consensus-layer requests if Prague is enabled.
-	requests, bal, err := core.PostExecution(ctx, miner.chainConfig, work.header.Number, work.header.Time, allLogs, work.evm, uint32(work.tcount+1))
+	requests, bal, err := core.PostExecution(ctx, miner.chainConfig, work.header.Number, work.header.Time, common.Hash{}, work.header.ParentHash, work.txs, work.receipts, miner.logIndex, work.evm, uint32(work.tcount+1))
 	if err != nil {
 		return &newPayloadResult{err: err}
 	}
