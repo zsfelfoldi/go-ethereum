@@ -35,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/history"
 	"github.com/ethereum/go-ethereum/core/logindex"
+	"github.com/ethereum/go-ethereum/core/logindex/logquery"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/pruner"
 	"github.com/ethereum/go-ethereum/core/txpool"
@@ -101,6 +102,7 @@ type Ethereum struct {
 	localTxTracker *locals.TxTracker
 	blockchain     *core.BlockChain
 	logIndex       *logindex.Indexer
+	logQuery       *logquery.Matcher
 
 	handler *handler
 	discmix *enode.FairMix
@@ -387,6 +389,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		log.Info("Unprotected transactions allowed")
 	}
 	eth.APIBackend.gpo = gasprice.NewOracle(eth.APIBackend, config.GPO, config.Miner.GasPrice)
+	eth.logQuery = logquery.NewMatcher(eth.logIndex, eth.APIBackend)
 
 	// Start the RPC service
 	eth.netRPCService = ethapi.NewNetAPI(eth.p2pServer, networkID)
