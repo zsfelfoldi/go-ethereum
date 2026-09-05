@@ -783,6 +783,9 @@ func newTableWriter(params *Params, tf *tableFiles, name string, storedState boo
 		tw.delete()
 		return nil, errors.New("invalid table write phase")
 	}
+	if err := tw.open(); err != nil { //TODO merge into this fn?
+		return nil, err
+	}
 	return tw, nil
 }
 
