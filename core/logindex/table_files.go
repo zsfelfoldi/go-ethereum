@@ -55,7 +55,7 @@ type tableFiles struct {
 	maxFileSize   int64
 	maxOpenFiles  int
 	accessCounter uint64
-	osFiles       map[osFileID]*osFileInfo // finished files only
+	osFiles       map[osFileID]*osFileInfo
 	tableFiles    map[string]*tableFileInfo
 	memFileTotal  int64
 }
@@ -68,6 +68,7 @@ type osFileID struct {
 type osFileInfo struct {
 	file          *os.File
 	accessCounter uint64
+	writeFinished chan struct{}
 }
 
 type tableFileInfo struct {
@@ -273,6 +274,7 @@ func (fi *tableFileInfo) isLocked() bool {
 	return atomic.LoadUint32(&fi.locked) != 0
 }
 
+// if write is true then writeFinished has to be closed after writing
 func (tf *tableFiles) getOsFileInfo(fi *tableFileInfo, fileIndex int, write bool) (*osFileInfo, error) {
 	tf.lock.Lock()
 	defer tf.lock.Unlock()
@@ -284,6 +286,7 @@ func (tf *tableFiles) getOsFileInfo(fi *tableFileInfo, fileIndex int, write bool
 	id := osFileID{tfInfo: fi, fileIndex: fileIndex}
 	if of, ok := tf.osFiles[id]; ok {
 		of.accessCounter = tf.accessCounter
+		of.writeFinished = make(chan struct{})
 		return of, nil
 	}
 	for len(tf.osFiles) >= tf.maxOpenFiles {
@@ -306,6 +309,7 @@ func (tf *tableFiles) getOsFileInfo(fi *tableFileInfo, fileIndex int, write bool
 	)
 	if write {
 		of.file, err = os.OpenFile(tf.osFileName(id.tfInfo.name, id.fileIndex), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		of.writeFinished = make(chan struct{})
 	} else {
 		of.file, err = os.Open(tf.osFileName(id.tfInfo.name, id.fileIndex))
 	}
@@ -329,6 +333,9 @@ func (tf *tableFiles) closeOsFileIdLocked(id osFileID) error {
 	of := tf.osFiles[id]
 	if of == nil {
 		return nil
+	}
+	if of.writeFinished != nil {
+		<-of.writeFinished
 	}
 	if err := of.file.Close(); err != nil {
 		return err
@@ -434,11 +441,13 @@ func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
 	maxLen := fi.tf.maxFileSize - fi.chunkSize
 	if int64(len(p)) <= maxLen {
 		n, err = of.file.Write(p)
+		close(of.writeFinished)
 		fi.size += int64(n)
 		fi.chunkSize += int64(n)
 		return
 	}
 	n, err = of.file.Write(p[:maxLen])
+	close(of.writeFinished)
 	fi.size += int64(n)
 	if err != nil {
 		return n, err
@@ -461,9 +470,11 @@ func (fi *tableFileInfo) Close() error {
 	if fi.fileCount != 0 {
 		if fi.size == 0 {
 			// rare corner case; create file even if no bytes written yet
-			if _, err := fi.tf.getOsFileInfo(fi, fi.fileCount-1, true); err != nil {
+			of, err := fi.tf.getOsFileInfo(fi, fi.fileCount-1, true)
+			if err != nil {
 				return err
 			}
+			close(of.writeFinished)
 		}
 		if err := fi.tf.closeOsFile(fi, fi.fileCount-1); err != nil {
 			return err

@@ -26,10 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
-const (
-	maxOpenWriters   = 8 //TODO >= maxMergeThreads+1
-	writeStateSuffix = ".state"
-)
+const writeStateSuffix = ".state"
 
 var errTableNotFound = errors.New("table not found")
 
