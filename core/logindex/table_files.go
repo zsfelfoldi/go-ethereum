@@ -286,7 +286,9 @@ func (tf *tableFiles) getOsFileInfo(fi *tableFileInfo, fileIndex int, write bool
 	id := osFileID{tfInfo: fi, fileIndex: fileIndex}
 	if of, ok := tf.osFiles[id]; ok {
 		of.accessCounter = tf.accessCounter
-		of.writeFinished = make(chan struct{})
+		if write {
+			of.writeFinished = make(chan struct{})
+		}
 		return of, nil
 	}
 	for len(tf.osFiles) >= tf.maxOpenFiles {
@@ -336,6 +338,7 @@ func (tf *tableFiles) closeOsFileIdLocked(id osFileID) error {
 	}
 	if of.writeFinished != nil {
 		<-of.writeFinished
+		of.writeFinished = nil
 	}
 	if err := of.file.Close(); err != nil {
 		return err
