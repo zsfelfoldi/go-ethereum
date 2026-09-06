@@ -37,8 +37,8 @@ const (
 	headCacheSize              = 4
 	blockRequestLevels         = 2 // priority levels where block requests are processed
 	maxMergeThreads            = 4 //TODO config
-	mergeEntryPrefetch         = 20000
-	tableWriteBuffer           = 1000000
+	mergeEntryPrefetch         = 10000
+	tableWriteBuffer           = 500000
 	memFileLowThreshold        = 10000000 //TODO config
 	memFileHighThreshold       = 15000000 //TODO config
 	memFileSuspendThreshold    = 20000000 //TODO config
