@@ -254,7 +254,7 @@ func (tf *tableFiles) getReaderAt(name string) (io.ReaderAt, int64, error) {
 	//fmt.Println("getReaderAt", name)
 	fi, ok := tf.tableFiles[name]
 	if !ok {
-		//fmt.Println(" does not exist")
+		fmt.Println("getReaderAt: file does not exist:", name)
 		return nil, 0, errors.New("table file does not exist")
 	}
 	if fi.isLocked() {
@@ -387,10 +387,10 @@ func (tf *tableFiles) getAppendWriter(name string, memory bool) (io.WriteCloser,
 
 	//fmt.Println("getAppendWriter", name, memory)
 	fi, ok := tf.tableFiles[name]
-	//fmt.Println(" append", ok)
+	/*fmt.Println(" append", ok)
 	if ok {
-		//fmt.Println(" size", fi.size)
-	}
+		fmt.Println(" size", fi.size)
+	}*/
 	if !ok {
 		fi = &tableFileInfo{
 			tf:   tf,
@@ -406,12 +406,15 @@ func (tf *tableFiles) getAppendWriter(name string, memory bool) (io.WriteCloser,
 		return nil, errors.New("table file opened for writing is currently locked")
 	}
 	atomic.StoreUint32(&fi.locked, 1)
-	return &bufferedWriteCloser{writer: bufio.NewWriter(fi), closer: fi}, nil
+	if fi.fileCount == 0 {
+		return fi, nil
+	}
+	return &bufferedWriteCloser{writer: bufio.NewWriterSize(fi, tableWriteBuffer), closer: fi}, nil
 }
 
 func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
-	/*fmt.Println("Write", fi.name, fi.size, len(p))
-	defer func() {
+	//fmt.Println("Write", fi.name, fi.size, len(p))
+	/*defer func() {
 		fmt.Println(" ", n, err)
 	}()*/
 
@@ -456,6 +459,12 @@ func (fi *tableFileInfo) Close() error {
 		return errors.New("table file was not open for writing")
 	}
 	if fi.fileCount != 0 {
+		if fi.size == 0 {
+			// rare corner case; create file even if no bytes written yet
+			if _, err := fi.tf.getOsFileInfo(fi, fi.fileCount-1, true); err != nil {
+				return err
+			}
+		}
 		if err := fi.tf.closeOsFile(fi, fi.fileCount-1); err != nil {
 			return err
 		}
@@ -562,10 +571,12 @@ type bufferedWriteCloser struct {
 }
 
 func (bwc *bufferedWriteCloser) Write(p []byte) (n int, err error) {
+	//fmt.Println("bwc write", len(p))
 	return bwc.writer.Write(p)
 }
 
 func (bwc *bufferedWriteCloser) Close() error {
+	//fmt.Println("bwc close")
 	if err := bwc.writer.Flush(); err != nil {
 		return err
 	}

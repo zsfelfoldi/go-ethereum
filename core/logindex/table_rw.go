@@ -21,8 +21,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-
-	//"fmt"
 	"io"
 	"math"
 	"math/bits"
@@ -703,6 +701,7 @@ type writeState struct {
 }
 
 func newTableWriter(params *Params, tf *tableFiles, name string, storedState bool, entryCount uint64, forceMemory bool) (*tableWriter, error) {
+	//fmt.Println("+++ new", name, storedState, entryCount, forceMemory)
 	var state writeState
 	if storedState {
 		r, l, err := tf.getReaderAt(name + writeStateSuffix)
