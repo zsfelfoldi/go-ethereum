@@ -96,13 +96,11 @@ func newTableFiles(path string, maxFileSize int64, maxOpenFiles int) (*tableFile
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println("+++ newTableFiles")
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		fmt.Println(" os file", name)
 		if name == tempFileName {
 			os.Remove(filepath.Join(path, name))
 			continue
@@ -120,7 +118,6 @@ func newTableFiles(path string, maxFileSize int64, maxOpenFiles int) (*tableFile
 		name = name[:max(len(name), 5)-5]
 		fi, ok := tf.tableFiles[name]
 		if !ok {
-			fmt.Println(" new fi", name)
 			fi = &tableFileInfo{
 				tf:   tf,
 				name: name,
@@ -143,7 +140,6 @@ func newTableFiles(path string, maxFileSize int64, maxOpenFiles int) (*tableFile
 			continue
 		}
 		if fi.fileCount != fi.maxFileIndex+1 || fi.size != maxFileSize*int64(fi.fileCount-1)+fi.chunkSize {
-			fmt.Println(" remove fi", name)
 			log.Warn("Removing incomplete table file", "name", name)
 			delete(tf.tableFiles, name)
 			for i := range fi.maxFileIndex + 1 {
@@ -223,7 +219,6 @@ func (tf *tableFiles) loadMemTables() {
 }
 
 func (tf *tableFiles) storeMemTables() {
-	fmt.Println("storeMemTables")
 	var memTables []storedMemTable
 	for name, fi := range tf.tableFiles {
 		if fi.fileCount != 0 {
@@ -242,7 +237,6 @@ func (tf *tableFiles) storeMemTables() {
 			err = err2
 		}
 	}
-	fmt.Println(" error", err)
 	if err != nil {
 		log.Error("Could not save small index table files", "error", err)
 	}
@@ -252,17 +246,13 @@ func (tf *tableFiles) getReaderAt(name string) (io.ReaderAt, int64, error) {
 	tf.lock.Lock()
 	defer tf.lock.Unlock()
 
-	//fmt.Println("getReaderAt", name)
 	fi, ok := tf.tableFiles[name]
 	if !ok {
-		fmt.Println("getReaderAt: file does not exist:", name)
 		return nil, 0, errors.New("table file does not exist")
 	}
 	if fi.isLocked() {
-		///fmt.Println(" locked")
 		return nil, 0, errors.New("table file is currently locked")
 	}
-	//fmt.Println(" success; size", fi.size)
 	return fi, fi.size, nil
 }
 
@@ -318,8 +308,6 @@ func (tf *tableFiles) getOsFileInfo(fi *tableFileInfo, fileIndex int, write bool
 	if err != nil {
 		return nil, err
 	}
-	/*stats, _ := file.Stat()
-	fmt.Println("opened os file", id.tfInfo.name, "size", stats.Size())*/
 	tf.osFiles[id] = of
 	return of, nil
 }
@@ -348,9 +336,7 @@ func (tf *tableFiles) closeOsFileIdLocked(id osFileID) error {
 }
 
 func (fi *tableFileInfo) ReadAt(p []byte, offset int64) (n int, err error) {
-	//fmt.Println("ReadAt", fi.name, fi.size, offset, len(p))
 	defer func() {
-		//fmt.Println(" ", n, err)
 		if err != nil && fi.isDeleted() {
 			err = ErrTableDeleted
 		}
@@ -395,12 +381,7 @@ func (tf *tableFiles) getAppendWriter(name string, memory bool) (io.WriteCloser,
 	tf.lock.Lock()
 	defer tf.lock.Unlock()
 
-	//fmt.Println("getAppendWriter", name, memory)
 	fi, ok := tf.tableFiles[name]
-	/*fmt.Println(" append", ok)
-	if ok {
-		fmt.Println(" size", fi.size)
-	}*/
 	if !ok {
 		fi = &tableFileInfo{
 			tf:   tf,
@@ -412,7 +393,6 @@ func (tf *tableFiles) getAppendWriter(name string, memory bool) (io.WriteCloser,
 		tf.tableFiles[name] = fi
 	}
 	if fi.isLocked() {
-		//fmt.Println(" already locked")
 		return nil, errors.New("table file opened for writing is currently locked")
 	}
 	atomic.StoreUint32(&fi.locked, 1)
@@ -423,10 +403,6 @@ func (tf *tableFiles) getAppendWriter(name string, memory bool) (io.WriteCloser,
 }
 
 func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
-	//fmt.Println("Write", fi.name, fi.size, len(p))
-	/*defer func() {
-		fmt.Println(" ", n, err)
-	}()*/
 
 	if fi.fileCount == 0 {
 		// table file stored in memory
@@ -465,9 +441,7 @@ func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
 }
 
 func (fi *tableFileInfo) Close() error {
-	//fmt.Println("Close", fi.name, "fileCount", fi.fileCount)
 	if !fi.isLocked() {
-		//fmt.Println(" not open")
 		return errors.New("table file was not open for writing")
 	}
 	if fi.fileCount != 0 {
@@ -484,7 +458,6 @@ func (fi *tableFileInfo) Close() error {
 		}
 	}
 	atomic.StoreUint32(&fi.locked, 0)
-	//fmt.Println(" success")
 	return nil
 }
 
@@ -492,48 +465,39 @@ func (tf *tableFiles) renameFile(oldName, newName string) error {
 	tf.lock.Lock()
 	defer tf.lock.Unlock()
 
-	//fmt.Println("renameFile", oldName, newName)
 	if _, ok := tf.tableFiles[newName]; ok {
-		fmt.Println(" target name exists")
 		return errors.New("cannot rename table file to already existing name")
 	}
 	fi, ok := tf.tableFiles[oldName]
 	if !ok {
-		//fmt.Println(" not found")
 		return errFileNotFound
 	}
 	if fi.isLocked() {
-		//fmt.Println(" locked")
 		return errFileLocked
 	}
 	delete(tf.tableFiles, oldName)
 	switch {
 	case fi.fileCount == 1:
 		if err := os.Rename(tf.osFileName(oldName, 0), tf.osFileName(newName, 0)); err != nil {
-			//fmt.Println(" os.Rename 0 error", err)
 			return err
 		}
 	case fi.fileCount > 1:
 		// rename file index 0 to a temporary name first to ensure that file index
 		// range is not continuous under either name until the rename fully succeeds.
 		if err := os.Rename(tf.osFileName(oldName, 0), filepath.Join(tf.path, tempFileName)); err != nil {
-			//fmt.Println(" os.Rename 1 error", err)
 			return err
 		}
 		for i := 1; i < fi.fileCount; i++ {
 			if err := os.Rename(tf.osFileName(oldName, i), tf.osFileName(newName, i)); err != nil {
-				//fmt.Println(" os.Rename 2 error", i, fi.fileCount, err)
 				return err
 			}
 		}
 		if err := os.Rename(filepath.Join(tf.path, tempFileName), tf.osFileName(newName, 0)); err != nil {
-			//fmt.Println(" os.Rename 3 error", err)
 			return err
 		}
 	}
 	fi.name = newName
 	tf.tableFiles[newName] = fi
-	//fmt.Println(" success")
 	return nil
 }
 
@@ -543,14 +507,11 @@ func (tf *tableFiles) deleteFile(name string) error {
 	tf.lock.Lock()
 	defer tf.lock.Unlock()
 
-	//fmt.Println("deleteFile", name)
 	fi, ok := tf.tableFiles[name]
 	if !ok {
-		fmt.Println(" not found")
 		return errFileNotFound
 	}
 	if fi.isLocked() {
-		//fmt.Println(" locked")
 		return errFileLocked
 	}
 	atomic.StoreUint32(&fi.deleted, 1)
@@ -567,11 +528,9 @@ func (tf *tableFiles) deleteFile(name string) error {
 			delete(tf.osFiles, id)
 		}
 		if err := os.Remove(tf.osFileName(name, i)); err != nil {
-			//fmt.Println(" os.Remove error", err)
 			return err
 		}
 	}
-	//fmt.Println(" success")
 	return nil
 }
 
@@ -585,12 +544,10 @@ type bufferedWriteCloser struct {
 }
 
 func (bwc *bufferedWriteCloser) Write(p []byte) (n int, err error) {
-	//fmt.Println("bwc write", len(p))
 	return bwc.writer.Write(p)
 }
 
 func (bwc *bufferedWriteCloser) Close() error {
-	//fmt.Println("bwc close")
 	if err := bwc.writer.Flush(); err != nil {
 		return err
 	}

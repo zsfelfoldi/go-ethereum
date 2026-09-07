@@ -115,17 +115,14 @@ type Indexer struct {
 	processedBlockId     common.Hash
 	recentHeads          *lru.Cache[common.Hash, *cachedBlockData]
 
-	shutdown       bool
-	updateMergeCh  []chan struct{}
-	updateOps      []tableOperation // set by updateTableOperations before sending to updateMergeCh
-	currentOps     []tableOperation // set by mergeLoop after receiving from updateMergeCh and stopping previous operation
-	mergeWg        sync.WaitGroup
-	mergeStatTime  mclock.AbsTime
-	mergeStatCount uint64
+	shutdown      bool
+	updateMergeCh []chan struct{}
+	updateOps     []tableOperation // set by updateTableOperations before sending to updateMergeCh
+	currentOps    []tableOperation // set by mergeLoop after receiving from updateMergeCh and stopping previous operation
+	mergeWg       sync.WaitGroup
 }
 
 func NewIndexer(params *Params, config Config, path string) *Indexer {
-	fmt.Println("*** PATH", path)
 	files, err := newTableFiles(path, 2000000000, 16) //TODO
 	if err != nil {
 		log.Crit("Could not open index table file manager", "error", err) //TODO return?
@@ -205,7 +202,6 @@ func (ix *Indexer) GetRangeReaders(refBlockHash common.Hash, blockRange common.R
 	ix.lock.Lock()
 	defer ix.lock.Unlock()
 
-	//fmt.Println("GetRangeReaders", blockRange, refBlockHash)
 	refBd, ok := ix.recentHeads.Get(refBlockHash)
 	if !ok {
 		return nil
@@ -281,9 +277,6 @@ func (ix *Indexer) filterBlockRequests() {
 
 func (ix *Indexer) updateTableOperations() {
 	completeSet, partialSet, initPhase := ix.storage.tables()
-	/*fmt.Println("completeSet:", completeSet)
-	fmt.Println("partialSet:", partialSet)
-	fmt.Println("initPhase:", initPhase)*/
 	if initPhase {
 		reqNumber, ok := ix.storage.requestInitBlockHash()
 		if !ok {
@@ -311,7 +304,6 @@ func (ix *Indexer) updateTableOperations() {
 	ix.lowLevelMergeThreads = min(max(ix.lowLevelMergeThreads+1, t)-1, t)
 	targetSet := ix.makeTargetSet(completeSet)
 	tableOps, requiredBlockTables := ix.params.nextTableOperations(completeSet, partialSet, targetSet, ix.lowLevelMergeThreads, ix.mergeThreads)
-	//fmt.Println("updateTableOperations   complete", completeSet.count(), "partial", partialSet.count(), "target", targetSet.count())
 	if ix.setIndexerPriority != nil {
 		indexerPriority := 2
 		if (memFileTotal >= memFileSuspendThreshold || tableCountTotal >= tableCountSuspendThreshold) && len(tableOps) != 0 {
@@ -371,13 +363,10 @@ loop2:
 			}
 		}
 	}
-	//fmt.Println(" new currentOps", ix.currentOps)
-	//fmt.Println("requiredBlockTables:", requiredBlockTables, "requestedBlockTables", ix.requestedBlockTables)
 	ix.requiredBlockTables = requiredBlockTables
 	if ix.requestBlock != nil {
 		request := ix.requiredBlockTables.Difference(ix.requestedBlockTables)
 		for !request.IsEmpty() && ix.requestBlock(request.Last(), true, true, 2) {
-			//fmt.Println("requesting table block", request.Last())
 			requested := common.SingleRangeSet[uint64](common.NewRange[uint64](request.Last(), 1))
 			ix.requestedBlockTables = ix.requestedBlockTables.Union(requested)
 			request = request.Difference(requested)
@@ -392,16 +381,12 @@ func (ix *Indexer) makeTargetSet(complete tableSet) tableSet {
 	rangeStart := ix.tailBlock()
 	maxDelay := ix.params.tableLevels[len(ix.params.protocolLevels)-1].blockCount // highest in-protocol table size
 	rangeEnd := max(rangeStart+maxDelay, ix.finalBlock+maxDelay, ix.headBlock) - maxDelay
-	//fmt.Println("makeTargetSet  headBlock", ix.headBlock, "rangeStart", rangeStart, "rangeEnd", rangeEnd)
 	target := ix.params.rangeTarget(complete, common.SingleRangeSet[uint64](common.NewRange[uint64](rangeStart, rangeEnd+1-rangeStart)))
-	//fmt.Println(" rangeTarget", target)
 	for i, pl := range ix.params.protocolLevels {
 		first := (max(ix.headBlock, pl.tailAge) - pl.tailAge) / ix.params.tableLevels[i].blockCount
 		afterLast := (max(ix.headBlock+1, pl.headAge) - pl.headAge) / ix.params.tableLevels[i].blockCount
-		//fmt.Println(" protocolLevel", i, first, afterLast)
 		target[i] = target[i].Union(common.SingleRangeSet[uint64](common.NewRange[uint64](first, afterLast-first)))
 	}
-	//fmt.Println(" finalTarget", target)
 	return target
 }
 
@@ -652,7 +637,6 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 		ix.lock.Unlock()
 		return
 	}
-	//fmt.Println(" processBlockRequests")
 	ix.processBlockRequests(header, body, receipts)
 	if body == nil || receipts == nil {
 		ix.lock.Unlock()
@@ -660,15 +644,12 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 	}
 	blockNumber := header.Number.Uint64()
 	ix.requestedBlockTables = ix.requestedBlockTables.Difference(common.SingleRangeSet[uint64](common.NewRange[uint64](blockNumber, 1)))
-	//fmt.Println("AddBlockData", blockNumber, body != nil, receipts != nil)
 	if blockNumber >= ix.headBlock {
 		ix.headBlock = blockNumber
 		ix.headBlockHash = header.Hash()
 		ix.recentHeads.Add(header.Hash(), &cachedBlockData{header: header, body: body, receipts: receipts, canonicalUntil: blockNumber})
 	}
-	//fmt.Println(" processBlockTables")
 	if blockNumber < ix.headBlock && !ix.requiredBlockTables.Includes(blockNumber) {
-		//fmt.Println(" unexpected", blockNumber, "required", ix.requiredBlockTables)
 		ix.lock.Unlock()
 		return // unexpected block, do not create table
 	}
@@ -690,7 +671,6 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 	if err != nil {
 		log.Error("Failed to add block data to log index", "number", header.Number.Uint64(), "error", err)
 	}
-	//fmt.Println(" done")
 	if abStatCount%1000 == 0 {
 		completeSet, partialSet, _ := ix.storage.tables()
 		fmt.Println("--------- AddBlockData stats ----------")
@@ -754,8 +734,6 @@ func (ix *Indexer) processBlockTable(tw *tableWriter, header *types.Header, body
 		abStatSet(&abStatAddEntries)
 		var err error
 		if tw, err = ix.storage.addNewTableWriter(id, uint64(len(entries))); err != nil {
-			complete, partial, _ := ix.storage.tables()
-			fmt.Println(" complete", complete[0], "partial", partial[0])
 			return err
 		}
 		for _, entry := range entries {
@@ -786,7 +764,6 @@ func (ix *Indexer) processBlockTable(tw *tableWriter, header *types.Header, body
 		return err
 	}
 	abStatSet(&abStatOther)
-	//fmt.Println(" success")
 	return nil
 }
 
@@ -851,7 +828,6 @@ func (ix *Indexer) Suspended() { //TODO
 }
 
 func (ix *Indexer) Stop() {
-	fmt.Println("Stop")
 	ix.lock.Lock()
 	if ix.shutdown {
 		return
@@ -865,9 +841,6 @@ func (ix *Indexer) Stop() {
 		}
 	}
 	ix.mergeWg.Wait()
-	fmt.Println(" merge loop stopped")
 	ix.storage.close()
-	fmt.Println(" table storage stopped")
 	ix.files.close()
-	fmt.Println(" closed table file manager")
 }

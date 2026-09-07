@@ -72,7 +72,6 @@ loop:
 				tf.deleteFile(name)
 				continue loop
 			}
-			fmt.Println("table", reader.BlockRange(), "root", common.Hash(reader.TableRoot))
 			ts.readers[id] = reader
 		case fnWriteState:
 			writer, err := newTableWriter(params, tf, params.tableName(id), true, 0, id.level == 0)
@@ -122,12 +121,6 @@ func (ts *tableStorage) tables() (tableSet, tableSet, bool) {
 		panic("ts.complete.count() != len(ts.readers)")
 	}
 	if ts.partial.count() != uint64(len(ts.writers)) {
-		fmt.Println("partial:", ts.partial)
-		fmt.Print("writers: ")
-		for id := range ts.writers {
-			fmt.Print(id, " ")
-		}
-		fmt.Println()
 		panic("ts.partial.count() != len(ts.writers)")
 	}
 	complete := make(tableSet, len(ts.complete))
@@ -204,9 +197,7 @@ func (ts *tableStorage) addNewTableWriter(id tableID, entryCount uint64) (*table
 		return nil, err
 	}
 	ts.writers[id] = tw
-	//fmt.Println("+++ add tw 1", id)
 	ts.partial.add(id)
-	//fmt.Println("+++ add partial 1", id)
 	return tw, nil
 }
 
@@ -229,14 +220,11 @@ func (ts *tableStorage) finalizeTableWriter(id tableID) error {
 	if !ok {
 		return errTableNotFound
 	}
-	//fmt.Println("+++ finalizeTableWriter", tw.name)
 	if tw.getPhase() != wpFinalized {
 		return errors.New("table writer not finalized yet")
 	}
 	delete(ts.writers, id)
-	//fmt.Println("+++ delete tw 2", id)
 	ts.partial.remove(id)
-	//fmt.Println("+++ delete partial 2", id)
 	tr, err := newTableReader(ts.params, ts.tf, ts.params.tableName(id))
 	if err != nil {
 		return err
@@ -311,7 +299,6 @@ func (ts *tableStorage) requestInitBlockHash() (number uint64, request bool) {
 }
 
 func (ts *tableStorage) deliverInitBlockHash(number uint64, hash common.Hash) bool {
-	fmt.Println("deliverInitBlockHash", number)
 	ts.lock.Lock()
 	defer ts.lock.Unlock()
 
@@ -350,9 +337,7 @@ func (ts *tableStorage) deliverInitBlockHash(number uint64, hash common.Hash) bo
 					}
 				} else {
 					delete(ts.writers, id)
-					//fmt.Println("+++ delete tw 4", id)
 					ts.partial.remove(id)
-					//fmt.Println("+++ delete partial 4", id)
 					tw.delete()
 				}
 				ts.preInit.remove(id)
@@ -363,7 +348,6 @@ func (ts *tableStorage) deliverInitBlockHash(number uint64, hash common.Hash) bo
 	if ts.preInit.isEmpty() {
 		ts.preInit = nil
 	}
-	fmt.Println(" done")
 	return ts.preInit == nil
 }
 
@@ -379,7 +363,6 @@ func (ts *tableStorage) close() {
 			log.Error("Failed to close index table writer", "error", err)
 		}
 	}
-	fmt.Println("closed table writers")
 }
 
 func (p *Params) tableName(id tableID) string {

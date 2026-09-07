@@ -162,9 +162,7 @@ func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLeve
 	)
 	for i := len(p.tableLevels) - 1; i >= 0; i-- {
 		required = required.Union(target[i])
-		//fmt.Println("level", i, "complete", complete[i], "partial", partial[i], "target", target[i], "required", required)
 		if remove := complete[i].Union(partial[i]).Difference(required); !remove.IsEmpty() {
-			//fmt.Println(" remove", remove)
 			// Note that we deliberately only add one delete operation candidate
 			// per level in order to avoid delete operations always interrupting
 			// all merge operations
@@ -182,7 +180,6 @@ func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLeve
 		if i > 0 {
 			merge := required.Intersection(shiftRangeSetLevel(complete[i-1], p.tableLevels[i-1], p.tableLevels[i], false))
 			for !merge.IsEmpty() {
-				//fmt.Println(" merge", merge)
 				op := tableOperation{
 					operation: opMerge,
 					id: tableID{
@@ -200,14 +197,12 @@ func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLeve
 			required = shiftRangeSetLevel(required /*.Difference(merge)*/, p.tableLevels[i], p.tableLevels[i-1], false)
 		}
 	}
-	//fmt.Println("nextTableOperations  best", bestOps, "bestLL", bestLowLevelOps, "required blocks", required)
 	ops := bestLowLevelOps
 	for _, op := range bestOps {
 		if !p.addToOps(&ops, op, mergeThreads, true) {
 			break
 		}
 	}
-	//fmt.Println(" final", ops)
 	return ops, required
 }
 

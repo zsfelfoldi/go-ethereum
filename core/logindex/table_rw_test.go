@@ -106,13 +106,11 @@ func testTableRW(t *testing.T, blockCount uint64, maxFileSize int64) {
 			t.Fatalf("Invalid nextEntry from tableWriter.lastAndNextEntry after adding entry %d (expected %d, got %d)", i, i+1, nextEntry)
 		}
 		if rand.Intn(len(ies)) < 100 {
-			fmt.Println("/// reset tw")
 			err := tw.close()
 			if err != nil {
 				t.Fatalf("Error during tableWriter.close: %v", err)
 			}
-			if /*restart && */ rand.Intn(2) == 0 {
-				fmt.Println("/// reset files")
+			if rand.Intn(2) == 0 {
 				files.close()
 				files, err = newTableFiles(path, maxFileSize, 4)
 				if err != nil {

@@ -77,7 +77,6 @@ func (ix *Indexer) mergeLoop(threadIndex int) {
 }
 
 func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (bool, error) {
-	//fmt.Println("mergeTable", id)
 	if id.level == 0 {
 		panic("cannot merge table on the lowest level")
 	}
@@ -93,16 +92,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (bool, error) {
 		readers[i] = tr
 	}
 	tw, err := ix.storage.getTableWriter(id)
-	/*if err == nil && id.level > 4 {
-		fmt.Println("*** Resuming merge", id)
-		ix.mergeStatTime -= mclock.Now()
-	}*/
 	if err == errTableNotFound {
-		/*if id.level > 4 {
-			fmt.Println("*** Starting merge", id)
-			ix.mergeStatTime = -mclock.Now()
-			ix.mergeStatCount = 0
-		}*/
 		tw, err = ix.storage.addNewTableWriter(id, entryCount)
 		if err != nil {
 			return false, err
@@ -124,11 +114,6 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (bool, error) {
 	}
 	lastEntry, nextEntry := tw.lastAndNextEntry()
 	if tw.getPhase() == wpWriteEntries && nextEntry != entryCount {
-		if lastEntry == nil {
-			//fmt.Println("lastAndNextEntry", "nil", nextEntry)
-		} else {
-			//fmt.Println("lastAndNextEntry", *lastEntry, nextEntry)
-		}
 		nextReadPosition := make([]uint64, len(readers))
 		nextReadEntries := make([]IndexEntries, len(readers))
 		if nextEntry != 0 {
@@ -147,11 +132,8 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (bool, error) {
 				}
 				nextReadPosition[i] = pos
 				checkNextEntry += pos
-				//fmt.Println(" reader", i, "pos", pos)
 			}
 			if checkNextEntry != nextEntry {
-				//fmt.Println(" checkNextEntry", checkNextEntry)
-				panic("xxx")
 				return false, errors.New("next entry mismatch")
 			}
 		}
@@ -180,7 +162,6 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (bool, error) {
 			if err := tw.addEntry(bestEntry); err != nil {
 				return false, err
 			}
-			ix.mergeStatCount++
 			nextEntry++
 			nextReadPosition[bestIndex]++
 			if tr, pos := readers[bestIndex], nextReadPosition[bestIndex]; pos < tr.EntryCount {
@@ -195,7 +176,6 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (bool, error) {
 			} else {
 				nextReadEntries[bestIndex] = nil
 			}
-			//fmt.Println("merge", id, "write", nextEntry, "read", nextReadPosition, "entry", *bestEntry)
 		}
 	}
 	for {

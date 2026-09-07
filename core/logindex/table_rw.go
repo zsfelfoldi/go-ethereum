@@ -418,7 +418,6 @@ func (sc *subtreeChunk) toStorage() subtreesForStorage {
 }
 
 func (sc *subtreeChunk) getHash(gti uint64) (result merkle.Value) {
-	//fmt.Println("getHash gti", gti, "height", sc.height, "branches", sc.branches, "hasHash", sc.hasHash)
 	if sc.hasHash[gti] {
 		return sc.hashes[gti]
 	}
@@ -591,20 +590,15 @@ func (tr *TableReader) getEntries(indexRange common.Range[uint64]) (IndexEntries
 	}
 	firstEC, lastEC := indexRange.First()/entryChunkSize, indexRange.Last()/entryChunkSize
 	firstSC, lastSC := firstEC/subtreeChunkSize, lastEC/subtreeChunkSize
-	/*fmt.Println("getEntries", indexRange.First(), indexRange.Last(), tr.EntryCount)
-	fmt.Println(" EC", firstEC, lastEC)
-	fmt.Println(" SC", firstSC, lastSC)*/
 	scs := make([]*subtreeChunk, lastSC+1-firstSC)
 	for i := range scs {
 		sc, err := tr.getSubtreeChunk(tr.format.subtreeLevels-1, firstSC+uint64(i))
 		if err != nil {
 			return nil, err
 		}
-		//fmt.Println("scs", i, "bfp", sc.boundaryFilePos)
 		scs[i] = sc
 	}
 	start, stop := scs[0].boundaryFilePos[firstEC%subtreeChunkSize], scs[lastSC-firstSC].boundaryFilePos[lastEC%subtreeChunkSize+1]
-	//fmt.Println(" read", start, stop, stop-start)
 	enc := make([]byte, stop-start)
 	_, err := tr.reader.ReadAt(enc, int64(start))
 	if err != nil {
@@ -615,7 +609,6 @@ func (tr *TableReader) getEntries(indexRange common.Range[uint64]) (IndexEntries
 		sc := scs[ec/subtreeChunkSize-firstSC]
 		firstByte := sc.boundaryFilePos[ec%subtreeChunkSize] - start
 		afterLastByte := sc.boundaryFilePos[ec%subtreeChunkSize+1] - start
-		//fmt.Println(" enc range", firstByte, afterLastByte)
 		var dec IndexEntries
 		if err := rlp.DecodeBytes(enc[firstByte:afterLastByte], &dec); err != nil {
 			return nil, err
@@ -641,7 +634,6 @@ func (tr *TableReader) SeekEntry(target *IndexEntry) (uint64, bool, error) {
 			return 0, false, err
 		}
 		subIndex, _ := sc.boundaryEntries.Find(target)
-		//fmt.Println("seek s", chunkLevel, chunkIndex, subIndex, sc.boundaryEntries[max(subIndex, 1)-1], sc.boundaryEntries[min(subIndex, len(sc.boundaryEntries)-1)])
 		chunkLevel++
 		chunkIndex = chunkIndex*subtreeChunkSize + uint64(subIndex)
 		chunkEntries /= subtreeChunkSize
@@ -654,7 +646,6 @@ func (tr *TableReader) SeekEntry(target *IndexEntry) (uint64, bool, error) {
 		return 0, false, err
 	}
 	subIndex, found := ec.entries.Find(target)
-	//fmt.Println("seek e", chunkLevel, chunkIndex, subIndex)
 	return chunkIndex*entryChunkSize + uint64(subIndex), found, nil
 }
 
@@ -701,7 +692,6 @@ type writeState struct {
 }
 
 func newTableWriter(params *Params, tf *tableFiles, name string, storedState bool, entryCount uint64, forceMemory bool) (*tableWriter, error) {
-	//fmt.Println("+++ new", name, storedState, entryCount, forceMemory)
 	var state writeState
 	if storedState {
 		r, l, err := tf.getReaderAt(name + writeStateSuffix)
@@ -718,7 +708,6 @@ func newTableWriter(params *Params, tf *tableFiles, name string, storedState boo
 			tf.deleteFile(name + writeStateSuffix)
 			return nil, err
 		}
-		//fmt.Println("state @ newTableWriter:", state)
 		entryCount = state.Header.EntryCount
 	}
 	format := params.newTableFormat(entryCount)
@@ -824,7 +813,6 @@ func (tw *tableWriter) open() error {
 	tw.lock.Lock()
 	defer tw.lock.Unlock()
 
-	//fmt.Println("+++ open", tw.name)
 	if tw.isDeleted {
 		return ErrTableDeleted
 	}
@@ -862,7 +850,6 @@ func (tw *tableWriter) close() error {
 	tw.lock.Lock()
 	defer tw.lock.Unlock()
 
-	//fmt.Println("+++ close", tw.name)
 	if tw.isDeleted {
 		return ErrTableDeleted
 	}
@@ -908,8 +895,6 @@ func (tw *tableWriter) close() error {
 	default:
 		panic("invalid table write phase")
 	}
-	//fmt.Println("entryCount @ tableWriter.close:", tw.entryCount)
-	//fmt.Println("state @ tableWriter.close:", state)
 	sw, err := tw.tf.getAppendWriter(tw.name+writeStateSuffix, true)
 	if err != nil {
 		return err
@@ -997,7 +982,6 @@ func (tw *tableWriter) addEntry(ie *IndexEntry) error {
 
 func (tw *tableWriter) addSubtreeEntry(level uint, boundaryEntry *IndexEntry, beforePos, afterPos int64, hash merkle.Value) error {
 	sc := tw.lastSubtreeChunks[level]
-	//fmt.Println("addSubtreeEntry", tw.format, sc.height, sc.above, level, beforePos, afterPos)
 	if sc.branches < subtreeChunkSize-1 {
 		sc.boundaryEntries = append(sc.boundaryEntries, *boundaryEntry)
 	}
