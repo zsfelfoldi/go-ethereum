@@ -69,18 +69,18 @@ type Params struct {
 
 var DefaultParams = &Params{
 	tableLevels: []tableLevel{
-		{blockCount: 0x1},
-		//	{blockCount: 0x4},
-		{blockCount: 0x10},
-		//	{blockCount: 0x40},
-		{blockCount: 0x100},
-		//	{blockCount: 0x400},
-		{blockCount: 0x1000},
-		//	{blockCount: 0x4000},
-		{blockCount: 0x10000},
-		//	{blockCount: 0x40000},
-		{blockCount: 0x100000},
-		{blockCount: 0x400000},
+		{blockCount: 0x1, mergeLevels: 2},
+		{blockCount: 0x4, mergeLevels: 1},
+		{blockCount: 0x10, mergeLevels: 2},
+		{blockCount: 0x40, mergeLevels: 1},
+		{blockCount: 0x100, mergeLevels: 2},
+		{blockCount: 0x400, mergeLevels: 1},
+		{blockCount: 0x1000, mergeLevels: 2},
+		{blockCount: 0x4000, mergeLevels: 1},
+		{blockCount: 0x10000, mergeLevels: 2},
+		{blockCount: 0x40000, mergeLevels: 1},
+		{blockCount: 0x100000, mergeLevels: 2},
+		{blockCount: 0x400000, mergeLevels: 0},
 	},
 	protocolLevels: []protocolLevel{
 		{tailAge: 5, headAge: 0},
@@ -90,6 +90,15 @@ var DefaultParams = &Params{
 		{tailAge: 8192, headAge: 16},
 	},
 	fileStorageThresholdHeight: 12,
+}
+
+type tableLevel struct {
+	blockCount  uint64
+	mergeLevels int
+}
+
+type protocolLevel struct {
+	tailAge, headAge uint64
 }
 
 type Indexer struct {

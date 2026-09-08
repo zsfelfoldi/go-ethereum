@@ -53,7 +53,7 @@ func (ix *Indexer) mergeLoop(threadIndex int) {
 			ix.updateTableOperations()
 			ix.lock.Unlock()
 		case opMerge:
-			_, err := ix.mergeTable(currentOp.id, func() bool {
+			_, err := ix.mergeTable(currentOp.id, currentOp.mergeFromLevel, func() bool {
 				select {
 				case <-ix.updateMergeCh[threadIndex]:
 					triggered = true
@@ -76,15 +76,15 @@ func (ix *Indexer) mergeLoop(threadIndex int) {
 	}
 }
 
-func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (bool, error) {
-	if id.level == 0 {
-		panic("cannot merge table on the lowest level")
+func (ix *Indexer) mergeTable(id tableID, fromLevel int, stopFn func() bool) (bool, error) {
+	if id.level <= fromLevel {
+		panic("cannot merge table from same or higher level")
 	}
-	sourceIndices := shiftRangeLevel(common.NewRange[uint64](id.index, 1), ix.params.tableLevels[id.level], ix.params.tableLevels[id.level-1], false)
+	sourceIndices := shiftRangeLevel(common.NewRange[uint64](id.index, 1), ix.params.tableLevels[id.level], ix.params.tableLevels[fromLevel], false)
 	readers := make([]*TableReader, sourceIndices.Count())
 	var entryCount uint64
 	for i := range readers {
-		tr, err := ix.storage.getTableReader(tableID{level: id.level - 1, index: sourceIndices.First() + uint64(i)})
+		tr, err := ix.storage.getTableReader(tableID{level: fromLevel, index: sourceIndices.First() + uint64(i)})
 		if err != nil {
 			return false, err
 		}

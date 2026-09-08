@@ -24,14 +24,6 @@ import (
 
 type tableSet []common.RangeSet[uint64]
 
-type tableLevel struct {
-	blockCount uint64
-}
-
-type protocolLevel struct {
-	tailAge, headAge uint64
-}
-
 type tableID struct {
 	level int
 	index uint64
@@ -93,8 +85,9 @@ const (
 )
 
 type tableOperation struct {
-	operation int
-	id        tableID
+	operation      int
+	mergeFromLevel int // only for opMerge
+	id             tableID
 }
 
 func (p *Params) compareOps(a, b tableOperation, lowLevelFirst bool) int {
@@ -157,11 +150,15 @@ loop:
 func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLevelMergeThreads, mergeThreads int) ([]tableOperation, common.RangeSet[uint64]) {
 	var (
 		bestLowLevelOps, bestOps []tableOperation
-		required                 common.RangeSet[uint64]
 	)
+	required := make([]common.RangeSet[uint64], len(p.tableLevels))
 	for i := len(p.tableLevels) - 1; i >= 0; i-- {
-		required = required.Union(target[i])
-		if remove := complete[i].Union(partial[i]).Difference(required); !remove.IsEmpty() {
+		if i == len(p.tableLevels)-1 {
+			required[i] = target[i]
+		} else {
+			required[i] = shiftRangeSetLevel(required[i+1], p.tableLevels[i+1], p.tableLevels[i], false).Union(target[i])
+		}
+		if remove := complete[i].Union(partial[i]).Difference(required[i]); !remove.IsEmpty() {
 			// Note that we deliberately only add one delete operation candidate
 			// per level in order to avoid delete operations always interrupting
 			// all merge operations
@@ -175,14 +172,21 @@ func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLeve
 			p.addToOps(&bestLowLevelOps, op, lowLevelMergeThreads, true)
 			p.addToOps(&bestOps, op, mergeThreads, false)
 		}
-		required = required.Difference(complete[i])
-		if i > 0 {
-			merge := required.Intersection(shiftRangeSetLevel(complete[i-1], p.tableLevels[i-1], p.tableLevels[i], false))
+		mergeable := required[i].Intersection(complete[i])
+		required[i] = required[i].Difference(complete[i])
+		for j := i + 1; j <= i+p.tableLevels[i].mergeLevels && !mergeable.IsEmpty(); j++ {
+			// check whether we can merge tables from level i to level j
+			merge := required[j].Intersection(shiftRangeSetLevel(mergeable, p.tableLevels[i], p.tableLevels[j], false))
+			if merge.IsEmpty() {
+				continue
+			}
+			mergeable = mergeable.Difference(shiftRangeSetLevel(merge, p.tableLevels[j], p.tableLevels[i], false))
 			for !merge.IsEmpty() {
 				op := tableOperation{
-					operation: opMerge,
+					operation:      opMerge,
+					mergeFromLevel: i,
 					id: tableID{
-						level: i,
+						level: j,
 						index: merge.Last(),
 					},
 				}
@@ -193,7 +197,6 @@ func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLeve
 				}
 				merge = merge.Difference(common.SingleRangeSet[uint64](common.NewRange[uint64](merge.Last(), 1)))
 			}
-			required = shiftRangeSetLevel(required /*.Difference(merge)*/, p.tableLevels[i], p.tableLevels[i-1], false)
 		}
 	}
 	ops := bestLowLevelOps
@@ -202,7 +205,7 @@ func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLeve
 			break
 		}
 	}
-	return ops, required
+	return ops, required[0]
 }
 
 // TODO partial helyett vmi jobb nev
