@@ -177,7 +177,7 @@ func PreExecution(ctx context.Context, beaconRoot *common.Hash, parent *types.He
 // PostExecution processes post-execution system calls when Prague is enabled.
 // If Prague is not activated, it returns null requests to differentiate from
 // empty requests.
-func PostExecution(ctx context.Context, config *params.ChainConfig, number *big.Int, time uint64, optBlockHash, parent common.Hash, transactions types.Transactions, receipts types.Receipts, logIndex *logindex.Indexer, evm *vm.EVM, blockAccessIndex uint32) (requests [][]byte, blockAccessList *bal.ConstructionBlockAccessList, err error) {
+func PostExecution(ctx context.Context, config *params.ChainConfig, number *big.Int, time uint64, optBlockHash, parentHash common.Hash, transactions types.Transactions, receipts types.Receipts, logIndex *logindex.Indexer, evm *vm.EVM, blockAccessIndex uint32) (requests [][]byte, blockAccessList *bal.ConstructionBlockAccessList, err error) {
 	_, _, spanEnd := telemetry.StartSpan(ctx, "core.postExecution")
 	defer spanEnd(&err)
 
@@ -210,6 +210,13 @@ func PostExecution(ctx context.Context, config *params.ChainConfig, number *big.
 		if err := ProcessBuilderExitQueue(&requests, rules, evm, blockAccessIndex, blockAccessList); err != nil {
 			return nil, nil, fmt.Errorf("failed to process builder exit queue: %w", err)
 		}
+	}
+
+	if config.IsBogota(number, time) {
+		ProcessIndexTableRoots(number.Uint64(), optBlockHash, parentHash, transactions, receipts, logIndex, evm, blockAccessList)
+	} else {
+		//TODO remove
+		debugIndexTableRoots(number.Uint64(), optBlockHash, parentHash, transactions, receipts, logIndex, evm, blockAccessList)
 	}
 	return requests, blockAccessList, nil
 }
@@ -393,6 +400,21 @@ func ProcessIndexTableRoots(blockNumber uint64, optBlockHash, parentHash common.
 				panic(err)
 			}
 			addIndexTableRoot(firstBlock, tableSize, tableRoot, evm, blockAccessList)
+		}
+	}
+}
+
+//TODO remove
+func debugIndexTableRoots(blockNumber uint64, optBlockHash, parentHash common.Hash, transactions types.Transactions, receipts types.Receipts, logIndex *logindex.Indexer, evm *vm.EVM, blockAccessList *bal.ConstructionBlockAccessList) {
+	tableRoot, err := logIndex.GetProcessedTableRoot(optBlockHash, parentHash, transactions, receipts)
+	fmt.Println("+++ tableRoot", blockNumber, 1, tableRoot, err)
+	for i := 1; i < len(params.IndexTableSizes); i++ {
+		tableSize := params.IndexTableSizes[i]
+		firstBlockAge := tableSize + tableSize/4 - 1 // diff between first block of table and root inclusion block
+		if blockNumber >= firstBlockAge && (blockNumber-firstBlockAge)%tableSize == 0 {
+			firstBlock := blockNumber - firstBlockAge
+			tableRoot, err := logIndex.GetAsyncTableRoot(parentHash, firstBlock, tableSize)
+			fmt.Println("+++ tableRoot", firstBlock, tableSize, tableRoot, err)
 		}
 	}
 }

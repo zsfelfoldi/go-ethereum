@@ -80,7 +80,7 @@ var DefaultParams = &Params{
 		{blockCount: 0x10000},
 		//	{blockCount: 0x40000},
 		{blockCount: 0x100000},
-		{blockCount: 0x400000, leanStorage: true},
+		{blockCount: 0x400000},
 	},
 	protocolLevels: []protocolLevel{
 		{tailAge: 5, headAge: 0},
@@ -504,19 +504,24 @@ func (ix *Indexer) GetProcessedTableRoot(blockId, parentHash common.Hash, transa
 }
 
 func (ix *Indexer) GetAsyncTableRoot(parentHash common.Hash, firstBlock, tableSize uint64) (common.Hash, error) {
-	/*	for i := 1; i < len(ix.params.protocolLevels); i++ {
-		blockCount := ix.params.tableLevels[i].blockCount
-		headAge := ix.params.protocolLevels[i].headAge
-		if blockNumber >= headAge && (blockNumber-headAge)%blockCount == blockCount-1 { //TODO fork block
-			id := tableID{level: i, index: (blockNumber - headAge) / blockCount}
-			tr, err := ix.storage.waitForTableReader(id)
-			if err != nil {
-				return nil, err
-			}
-			updateIndexRoot(indexRoots[common.HashLength*i:common.HashLength*(i+1)], tr.tableRoot[:])
+	if firstBlock%tableSize != 0 {
+		return common.Hash{}, errors.New("invalid first block")
+	}
+	id := tableID{index: firstBlock / tableSize}
+	for i, tl := range ix.params.tableLevels {
+		if tl.blockCount == tableSize {
+			id.level = i
+			break
 		}
-	}*/
-	panic("xxx")
+		if tl.blockCount > tableSize {
+			return common.Hash{}, errors.New("unknown table size")
+		}
+	}
+	tr, err := ix.storage.waitForTableReader(id)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	return common.Hash(tr.TableRoot), nil
 }
 
 /*func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, transactions types.Transactions, receipts types.Receipts) ([]byte, error) {
