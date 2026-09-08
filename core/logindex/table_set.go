@@ -25,8 +25,7 @@ import (
 type tableSet []common.RangeSet[uint64]
 
 type tableLevel struct {
-	blockCount  uint64
-	leanStorage bool //TODO
+	blockCount uint64
 }
 
 type protocolLevel struct {
