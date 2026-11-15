@@ -32,6 +32,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/filtermaps"
 	"github.com/ethereum/go-ethereum/core/history"
+	"github.com/ethereum/go-ethereum/core/logindex/logquery"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/txpool"
@@ -518,6 +519,14 @@ func (b *EthAPIBackend) CurrentView() *filtermaps.ChainView {
 
 func (b *EthAPIBackend) NewMatcherBackend() filtermaps.MatcherBackend {
 	return b.eth.filterMaps.NewMatcherBackend()
+}
+
+func (b *EthAPIBackend) LogQuery() *logquery.Matcher {
+	return b.eth.logQuery
+}
+
+func (b *EthAPIBackend) ChainView(hash common.Hash, number uint64) *core.ChainView {
+	return b.eth.blockchain.NewChainView(hash, number)
 }
 
 func (b *EthAPIBackend) Engine() consensus.Engine {

@@ -33,6 +33,8 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/filtermaps"
+	"github.com/ethereum/go-ethereum/core/logindex"
+	"github.com/ethereum/go-ethereum/core/logindex/logquery"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/pruner"
 	"github.com/ethereum/go-ethereum/core/txpool"
@@ -99,6 +101,8 @@ type Ethereum struct {
 	blobCache      *blobpool.Cache
 	localTxTracker *locals.TxTracker
 	blockchain     *core.BlockChain
+	logIndex       *logindex.Indexer
+	logQuery       *logquery.Matcher
 
 	handler *handler
 	discmix *enode.FairMix
@@ -296,6 +300,16 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		return nil, err
 	}
 
+	// Initialize log index.
+	logIndexConfig := logindex.Config{
+		History:        config.LogHistory,
+		Disabled:       config.LogNoHistory,
+		ExportFileName: config.LogExportCheckpoints,
+		HashScheme:     scheme == rawdb.HashScheme,
+	}
+	eth.logIndex = logindex.NewIndexer(logindex.DefaultParams, logIndexConfig, stack.ResolvePath("logindex"))
+	eth.blockchain.RegisterIndexer(eth.logIndex, "log index")
+
 	// Initialize filtermaps log index.
 	fmConfig := filtermaps.Config{
 		History:        config.LogHistory,
@@ -374,6 +388,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		log.Info("Unprotected transactions allowed")
 	}
 	eth.APIBackend.gpo = gasprice.NewOracle(eth.APIBackend, config.GPO, config.Miner.GasPrice)
+	eth.logQuery = logquery.NewMatcher(eth.logIndex)
 
 	// Start the RPC service
 	eth.netRPCService = ethapi.NewNetAPI(eth.p2pServer, networkID)

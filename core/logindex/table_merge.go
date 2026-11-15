@@ -1,0 +1,220 @@
+// Copyright 2026 The go-ethereum Authors
+// This file is part of the go-ethereum library.
+//
+// The go-ethereum library is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// The go-ethereum library is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
+
+package logindex
+
+import (
+	"errors"
+	//"fmt"
+	//"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	//"github.com/ethereum/go-ethereum/common/mclock"
+	"github.com/ethereum/go-ethereum/log"
+)
+
+func (ix *Indexer) mergeLoop(threadIndex int) {
+	defer ix.mergeWg.Done()
+
+	var triggered bool
+	for {
+		if !triggered {
+			<-ix.updateMergeCh[threadIndex]
+		}
+		triggered = false
+		ix.lock.Lock()
+		currentOp, shutdown := ix.updateOps[threadIndex], ix.shutdown
+		ix.currentOps[threadIndex], ix.updateOps[threadIndex] = currentOp, tableOperation{}
+		ix.lock.Unlock()
+		if shutdown {
+			return
+		}
+		switch currentOp.operation {
+		case opDelete:
+			if err := ix.storage.deleteTable(currentOp.id); err != nil {
+				r := ix.params.blockRange(currentOp.id)
+				log.Error("Failed to delete index table", "start", r.First(), "count", r.Count(), "error", err)
+			}
+			ix.lock.Lock()
+			ix.currentOps[threadIndex] = tableOperation{}
+			ix.updateTableOperations()
+			ix.lock.Unlock()
+		case opMerge:
+			_, err := ix.mergeTable(currentOp.id, func() bool {
+				select {
+				case <-ix.updateMergeCh[threadIndex]:
+					triggered = true
+					return true
+				default:
+					return false
+				}
+			})
+			if err != nil {
+				r := ix.params.blockRange(currentOp.id)
+				log.Error("Failed to merge index table", "start", r.First(), "count", r.Count(), "error", err)
+			}
+			if !triggered {
+				ix.lock.Lock()
+				ix.currentOps[threadIndex] = tableOperation{}
+				ix.updateTableOperations()
+				ix.lock.Unlock()
+			}
+		}
+	}
+}
+
+func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (bool, error) {
+	//fmt.Println("mergeTable", id)
+	if id.level == 0 {
+		panic("cannot merge table on the lowest level")
+	}
+	sourceIndices := shiftRangeLevel(common.NewRange[uint64](id.index, 1), ix.params.tableLevels[id.level], ix.params.tableLevels[id.level-1], false)
+	readers := make([]*TableReader, sourceIndices.Count())
+	var entryCount uint64
+	for i := range readers {
+		tr, err := ix.storage.getTableReader(tableID{level: id.level - 1, index: sourceIndices.First() + uint64(i)})
+		if err != nil {
+			return false, err
+		}
+		entryCount += tr.EntryCount
+		readers[i] = tr
+	}
+	tw, err := ix.storage.getTableWriter(id)
+	/*if err == nil && id.level > 4 {
+		fmt.Println("*** Resuming merge", id)
+		ix.mergeStatTime -= mclock.Now()
+	}*/
+	if err == errTableNotFound {
+		/*if id.level > 4 {
+			fmt.Println("*** Starting merge", id)
+			ix.mergeStatTime = -mclock.Now()
+			ix.mergeStatCount = 0
+		}*/
+		tw, err = ix.storage.addNewTableWriter(id, entryCount)
+		if err != nil {
+			return false, err
+		}
+		// initialize table metadata
+		r := ix.params.blockRange(id)
+		tw.setMeta(TableMeta{
+			LastBlockNumber: r.Last(),
+			BlockCount:      r.Count(),
+			LastBlockHash:   readers[len(readers)-1].Meta.LastBlockHash,
+			ParentHash:      readers[0].Meta.ParentHash,
+		})
+	}
+	if err != nil {
+		return false, err
+	}
+	if tw.entryCount != entryCount {
+		return false, errors.New("entry count mismatch")
+	}
+	lastEntry, nextEntry := tw.lastAndNextEntry()
+	if tw.getPhase() == wpWriteEntries && nextEntry != entryCount {
+		if lastEntry == nil {
+			//fmt.Println("lastAndNextEntry", "nil", nextEntry)
+		} else {
+			//fmt.Println("lastAndNextEntry", *lastEntry, nextEntry)
+		}
+		nextReadPosition := make([]uint64, len(readers))
+		nextReadEntries := make([]IndexEntries, len(readers))
+		if nextEntry != 0 {
+			// find next read position in each source reader
+			if lastEntry == nil {
+				return false, errors.New("last entry not found")
+			}
+			var checkNextEntry uint64
+			for i, tr := range readers {
+				pos, found, err := tr.SeekEntry(lastEntry)
+				if err != nil {
+					return false, err
+				}
+				if found {
+					pos++
+				}
+				nextReadPosition[i] = pos
+				checkNextEntry += pos
+				//fmt.Println(" reader", i, "pos", pos)
+			}
+			if checkNextEntry != nextEntry {
+				//fmt.Println(" checkNextEntry", checkNextEntry)
+				panic("xxx")
+				return false, errors.New("next entry mismatch")
+			}
+		}
+		for i, tr := range readers {
+			if nextReadPosition[i] < tr.EntryCount {
+				var err error
+				nextReadEntries[i], err = tr.getEntries(common.NewRange[uint64](nextReadPosition[i], min(mergeEntryPrefetch, tr.EntryCount-nextReadPosition[i])))
+				if err != nil {
+					return false, err
+				}
+			}
+		}
+		for nextEntry < entryCount {
+			if nextEntry%10000 == 0 && stopFn() {
+				return false, nil
+			}
+			var (
+				bestIndex int
+				bestEntry *IndexEntry
+			)
+			for i, entries := range nextReadEntries {
+				if len(entries) > 0 && (bestEntry == nil || entries[0].Compare(bestEntry) < 0) {
+					bestIndex, bestEntry = i, &entries[0]
+				}
+			}
+			if err := tw.addEntry(bestEntry); err != nil {
+				return false, err
+			}
+			ix.mergeStatCount++
+			nextEntry++
+			nextReadPosition[bestIndex]++
+			if tr, pos := readers[bestIndex], nextReadPosition[bestIndex]; pos < tr.EntryCount {
+				nextReadEntries[bestIndex] = nextReadEntries[bestIndex][1:]
+				if len(nextReadEntries[bestIndex]) == 0 {
+					var err error
+					nextReadEntries[bestIndex], err = tr.getEntries(common.NewRange[uint64](pos, min(mergeEntryPrefetch, tr.EntryCount-pos)))
+					if err != nil {
+						return false, err
+					}
+				}
+			} else {
+				nextReadEntries[bestIndex] = nil
+			}
+			//fmt.Println("merge", id, "write", nextEntry, "read", nextReadPosition, "entry", *bestEntry)
+		}
+	}
+	for {
+		if stopFn() {
+			return false, nil
+		}
+		done, err := tw.finalize()
+		if err != nil {
+			return false, err
+		}
+		if done {
+			break
+		}
+	}
+	if tw.getPhase() != wpFinalized {
+		panic("invalid table write phase")
+	}
+	if err := ix.storage.finalizeTableWriter(id); err != nil {
+		return false, err
+	}
+	return true, nil
+}

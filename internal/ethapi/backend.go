@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/filtermaps"
+	"github.com/ethereum/go-ethereum/core/logindex/logquery"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -116,6 +117,8 @@ type Backend interface {
 
 	CurrentView() *filtermaps.ChainView
 	NewMatcherBackend() filtermaps.MatcherBackend
+	LogQuery() *logquery.Matcher
+	ChainView(hash common.Hash, number uint64) *core.ChainView
 }
 
 func GetAPIs(apiBackend Backend) []rpc.API {
