@@ -21,12 +21,9 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-
-	//"fmt"
 	"io"
 	"math"
 	"math/bits"
-	"slices"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/beacon/merkle"
@@ -126,7 +123,7 @@ type IndexEntry struct {
 }
 
 type IndexValue struct {
-	EntryType uint32      `json:"type"`
+	EntryType uint16      `json:"type"`
 	Value     common.Hash `json:"value"`
 }
 
@@ -158,17 +155,18 @@ type IndexEntries []IndexEntry
 
 // DecodeRLP implements rlp.Decoder.
 func (ies *IndexEntries) DecodeRLP(s *rlp.Stream) error {
-	var ess entriesForStorage
-	if err := s.Decode(&ess); err != nil {
+	var enc []byte
+	if err := s.Decode(&enc); err != nil {
 		return err
 	}
-	*ies = ess.toEntries()
-	return nil
+	var err error
+	*ies, err = new(IndexEntries).decode(enc)
+	return err
 }
 
 // EncodeRLP implements rlp.Encoder
 func (ies IndexEntries) EncodeRLP(w io.Writer) error {
-	return rlp.Encode(w, ies.toStorage())
+	return rlp.Encode(w, ies.encode())
 }
 
 func (ie *IndexEntry) Hash() (result merkle.Value) {
@@ -241,14 +239,6 @@ func (ip *IndexPosition) Compare(i2 *IndexPosition) int {
 	return 0
 }
 
-type entriesForStorage []entryForStorage
-
-type entryForStorage struct {
-	TypeAndValueDiff []byte
-	BlockDiff        uint64
-	TxDiff, LogDiff  uint32
-}
-
 // ies[pos] >= ie; == if found is true
 func (ies IndexEntries) Find(ie *IndexEntry) (int, bool) {
 	min, max := 0, len(ies)
@@ -266,43 +256,81 @@ func (ies IndexEntries) Find(ie *IndexEntry) (int, bool) {
 	return min, false
 }
 
-func (ies IndexEntries) toStorage() entriesForStorage {
-	ess := make(entriesForStorage, 0, len(ies))
+func encodeNumber(buf []byte, n uint64) []byte {
+	for {
+		b := byte(n & 127)
+		n >>= 7
+		if n != 0 {
+			b += 128
+		}
+		buf = append(buf, b)
+		if n == 0 {
+			return buf
+		}
+	}
+}
+
+func decodeNumber(buf []byte) (uint64, []byte, error) {
+	var n uint64
+	for len(buf) != 0 {
+		b := buf[0]
+		buf = buf[1:]
+		n = n<<7 + uint64(b&127)
+		if b&128 == 0 {
+			return n, buf, nil
+		}
+	}
+	return 0, nil, errors.New("unexpected end of entry chunk (invalid number encoding)")
+}
+
+func (ies IndexEntries) encode() []byte {
+	enc := make([]byte, 0, len(ies)*64)
 	var (
-		typeAndValue, lastTypeAndValue [36]byte
+		typeAndValue, lastTypeAndValue [34]byte
 		lastBlockNumber                uint64
 		lastTxIndex, lastLogIndex      uint32
 	)
 	for _, ie := range ies {
-		binary.BigEndian.PutUint32(typeAndValue[0:4], ie.EntryType)
-		copy(typeAndValue[4:], ie.Value[:])
-		var es entryForStorage
+		var (
+			blockDiff       uint64
+			txDiff, logDiff uint32
+		)
+		binary.BigEndian.PutUint16(typeAndValue[0:2], ie.EntryType)
+		copy(typeAndValue[2:], ie.Value[:])
 		p := 0
-		for ; p < 36; p++ {
+		for ; p < 34; p++ {
 			if typeAndValue[p] != lastTypeAndValue[p] {
 				break
 			}
 		}
-		if p < 36 {
-			es.TypeAndValueDiff = slices.Clone(typeAndValue[p:])
+		if p < 34 {
 			lastTypeAndValue = typeAndValue
 			lastBlockNumber, lastTxIndex, lastLogIndex = 0, 0, 0
 		}
 		if ie.BlockNumber != lastBlockNumber {
-			es.BlockDiff = ie.BlockNumber - lastBlockNumber
+			blockDiff = ie.BlockNumber - lastBlockNumber
 			lastBlockNumber = ie.BlockNumber
 			lastTxIndex, lastLogIndex = 0, 0
 		}
 		if ie.TxIndex != lastTxIndex {
-			es.TxDiff = ie.TxIndex - lastTxIndex
+			txDiff = ie.TxIndex - lastTxIndex
 			lastTxIndex = ie.TxIndex
 			lastLogIndex = 0
 		}
-		es.LogDiff = ie.LogIndex - lastLogIndex
+		logDiff = ie.LogIndex - lastLogIndex
 		lastLogIndex = ie.LogIndex
-		ess = append(ess, es)
+		blockDiff += blockDiff
+		if p < 34 {
+			blockDiff++
+		}
+		enc = encodeNumber(enc, blockDiff)
+		enc = encodeNumber(enc, uint64(txDiff))
+		enc = encodeNumber(enc, uint64(logDiff))
+		if p < 34 {
+			enc = append(append(enc, byte(p)), typeAndValue[p:]...)
+		}
 	}
-	return ess
+	return enc
 }
 
 type entryChunk struct {
@@ -341,30 +369,50 @@ func (ec *entryChunk) getHash(gti uint64) (result merkle.Value) {
 	return
 }
 
-func (ess entriesForStorage) toEntries() IndexEntries {
-	ies := make(IndexEntries, 0, len(ess))
+func (ies IndexEntries) decode(enc []byte) (IndexEntries, error) {
 	var (
-		lastTypeAndValue          [36]byte
+		lastTypeAndValue          [34]byte
 		lastBlockNumber           uint64
 		lastTxIndex, lastLogIndex uint32
 	)
-	for _, es := range ess {
-		if len(es.TypeAndValueDiff) != 0 {
-			copy(lastTypeAndValue[36-len(es.TypeAndValueDiff):], es.TypeAndValueDiff)
+	for len(enc) > 0 {
+		blockDiff, enc, err := decodeNumber(enc)
+		if err != nil {
+			return nil, err
+		}
+		txDiff, enc, err := decodeNumber(enc)
+		if err != nil {
+			return nil, err
+		}
+		logDiff, enc, err := decodeNumber(enc)
+		if err != nil {
+			return nil, err
+		}
+		if blockDiff&1 != 0 {
+			if len(enc) < 1 {
+				return nil, errors.New("unexpected end of entry chunk (missing value diff)")
+			}
+			start := int(enc[0])
+			if start > 33 || 34-start > len(enc)-1 {
+				return nil, errors.New("invalid value diff length")
+			}
+			copy(lastTypeAndValue[start:], enc[1:35-start])
+			enc = enc[35-start:]
 			lastBlockNumber, lastTxIndex, lastLogIndex = 0, 0, 0
 		}
-		if es.BlockDiff != 0 {
-			lastBlockNumber += es.BlockDiff
+		blockDiff >>= 1
+		if blockDiff != 0 {
+			lastBlockNumber += blockDiff
 			lastTxIndex, lastLogIndex = 0, 0
 		}
-		if es.TxDiff != 0 {
-			lastTxIndex += es.TxDiff
+		if txDiff != 0 {
+			lastTxIndex += uint32(txDiff)
 			lastLogIndex = 0
 		}
-		lastLogIndex += es.LogDiff
+		lastLogIndex += uint32(logDiff)
 		ie := IndexEntry{
 			IndexValue: IndexValue{
-				EntryType: binary.BigEndian.Uint32(lastTypeAndValue[:4]),
+				EntryType: binary.BigEndian.Uint16(lastTypeAndValue[:2]),
 			},
 			IndexPosition: IndexPosition{
 				BlockNumber: lastBlockNumber,
@@ -372,16 +420,16 @@ func (ess entriesForStorage) toEntries() IndexEntries {
 				LogIndex:    lastLogIndex,
 			},
 		}
-		copy(ie.Value[:], lastTypeAndValue[4:])
+		copy(ie.Value[:], lastTypeAndValue[2:])
 		ies = append(ies, ie)
 	}
-	return ies
+	return ies, nil
 }
 
 type subtreesForStorage struct {
-	BoundaryEntries entriesForStorage // N-1
-	BoundaryFilePos []uint64          // N+1
-	Hashes          []merkle.Value    //N
+	BoundaryEntries []byte         // N-1
+	BoundaryFilePos []uint64       // N+1
+	Hashes          []merkle.Value //N
 }
 
 type subtreeChunk struct {
@@ -393,8 +441,12 @@ type subtreeChunk struct {
 }
 
 func (ss *subtreesForStorage) toSubtreeChunk(height, above uint) *subtreeChunk {
+	entries, err := make(IndexEntries, 0, subtreeChunkSize-1).decode(ss.BoundaryEntries)
+	if err != nil {
+		panic(err) //TODO
+	}
 	sc := &subtreeChunk{
-		boundaryEntries: ss.BoundaryEntries.toEntries(),
+		boundaryEntries: entries,
 		boundaryFilePos: ss.BoundaryFilePos,
 		height:          height,
 		above:           above,
@@ -412,7 +464,7 @@ func (ss *subtreesForStorage) toSubtreeChunk(height, above uint) *subtreeChunk {
 
 func (sc *subtreeChunk) toStorage() subtreesForStorage {
 	return subtreesForStorage{
-		BoundaryEntries: sc.boundaryEntries.toStorage(),
+		BoundaryEntries: sc.boundaryEntries.encode(),
 		BoundaryFilePos: sc.boundaryFilePos,
 		Hashes:          sc.hashes[1<<sc.height : 1<<sc.height+sc.branches],
 	}
@@ -692,7 +744,7 @@ const (
 type writeState struct {
 	Phase             uint
 	NextEntry         uint64
-	LastEntryChunk    entriesForStorage
+	LastEntryChunk    []byte
 	LastSubtreeChunks []subtreesForStorage
 	CopyLevel         uint
 	CopyReadPointer   uint64
@@ -746,7 +798,11 @@ func newTableWriter(params *Params, tf *tableFiles, name string, storedState boo
 		}
 		tw.phase = wpWriteEntries
 	case wpWriteEntries:
-		tw.lastEntryChunk.entries = state.LastEntryChunk.toEntries()
+		entries, err := make(IndexEntries, 0, entryChunkSize).decode(state.LastEntryChunk)
+		if err != nil {
+			panic(err) //TODO
+		}
+		tw.lastEntryChunk.entries = entries
 		for i := range tw.lastSubtreeChunks {
 			tw.lastSubtreeChunks[i] = state.LastSubtreeChunks[i].toSubtreeChunk(tw.format.subtreeChunkHeight(uint(i)), tw.format.leafHeight-tw.format.baseHeight(uint(i+1)))
 		}
@@ -884,7 +940,7 @@ func (tw *tableWriter) close() error {
 			}
 			tw.writers[i] = nil // signal for a potential delete() that this writer has been successfully closed
 		}
-		state.LastEntryChunk = tw.lastEntryChunk.entries.toStorage()
+		state.LastEntryChunk = tw.lastEntryChunk.entries.encode()
 		state.LastSubtreeChunks = make([]subtreesForStorage, len(tw.lastSubtreeChunks))
 		for i, sc := range tw.lastSubtreeChunks {
 			state.LastSubtreeChunks[i] = sc.toStorage()
@@ -971,7 +1027,7 @@ func (tw *tableWriter) addEntry(ie *IndexEntry) error {
 	tw.lastEntryChunk.entries = append(tw.lastEntryChunk.entries, *ie)
 	tw.nextEntry++
 	if len(tw.lastEntryChunk.entries) == entryChunkSize || tw.nextEntry == tw.entryCount {
-		ess := tw.lastEntryChunk.entries.toStorage()
+		ess := tw.lastEntryChunk.entries.encode()
 		enc, err := rlp.EncodeToBytes(&ess)
 		if err != nil {
 			return err

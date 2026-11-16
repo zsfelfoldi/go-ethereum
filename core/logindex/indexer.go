@@ -458,7 +458,7 @@ func getBlockEntries(blockNumber uint64, parentHash common.Hash, txs types.Trans
 			for ti, topic := range log.Topics {
 				entries = append(entries, IndexEntry{
 					IndexValue: IndexValue{
-						EntryType: IeTopic0 + uint32(ti),
+						EntryType: IeTopic0 + uint16(ti),
 						Value:     ([32]byte)(topic),
 					},
 					IndexPosition: IndexPosition{

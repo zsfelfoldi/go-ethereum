@@ -100,7 +100,7 @@ func NewPatternMatcherFromJSON(msg json.RawMessage) (PatternMatcher, error) {
 			if err != nil || topicIndex < 0 || topicIndex >= logindex.MaxTopicCount {
 				return nil, errors.New("invalid topic index")
 			}
-			sm.value.EntryType = logindex.IeTopic0 + uint32(topicIndex)
+			sm.value.EntryType = logindex.IeTopic0 + uint16(topicIndex)
 		default:
 			return nil, errors.New("unknown entry type")
 		}
@@ -177,7 +177,7 @@ func NewLegacyMatcher(addresses []common.Address, topics [][]common.Hash) (Patte
 		if len(topicList) > 0 {
 			matchTopic := make(matchAny, len(topicList))
 			for j, topic := range topicList {
-				matchTopic[j] = &singleMatcher{value: logindex.IndexValue{EntryType: logindex.IeTopic0 + uint32(i), Value: ([32]byte)(topic)}}
+				matchTopic[j] = &singleMatcher{value: logindex.IndexValue{EntryType: logindex.IeTopic0 + uint16(i), Value: ([32]byte)(topic)}}
 			}
 			matcher = append(matcher, matchTopic)
 		}
