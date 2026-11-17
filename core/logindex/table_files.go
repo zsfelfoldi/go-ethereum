@@ -285,8 +285,14 @@ func (tf *tableFiles) getOsFileInfo(fi *tableFileInfo, fileIndex int, write bool
 	tf.accessCounter++
 	id := osFileID{tfInfo: fi, fileIndex: fileIndex}
 	if of, ok := tf.osFiles[id]; ok {
-		of.accessCounter = tf.accessCounter
-		return of, nil
+		if of.writer != nil == write {
+			of.accessCounter = tf.accessCounter
+			return of, nil
+		} else {
+			if err := tf.closeOsFileIdLocked(id); err != nil {
+				log.Error("Could not close index table file", "name", tf.osFileName(id.tfInfo.name, id.fileIndex), "error", err)
+			}
+		}
 	}
 	for len(tf.osFiles) >= tf.maxOpenFiles {
 		// close least recently accessed os file

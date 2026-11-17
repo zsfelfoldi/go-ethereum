@@ -53,18 +53,21 @@ func (ix *Indexer) mergeLoop(threadIndex int) {
 			ix.updateTableOperations()
 			ix.lock.Unlock()
 		case opMerge:
-			_, err := ix.mergeTable(currentOp.id, func() bool {
-				select {
-				case <-ix.updateMergeCh[threadIndex]:
-					triggered = true
-					return true
-				default:
-					return false
+			completeSet, _, _ := ix.storage.tables()
+			if !completeSet.includes(currentOp.id) {
+				_, err := ix.mergeTable(currentOp.id, func() bool {
+					select {
+					case <-ix.updateMergeCh[threadIndex]:
+						triggered = true
+						return true
+					default:
+						return false
+					}
+				})
+				if err != nil {
+					r := ix.params.blockRange(currentOp.id)
+					log.Error("Failed to merge index table", "start", r.First(), "count", r.Count(), "error", err)
 				}
-			})
-			if err != nil {
-				r := ix.params.blockRange(currentOp.id)
-				log.Error("Failed to merge index table", "start", r.First(), "count", r.Count(), "error", err)
 			}
 			if !triggered {
 				ix.lock.Lock()
