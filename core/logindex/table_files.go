@@ -430,10 +430,10 @@ func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
 		fi.memData = append(fi.memData, p...)
 		n = len(p)
 		fi.size += int64(n)
-		nn := atomic.AddInt64(&fi.tf.memFileTotal, int64(n))
-		if nn>>20 != (nn-int64(n))>>20 {
+		/*nn := */ atomic.AddInt64(&fi.tf.memFileTotal, int64(n))
+		/*if nn>>20 != (nn-int64(n))>>20 {
 			fmt.Println("memFileTotal", nn>>20)
-		}
+		}*/
 		return
 	}
 	// table file stored on disk
@@ -502,6 +502,7 @@ func (tf *tableFiles) renameFile(oldName, newName string) error {
 		return errFileLocked
 	}
 	delete(tf.tableFiles, oldName)
+
 	switch {
 	case fi.fileCount == 1:
 		if err := os.Rename(tf.osFileName(oldName, 0), tf.osFileName(newName, 0)); err != nil {

@@ -771,6 +771,9 @@ type writeState struct {
 }
 
 func newTableWriter(params *Params, tf *tableFiles, name string, storedState bool, entryCount uint64, forceMemory bool) (*tableWriter, error) {
+	if entryCount >= 10000000 {
+		fmt.Println("*** newTableWriter", name, storedState)
+	}
 	var state writeState
 	if storedState {
 		r, l, err := tf.getReaderAt(name + writeStateSuffix)
@@ -860,6 +863,9 @@ func newTableWriter(params *Params, tf *tableFiles, name string, storedState boo
 	if err := tw.open(); err != nil { //TODO merge into this fn?
 		return nil, err
 	}
+	if entryCount >= 10000000 {
+		fmt.Println("+++ newTableWriter success", name)
+	}
 	return tw, nil
 }
 
@@ -867,6 +873,9 @@ func (tw *tableWriter) delete() error {
 	tw.lock.Lock()
 	defer tw.lock.Unlock()
 
+	if tw.entryCount >= 10000000 {
+		fmt.Println("*** delete", tw.name)
+	}
 	var finalErr error
 	for _, w := range tw.writers {
 		if w != nil {
@@ -892,6 +901,9 @@ func (tw *tableWriter) delete() error {
 		finalErr = err
 	}
 	tw.isDeleted = true
+	if tw.entryCount >= 10000000 {
+		fmt.Println("+++ delete", tw.name, finalErr)
+	}
 	return finalErr
 }
 
@@ -937,6 +949,9 @@ func (tw *tableWriter) close() error {
 	tw.lock.Lock()
 	defer tw.lock.Unlock()
 
+	if tw.entryCount >= 10000000 {
+		fmt.Println("*** close", tw.name)
+	}
 	//fmt.Println("+++ close", tw.name)
 	if tw.isDeleted {
 		return ErrTableDeleted
@@ -978,6 +993,9 @@ func (tw *tableWriter) close() error {
 			state.Header.LevelPointers[i] = uint64(p)
 		}
 	case wpFinalized:
+		if tw.entryCount >= 10000000 {
+			fmt.Println("+++ close success (finalized)", tw.name)
+		}
 		tw.isOpen = false
 		return nil
 	default:
@@ -998,6 +1016,9 @@ func (tw *tableWriter) close() error {
 	}
 	tw.hasStoredState = true
 	tw.isOpen = false
+	if tw.entryCount >= 10000000 {
+		fmt.Println("+++ close success", tw.name)
+	}
 	return nil
 }
 
@@ -1196,6 +1217,9 @@ func (tw *tableWriter) finalize() (bool, error) {
 				if err := tw.tf.deleteFile(tw.name + writeTempSuffix(i)); err != nil {
 					return false, err
 				}
+			}
+			if tw.entryCount >= 10000000 {
+				fmt.Println("*** finalized; rename", tw.name+writeTempSuffix(tw.format.subtreeLevels), tw.name)
 			}
 			if err := tw.tf.renameFile(tw.name+writeTempSuffix(tw.format.subtreeLevels), tw.name); err != nil {
 				return false, err
