@@ -88,10 +88,10 @@ func testTableRW(t *testing.T, blockCount uint64, maxFileSize int64) {
 	if err != nil {
 		t.Fatalf("Error during newTableWriter: %v", err)
 	}
-	err = tw.open()
+	/*err = tw.open()
 	if err != nil {
 		t.Fatalf("Error during tableWriter.open: %v", err)
-	}
+	}*/
 	tw.setMeta(TableMeta{LastBlockHash: common.Hash{1}})
 	for i := range ies {
 		err := tw.addEntry(&ies[i])
@@ -114,22 +114,16 @@ func testTableRW(t *testing.T, blockCount uint64, maxFileSize int64) {
 			if err != nil {
 				t.Fatalf("Error during tableWriter.close: %v", err)
 			}
-			if /*restart && */ rand.Intn(2) == 0 {
-				files.close()
-				files, err = newTableFiles(path, maxFileSize, 4)
-				if err != nil {
-					t.Fatalf("Error during newTableFiles: %v", err)
-				}
-				tw, err = newTableWriter(DefaultParams, files, "test_table", true, uint64(len(ies)), false)
-				if err != nil {
-					t.Fatalf("Error during newTableWriter: %v", err)
-				}
-				fmt.Println("/// restart", tw.entryCount, len(ies))
-			}
-			err = tw.open()
+			files.close()
+			files, err = newTableFiles(path, maxFileSize, 4)
 			if err != nil {
-				t.Fatalf("Error during tableWriter.open: %v", err)
+				t.Fatalf("Error during newTableFiles: %v", err)
 			}
+			tw, err = newTableWriter(DefaultParams, files, "test_table", true, uint64(len(ies)), false)
+			if err != nil {
+				t.Fatalf("Error during newTableWriter: %v", err)
+			}
+			fmt.Println("/// restart", tw.entryCount, len(ies))
 		}
 	}
 	for {

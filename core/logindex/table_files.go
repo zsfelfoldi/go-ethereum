@@ -55,7 +55,7 @@ type tableFiles struct {
 	maxFileSize   int64
 	maxOpenFiles  int
 	accessCounter uint64
-	osFiles       map[osFileID]*osFileInfo // finished files only
+	osFiles       map[osFileID]*osFileInfo // open files only
 	tableFiles    map[string]*tableFileInfo
 	memFileTotal  int64
 }
@@ -212,6 +212,7 @@ func (tf *tableFiles) loadMemTables() {
 		return
 	}
 	for _, mt := range memTables {
+		fmt.Println(" new mem fi", mt.Name)
 		tf.tableFiles[mt.Name] = &tableFileInfo{
 			tf:      tf,
 			name:    mt.Name,
@@ -465,6 +466,11 @@ func (fi *tableFileInfo) Close() error {
 		return errors.New("table file was not open for writing")
 	}
 	if fi.fileCount != 0 {
+		if fi.size == 0 {
+			if _, err := fi.tf.getOsFileInfo(fi, fi.fileCount-1, true); err != nil {
+				return err
+			}
+		}
 		if err := fi.tf.closeOsFile(fi, fi.fileCount-1); err != nil {
 			return err
 		}

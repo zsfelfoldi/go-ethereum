@@ -26,6 +26,7 @@ func TestTableFiles(t *testing.T) {
 	testTableFiles(t, 1000000, 2000000000, true)
 	testTableFiles(t, 1000000, 2000000000, false)
 	testTableFiles(t, 1000000, 100000, false)
+	testTableFiles(t, 0, 100000, false)
 }
 
 func testTableFiles(t *testing.T, size, maxFileSize int64, memory bool) {
@@ -93,6 +94,13 @@ func testTableFilesWithFlags(t *testing.T, size, maxFileSize int64, memory, open
 		}
 	}
 	w.Close()
+	if restart {
+		files.close()
+		files, err = newTableFiles(path, maxFileSize, 4)
+		if err != nil {
+			t.Fatalf("Error during newTableFiles: %v", err)
+		}
+	}
 	r, rsize, err := files.getReaderAt("table_file_test")
 	if err != nil {
 		t.Fatalf("Error during tableFiles.getReaderAt: %v", err)
@@ -100,18 +108,20 @@ func testTableFilesWithFlags(t *testing.T, size, maxFileSize int64, memory, open
 	if rsize != size {
 		t.Fatalf("Incorrect file size (expected %d, got %d)", size, rsize)
 	}
-	for range 10000 {
-		pos := rand.Int63n(size)
-		l := min(rand.Int63n(1000), size-pos)
-		n, err := r.ReadAt(buf[:l], pos)
-		if err != nil {
-			t.Fatalf("Error during tableFileInfo.ReadAt: %v", err)
-		}
-		if int64(n) != l {
-			t.Fatalf("Not enough bytes read by tableFileInfo.ReadAt (expected %d, got %d)", l, n)
-		}
-		if !checkTestBytes(buf[:l], pos) {
-			t.Fatalf("Incorrect data read by tableFileInfo.ReadAt (offset %d, length %d)", pos, l)
+	if size > 0 {
+		for range 10000 {
+			pos := rand.Int63n(size)
+			l := min(rand.Int63n(1000), size-pos)
+			n, err := r.ReadAt(buf[:l], pos)
+			if err != nil {
+				t.Fatalf("Error during tableFileInfo.ReadAt: %v", err)
+			}
+			if int64(n) != l {
+				t.Fatalf("Not enough bytes read by tableFileInfo.ReadAt (expected %d, got %d)", l, n)
+			}
+			if !checkTestBytes(buf[:l], pos) {
+				t.Fatalf("Incorrect data read by tableFileInfo.ReadAt (offset %d, length %d)", pos, l)
+			}
 		}
 	}
 }
