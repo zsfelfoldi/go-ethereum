@@ -430,7 +430,10 @@ func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
 		fi.memData = append(fi.memData, p...)
 		n = len(p)
 		fi.size += int64(n)
-		atomic.AddInt64(&fi.tf.memFileTotal, int64(n))
+		nn := atomic.AddInt64(&fi.tf.memFileTotal, int64(n))
+		if nn>>20 != (nn-int64(n))>>20 {
+			fmt.Println("memFileTotal", nn>>20)
+		}
 		return
 	}
 	// table file stored on disk

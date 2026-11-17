@@ -28,12 +28,12 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-func testValue(blockNumber uint64, txIndex, logIndex, EntryType uint32) (result [32]byte) {
-	var data [20]byte
+func testValue(blockNumber uint64, txIndex, logIndex uint32, entryType uint16) (result [32]byte) {
+	var data [18]byte
 	binary.LittleEndian.PutUint64(data[0:8], blockNumber)
 	binary.LittleEndian.PutUint32(data[8:12], txIndex)
 	binary.LittleEndian.PutUint32(data[12:16], logIndex)
-	binary.LittleEndian.PutUint32(data[16:20], EntryType)
+	binary.LittleEndian.PutUint16(data[16:18], entryType)
 	hasher := sha256.New()
 	hasher.Write(data[:])
 	hasher.Sum(result[:0])
@@ -45,7 +45,7 @@ func makeIndexEntries(blockCount uint64) IndexEntries {
 	for blockNumber := range blockCount {
 		for txIndex := range uint32(10) {
 			for logIndex := range uint32(10) {
-				for entryType := range uint32(10) {
+				for entryType := range uint16(10) {
 					ies = append(ies, IndexEntry{
 						IndexValue: IndexValue{
 							EntryType: entryType,
@@ -146,7 +146,7 @@ func testTableRW(t *testing.T, blockCount uint64, maxFileSize int64) {
 		blockNumber := uint64(rand.Int63n(int64(blockCount)))
 		txIndex := uint32(rand.Intn(10))
 		logIndex := uint32(rand.Intn(10))
-		entryType := uint32(rand.Intn(10))
+		entryType := uint16(rand.Intn(10))
 		target := &IndexEntry{
 			IndexValue: IndexValue{
 				EntryType: entryType,

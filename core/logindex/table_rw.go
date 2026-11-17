@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"math/bits"
@@ -155,18 +156,24 @@ type IndexEntries []IndexEntry
 
 // DecodeRLP implements rlp.Decoder.
 func (ies *IndexEntries) DecodeRLP(s *rlp.Stream) error {
+	fmt.Println("DecodeRLP")
 	var enc []byte
 	if err := s.Decode(&enc); err != nil {
 		return err
 	}
+	fmt.Println(" DecodeRLP enc", len(enc))
 	var err error
 	*ies, err = new(IndexEntries).decode(enc)
+	fmt.Println(" DecodeRLP dec", len(*ies))
 	return err
 }
 
 // EncodeRLP implements rlp.Encoder
 func (ies IndexEntries) EncodeRLP(w io.Writer) error {
-	return rlp.Encode(w, ies.encode())
+	fmt.Println("EncodeRLP", len(ies))
+	enc := ies.encode()
+	fmt.Println(" EncodeRLP enc", len(enc))
+	return rlp.Encode(w, &enc)
 }
 
 func (ie *IndexEntry) Hash() (result merkle.Value) {
@@ -271,11 +278,15 @@ func encodeNumber(buf []byte, n uint64) []byte {
 }
 
 func decodeNumber(buf []byte) (uint64, []byte, error) {
-	var n uint64
+	var (
+		n     uint64
+		shift uint
+	)
 	for len(buf) != 0 {
 		b := buf[0]
 		buf = buf[1:]
-		n = n<<7 + uint64(b&127)
+		n += uint64(b&127) << shift
+		shift += 7
 		if b&128 == 0 {
 			return n, buf, nil
 		}
@@ -284,6 +295,7 @@ func decodeNumber(buf []byte) (uint64, []byte, error) {
 }
 
 func (ies IndexEntries) encode() []byte {
+	//fmt.Println("encode", len(ies))
 	enc := make([]byte, 0, len(ies)*64)
 	var (
 		typeAndValue, lastTypeAndValue [34]byte
@@ -330,6 +342,7 @@ func (ies IndexEntries) encode() []byte {
 			enc = append(append(enc, byte(p)), typeAndValue[p:]...)
 		}
 	}
+	//fmt.Println(" encode success", len(enc))
 	return enc
 }
 
@@ -370,6 +383,7 @@ func (ec *entryChunk) getHash(gti uint64) (result merkle.Value) {
 }
 
 func (ies IndexEntries) decode(enc []byte) (IndexEntries, error) {
+	//fmt.Println("decode", len(enc))
 	var (
 		lastTypeAndValue          [34]byte
 		lastBlockNumber           uint64
@@ -423,6 +437,7 @@ func (ies IndexEntries) decode(enc []byte) (IndexEntries, error) {
 		copy(ie.Value[:], lastTypeAndValue[2:])
 		ies = append(ies, ie)
 	}
+	//fmt.Println(" decode success", len(ies))
 	return ies, nil
 }
 
@@ -443,7 +458,7 @@ type subtreeChunk struct {
 func (ss *subtreesForStorage) toSubtreeChunk(height, above uint) *subtreeChunk {
 	entries, err := make(IndexEntries, 0, subtreeChunkSize-1).decode(ss.BoundaryEntries)
 	if err != nil {
-		panic(err) //TODO
+		fmt.Println("toSubtreeChunk decode error", err, ss.BoundaryEntries) //TODO
 	}
 	sc := &subtreeChunk{
 		boundaryEntries: entries,
@@ -798,11 +813,13 @@ func newTableWriter(params *Params, tf *tableFiles, name string, storedState boo
 		}
 		tw.phase = wpWriteEntries
 	case wpWriteEntries:
-		entries, err := make(IndexEntries, 0, entryChunkSize).decode(state.LastEntryChunk)
-		if err != nil {
-			panic(err) //TODO
+		if state.LastEntryChunk != nil {
+			entries, err := make(IndexEntries, 0, entryChunkSize).decode(state.LastEntryChunk)
+			if err != nil {
+				fmt.Println("LastEntryChunk decode error", err, state.LastEntryChunk) //TODO
+			}
+			tw.lastEntryChunk.entries = entries
 		}
-		tw.lastEntryChunk.entries = entries
 		for i := range tw.lastSubtreeChunks {
 			tw.lastSubtreeChunks[i] = state.LastSubtreeChunks[i].toSubtreeChunk(tw.format.subtreeChunkHeight(uint(i)), tw.format.leafHeight-tw.format.baseHeight(uint(i+1)))
 		}
