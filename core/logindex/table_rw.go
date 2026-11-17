@@ -156,23 +156,23 @@ type IndexEntries []IndexEntry
 
 // DecodeRLP implements rlp.Decoder.
 func (ies *IndexEntries) DecodeRLP(s *rlp.Stream) error {
-	fmt.Println("DecodeRLP")
+	//fmt.Println("DecodeRLP")
 	var enc []byte
 	if err := s.Decode(&enc); err != nil {
 		return err
 	}
-	fmt.Println(" DecodeRLP enc", len(enc))
+	//fmt.Println(" DecodeRLP enc", len(enc))
 	var err error
 	*ies, err = new(IndexEntries).decode(enc)
-	fmt.Println(" DecodeRLP dec", len(*ies))
+	//fmt.Println(" DecodeRLP dec", len(*ies))
 	return err
 }
 
 // EncodeRLP implements rlp.Encoder
 func (ies IndexEntries) EncodeRLP(w io.Writer) error {
-	fmt.Println("EncodeRLP", len(ies))
+	//fmt.Println("EncodeRLP", len(ies))
 	enc := ies.encode()
-	fmt.Println(" EncodeRLP enc", len(enc))
+	//fmt.Println(" EncodeRLP enc", len(enc))
 	return rlp.Encode(w, &enc)
 }
 
@@ -390,15 +390,19 @@ func (ies IndexEntries) decode(enc []byte) (IndexEntries, error) {
 		lastTxIndex, lastLogIndex uint32
 	)
 	for len(enc) > 0 {
-		blockDiff, enc, err := decodeNumber(enc)
+		var (
+			blockDiff, txDiff, logDiff uint64
+			err                        error
+		)
+		blockDiff, enc, err = decodeNumber(enc)
 		if err != nil {
 			return nil, err
 		}
-		txDiff, enc, err := decodeNumber(enc)
+		txDiff, enc, err = decodeNumber(enc)
 		if err != nil {
 			return nil, err
 		}
-		logDiff, enc, err := decodeNumber(enc)
+		logDiff, enc, err = decodeNumber(enc)
 		if err != nil {
 			return nil, err
 		}
