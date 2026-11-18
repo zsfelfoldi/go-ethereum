@@ -533,20 +533,24 @@ type subtreePos struct {
 func newTableReader(p *Params, tf *tableFiles, name string) (*TableReader, error) {
 	ioReader, fileSize, err := tf.getReaderAt(name)
 	if err != nil {
+		fmt.Println("newTableReader err 1", name, fileSize, err)
 		return nil, err
 	}
 	var headerSizeByte [1]byte
 	_, err = ioReader.ReadAt(headerSizeByte[:], fileSize-1)
 	if err != nil {
+		fmt.Println("newTableReader err 2", name, fileSize, err)
 		return nil, err
 	}
 	headerEnc := make([]byte, headerSizeByte[0])
 	_, err = ioReader.ReadAt(headerEnc, fileSize-1-int64(headerSizeByte[0]))
 	if err != nil {
+		fmt.Println("newTableReader err 3", name, fileSize, headerSizeByte[0], err)
 		return nil, err
 	}
 	var header tableHeader
 	if err := rlp.DecodeBytes(headerEnc, &header); err != nil {
+		fmt.Println("newTableReader err 4", name, fileSize, headerSizeByte[0], headerEnc, err)
 		return nil, err
 	}
 	tr := &TableReader{
@@ -1070,7 +1074,7 @@ func (tw *tableWriter) addEntry(ie *IndexEntry) error {
 	tw.nextEntry++
 	if len(tw.lastEntryChunk.entries) == entryChunkSize || tw.nextEntry == tw.entryCount {
 		ess := tw.lastEntryChunk.entries.encode()
-		enc, err := rlp.EncodeToBytes(&ess)
+		enc, err := rlp.EncodeToBytes(&ess) //TODO
 		if err != nil {
 			return err
 		}
