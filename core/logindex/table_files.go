@@ -69,6 +69,9 @@ type osFileInfo struct {
 	file          *os.File
 	writer        *bufio.Writer // only in write mode
 	accessCounter uint64
+
+	lock   sync.Mutex // locked during every operation
+	closed bool       // set when removed from osFiles; protected by lock
 }
 
 type tableFileInfo struct {
@@ -341,6 +344,9 @@ func (tf *tableFiles) closeOsFileIdLocked(id osFileID) error {
 	if of == nil {
 		return nil
 	}
+	of.lock.Lock()
+	defer of.lock.Unlock()
+
 	if of.writer != nil {
 		if err := of.writer.Flush(); err != nil {
 			return err
@@ -349,6 +355,7 @@ func (tf *tableFiles) closeOsFileIdLocked(id osFileID) error {
 	if err := of.file.Close(); err != nil {
 		return err
 	}
+	of.closed = true
 	delete(tf.osFiles, id)
 	return nil
 }
@@ -380,16 +387,27 @@ func (fi *tableFileInfo) ReadAt(p []byte, offset int64) (n int, err error) {
 	if fileIndex >= fi.fileCount {
 		return 0, errors.New("invalid read offset")
 	}
-	of, err := fi.tf.getOsFileInfo(fi, fileIndex, false)
-	if err != nil {
-		return 0, err
+	var of *osFileInfo
+	for {
+		var err error
+		of, err = fi.tf.getOsFileInfo(fi, fileIndex, false)
+		if err != nil {
+			return 0, err
+		}
+		of.lock.Lock()
+		if !of.closed {
+			break
+		}
+		of.lock.Unlock()
 	}
 	filePos := offset % fi.tf.maxFileSize
 	maxLen := fi.tf.maxFileSize - filePos
 	if int64(len(p)) <= maxLen {
+		defer of.lock.Unlock()
 		return of.file.ReadAt(p, filePos)
 	}
 	n, err = of.file.ReadAt(p[:maxLen], filePos)
+	of.lock.Unlock()
 	if err != nil {
 		return n, err
 	}
@@ -443,18 +461,29 @@ func (fi *tableFileInfo) Write(p []byte) (n int, err error) {
 		return
 	}
 	// table file stored on disk
-	of, err := fi.tf.getOsFileInfo(fi, fi.fileCount-1, true)
-	if err != nil {
-		return 0, err
+	var of *osFileInfo
+	for {
+		var err error
+		of, err = fi.tf.getOsFileInfo(fi, fi.fileCount-1, true)
+		if err != nil {
+			return 0, err
+		}
+		of.lock.Lock()
+		if !of.closed {
+			break
+		}
+		of.lock.Unlock()
 	}
 	maxLen := fi.tf.maxFileSize - fi.chunkSize
 	if int64(len(p)) <= maxLen {
 		n, err = of.writer.Write(p)
+		of.lock.Unlock()
 		fi.size += int64(n)
 		fi.chunkSize += int64(n)
 		return
 	}
 	n, err = of.writer.Write(p[:maxLen])
+	of.lock.Unlock()
 	fi.size += int64(n)
 	if err != nil {
 		return n, err
@@ -563,10 +592,13 @@ func (tf *tableFiles) deleteFile(name string) error {
 	for i := range fi.fileCount {
 		id := osFileID{tfInfo: fi, fileIndex: i}
 		if of, ok := tf.osFiles[id]; ok {
+			of.lock.Lock()
 			if err := of.file.Close(); err != nil {
 				log.Error("Could not close index table file", "name", tf.osFileName(fi.name, i), "error", err)
 			}
 			delete(tf.osFiles, id)
+			of.closed = true
+			of.lock.Unlock()
 		}
 		if err := os.Remove(tf.osFileName(name, i)); err != nil {
 			//fmt.Println(" os.Remove error", err)

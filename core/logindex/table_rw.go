@@ -588,6 +588,9 @@ func (tr *TableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 			return nil, err
 		}
 		i := index % subtreeChunkSize
+		if i+1 >= uint64(len(sc.boundaryFilePos)) {
+			return nil, errors.New("subtree chunk does not exist")
+		}
 		start, stop = tr.levelPointers[level+1]+int64(sc.boundaryFilePos[i]), tr.levelPointers[level+1]+int64(sc.boundaryFilePos[i+1])
 	}
 	enc := make([]byte, stop-start)
