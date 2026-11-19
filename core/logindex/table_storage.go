@@ -78,7 +78,7 @@ loop:
 			fmt.Println("table", reader.BlockRange(), "root", common.Hash(reader.TableRoot))
 			ts.readers[id] = reader
 		case fnWriteState:
-			writer, err := newTableWriter(params, tf, params.tableName(id), true, 0, id.level == 0)
+			writer, err := newTableWriter(params, tf, id, true, 0)
 			if err != nil {
 				log.Error("Invalid partial index table file", "name", params.tableName(id), "error", err)
 				tf.deleteFile(name)
@@ -202,11 +202,7 @@ func (ts *tableStorage) addNewTableWriter(id tableID, entryCount uint64) (*table
 	if ts.writers[id] != nil {
 		return nil, errors.New("table already exists")
 	}
-	minUnique := 34 //TODO
-	if id.level == len(ts.params.tableLevels)-1 {
-		minUnique = 4
-	}
-	tw, err := newTableWriter(ts.params, ts.tf, ts.params.tableName(id), false, entryCount, id.level == 0, minUnique)
+	tw, err := newTableWriter(ts.params, ts.tf, id, false, entryCount)
 	if err != nil {
 		return nil, err
 	}

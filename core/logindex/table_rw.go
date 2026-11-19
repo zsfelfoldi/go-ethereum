@@ -294,7 +294,7 @@ func decodeNumber(buf []byte) (uint64, []byte, error) {
 	return 0, nil, errors.New("unexpected end of entry chunk (invalid number encoding)")
 }
 
-func (ies IndexEntries) encode(minUnique int) []byte {
+func (ies IndexEntries) encode(minUnique uint) []byte {
 	//fmt.Println("encode", len(ies))
 	enc := make([]byte, 0, len(ies)*64)
 	var (
@@ -302,11 +302,11 @@ func (ies IndexEntries) encode(minUnique int) []byte {
 		lastBlockNumber                uint64
 		lastTxIndex, lastLogIndex      uint32
 	)
-	sharedPrefix := make([]int, len(ies))
+	sharedPrefix := make([]uint, len(ies))
 	for i, ie := range ies {
 		binary.BigEndian.PutUint16(typeAndValue[0:2], ie.EntryType)
 		copy(typeAndValue[2:], ie.Value[:])
-		p := 0
+		p := uint(0)
 		for ; p < 34; p++ {
 			if typeAndValue[p] != lastTypeAndValue[p] {
 				break
@@ -766,7 +766,7 @@ type tableWriter struct {
 	name                                       string
 	entryCount                                 uint64
 	format                                     tableFormat
-	minUnique                                  int
+	minUnique                                  uint
 	meta                                       TableMeta
 	isOpen, isDeleted, hasStoredState, hasMeta bool
 	phase                                      uint
@@ -803,7 +803,8 @@ type writeState struct {
 	Header            tableHeader
 }
 
-func newTableWriter(params *Params, tf *tableFiles, name string, storedState bool, entryCount uint64, forceMemory bool, minUnique int) (*tableWriter, error) {
+func newTableWriter(params *Params, tf *tableFiles, id tableID, storedState bool, entryCount uint64) (*tableWriter, error) {
+	name := params.tableName(id)
 	if entryCount >= 10000000 {
 		fmt.Println("*** newTableWriter", name, storedState)
 	}
@@ -827,8 +828,12 @@ func newTableWriter(params *Params, tf *tableFiles, name string, storedState boo
 		entryCount = state.Header.EntryCount
 	}
 	format := params.newTableFormat(entryCount)
-	if forceMemory {
+	if id.level == 0 {
 		format.memoryStorage = format.subtreeLevels + 1
+	}
+	minUnique := uint(34)
+	if id.level == len(params.tableLevels)-1 {
+		minUnique = params.topLevelMinUnique
 	}
 	tw := &tableWriter{
 		tf:                tf,

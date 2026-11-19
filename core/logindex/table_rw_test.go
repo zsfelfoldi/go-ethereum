@@ -84,7 +84,7 @@ func testTableRW(t *testing.T, blockCount uint64, maxFileSize int64) {
 	}()
 
 	ies := makeIndexEntries(blockCount)
-	tw, err := newTableWriter(DefaultParams, files, "test_table", false, uint64(len(ies)), false)
+	tw, err := newTableWriter(DefaultParams, files, tableID{level: 1}, false, uint64(len(ies)))
 	if err != nil {
 		t.Fatalf("Error during newTableWriter: %v", err)
 	}
@@ -119,7 +119,7 @@ func testTableRW(t *testing.T, blockCount uint64, maxFileSize int64) {
 			if err != nil {
 				t.Fatalf("Error during newTableFiles: %v", err)
 			}
-			tw, err = newTableWriter(DefaultParams, files, "test_table", true, uint64(len(ies)), false)
+			tw, err = newTableWriter(DefaultParams, files, tableID{level: 1}, true, uint64(len(ies)), false)
 			if err != nil {
 				t.Fatalf("Error during newTableWriter: %v", err)
 			}

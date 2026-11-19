@@ -64,6 +64,7 @@ type Params struct {
 	tableLevels                []tableLevel //TODO config?
 	protocolLevels             []protocolLevel
 	fileStorageThresholdHeight uint
+	topLevelMinUnique          uint
 }
 
 var DefaultParams = &Params{
@@ -89,6 +90,7 @@ var DefaultParams = &Params{
 		{tailAge: 8192, headAge: 16},
 	},
 	fileStorageThresholdHeight: 12,
+	topLevelMinUnique:          34, //TODO
 }
 
 type Indexer struct {
