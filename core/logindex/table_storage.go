@@ -202,7 +202,11 @@ func (ts *tableStorage) addNewTableWriter(id tableID, entryCount uint64) (*table
 	if ts.writers[id] != nil {
 		return nil, errors.New("table already exists")
 	}
-	tw, err := newTableWriter(ts.params, ts.tf, ts.params.tableName(id), false, entryCount, id.level == 0)
+	minUnique := 34 //TODO
+	if id.level == len(ts.params.tableLevels)-1 {
+		minUnique = 4
+	}
+	tw, err := newTableWriter(ts.params, ts.tf, ts.params.tableName(id), false, entryCount, id.level == 0, minUnique)
 	if err != nil {
 		return nil, err
 	}

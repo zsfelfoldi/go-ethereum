@@ -171,7 +171,7 @@ func (ies *IndexEntries) DecodeRLP(s *rlp.Stream) error {
 // EncodeRLP implements rlp.Encoder
 func (ies IndexEntries) EncodeRLP(w io.Writer) error {
 	//fmt.Println("EncodeRLP", len(ies))
-	enc := ies.encode()
+	enc := ies.encode(34)
 	//fmt.Println(" EncodeRLP enc", len(enc))
 	return rlp.Encode(w, &enc)
 }
@@ -294,7 +294,7 @@ func decodeNumber(buf []byte) (uint64, []byte, error) {
 	return 0, nil, errors.New("unexpected end of entry chunk (invalid number encoding)")
 }
 
-func (ies IndexEntries) encode() []byte {
+func (ies IndexEntries) encode(minUnique int) []byte {
 	//fmt.Println("encode", len(ies))
 	enc := make([]byte, 0, len(ies)*64)
 	var (
@@ -302,11 +302,8 @@ func (ies IndexEntries) encode() []byte {
 		lastBlockNumber                uint64
 		lastTxIndex, lastLogIndex      uint32
 	)
-	for _, ie := range ies {
-		var (
-			blockDiff       uint64
-			txDiff, logDiff uint32
-		)
+	sharedPrefix := make([]int, len(ies))
+	for i, ie := range ies {
 		binary.BigEndian.PutUint16(typeAndValue[0:2], ie.EntryType)
 		copy(typeAndValue[2:], ie.Value[:])
 		p := 0
@@ -315,7 +312,16 @@ func (ies IndexEntries) encode() []byte {
 				break
 			}
 		}
-		if p < 34 {
+		sharedPrefix[i] = p
+		lastTypeAndValue = typeAndValue
+	}
+	for i, ie := range ies {
+		var (
+			blockDiff       uint64
+			txDiff, logDiff uint32
+		)
+		tvStart := sharedPrefix[i]
+		if tvStart < 34 {
 			lastTypeAndValue = typeAndValue
 			lastBlockNumber, lastTxIndex, lastLogIndex = 0, 0, 0
 		}
@@ -332,14 +338,33 @@ func (ies IndexEntries) encode() []byte {
 		logDiff = ie.LogIndex - lastLogIndex
 		lastLogIndex = ie.LogIndex
 		blockDiff += blockDiff
-		if p < 34 {
+		if tvStart < 34 {
 			blockDiff++
 		}
 		enc = encodeNumber(enc, blockDiff)
 		enc = encodeNumber(enc, uint64(txDiff))
 		enc = encodeNumber(enc, uint64(logDiff))
-		if p < 34 {
-			enc = append(append(enc, byte(p)), typeAndValue[p:]...)
+		if tvStart < 34 {
+			maxPrefix := tvStart
+		loop:
+			for j := i + 1; j < len(ies); j++ {
+				if sp := sharedPrefix[j]; sp < 34 {
+					maxPrefix = max(maxPrefix, sp)
+					break loop
+				}
+			}
+			tvEnd := min(maxPrefix+minUnique, 34)
+			encRange := tvStart
+			if tvEnd < 34 {
+				encRange += (tvEnd - tvStart) * 34
+			}
+			if encRange > 255 {
+				encRange = tvStart
+				tvEnd = 34
+			}
+			binary.BigEndian.PutUint16(typeAndValue[0:2], ie.EntryType)
+			copy(typeAndValue[2:], ie.Value[:])
+			enc = append(append(enc, byte(encRange)), typeAndValue[tvStart:tvEnd]...)
 		}
 	}
 	//fmt.Println(" encode success", len(enc))
@@ -483,7 +508,7 @@ func (ss *subtreesForStorage) toSubtreeChunk(height, above uint) *subtreeChunk {
 
 func (sc *subtreeChunk) toStorage() subtreesForStorage {
 	return subtreesForStorage{
-		BoundaryEntries: sc.boundaryEntries.encode(),
+		BoundaryEntries: sc.boundaryEntries.encode(34),
 		BoundaryFilePos: sc.boundaryFilePos,
 		Hashes:          sc.hashes[1<<sc.height : 1<<sc.height+sc.branches],
 	}
@@ -741,6 +766,7 @@ type tableWriter struct {
 	name                                       string
 	entryCount                                 uint64
 	format                                     tableFormat
+	minUnique                                  int
 	meta                                       TableMeta
 	isOpen, isDeleted, hasStoredState, hasMeta bool
 	phase                                      uint
@@ -777,7 +803,7 @@ type writeState struct {
 	Header            tableHeader
 }
 
-func newTableWriter(params *Params, tf *tableFiles, name string, storedState bool, entryCount uint64, forceMemory bool) (*tableWriter, error) {
+func newTableWriter(params *Params, tf *tableFiles, name string, storedState bool, entryCount uint64, forceMemory bool, minUnique int) (*tableWriter, error) {
 	if entryCount >= 10000000 {
 		fmt.Println("*** newTableWriter", name, storedState)
 	}
@@ -815,6 +841,7 @@ func newTableWriter(params *Params, tf *tableFiles, name string, storedState boo
 		writePointers:     make([]int64, format.subtreeLevels+1),
 		entryCount:        entryCount,
 		format:            format,
+		minUnique:         minUnique,
 	}
 	tw.phase = state.Phase
 	tw.lastEntryChunk = tw.newEntryChunk()
@@ -983,7 +1010,7 @@ func (tw *tableWriter) close() error {
 			}
 			tw.writers[i] = nil // signal for a potential delete() that this writer has been successfully closed
 		}
-		state.LastEntryChunk = tw.lastEntryChunk.entries.encode()
+		state.LastEntryChunk = tw.lastEntryChunk.entries.encode(34)
 		state.LastSubtreeChunks = make([]subtreesForStorage, len(tw.lastSubtreeChunks))
 		for i, sc := range tw.lastSubtreeChunks {
 			state.LastSubtreeChunks[i] = sc.toStorage()
@@ -1076,7 +1103,7 @@ func (tw *tableWriter) addEntry(ie *IndexEntry) error {
 	tw.lastEntryChunk.entries = append(tw.lastEntryChunk.entries, *ie)
 	tw.nextEntry++
 	if len(tw.lastEntryChunk.entries) == entryChunkSize || tw.nextEntry == tw.entryCount {
-		ess := tw.lastEntryChunk.entries.encode()
+		ess := tw.lastEntryChunk.entries.encode(tw.minUnique)
 		enc, err := rlp.EncodeToBytes(&ess) //TODO
 		if err != nil {
 			return err
