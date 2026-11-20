@@ -632,7 +632,7 @@ func (tr *TableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 	return sc, nil
 }
 
-func (tr *TableReader) GetEntryChunk(index uint64) (*entryChunk, error) {
+func (tr *TableReader) getEntryChunk(index uint64) (*entryChunk, error) {
 	if ec, ok := tr.entryChunkCache.Get(index); ok {
 		return ec, nil
 	}
@@ -665,7 +665,7 @@ func (tr *TableReader) GetHash(gti uint64) (merkle.Value, error) {
 	m := uint64(1) << (gtiHeight - chunkBaseHeight)
 	chunkGti := m + gti&(m-1)
 	if chunkLevel == tr.format.subtreeLevels {
-		ec, err := tr.GetEntryChunk(chunkIndex)
+		ec, err := tr.getEntryChunk(chunkIndex)
 		if err != nil {
 			return merkle.Value{}, err
 		}
@@ -679,7 +679,7 @@ func (tr *TableReader) GetHash(gti uint64) (merkle.Value, error) {
 }
 
 func (tr *TableReader) GetEntry(index uint64) (*IndexEntry, error) {
-	ec, err := tr.GetEntryChunk(index / entryChunkSize)
+	ec, err := tr.getEntryChunk(index / entryChunkSize)
 	if err != nil {
 		return nil, err
 	}
@@ -751,7 +751,7 @@ func (tr *TableReader) SeekEntry(target *IndexEntry) (uint64, bool, error) {
 			return tr.EntryCount, false, nil //TODO unit test
 		}
 	}
-	ec, err := tr.GetEntryChunk(chunkIndex)
+	ec, err := tr.getEntryChunk(chunkIndex)
 	if err != nil {
 		return 0, false, err
 	}
