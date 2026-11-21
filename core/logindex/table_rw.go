@@ -124,8 +124,9 @@ type IndexEntry struct {
 }
 
 type IndexValue struct {
-	EntryType uint16      `json:"type"`
-	Value     common.Hash `json:"value"`
+	EntryType    uint16      `json:"type"`
+	Value        common.Hash `json:"value"`
+	UnknownBytes uint8       // unknown last bytes of Value; !=0 is only allowed if explicitly enabled during decoding
 }
 
 type IndexPosition struct {
@@ -356,7 +357,7 @@ func (ies IndexEntries) encode(minUnique uint) []byte {
 			tvEnd := min(maxPrefix+minUnique, 34)
 			encRange := tvStart
 			if tvEnd < 34 {
-				encRange += (tvEnd - tvStart) * 34
+				encRange += (tvEnd - tvStart) * 34 //TODO improve encoding
 			}
 			if encRange > 255 {
 				encRange = tvStart
@@ -407,12 +408,14 @@ func (ec *entryChunk) getHash(gti uint64) (result merkle.Value) {
 	return
 }
 
-func (ies IndexEntries) decode(enc []byte) (IndexEntries, error) {
+func decodeEntries(ies IndexEntries, enc []byte, allowUnknown bool) (IndexEntries, bool, error) {
 	//fmt.Println("decode", len(enc))
 	var (
 		lastTypeAndValue          [34]byte
+		lastTvEnd                 int
 		lastBlockNumber           uint64
 		lastTxIndex, lastLogIndex uint32
+		hasUnknown                bool
 	)
 	for len(enc) > 0 {
 		var (
@@ -421,26 +424,40 @@ func (ies IndexEntries) decode(enc []byte) (IndexEntries, error) {
 		)
 		blockDiff, enc, err = decodeNumber(enc)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		txDiff, enc, err = decodeNumber(enc)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		logDiff, enc, err = decodeNumber(enc)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if blockDiff&1 != 0 {
 			if len(enc) < 1 {
-				return nil, errors.New("unexpected end of entry chunk (missing value diff)")
+				return nil, false, errors.New("unexpected end of entry chunk (missing value diff)")
 			}
-			start := int(enc[0])
-			if start > 33 || 34-start > len(enc)-1 {
-				return nil, errors.New("invalid value diff length")
+			encRange := int(enc[0])
+			var tvStart, tvEnd int
+			if encRange <= 34 { //TODO improve encoding
+				tvStart = encRange
+				tvEnd = 34
+			} else {
+				tvStart = encRange % 34
+				tvEnd = tvStart + encRange/34
 			}
-			copy(lastTypeAndValue[start:], enc[1:35-start])
-			enc = enc[35-start:]
+			copy(lastTypeAndValue[tvStart:tvEnd], enc[1:tvEnd+1-tvStart])
+			if tvEnd < lastTvEnd {
+				for i := tvEnd; i < lastTvEnd; i++ {
+					lastTypeAndValue[i] = 0
+				}
+			}
+			lastTvEnd = tvEnd
+			if tvEnd != 34 {
+				hasUnknown = true
+			}
+			enc = enc[tvEnd+1-tvStart:]
 			lastBlockNumber, lastTxIndex, lastLogIndex = 0, 0, 0
 		}
 		blockDiff >>= 1
@@ -455,7 +472,8 @@ func (ies IndexEntries) decode(enc []byte) (IndexEntries, error) {
 		lastLogIndex += uint32(logDiff)
 		ie := IndexEntry{
 			IndexValue: IndexValue{
-				EntryType: binary.BigEndian.Uint16(lastTypeAndValue[:2]),
+				EntryType:    binary.BigEndian.Uint16(lastTypeAndValue[:2]),
+				UnknownBytes: uint8(34 - lastTvEnd),
 			},
 			IndexPosition: IndexPosition{
 				BlockNumber: lastBlockNumber,
@@ -463,11 +481,11 @@ func (ies IndexEntries) decode(enc []byte) (IndexEntries, error) {
 				LogIndex:    lastLogIndex,
 			},
 		}
-		copy(ie.Value[:], lastTypeAndValue[2:])
+		copy(ie.Value[:lastTvEnd-2], lastTypeAndValue[2:lastTvEnd]) // minUnique guarantees that lastTvEnd >= 2
 		ies = append(ies, ie)
 	}
 	//fmt.Println(" decode success", len(ies))
-	return ies, nil
+	return ies, hasUnknown, nil
 }
 
 type subtreesForStorage struct {
@@ -485,7 +503,7 @@ type subtreeChunk struct {
 }
 
 func (ss *subtreesForStorage) toSubtreeChunk(height, above uint) *subtreeChunk {
-	entries, err := make(IndexEntries, 0, subtreeChunkSize-1).decode(ss.BoundaryEntries)
+	entries, _, err := decodeEntries(make(IndexEntries, 0, subtreeChunkSize-1), ss.BoundaryEntries, false)
 	if err != nil {
 		fmt.Println("toSubtreeChunk decode error", err, ss.BoundaryEntries) //TODO
 	}
@@ -632,7 +650,7 @@ func (tr *TableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 	return sc, nil
 }
 
-func (tr *TableReader) GetEntryChunk(index uint64) (*entryChunk, error) {
+func (tr *TableReader) getEntryChunk(index uint64) (*entryChunk, error) {
 	if ec, ok := tr.entryChunkCache.Get(index); ok {
 		return ec, nil
 	}
@@ -665,7 +683,7 @@ func (tr *TableReader) GetHash(gti uint64) (merkle.Value, error) {
 	m := uint64(1) << (gtiHeight - chunkBaseHeight)
 	chunkGti := m + gti&(m-1)
 	if chunkLevel == tr.format.subtreeLevels {
-		ec, err := tr.GetEntryChunk(chunkIndex)
+		ec, err := tr.getEntryChunk(chunkIndex)
 		if err != nil {
 			return merkle.Value{}, err
 		}
@@ -679,7 +697,7 @@ func (tr *TableReader) GetHash(gti uint64) (merkle.Value, error) {
 }
 
 func (tr *TableReader) GetEntry(index uint64) (*IndexEntry, error) {
-	ec, err := tr.GetEntryChunk(index / entryChunkSize)
+	ec, err := tr.getEntryChunk(index / entryChunkSize)
 	if err != nil {
 		return nil, err
 	}
@@ -751,7 +769,7 @@ func (tr *TableReader) SeekEntry(target *IndexEntry) (uint64, bool, error) {
 			return tr.EntryCount, false, nil //TODO unit test
 		}
 	}
-	ec, err := tr.GetEntryChunk(chunkIndex)
+	ec, err := tr.getEntryChunk(chunkIndex)
 	if err != nil {
 		return 0, false, err
 	}
@@ -860,7 +878,7 @@ func newTableWriter(params *Params, tf *tableFiles, id tableID, storedState bool
 		tw.phase = wpWriteEntries
 	case wpWriteEntries:
 		if state.LastEntryChunk != nil {
-			entries, err := make(IndexEntries, 0, entryChunkSize).decode(state.LastEntryChunk)
+			entries, _, err := decodeEntries(make(IndexEntries, 0, entryChunkSize), state.LastEntryChunk, false)
 			if err != nil {
 				fmt.Println("LastEntryChunk decode error", err, state.LastEntryChunk) //TODO
 			}
