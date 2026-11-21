@@ -52,6 +52,8 @@ const (
 	MaxTopicCount = 4
 )
 
+var ErrUnknownBytes = errors.New("index entry with unknown value bytes not allowed")
+
 type tableFormat struct {
 	entryCount                                    uint64
 	firstSubtreeHeight, subtreeLevels, leafHeight uint
@@ -164,7 +166,7 @@ func (ies *IndexEntries) DecodeRLP(s *rlp.Stream) error {
 	}
 	//fmt.Println(" DecodeRLP enc", len(enc))
 	var err error
-	*ies, err = new(IndexEntries).decode(enc)
+	*ies, _, err = decodeEntries(nil, enc, false)
 	//fmt.Println(" DecodeRLP dec", len(*ies))
 	return err
 }
@@ -215,13 +217,16 @@ func (ie *IndexEntry) Compare(i2 *IndexEntry) int {
 }
 
 func (iv *IndexValue) Compare(i2 *IndexValue) int {
+	if i2.UnknownBytes != 0 {
+		panic("second operand of Compare has unknown bytes")
+	}
 	if iv.EntryType != i2.EntryType {
 		if iv.EntryType < i2.EntryType {
 			return -1
 		}
 		return 1
 	}
-	return bytes.Compare(iv.Value[:], i2.Value[:])
+	return bytes.Compare(iv.Value[:32-iv.UnknownBytes], i2.Value[:32-iv.UnknownBytes])
 }
 
 func (ip *IndexPosition) Compare(i2 *IndexPosition) int {
@@ -373,10 +378,11 @@ func (ies IndexEntries) encode(minUnique uint) []byte {
 }
 
 type entryChunk struct {
-	entries IndexEntries
-	height  uint
-	hashes  []merkle.Value // 2^(height+1)
-	hasHash []bool         // 2^(height+1)
+	entries    IndexEntries
+	hasUnknown bool
+	height     uint
+	hashes     []merkle.Value // 2^(height+1)
+	hasHash    []bool         // 2^(height+1)
 }
 
 func (ec *entryChunk) getHash(gti uint64) (result merkle.Value) {
@@ -668,7 +674,8 @@ func (tr *TableReader) getEntryChunk(index uint64) (*entryChunk, error) {
 	ec := &entryChunk{
 		height: tr.format.entryChunkHeight(),
 	}
-	if err := rlp.DecodeBytes(enc, &ec.entries); err != nil {
+	ec.entries, ec.hasUnknown, err = decodeEntries(make(IndexEntries, 0, entryChunkSize), enc, true)
+	if err != nil {
 		return nil, err
 	}
 	tr.entryChunkCache.Add(index, ec)
@@ -687,6 +694,9 @@ func (tr *TableReader) GetHash(gti uint64) (merkle.Value, error) {
 		if err != nil {
 			return merkle.Value{}, err
 		}
+		if ec.hasUnknown {
+			return merkle.Value{}, ErrUnknownBytes
+		}
 		return ec.getHash(chunkGti), nil
 	}
 	sc, err := tr.getSubtreeChunk(chunkLevel, chunkIndex)
@@ -696,12 +706,16 @@ func (tr *TableReader) GetHash(gti uint64) (merkle.Value, error) {
 	return sc.getHash(chunkGti), nil
 }
 
-func (tr *TableReader) GetEntry(index uint64) (*IndexEntry, error) {
+func (tr *TableReader) GetEntry(index uint64, allowUnknown bool) (*IndexEntry, error) {
 	ec, err := tr.getEntryChunk(index / entryChunkSize)
 	if err != nil {
 		return nil, err
 	}
-	return &ec.entries[index%entryChunkSize], nil
+	entry := &ec.entries[index%entryChunkSize]
+	if !allowUnknown && entry.UnknownBytes != 0 {
+		return nil, ErrUnknownBytes
+	}
+	return entry, nil
 }
 
 // batch read entry chunk (not cached, optimized for table merge linear read)
@@ -736,17 +750,15 @@ func (tr *TableReader) getEntries(indexRange common.Range[uint64]) (IndexEntries
 		firstByte := sc.boundaryFilePos[ec%subtreeChunkSize] - start
 		afterLastByte := sc.boundaryFilePos[ec%subtreeChunkSize+1] - start
 		//fmt.Println(" enc range", firstByte, afterLastByte)
-		var dec IndexEntries
-		if err := rlp.DecodeBytes(enc[firstByte:afterLastByte], &dec); err != nil {
+		if entries, _, err = decodeEntries(entries, enc[firstByte:afterLastByte], false); err != nil {
 			return nil, err
 		}
-		entries = append(entries, dec...)
 	}
 	offset := indexRange.First() % entryChunkSize
 	return entries[offset : offset+indexRange.Count()], nil
 }
 
-func (tr *TableReader) SeekEntry(target *IndexEntry) (uint64, bool, error) {
+func (tr *TableReader) SeekEntry(target *IndexEntry, allowUnknown bool) (uint64, bool, error) {
 	var (
 		chunkLevel               uint
 		chunkIndex, chunkEntries uint64
@@ -772,6 +784,9 @@ func (tr *TableReader) SeekEntry(target *IndexEntry) (uint64, bool, error) {
 	ec, err := tr.getEntryChunk(chunkIndex)
 	if err != nil {
 		return 0, false, err
+	}
+	if !allowUnknown && ec.hasUnknown {
+		return 0, false, ErrUnknownBytes
 	}
 	subIndex, found := ec.entries.Find(target)
 	//fmt.Println("seek e", chunkLevel, chunkIndex, subIndex)

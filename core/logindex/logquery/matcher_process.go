@@ -200,7 +200,7 @@ func (mp *matcherProcess) updateLastMatchBlock(number uint64) error {
 					BlockNumber: number,
 				},
 			}
-			blockEntryIndex, found, err := mp.tableReader.SeekEntry(&blockEntry)
+			blockEntryIndex, found, err := mp.tableReader.SeekEntry(&blockEntry, false)
 			if err != nil {
 				return err
 			}
@@ -283,7 +283,7 @@ func (mp *matcherProcess) addMatch(pos *logindex.IndexPosition) error {
 					LogIndex:    uint32(logOffset),
 				},
 			}
-			txEntryIndex, found, err := mp.tableReader.SeekEntry(&txEntry)
+			txEntryIndex, found, err := mp.tableReader.SeekEntry(&txEntry, false)
 			if err != nil {
 				return err
 			}

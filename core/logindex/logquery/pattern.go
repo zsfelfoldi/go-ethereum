@@ -312,7 +312,7 @@ func (m *singleMatcherInstance) next() (dpos *logindex.IndexPosition, dlsn logic
 		if err != nil {
 			return nil, 0, err
 		}
-		if entry.IndexValue != m.value || m.reader.comparePosition(&entry.IndexPosition, &m.last) == 1 {
+		if entry.IndexValue.Compare(&m.value) != 0 || m.reader.comparePosition(&entry.IndexPosition, &m.last) == 1 {
 			m.isEmpty = true
 			m.currentPos = nil
 			return nil, m.lastSectionNode, nil
@@ -860,7 +860,7 @@ func (dr *directionalReader) prevNextEntry(entryIndex uint64, next bool) (uint64
 }
 
 func (dr *directionalReader) entryAtOrAfter(target *logindex.IndexEntry) (uint64, bool, error) {
-	pos, found, err := dr.reader.SeekEntry(target)
+	pos, found, err := dr.reader.SeekEntry(target, true)
 	if err != nil {
 		return 0, false, err
 	}
@@ -899,5 +899,5 @@ func (dr *directionalReader) comparePosition(a, b *logindex.IndexPosition) int {
 }
 
 func (dr *directionalReader) getEntry(index uint64) (*logindex.IndexEntry, error) {
-	return dr.reader.GetEntry(index)
+	return dr.reader.GetEntry(index, true)
 }

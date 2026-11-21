@@ -141,7 +141,7 @@ func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (bool, error) {
 			}
 			var checkNextEntry uint64
 			for i, tr := range readers {
-				pos, found, err := tr.SeekEntry(lastEntry)
+				pos, found, err := tr.SeekEntry(lastEntry, false)
 				if err != nil {
 					return false, err
 				}

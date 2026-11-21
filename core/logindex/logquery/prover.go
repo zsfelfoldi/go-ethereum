@@ -128,7 +128,7 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 			IndexPosition: logindex.IndexPosition{
 				BlockNumber: tp.reader.BlockRange().First() - 1,
 			},
-		})
+		}, false)
 		fmt.Println(" fetch parent block entry", found, err)
 		if err != nil {
 			return tableQueryProof{}, common.Hash{}, err
@@ -175,7 +175,7 @@ func (tp *tableProver) finalize(proveParentBlock common.Hash) (tableQueryProof, 
 	lastIndex := uint64(math.MaxUint64)
 	//fmt.Println("proof.EntryIndices", len(proof.EntryIndices))
 	for i, entryIndex := range proof.EntryIndices {
-		entry, err := tp.reader.GetEntry(entryIndex)
+		entry, err := tp.reader.GetEntry(entryIndex, false)
 		if err != nil {
 			return tableQueryProof{}, common.Hash{}, err
 		}
