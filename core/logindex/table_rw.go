@@ -667,10 +667,13 @@ func (tr *TableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 	return sc, nil
 }
 
-func (tr *TableReader) getEntryChunk(index uint64) (*entryChunk, error) {
+func (tr *TableReader) getEntryChunk(index uint64, allowUnknown bool) (*entryChunk, error) {
 	//fmt.Println("getEntryChunk", index)
 	if ec, ok := tr.entryChunkCache.Get(index); ok {
 		//fmt.Println(" *getEntryChunk", index, "cached", len(ec.entries))
+		if !allowUnknown && ec.hasUnknown {
+			return nil, ErrUnknownBytes
+		}
 		return ec, nil
 	}
 	sc, err := tr.getSubtreeChunk(tr.format.subtreeLevels-1, index/subtreeChunkSize)
@@ -692,6 +695,9 @@ func (tr *TableReader) getEntryChunk(index uint64) (*entryChunk, error) {
 		height: tr.format.entryChunkHeight(),
 	}
 	ec.entries, ec.hasUnknown, err = decodeEntries(make(IndexEntries, 0, entryChunkSize), enc, true)
+	if !allowUnknown && ec.hasUnknown {
+		return nil, ErrUnknownBytes
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -708,12 +714,9 @@ func (tr *TableReader) GetHash(gti uint64) (merkle.Value, error) {
 	m := uint64(1) << (gtiHeight - chunkBaseHeight)
 	chunkGti := m + gti&(m-1)
 	if chunkLevel == tr.format.subtreeLevels {
-		ec, err := tr.getEntryChunk(chunkIndex)
+		ec, err := tr.getEntryChunk(chunkIndex, false)
 		if err != nil {
 			return merkle.Value{}, err
-		}
-		if ec.hasUnknown {
-			return merkle.Value{}, ErrUnknownBytes
 		}
 		return ec.getHash(chunkGti), nil
 	}
@@ -726,15 +729,11 @@ func (tr *TableReader) GetHash(gti uint64) (merkle.Value, error) {
 
 func (tr *TableReader) GetEntry(index uint64, allowUnknown bool) (*IndexEntry, error) {
 	fmt.Println("GetEntry", index, allowUnknown, "count", tr.EntryCount)
-	ec, err := tr.getEntryChunk(index / entryChunkSize)
+	ec, err := tr.getEntryChunk(index/entryChunkSize, allowUnknown)
 	if err != nil {
 		return nil, err
 	}
-	entry := &ec.entries[index%entryChunkSize]
-	if !allowUnknown && entry.UnknownBytes != 0 {
-		return nil, ErrUnknownBytes
-	}
-	return entry, nil
+	return &ec.entries[index%entryChunkSize], nil
 }
 
 // batch read entry chunk (not cached, optimized for table merge linear read)
@@ -805,12 +804,9 @@ func (tr *TableReader) SeekEntry(target *IndexEntry, allowUnknown bool) (uint64,
 			return tr.EntryCount, false, nil //TODO unit test
 		}
 	}
-	ec, err := tr.getEntryChunk(chunkIndex)
+	ec, err := tr.getEntryChunk(chunkIndex, allowUnknown)
 	if err != nil {
 		return 0, false, err
-	}
-	if !allowUnknown && ec.hasUnknown {
-		return 0, false, ErrUnknownBytes
 	}
 	subIndex, found := ec.entries.Find(target)
 	//fmt.Println("seek e", chunkLevel, chunkIndex, subIndex)
