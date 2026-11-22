@@ -26,14 +26,14 @@ import (
 )
 
 type indexStats struct {
-	total                  indexStat
-	readBlockData          [priorityLevels]indexStat
-	indexerProcessing      [priorityLevels]indexStat
-	totalWait              indexStat
-	waitForRequest         [priorityLevels]indexStat
-	systemPriorityTooHigh  [priorityLevels]indexStat
-	indexerPriorityTooHigh [priorityLevels]indexStat
-	deliverQueueFull       [priorityLevels]indexStat
+	total             indexStat
+	readBlockData     indexStat
+	indexerProcessing indexStat
+	totalWait         indexStat
+	waitForRequest    indexStat
+	systemSuspended   indexStat
+	indexerSuspended  indexStat
+	deliverQueueFull  indexStat
 }
 
 type indexStat struct {
@@ -81,21 +81,19 @@ func (s *indexStat) printAndReset(now mclock.AbsTime, name string) {
 	fmt.Printf("| %-35s | %15v | %8d | %15v |\n", name, totalTime, totalCount, totalTime/time.Duration(max(totalCount, 1)))
 }
 
-func (s *indexStats) setWaiting(now mclock.AbsTime, systemPriority, indexerPriority, fullQueue int, counting bool) {
+func (s *indexStats) setWaiting(now mclock.AbsTime, systemSuspend, indexerSuspend, fullQueue, counting bool) {
 	s.totalWait.set(now, counting)
-	for p := range priorityLevels {
-		if systemPriority < p {
-			s.systemPriorityTooHigh[p].set(now, counting)
-		}
-		if indexerPriority < p {
-			s.indexerPriorityTooHigh[p].set(now, counting)
-		}
-		if fullQueue <= p {
-			s.deliverQueueFull[p].set(now, counting)
-		}
-		if min(systemPriority+1, indexerPriority+1, fullQueue) > p {
-			s.waitForRequest[p].set(now, counting)
-		}
+	if systemSuspend {
+		s.systemSuspended.set(now, counting)
+	}
+	if indexerSuspend {
+		s.indexerSuspended.set(now, counting)
+	}
+	if fullQueue {
+		s.deliverQueueFull.set(now, counting)
+	}
+	if !(systemSuspend || indexerSuspend || fullQueue) {
+		s.waitForRequest.set(now, counting)
 	}
 }
 
@@ -104,25 +102,13 @@ func (s *indexStats) printAndReset() {
 	fmt.Println(printDelimiter)
 
 	s.total.printAndReset(now, "Total time")
-	for p := range priorityLevels {
-		s.readBlockData[p].printAndReset(now, fmt.Sprintf(" Read block data @P%d", p))
-	}
-	for p := range priorityLevels {
-		s.indexerProcessing[p].printAndReset(now, fmt.Sprintf(" Indexer processing block data @P%d", p))
-	}
+	s.readBlockData.printAndReset(now, fmt.Sprintf(" Read block data"))
+	s.indexerProcessing.printAndReset(now, fmt.Sprintf(" Indexer processing block data"))
 	fmt.Println(printDelimiter)
 	s.totalWait.printAndReset(now, "Total wait time in read loop")
-	for p := range priorityLevels {
-		s.waitForRequest[p].printAndReset(now, fmt.Sprintf(" Waiting for request @P%d", p))
-	}
-	for p := 1; p < priorityLevels; p++ {
-		s.systemPriorityTooHigh[p].printAndReset(now, fmt.Sprintf(" Blocked by system priority @P%d", p))
-	}
-	for p := 1; p < priorityLevels; p++ {
-		s.indexerPriorityTooHigh[p].printAndReset(now, fmt.Sprintf(" Blocked by indexer priority @P%d", p))
-	}
-	for p := range priorityLevels {
-		s.deliverQueueFull[p].printAndReset(now, fmt.Sprintf(" Blocked by full delivery queue @P%d", p))
-	}
+	s.waitForRequest.printAndReset(now, fmt.Sprintf(" Waiting for request"))
+	s.systemSuspended.printAndReset(now, fmt.Sprintf(" Blocked by system suspend"))
+	s.indexerSuspended.printAndReset(now, fmt.Sprintf(" Blocked by indexer suspend"))
+	s.deliverQueueFull.printAndReset(now, fmt.Sprintf(" Blocked by full delivery queue"))
 	fmt.Println(printDelimiter)
 }

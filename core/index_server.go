@@ -31,7 +31,6 @@ import (
 const (
 	queueCapacity        = 8 // size of block data pre-fetch queue
 	rawReceiptsCacheSize = 8
-	priorityLevels       = 3
 	logFrequency         = time.Second * 20 // log info frequency during long indexing/unindexing process
 	headLogDelay         = time.Second      // head indexing log info delay (do not log if finished faster)
 
@@ -39,7 +38,7 @@ const (
 )
 
 type Indexer interface {
-	Register(requestBlock func(uint64, bool, bool, int) bool, setIndexerPriority func(int))
+	Register(requestBlock func(uint64) bool, suspendDelivery func(bool))
 	// AddBlockData delivers a header and receipts belonging to a block that is
 	// either a direct descendant of the latest delivered head or the first one
 	// in the last requested range.
@@ -124,20 +123,18 @@ func (f *indexServers) register(indexer Indexer, name string) {
 	defer f.lock.Unlock()
 
 	server := &indexServer{
-		parent:            f,
-		indexer:           indexer,
-		name:              name,
-		revertBlocks:      make(map[uint64]uint64),
-		revertCountCh:     make(chan uint64, 1),
-		deliveredCountCh:  make(chan [priorityLevels]uint64, 1),
-		readPriorityCh:    make(chan priorityUpdate, 1),
-		deliverPriorityCh: make(chan int, 1),
-		indexerPriority:   priorityLevels - 1,
-		systemPriority:    priorityLevels - 1,
-	}
-	for i := range priorityLevels {
-		server.blockRequestCh[i] = make(chan blockRequest, queueCapacity)
-		server.blockDataCh[i] = make(chan blockData, queueCapacity)
+		parent:           f,
+		indexer:          indexer,
+		name:             name,
+		revertBlocks:     make(map[uint64]uint64),
+		revertCountCh:    make(chan uint64, 1),
+		deliveredCountCh: make(chan uint64, 1),
+		readSuspendCh:    make(chan suspendStatus, 1),
+		deliverSuspendCh: make(chan bool, 1),
+		blockRequestCh:   make(chan uint64, queueCapacity),
+		blockDataCh:      make(chan blockData, queueCapacity),
+		indexerSuspend:   true,
+		systemSuspend:    true,
 	}
 	f.closeWg.Add(2)
 	if enableIndexStats {
@@ -147,7 +144,7 @@ func (f *indexServers) register(indexer Indexer, name string) {
 		go server.printStatsLoop()
 	}
 	f.servers = append(f.servers, server)
-	indexer.Register(server.requestBlock, server.setIndexerPriority)
+	indexer.Register(server.requestBlock, server.suspendByIndexer)
 	indexer.SetHistoryCutoff(f.historyCutoff)
 	indexer.SetFinalized(f.finalBlock)
 	if f.lastHead != nil && f.lastHeadBody != nil && f.lastHeadReceipts != nil {
@@ -250,20 +247,20 @@ type indexServer struct {
 	stopped     bool
 
 	lastHead                          *types.Header
-	deliveredCount                    [priorityLevels]uint64
+	deliveredCount                    uint64
 	revertCount, lastRevertCount      uint64
 	revertBlocks                      map[uint64]uint64
 	historyCutoff, missingBlockCutoff uint64
 
-	blockRequestCh   [priorityLevels]chan blockRequest // Indexer => callback -> historicReadLoop (cap=queueCapacity)
-	revertCountCh    chan uint64                       // indexServer -> historicReadLoop (cap=1)
-	deliveredCountCh chan [priorityLevels]uint64       // historicDeliverLoop -> historicReadLoop (cap=1)
-	blockDataCh      [priorityLevels]chan blockData    // historicReadLoop -> historicDeliverLoop => Indexer (cap=queueCapacity)
+	blockRequestCh   chan uint64    // Indexer => callback -> historicReadLoop (cap=queueCapacity)
+	revertCountCh    chan uint64    // indexServer -> historicReadLoop (cap=1)
+	deliveredCountCh chan uint64    // historicDeliverLoop -> historicReadLoop (cap=1)
+	blockDataCh      chan blockData // historicReadLoop -> historicDeliverLoop => Indexer (cap=queueCapacity)
 
-	readPriorityCh                  chan priorityUpdate // Indexer => callback -> historicReadLoop (cap=1)
-	deliverPriorityCh               chan int            // Indexer => callback -> historicDeliverLoop (cap=1)
-	priorityLock                    sync.Mutex
-	indexerPriority, systemPriority int
+	readSuspendCh                 chan suspendStatus // Indexer => callback -> historicReadLoop (cap=1)
+	deliverSuspendCh              chan bool          // Indexer => callback -> historicDeliverLoop (cap=1)
+	suspendLock                   sync.Mutex
+	indexerSuspend, systemSuspend bool
 
 	testSuspendHookCh       chan struct{} // initialized by test (cap=1)
 	name                    string
@@ -274,11 +271,6 @@ type indexServer struct {
 	stats                   *indexStats
 }
 
-type blockRequest struct {
-	blockNumber            uint64
-	needBody, needReceipts bool
-}
-
 // blockData represents the indexable data of a single block being sent from the
 // reader to the sender goroutine and optionally queued in blockDataCh between.
 // It also includes the latest revertCount known before reading the block data,
@@ -286,7 +278,7 @@ type blockRequest struct {
 // consistent with the indexer's canonical chain view while the reading of block
 // data can still happen asynchronously.
 type blockData struct {
-	request     blockRequest
+	blockNumber uint64
 	valid       bool
 	revertCount uint64
 	header      *types.Header
@@ -333,180 +325,129 @@ func (s *indexServer) revert(header *types.Header) {
 	s.lastHead = header
 }
 
-func (s *indexServer) requestBlock(blockNumber uint64, needBody, needReceipts bool, priority int) bool {
-	req := blockRequest{
-		blockNumber:  blockNumber,
-		needBody:     needBody,
-		needReceipts: needReceipts,
-	}
+func (s *indexServer) requestBlock(blockNumber uint64) bool {
 	select {
-	case s.blockRequestCh[priority] <- req:
-		//fmt.Println("*** request", req, "success")
+	case s.blockRequestCh <- blockNumber:
 		return true
 	default:
-		//fmt.Println("*** request", req, "fail")
 		return false
 	}
 }
 
-func (s *indexServer) setIndexerPriority(priority int) {
-	s.priorityLock.Lock()
-	defer s.priorityLock.Unlock()
+func (s *indexServer) suspendByIndexer(suspend bool) {
+	s.suspendLock.Lock()
+	defer s.suspendLock.Unlock()
 
-	if s.indexerPriority == priority {
+	if s.indexerSuspend == suspend {
 		return
 	}
-	s.indexerPriority = priority
-	s.updatePriority()
+	s.indexerSuspend = suspend
+	s.updateSuspendStatus()
 }
 
-func (s *indexServer) setSystemPriority(priority int) {
-	s.priorityLock.Lock()
-	defer s.priorityLock.Unlock()
+func (s *indexServer) suspendBySystem(suspend bool) {
+	s.suspendLock.Lock()
+	defer s.suspendLock.Unlock()
 
-	if s.systemPriority == priority {
+	if s.systemSuspend == suspend {
 		return
 	}
-	s.systemPriority = priority
-	s.updatePriority()
+	s.systemSuspend = suspend
+	s.updateSuspendStatus()
 }
 
-type priorityUpdate struct {
-	system, indexer int
+type suspendStatus struct {
+	system, indexer bool
 }
 
-func (u priorityUpdate) value() int {
-	return min(u.system, u.indexer)
+func (u suspendStatus) active() bool {
+	return u.system || u.indexer
 }
 
-func (s *indexServer) updatePriority() {
-	//fmt.Println("*** updatePriority", s.indexerPriority, s.systemPriority)
-	update := priorityUpdate{s.systemPriority, s.indexerPriority}
+func (s *indexServer) updateSuspendStatus() {
+	//fmt.Println("*** updateSuspendStatus", s.indexerSuspend, s.systemSuspend)
+	suspend := suspendStatus{s.systemSuspend, s.indexerSuspend}
 	select {
-	case <-s.deliverPriorityCh:
+	case <-s.deliverSuspendCh:
 	default:
 	}
-	s.deliverPriorityCh <- update.value()
+	s.deliverSuspendCh <- suspend.active()
 
 	select {
-	case <-s.readPriorityCh:
+	case <-s.readSuspendCh:
 	default:
 	}
-	s.readPriorityCh <- update
+	s.readSuspendCh <- suspend
 }
 
 func (s *indexServer) historicReadLoop() {
 	defer s.parent.closeWg.Done()
 
 	var (
-		priority, priorityBefore          priorityUpdate
-		canDeliverBelow, canDeliverBefore int
-		revertCount                       uint64
-		readCount, deliveredCount         [priorityLevels]uint64
+		suspend, suspendBefore       suspendStatus
+		canDeliver, canDeliverBefore bool
+		revertCount                  uint64
+		readCount, deliveredCount    uint64
 	)
-	handleRequest := func(priority int, req blockRequest) {
+	handleRequest := func(blockNumber uint64) {
 		if s.stats != nil {
 			now := mclock.Now()
-			s.stats.setWaiting(mclock.Now(), priorityBefore.system, priorityBefore.indexer, canDeliverBefore, false)
-			s.stats.readBlockData[priority].set(now, true)
+			s.stats.setWaiting(mclock.Now(), suspendBefore.system, suspendBefore.indexer, canDeliverBefore, false)
+			s.stats.readBlockData.set(now, true)
 		}
-		s.blockDataCh[priority] <- s.readBlockData(req, revertCount)
+		s.blockDataCh <- s.readBlockData(blockNumber, revertCount)
 		if s.stats != nil {
-			s.stats.readBlockData[priority].set(mclock.Now(), false)
+			s.stats.readBlockData.set(mclock.Now(), false)
 		}
-		readCount[priority]++
+		readCount++
 	}
 
 	for {
-		canDeliverBelow = priorityLevels
-		for i := range priorityLevels {
-			if readCount[i] >= deliveredCount[i]+queueCapacity {
-				canDeliverBelow = i
-				break
-			}
-		}
-		waitRequestBelow := min(canDeliverBelow, priority.value()+1)
+		canDeliver = readCount < deliveredCount+queueCapacity
+		waitRequest := canDeliver || !suspend.active()
 		if s.stats != nil {
-			priorityBefore, canDeliverBefore = priority, canDeliverBelow
-			s.stats.setWaiting(mclock.Now(), priority.system, priority.indexer, canDeliverBelow, true)
+			suspendBefore, canDeliverBefore = suspend, canDeliver
+			s.stats.setWaiting(mclock.Now(), suspend.system, suspend.indexer, canDeliver, true)
 		}
-		switch waitRequestBelow {
-		case 0:
+		switch waitRequest {
+		case false:
 			select {
 			case <-s.parent.closeCh:
 				return
-			case priority = <-s.readPriorityCh:
+			case suspend = <-s.readSuspendCh:
 			case revertCount = <-s.revertCountCh:
 			case deliveredCount = <-s.deliveredCountCh:
 			}
-		case 1:
+		case true:
 			select {
 			case <-s.parent.closeCh:
 				return
-			case priority = <-s.readPriorityCh:
+			case suspend = <-s.readSuspendCh:
 			case revertCount = <-s.revertCountCh:
 			case deliveredCount = <-s.deliveredCountCh:
-			case req := <-s.blockRequestCh[0]:
-				handleRequest(0, req)
+			case req := <-s.blockRequestCh:
+				handleRequest(req)
 			}
-		case 2:
-			select {
-			case <-s.parent.closeCh:
-				return
-			case priority = <-s.readPriorityCh:
-			case revertCount = <-s.revertCountCh:
-			case deliveredCount = <-s.deliveredCountCh:
-			case req := <-s.blockRequestCh[0]:
-				handleRequest(0, req)
-			case req := <-s.blockRequestCh[1]:
-				handleRequest(1, req)
-			}
-		case 3:
-			select {
-			case <-s.parent.closeCh:
-				return
-			case priority = <-s.readPriorityCh:
-			case revertCount = <-s.revertCountCh:
-			case deliveredCount = <-s.deliveredCountCh:
-			case req := <-s.blockRequestCh[0]:
-				handleRequest(0, req)
-			case req := <-s.blockRequestCh[1]:
-				handleRequest(1, req)
-			case req := <-s.blockRequestCh[2]:
-				handleRequest(2, req)
-			}
-		default:
-			panic("invalid priority value")
 		}
 		if s.stats != nil {
-			s.stats.setWaiting(mclock.Now(), priorityBefore.system, priorityBefore.indexer, canDeliverBefore, false)
+			s.stats.setWaiting(mclock.Now(), suspendBefore.system, suspendBefore.indexer, canDeliverBefore, false)
 		}
 	}
 
 }
 
-func (s *indexServer) readBlockData(req blockRequest, revertCount uint64) (bd blockData) {
-	bd.request, bd.revertCount = req, revertCount
-	if bd.header = s.parent.chain.GetHeaderByNumber(req.blockNumber); bd.header != nil {
-		bd.valid = true
+func (s *indexServer) readBlockData(blockNumber, revertCount uint64) (bd blockData) {
+	bd.blockNumber, bd.revertCount = blockNumber, revertCount
+	if bd.header = s.parent.chain.GetHeaderByNumber(blockNumber); bd.header != nil {
 		blockHash := bd.header.Hash()
-		if req.needBody {
-			bd.body = s.parent.chain.GetBody(blockHash)
-			if bd.body == nil {
-				bd.valid = false
-			}
+		bd.body = s.parent.chain.GetBody(blockHash)
+		bd.receipts, _ = s.parent.rawReceiptsCache.Get(blockHash)
+		if bd.receipts == nil {
+			// Note: we do not cache historical receipts because the indexer
+			// typically requests them once
+			bd.receipts = s.parent.chain.GetRawReceipts(blockHash, bd.blockNumber)
 		}
-		if req.needReceipts {
-			bd.receipts, _ = s.parent.rawReceiptsCache.Get(blockHash)
-			if bd.receipts == nil {
-				// Note: we do not cache historical receipts because the indexer
-				// typically requests them once
-				bd.receipts = s.parent.chain.GetRawReceipts(blockHash, bd.request.blockNumber)
-				if bd.receipts == nil {
-					bd.valid = false
-				}
-			}
-		}
+		bd.valid = bd.body != nil && bd.receipts != nil
 	}
 	return
 }
@@ -520,46 +461,28 @@ func (s *indexServer) historicDeliverLoop() {
 		s.parent.closeWg.Done()
 	}()
 
-	var maxPriority int
+	var suspend bool
 	for {
-		switch maxPriority {
-		case 0:
+		switch suspend {
+		case false:
 			select {
 			case <-s.parent.closeCh:
 				return
-			case maxPriority = <-s.deliverPriorityCh:
-			case bd := <-s.blockDataCh[0]:
-				s.deliverBlockData(bd, 0)
+			case suspend = <-s.deliverSuspendCh:
 			}
-		case 1:
+		case true:
 			select {
 			case <-s.parent.closeCh:
 				return
-			case maxPriority = <-s.deliverPriorityCh:
-			case bd := <-s.blockDataCh[0]:
-				s.deliverBlockData(bd, 0)
-			case bd := <-s.blockDataCh[1]:
-				s.deliverBlockData(bd, 1)
+			case suspend = <-s.deliverSuspendCh:
+			case bd := <-s.blockDataCh:
+				s.deliverBlockData(bd)
 			}
-		case 2:
-			select {
-			case <-s.parent.closeCh:
-				return
-			case maxPriority = <-s.deliverPriorityCh:
-			case bd := <-s.blockDataCh[0]:
-				s.deliverBlockData(bd, 0)
-			case bd := <-s.blockDataCh[1]:
-				s.deliverBlockData(bd, 1)
-			case bd := <-s.blockDataCh[2]:
-				s.deliverBlockData(bd, 2)
-			}
-		default:
-			panic("invalid priority value")
 		}
 	}
 }
 
-func (s *indexServer) deliverBlockData(bd blockData, priority int) {
+func (s *indexServer) deliverBlockData(bd blockData) {
 	/*var number uint64
 	if bd.header != nil {
 		number = bd.header.Number.Uint64()
@@ -567,7 +490,7 @@ func (s *indexServer) deliverBlockData(bd blockData, priority int) {
 	fmt.Println("*** deliverBlockData", number, bd.header != nil, bd.body != nil, bd.receipts != nil, priority)*/
 	s.indexerLock.Lock()
 	defer func() {
-		s.deliveredCount[priority]++
+		s.deliveredCount++
 	loop:
 		for {
 			select {
@@ -589,21 +512,21 @@ func (s *indexServer) deliverBlockData(bd blockData, priority int) {
 	}
 	s.lastRevertCount = bd.revertCount
 	for i := bd.revertCount; i < s.revertCount; i++ {
-		if s.revertBlocks[i] <= bd.request.blockNumber {
+		if s.revertBlocks[i] <= bd.blockNumber {
 			return
 		}
 	}
-	if bd.request.blockNumber < max(s.historyCutoff, s.missingBlockCutoff) ||
-		bd.request.blockNumber > s.lastHead.Number.Uint64() {
+	if bd.blockNumber < max(s.historyCutoff, s.missingBlockCutoff) ||
+		bd.blockNumber > s.lastHead.Number.Uint64() {
 		return
 	}
 	if bd.valid {
 		if s.stats != nil {
-			s.stats.indexerProcessing[priority].set(mclock.Now(), true)
+			s.stats.indexerProcessing.set(mclock.Now(), true)
 		}
 		s.indexer.AddBlockData(bd.header, bd.body, bd.receipts)
 		if s.stats != nil {
-			s.stats.indexerProcessing[priority].set(mclock.Now(), false)
+			s.stats.indexerProcessing.set(mclock.Now(), false)
 		}
 	} else {
 		// report error and update missingBlockCutoff in order to
@@ -611,14 +534,14 @@ func (s *indexServer) deliverBlockData(bd blockData, priority int) {
 		if time.Since(s.lastHistoryErrorLog) >= time.Second*10 {
 			s.lastHistoryErrorLog = time.Now()
 			if bd.header == nil {
-				log.Error("Historical header is missing", "number", bd.request.blockNumber)
-			} else if bd.request.needBody && bd.body == nil {
-				log.Error("Historical block body is missing", "number", bd.request.blockNumber, "hash", bd.header.Hash())
-			} else if bd.request.needReceipts && bd.receipts == nil {
-				log.Error("Historical receipts are missing", "number", bd.request.blockNumber, "hash", bd.header.Hash())
+				log.Error("Historical header is missing", "number", bd.blockNumber)
+			} else if bd.body == nil {
+				log.Error("Historical block body is missing", "number", bd.blockNumber, "hash", bd.header.Hash())
+			} else if bd.receipts == nil {
+				log.Error("Historical receipts are missing", "number", bd.blockNumber, "hash", bd.header.Hash())
 			}
 		}
-		s.missingBlockCutoff = max(s.missingBlockCutoff, bd.request.blockNumber+1)
+		s.missingBlockCutoff = max(s.missingBlockCutoff, bd.blockNumber+1)
 		s.indexer.SetHistoryCutoff(max(s.historyCutoff, s.missingBlockCutoff))
 	}
 }
@@ -626,11 +549,7 @@ func (s *indexServer) deliverBlockData(bd blockData, priority int) {
 // setBlockProcessing suspends serving historical blocks requested by the indexer
 // while a chain segment is being processed and added to the chain.
 func (s *indexServer) setBlockProcessing(processing bool) {
-	if processing {
-		s.setSystemPriority(1)
-	} else {
-		s.setSystemPriority(2)
-	}
+	s.suspendBySystem(processing)
 	if processing && s.testSuspendHookCh != nil {
 		select {
 		case s.testSuspendHookCh <- struct{}{}:

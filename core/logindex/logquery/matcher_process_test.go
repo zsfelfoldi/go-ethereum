@@ -285,7 +285,7 @@ func (ts *testScheduler) RequestBlock(refBlockHash common.Hash, blockNumber uint
 			return
 		}
 	}
-	deliverFn(logindex.BlockRequest{Number: blockNumber, NeedBody: true, NeedReceipts: true}, nil, nil, nil)
+	deliverFn(logindex.uint64{Number: blockNumber, NeedBody: true, NeedReceipts: true}, nil, nil, nil)
 }
 
 func (ts *testScheduler) registerHook(mp *matcherProcess) {
@@ -309,7 +309,7 @@ func (ts *testScheduler) deliverBlockTo(mp *matcherProcess) {
 	}
 	req := tmi.blockRequests[0]
 	tmi.blockRequests = tmi.blockRequests[1:]
-	req.fn(logindex.BlockRequest{Number: req.number, NeedBody: true, NeedReceipts: true}, ts.blocks[req.number].Header(), ts.blocks[req.number].Body(), ts.receipts[req.number])
+	req.fn(logindex.uint64{Number: req.number, NeedBody: true, NeedReceipts: true}, ts.blocks[req.number].Header(), ts.blocks[req.number].Body(), ts.receipts[req.number])
 }
 
 type testProcessState struct {

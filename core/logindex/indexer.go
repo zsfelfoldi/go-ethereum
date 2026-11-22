@@ -17,8 +17,6 @@
 package logindex
 
 import (
-	"crypto/sha256"
-	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -94,21 +92,21 @@ var DefaultParams = &Params{
 }
 
 type Indexer struct {
-	lock               sync.Mutex
-	params             *Params
-	config             Config
-	requestBlock       func(uint64, bool, bool, int) bool
-	setIndexerPriority func(int)
+	lock            sync.Mutex
+	params          *Params
+	config          Config
+	requestBlock    func(uint64) bool
+	suspendDelivery func(bool)
 
 	files                                     *tableFiles
 	storage                                   *tableStorage
 	mergeThreads, lowLevelMergeThreads        int
 	requiredBlockTables, requestedBlockTables common.RangeSet[uint64]
-	indexerPriority                           int
+	indexerSuspend                            bool
 	headBlock, finalBlock, cutoffBlock        uint64
 	headBlockHash                             common.Hash
-	blockRequests                             map[BlockRequest][]DeliverBlockFn
-	queuedBlockRequests                       [blockRequestLevels][]BlockRequest
+	blockRequests                             map[uint64][]DeliverBlockFn
+	queuedBlockRequests                       []uint64
 	requestedInitBlock                        uint64
 
 	hasProcessedBlock    bool
@@ -140,14 +138,14 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 		config:             config,
 		files:              files,
 		storage:            storage,
-		indexerPriority:    2,
+		indexerSuspend:     false,
 		mergeThreads:       maxMergeThreads,
 		requestedInitBlock: math.MaxUint64,
 		updateMergeCh:      make([]chan struct{}, maxMergeThreads),
 		updateOps:          make([]tableOperation, maxMergeThreads),
 		currentOps:         make([]tableOperation, maxMergeThreads),
 		recentHeads:        lru.NewCache[common.Hash, *cachedBlockData](headCacheSize),
-		blockRequests:      make(map[BlockRequest][]DeliverBlockFn),
+		blockRequests:      make(map[uint64][]DeliverBlockFn),
 	}
 	for i := range ix.updateMergeCh {
 		ix.updateMergeCh[i] = make(chan struct{}, 1)
@@ -159,11 +157,6 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 	return ix
 }
 
-type BlockRequest struct {
-	Number                 uint64
-	NeedBody, NeedReceipts bool
-}
-
 type cachedBlockData struct {
 	header         *types.Header
 	body           *types.Body
@@ -171,43 +164,14 @@ type cachedBlockData struct {
 	canonicalUntil uint64
 }
 
-type DeliverBlockFn = func(BlockRequest, *types.Header, *types.Body, types.Receipts)
-
-func (ix *Indexer) RequestBlock(refBlockHash common.Hash, number uint64, deliverFn DeliverBlockFn) {
-	ix.lock.Lock()
-	defer ix.lock.Unlock()
-
-	refBd, ok := ix.recentHeads.Get(refBlockHash)
-	if !ok || number > refBd.header.Number.Uint64() {
-		deliverFn(BlockRequest{Number: number, NeedBody: true, NeedReceipts: true}, nil, nil, nil) //TODO van olyan, hogy nem kell minden?
-		return
-	}
-	if number+headCacheSize > refBd.header.Number.Uint64() {
-		// look up in cache
-		bd := refBd
-		for bd != nil && bd.header.Number.Uint64() != number {
-			bd, _ = ix.recentHeads.Get(bd.header.ParentHash)
-		}
-		if bd != nil {
-			deliverFn(BlockRequest{Number: number, NeedBody: true, NeedReceipts: true},
-				bd.header, bd.body, bd.receipts) //TODO van olyan, hogy nem kell minden?
-			return
-		}
-	}
-	if number > refBd.canonicalUntil {
-		// not canonical anymore, also not cached
-		deliverFn(BlockRequest{Number: number, NeedBody: true, NeedReceipts: true}, nil, nil, nil) //TODO van olyan, hogy nem kell minden?
-		return
-	}
-	ix.getBlockData(number, true, true, 0 /*TODO*/, deliverFn)
-}
+type DeliverBlockFn = func(uint64, *types.Header, *types.Body, types.Receipts)
 
 func (ix *Indexer) GetRangeReaders(refBlockHash common.Hash, blockRange common.Range[uint64]) []*TableReader {
 	ix.lock.Lock()
 	defer ix.lock.Unlock()
 
 	//fmt.Println("GetRangeReaders", blockRange, refBlockHash)
-	refBd, ok := ix.recentHeads.Get(refBlockHash)
+	refBd, ok := ix.recentHeads.Get(refBlockHash) //TODO give useful error message
 	if !ok {
 		return nil
 	}
@@ -221,29 +185,20 @@ func (ix *Indexer) GetRangeReaders(refBlockHash common.Hash, blockRange common.R
 }
 
 // needs ix.lock
-func (ix *Indexer) getBlockData(number uint64, needBody, needReceipts bool, priority int, deliverFn DeliverBlockFn) {
-	req := BlockRequest{
-		Number:       number,
-		NeedBody:     needBody,
-		NeedReceipts: needReceipts,
-	}
-	ix.blockRequests[req] = append(ix.blockRequests[req], deliverFn)
-	if ix.requestBlock == nil || !ix.requestBlock(number, needBody, needReceipts, priority) {
-		ix.queuedBlockRequests[priority] = append(ix.queuedBlockRequests[priority], req)
+func (ix *Indexer) getBlockData(number uint64, deliverFn DeliverBlockFn) {
+	ix.blockRequests[number] = append(ix.blockRequests[number], deliverFn)
+	if ix.requestBlock == nil || !ix.requestBlock(number) {
+		ix.queuedBlockRequests = append(ix.queuedBlockRequests, number)
 	}
 }
 
 func (ix *Indexer) processBlockRequests(header *types.Header, body *types.Body, receipts types.Receipts) {
-	req := BlockRequest{
-		Number:       header.Number.Uint64(),
-		NeedBody:     body != nil,
-		NeedReceipts: receipts != nil,
-	}
-	if deliverFns, ok := ix.blockRequests[req]; ok {
+	number := header.Number.Uint64()
+	if deliverFns, ok := ix.blockRequests[number]; ok {
 		for _, deliverFn := range deliverFns {
-			deliverFn(req, header, body, receipts)
+			deliverFn(number, header, body, receipts)
 		}
-		delete(ix.blockRequests, req)
+		delete(ix.blockRequests, number)
 	}
 	ix.sendQueuedBlockRequests()
 }
@@ -252,17 +207,14 @@ func (ix *Indexer) sendQueuedBlockRequests() {
 	if ix.requestBlock == nil {
 		return
 	}
-	for priority, reqList := range ix.queuedBlockRequests {
-		for len(reqList) > 0 {
-			if _, ok := ix.blockRequests[reqList[0]]; ok && !ix.requestBlock(reqList[0].Number, reqList[0].NeedBody, reqList[0].NeedReceipts, priority) {
-				break
-			}
-			if len(reqList) > 1 {
-				reqList = reqList[1:]
-			} else {
-				reqList = nil
-			}
-			ix.queuedBlockRequests[priority] = reqList
+	for len(ix.queuedBlockRequests) > 0 {
+		if _, ok := ix.blockRequests[ix.queuedBlockRequests[0]]; ok && !ix.requestBlock(ix.queuedBlockRequests[0]) {
+			break
+		}
+		if len(ix.queuedBlockRequests) > 1 {
+			ix.queuedBlockRequests = ix.queuedBlockRequests[1:]
+		} else {
+			ix.queuedBlockRequests = nil
 		}
 	}
 }
@@ -270,12 +222,12 @@ func (ix *Indexer) sendQueuedBlockRequests() {
 func (ix *Indexer) filterBlockRequests() {
 	tailBlock := ix.tailBlock()
 	ix.requestedBlockTables = ix.requestedBlockTables.Intersection(common.SingleRangeSet[uint64](common.NewRange[uint64](tailBlock, ix.headBlock+1-tailBlock)))
-	for req, deliverFns := range ix.blockRequests {
-		if req.Number < tailBlock || req.Number > ix.headBlock {
+	for number, deliverFns := range ix.blockRequests {
+		if number < tailBlock || number > ix.headBlock {
 			for _, deliverFn := range deliverFns {
-				deliverFn(req, nil, nil, nil)
+				deliverFn(number, nil, nil, nil)
 			}
-			delete(ix.blockRequests, req)
+			delete(ix.blockRequests, number)
 		}
 	}
 }
@@ -294,7 +246,7 @@ func (ix *Indexer) updateTableOperations() {
 			return
 		}
 		fmt.Println("requesting init block", reqNumber)
-		ix.getBlockData(reqNumber, false, false, 0, func(req BlockRequest, header *types.Header, body *types.Body, receipts types.Receipts) {
+		ix.getBlockData(reqNumber, func(number uint64, header *types.Header, body *types.Body, receipts types.Receipts) {
 			if header != nil {
 				ix.storage.deliverInitBlockHash(reqNumber, header.Hash())
 			} else {
@@ -313,14 +265,11 @@ func (ix *Indexer) updateTableOperations() {
 	targetSet := ix.makeTargetSet(completeSet)
 	tableOps, requiredBlockTables := ix.params.nextTableOperations(completeSet, partialSet, targetSet, ix.lowLevelMergeThreads, ix.mergeThreads)
 	//fmt.Println("updateTableOperations   complete", completeSet.count(), "partial", partialSet.count(), "target", targetSet.count())
-	if ix.setIndexerPriority != nil {
-		indexerPriority := 2
-		if (memFileTotal >= memFileSuspendThreshold || tableCountTotal >= tableCountSuspendThreshold) && len(tableOps) != 0 {
-			indexerPriority = 1
-		}
-		if indexerPriority != ix.indexerPriority {
-			ix.indexerPriority = indexerPriority
-			ix.setIndexerPriority(indexerPriority)
+	if ix.suspendDelivery != nil {
+		indexerSuspend := (memFileTotal >= memFileSuspendThreshold || tableCountTotal >= tableCountSuspendThreshold) && len(tableOps) != 0
+		if indexerSuspend != ix.indexerSuspend {
+			ix.indexerSuspend = indexerSuspend
+			ix.suspendDelivery(indexerSuspend)
 		}
 	}
 	canUpdate := make([]bool, ix.mergeThreads)
@@ -377,7 +326,7 @@ loop2:
 	ix.requiredBlockTables = requiredBlockTables
 	if ix.requestBlock != nil {
 		request := ix.requiredBlockTables.Difference(ix.requestedBlockTables)
-		for !request.IsEmpty() && ix.requestBlock(request.Last(), true, true, 2) {
+		for !request.IsEmpty() && ix.requestBlock(request.Last()) {
 			//fmt.Println("requesting table block", request.Last())
 			requested := common.SingleRangeSet[uint64](common.NewRange[uint64](request.Last(), 1))
 			ix.requestedBlockTables = ix.requestedBlockTables.Union(requested)
@@ -475,154 +424,16 @@ func getBlockEntries(blockNumber uint64, parentHash common.Hash, txs types.Trans
 	return entries
 }
 
-func (ix *Indexer) GetProcessedTableRoot(blockId, parentHash common.Hash, transactions types.Transactions, receipts types.Receipts) (common.Hash, error) {
-	ix.lock.Lock()
-	if ix.hasProcessedBlock {
-		if err := ix.storage.deleteTable(tableID{level: 0, index: ix.processedBlockNumber}); err != nil {
-			return common.Hash{}, err
-		}
-		ix.hasProcessedBlock = false
-	}
-	indexHeadNumber, indexHeadHash := ix.headBlock, ix.headBlockHash
-	ix.lock.Unlock()
-
-	if parentHash != indexHeadHash {
-		return common.Hash{}, errors.New("parent of processed table block does not match index head")
-	}
-	blockNumber := indexHeadNumber
-	if indexHeadHash != (common.Hash{}) {
-		blockNumber++
-	}
-	ix.storage.deleteTablesFromBlock(blockNumber)
-	entries := getBlockEntries(blockNumber, parentHash, transactions, receipts)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Compare(&entries[j]) < 0
-	})
-	tw, err := ix.storage.addNewTableWriter(tableID{level: 0, index: blockNumber}, uint64(len(entries)))
-	if err != nil {
-		return common.Hash{}, err
-	}
-	for _, entry := range entries {
-		if err := tw.addEntry(&entry); err != nil {
-			ix.storage.deleteTable(tableID{level: 0, index: blockNumber})
-			return common.Hash{}, err
-		}
-	}
-	tableRoot := tw.getTableRoot()
-
-	ix.lock.Lock()
-	ix.hasProcessedBlock = true
-	ix.processedBlockNumber = blockNumber
-	ix.processedBlockId = blockId
-	ix.lock.Unlock()
-
-	return common.Hash(tableRoot), nil
-}
-
-func (ix *Indexer) GetAsyncTableRoot(parentHash common.Hash, firstBlock, tableSize uint64) (common.Hash, error) {
-	/*	for i := 1; i < len(ix.params.protocolLevels); i++ {
-		blockCount := ix.params.tableLevels[i].blockCount
-		headAge := ix.params.protocolLevels[i].headAge
-		if blockNumber >= headAge && (blockNumber-headAge)%blockCount == blockCount-1 { //TODO fork block
-			id := tableID{level: i, index: (blockNumber - headAge) / blockCount}
-			tr, err := ix.storage.waitForTableReader(id)
-			if err != nil {
-				return nil, err
-			}
-			updateIndexRoot(indexRoots[common.HashLength*i:common.HashLength*(i+1)], tr.tableRoot[:])
-		}
-	}*/
-	panic("xxx")
-}
-
-/*func (ix *Indexer) GetIndexRoots(blockNumber uint64, parentHash common.Hash, transactions types.Transactions, receipts types.Receipts) ([]byte, error) {
-	indexRoots := make([]byte, common.HashLength*len(ix.params.protocolLevels))
-	if blockNumber > 0 {
-		parentHeader, ok := ix.recentHeaders.Get(blockNumber - 1)
-		for !ok {
-			headerCh := make(chan *types.Header, 1)
-			ix.getBlockDataLocked(blockNumber-1, false, false, 0, func(req BlockRequest, header *types.Header, body *types.Body, receipts types.Receipts) {
-				headerCh <- header
-			})
-			parentHeader = <-headerCh
-			if parentHeader == nil {
-				return nil, errors.New("could not retrieve parent header")
-			}
-		}
-		if parentHeader.Hash() != parentHash {
-			return nil, errors.New("parent header hash mismatch")
-		}
-		if len(parentHeader.BloomOrIndex) == len(indexRoots) {
-			copy(indexRoots, parentHeader.BloomOrIndex)
-		}
-	}
-
-	ix.lock.Lock()
-	if ix.hasProcessedBlock {
-		if err := ix.storage.deleteTable(tableID{level: 0, index: ix.processedBlockNumber}); err != nil {
-			return nil, err
-		}
-		ix.hasProcessedBlock = false
-	}
-	ix.lock.Unlock()
-
-	ix.storage.deleteTablesFromBlock(blockNumber)
-	entries := getBlockEntries(blockNumber, parentHash, transactions, receipts)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Compare(&entries[j]) < 0
-	})
-	tw, err := ix.storage.addNewTableWriter(tableID{level: 0, index: blockNumber}, uint64(len(entries)))
-	if err != nil {
-		return nil, err
-	}
-	for _, entry := range entries {
-		if err := tw.addEntry(&entry); err != nil {
-			ix.storage.deleteTable(tableID{level: 0, index: blockNumber})
-			return nil, err
-		}
-	}
-	tableRoot := tw.getTableRoot()
-	updateIndexRoot(indexRoots[:common.HashLength], tableRoot[:])
-	for i := 1; i < len(ix.params.protocolLevels); i++ {
-		blockCount := ix.params.tableLevels[i].blockCount
-		headAge := ix.params.protocolLevels[i].headAge
-		if blockNumber >= headAge && (blockNumber-headAge)%blockCount == blockCount-1 { //TODO fork block
-			id := tableID{level: i, index: (blockNumber - headAge) / blockCount}
-			tr, err := ix.storage.waitForTableReader(id)
-			if err != nil {
-				return nil, err
-			}
-			updateIndexRoot(indexRoots[common.HashLength*i:common.HashLength*(i+1)], tr.tableRoot[:])
-		}
-	}
-
-	ix.lock.Lock()
-	ix.hasProcessedBlock = true
-	ix.processedBlockNumber = blockNumber
-	copy(ix.processedBlockId[:], indexRoots[:common.HashLength])
-	ix.lock.Unlock()
-	return indexRoots, nil
-}*/
-
-func updateIndexRoot(rootSection, newTableRoot []byte) {
-	hasher := sha256.New()
-	hasher.Write(rootSection)
-	hasher.Write(newTableRoot)
-	var result common.Hash
-	hasher.Sum(result[:0])
-	copy(rootSection, result[:])
-}
-
-func (ix *Indexer) Register(requestBlock func(uint64, bool, bool, int) bool, setIndexerPriority func(int)) {
+func (ix *Indexer) Register(requestBlock func(uint64) bool, suspendDelivery func(bool)) {
 	ix.lock.Lock()
 	defer ix.lock.Unlock()
 
 	if ix.shutdown {
 		return
 	}
-	ix.requestBlock, ix.setIndexerPriority = requestBlock, setIndexerPriority
+	ix.requestBlock, ix.suspendDelivery = requestBlock, suspendDelivery
 	ix.sendQueuedBlockRequests()
-	ix.setIndexerPriority(ix.indexerPriority)
+	ix.suspendDelivery(ix.indexerSuspend)
 }
 
 var (
