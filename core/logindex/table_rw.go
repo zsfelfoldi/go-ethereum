@@ -294,6 +294,7 @@ func decodeNumber(buf []byte) (uint64, []byte, error) {
 		n += uint64(b&127) << shift
 		shift += 7
 		if b&128 == 0 {
+			//fmt.Println(" decodeNumber", n)
 			return n, buf, nil
 		}
 	}
@@ -415,7 +416,7 @@ func (ec *entryChunk) getHash(gti uint64) (result merkle.Value) {
 }
 
 func decodeEntries(ies IndexEntries, enc []byte, allowUnknown bool) (IndexEntries, bool, error) {
-	//fmt.Println("decode", len(enc))
+	//fmt.Println("decodeEntries", enc)
 	var (
 		lastTypeAndValue          [34]byte
 		lastTvEnd                 int
@@ -453,6 +454,7 @@ func decodeEntries(ies IndexEntries, enc []byte, allowUnknown bool) (IndexEntrie
 				tvStart = encRange % 34
 				tvEnd = tvStart + encRange/34
 			}
+			//fmt.Println(" encRange", encRange, tvStart, tvEnd, len(enc))
 			copy(lastTypeAndValue[tvStart:tvEnd], enc[1:tvEnd+1-tvStart])
 			if tvEnd < lastTvEnd {
 				for i := tvEnd; i < lastTvEnd; i++ {
@@ -624,8 +626,10 @@ func (tr *TableReader) BlockRange() common.Range[uint64] {
 }
 
 func (tr *TableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk, error) {
+	//fmt.Println("getSubtreeChunk", level, index)
 	sp := subtreePos{level, index}
 	if sc, ok := tr.subtreeChunkCache.Get(sp); ok {
+		//fmt.Println(" *getSubtreeChunk", level, index, "cached", len(sc.boundaryEntries))
 		return sc, nil
 	}
 	var start, stop int64
@@ -653,11 +657,14 @@ func (tr *TableReader) getSubtreeChunk(level uint, index uint64) (*subtreeChunk,
 	}
 	sc := ss.toSubtreeChunk(tr.format.subtreeChunkHeight(level), tr.format.leafHeight-tr.format.baseHeight(level+1))
 	tr.subtreeChunkCache.Add(sp, sc)
+	//fmt.Println(" *getSubtreeChunk", level, index, "success", len(sc.boundaryEntries))
 	return sc, nil
 }
 
 func (tr *TableReader) getEntryChunk(index uint64) (*entryChunk, error) {
+	//fmt.Println("getEntryChunk", index)
 	if ec, ok := tr.entryChunkCache.Get(index); ok {
+		//fmt.Println(" *getEntryChunk", index, "cached", len(ec.entries))
 		return ec, nil
 	}
 	sc, err := tr.getSubtreeChunk(tr.format.subtreeLevels-1, index/subtreeChunkSize)
@@ -666,9 +673,13 @@ func (tr *TableReader) getEntryChunk(index uint64) (*entryChunk, error) {
 	}
 	i := index % subtreeChunkSize
 	start, stop := sc.boundaryFilePos[i], sc.boundaryFilePos[i+1]
-	enc := make([]byte, stop-start)
-	_, err = tr.reader.ReadAt(enc, int64(start))
+	encRlp := make([]byte, stop-start)
+	_, err = tr.reader.ReadAt(encRlp, int64(start))
 	if err != nil {
+		return nil, err
+	}
+	var enc []byte
+	if err := rlp.DecodeBytes(encRlp, &enc); err != nil { //TODO remove rlp wrapper
 		return nil, err
 	}
 	ec := &entryChunk{
@@ -679,6 +690,7 @@ func (tr *TableReader) getEntryChunk(index uint64) (*entryChunk, error) {
 		return nil, err
 	}
 	tr.entryChunkCache.Add(index, ec)
+	//fmt.Println(" *getEntryChunk", index, "success", len(ec.entries))
 	return ec, nil
 }
 
@@ -707,6 +719,7 @@ func (tr *TableReader) GetHash(gti uint64) (merkle.Value, error) {
 }
 
 func (tr *TableReader) GetEntry(index uint64, allowUnknown bool) (*IndexEntry, error) {
+	fmt.Println("GetEntry", index, allowUnknown, "count", tr.EntryCount)
 	ec, err := tr.getEntryChunk(index / entryChunkSize)
 	if err != nil {
 		return nil, err
@@ -720,6 +733,7 @@ func (tr *TableReader) GetEntry(index uint64, allowUnknown bool) (*IndexEntry, e
 
 // batch read entry chunk (not cached, optimized for table merge linear read)
 func (tr *TableReader) getEntries(indexRange common.Range[uint64]) (IndexEntries, error) {
+	//fmt.Println("getEntries", indexRange, "count", tr.EntryCount, "levels", tr.format.subtreeLevels)
 	if indexRange.IsEmpty() {
 		return nil, nil
 	}
@@ -739,8 +753,8 @@ func (tr *TableReader) getEntries(indexRange common.Range[uint64]) (IndexEntries
 	}
 	start, stop := scs[0].boundaryFilePos[firstEC%subtreeChunkSize], scs[lastSC-firstSC].boundaryFilePos[lastEC%subtreeChunkSize+1]
 	//fmt.Println(" read", start, stop, stop-start)
-	enc := make([]byte, stop-start)
-	_, err := tr.reader.ReadAt(enc, int64(start))
+	encRlp := make([]byte, stop-start) //TODO remove rlp wrapper
+	_, err := tr.reader.ReadAt(encRlp, int64(start))
 	if err != nil {
 		return nil, err
 	}
@@ -749,8 +763,12 @@ func (tr *TableReader) getEntries(indexRange common.Range[uint64]) (IndexEntries
 		sc := scs[ec/subtreeChunkSize-firstSC]
 		firstByte := sc.boundaryFilePos[ec%subtreeChunkSize] - start
 		afterLastByte := sc.boundaryFilePos[ec%subtreeChunkSize+1] - start
-		//fmt.Println(" enc range", firstByte, afterLastByte)
-		if entries, _, err = decodeEntries(entries, enc[firstByte:afterLastByte], false); err != nil {
+		//fmt.Println(" ec enc range", firstByte, afterLastByte)
+		var enc []byte
+		if err := rlp.DecodeBytes(encRlp[firstByte:afterLastByte], &enc); err != nil {
+			return nil, err
+		}
+		if entries, _, err = decodeEntries(entries, enc, false); err != nil {
 			return nil, err
 		}
 	}

@@ -90,7 +90,7 @@ var DefaultParams = &Params{
 		{tailAge: 8192, headAge: 16},
 	},
 	fileStorageThresholdHeight: 12,
-	topLevelMinUnique:          34, //TODO
+	topLevelMinUnique:          3, //TODO
 }
 
 type Indexer struct {
