@@ -453,6 +453,12 @@ func decodeEntries(ies IndexEntries, enc []byte, allowUnknown bool) (IndexEntrie
 			} else {
 				tvStart = encRange % 34
 				tvEnd = tvStart + encRange/34
+				if tvEnd >= 34 {
+					return nil, false, errors.New("invalid entry value encoding")
+				}
+				if !allowUnknown {
+					return nil, false, ErrUnknownBytes
+				}
 			}
 			//fmt.Println(" encRange", encRange, tvStart, tvEnd, len(enc))
 			copy(lastTypeAndValue[tvStart:tvEnd], enc[1:tvEnd+1-tvStart])
