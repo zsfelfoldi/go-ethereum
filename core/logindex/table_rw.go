@@ -682,13 +682,9 @@ func (tr *TableReader) getEntryChunk(index uint64, allowUnknown bool) (*entryChu
 	}
 	i := index % subtreeChunkSize
 	start, stop := sc.boundaryFilePos[i], sc.boundaryFilePos[i+1]
-	encRlp := make([]byte, stop-start)
-	_, err = tr.reader.ReadAt(encRlp, int64(start))
+	enc := make([]byte, stop-start)
+	_, err = tr.reader.ReadAt(enc, int64(start))
 	if err != nil {
-		return nil, err
-	}
-	var enc []byte
-	if err := rlp.DecodeBytes(encRlp, &enc); err != nil { //TODO remove rlp wrapper
 		return nil, err
 	}
 	ec := &entryChunk{
@@ -758,8 +754,8 @@ func (tr *TableReader) getEntries(indexRange common.Range[uint64]) (IndexEntries
 	}
 	start, stop := scs[0].boundaryFilePos[firstEC%subtreeChunkSize], scs[lastSC-firstSC].boundaryFilePos[lastEC%subtreeChunkSize+1]
 	//fmt.Println(" read", start, stop, stop-start)
-	encRlp := make([]byte, stop-start) //TODO remove rlp wrapper
-	_, err := tr.reader.ReadAt(encRlp, int64(start))
+	enc := make([]byte, stop-start)
+	_, err := tr.reader.ReadAt(enc, int64(start))
 	if err != nil {
 		return nil, err
 	}
@@ -769,11 +765,7 @@ func (tr *TableReader) getEntries(indexRange common.Range[uint64]) (IndexEntries
 		firstByte := sc.boundaryFilePos[ec%subtreeChunkSize] - start
 		afterLastByte := sc.boundaryFilePos[ec%subtreeChunkSize+1] - start
 		//fmt.Println(" ec enc range", firstByte, afterLastByte)
-		var enc []byte
-		if err := rlp.DecodeBytes(encRlp[firstByte:afterLastByte], &enc); err != nil {
-			return nil, err
-		}
-		if entries, _, err = decodeEntries(entries, enc, false); err != nil {
+		if entries, _, err = decodeEntries(entries, enc[firstByte:afterLastByte], false); err != nil {
 			return nil, err
 		}
 	}
@@ -861,6 +853,10 @@ func newTableWriter(params *Params, tf *tableFiles, id tableID, storedState bool
 	if entryCount >= 10000000 {
 		fmt.Println("*** newTableWriter", name, storedState)
 	}
+	minUnique := uint(34)
+	if id.level == len(params.tableLevels)-1 {
+		minUnique = params.topLevelMinUnique
+	}
 	var state writeState
 	if storedState {
 		r, l, err := tf.getReaderAt(name + writeStateSuffix)
@@ -878,15 +874,14 @@ func newTableWriter(params *Params, tf *tableFiles, id tableID, storedState bool
 			return nil, err
 		}
 		//fmt.Println("state @ newTableWriter:", state)
+		if state.Header.MinUnique != minUnique {
+			return nil, errors.New("minUnique encoding mismatch")
+		}
 		entryCount = state.Header.EntryCount
 	}
 	format := params.newTableFormat(entryCount)
 	if id.level == 0 {
 		format.memoryStorage = format.subtreeLevels + 1
-	}
-	minUnique := uint(34)
-	if id.level == len(params.tableLevels)-1 {
-		minUnique = params.topLevelMinUnique
 	}
 	tw := &tableWriter{
 		tf:                tf,
@@ -1056,6 +1051,7 @@ func (tw *tableWriter) close() error {
 		NextEntry: tw.nextEntry,
 		Header: tableHeader{
 			EntryCount: tw.entryCount,
+			MinUnique:  tw.minUnique,
 			TableRoot:  tw.tableRoot,
 			Meta:       tw.meta,
 		},
@@ -1161,11 +1157,7 @@ func (tw *tableWriter) addEntry(ie *IndexEntry) error {
 	tw.lastEntryChunk.entries = append(tw.lastEntryChunk.entries, *ie)
 	tw.nextEntry++
 	if len(tw.lastEntryChunk.entries) == entryChunkSize || tw.nextEntry == tw.entryCount {
-		ess := tw.lastEntryChunk.entries.encode(tw.minUnique)
-		enc, err := rlp.EncodeToBytes(&ess) //TODO
-		if err != nil {
-			return err
-		}
+		enc := tw.lastEntryChunk.entries.encode(tw.minUnique)
 		n, err := tw.writers[tw.format.subtreeLevels].Write(enc)
 		if err != nil {
 			return err
@@ -1286,6 +1278,7 @@ func (tw *tableWriter) finalize() (bool, error) {
 			header := tableHeader{
 				LevelPointers: make([]uint64, len(tw.levelPointers)),
 				EntryCount:    tw.entryCount,
+				MinUnique:     tw.minUnique,
 				TableRoot:     tw.tableRoot,
 				Meta:          tw.meta,
 			}
@@ -1357,6 +1350,7 @@ func (tw *tableWriter) getPhase() uint { //TODO deleted phase?
 type tableHeader struct {
 	LevelPointers []uint64
 	EntryCount    uint64
+	MinUnique     uint
 	TableRoot     merkle.Value
 	Meta          TableMeta
 }
