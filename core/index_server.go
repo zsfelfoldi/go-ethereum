@@ -404,7 +404,7 @@ func (s *indexServer) historicReadLoop() {
 
 	for {
 		canDeliver = readCount < deliveredCount+queueCapacity
-		waitRequest := canDeliver || !suspend.active()
+		waitRequest := canDeliver && !suspend.active()
 		if s.stats != nil {
 			suspendBefore, canDeliverBefore = suspend, canDeliver
 			s.stats.setWaiting(mclock.Now(), suspend.system, suspend.indexer, canDeliver, true)
@@ -464,13 +464,13 @@ func (s *indexServer) historicDeliverLoop() {
 	var suspend bool
 	for {
 		switch suspend {
-		case false:
+		case true:
 			select {
 			case <-s.parent.closeCh:
 				return
 			case suspend = <-s.deliverSuspendCh:
 			}
-		case true:
+		case false:
 			select {
 			case <-s.parent.closeCh:
 				return
