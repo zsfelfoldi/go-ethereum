@@ -728,7 +728,7 @@ func (tr *TableReader) GetHash(gti uint64) (merkle.Value, error) {
 }
 
 func (tr *TableReader) GetEntry(index uint64, allowUnknown bool) (*IndexEntry, error) {
-	fmt.Println("GetEntry", index, allowUnknown, "count", tr.EntryCount)
+	//fmt.Println("GetEntry", index, allowUnknown, "count", tr.EntryCount)
 	ec, err := tr.getEntryChunk(index/entryChunkSize, allowUnknown)
 	if err != nil {
 		return nil, err

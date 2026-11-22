@@ -381,9 +381,14 @@ func (mp *matcherProcess) split() (*matcherProcess, error) {
 		return nil, nil
 	}
 	//fmt.Println(mp.firstBlock, mp.lastBlock, "*** split at", splitAt)
-	logicBuilder := mp.tableProver.optimizer.newBuilderInstance()
+	var logicBuilder *logicBuilder
+	if mp.tableProver != nil {
+		logicBuilder = mp.tableProver.optimizer.newBuilderInstance()
+	}
 	mp2 := newMatcherProcess(mp.logIndex, mp.chainView, mp.matcher.split(logicBuilder, splitAt), mp.session, mp.tableReader, mp.firstBlock, mp.lastBlock)
-	mp2.setProver(mp.tableProver, logicBuilder)
+	if mp.tableProver != nil {
+		mp2.setProver(mp.tableProver, logicBuilder)
+	}
 	mp2.prev, mp2.next = mp, mp.next
 	if mp.next != nil {
 		mp.next.prev = mp2

@@ -288,7 +288,7 @@ func (m *singleMatcherInstance) next() (dpos *logindex.IndexPosition, dlsn logic
 			return nil, 0, err
 		}
 	}
-	if m.lastSectionNode == 0 {
+	if m.logic != nil && m.lastSectionNode == 0 {
 		if m.currentEntryNode == 0 {
 			m.currentEntryNode = m.logic.addInputNode(m.entryPtr)
 			//fmt.Println(" currentEntryNode ptr =", m.entryPtr)
@@ -488,13 +488,15 @@ func (m *offsetMatcherInstance) next() (dpos *logindex.IndexPosition, dlsn logic
 			}
 			m.currentPos = new(logindex.IndexPosition)
 			*m.currentPos = *pos
-			if m.lastSectionNode == 0 {
-				m.lastSectionNode = lsn
-			} else {
-				andNode := m.logic.addAndGateNode()
-				m.logic.connect(m.lastSectionNode, andNode)
-				m.logic.connect(lsn, andNode)
-				m.lastSectionNode = andNode
+			if m.logic != nil {
+				if m.lastSectionNode == 0 {
+					m.lastSectionNode = lsn
+				} else {
+					andNode := m.logic.addAndGateNode()
+					m.logic.connect(m.lastSectionNode, andNode)
+					m.logic.connect(lsn, andNode)
+					m.lastSectionNode = andNode
+				}
 			}
 			if !addOffset(m.currentPos, -m.offset) {
 				break loop

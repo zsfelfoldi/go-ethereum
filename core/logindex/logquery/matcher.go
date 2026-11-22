@@ -181,12 +181,18 @@ func (mc *Matcher) getMatches(ctx context.Context, chainView chainView, query Fi
 	for i, tr := range readers {
 		br := tr.BlockRange().Intersection(blockRange) // can be empty in the last table because of readerRange extension
 		//fmt.Println(" ", i, "range", br)
-		prover := newTableProver(tr)
-		if br.IsEmpty() {
-			lastBlockProver = prover
-			break
+		var (
+			prover       *tableProver
+			logicBuilder *logicBuilder
+		)
+		if prove {
+			prover = newTableProver(tr)
+			if br.IsEmpty() {
+				lastBlockProver = prover
+				break
+			}
+			logicBuilder = prover.optimizer.newBuilderInstance()
 		}
-		logicBuilder := prover.optimizer.newBuilderInstance()
 		firstPos := logindex.IndexPosition{BlockNumber: br.First()}
 		lastPos := logindex.IndexPosition{BlockNumber: br.Last(), TxIndex: math.MaxUint32, LogIndex: math.MaxUint32}
 		firstBlock := br.First()
@@ -203,7 +209,9 @@ func (mc *Matcher) getMatches(ctx context.Context, chainView chainView, query Fi
 			lastPos,
 		)
 		mp := newMatcherProcess(mc.logIndex, chainView, matcherInstance, session, tr, firstBlock, lastBlock)
-		mp.setProver(prover, logicBuilder)
+		if prove {
+			mp.setProver(prover, logicBuilder)
+		}
 		if i == 0 {
 			session.first = mp
 			session.last = mp
@@ -612,11 +620,15 @@ func (ms *matcherSession) returnResults() {
 		}
 		_, lastBlockProven := mp.blockProofs[mp.tableReader.BlockRange().Last()]
 		for i, log := range mp.allMatches {
-			mp.logicBuilder.connect(mp.sectionNodes[i], andNode)
+			if mp.tableProver != nil {
+				mp.logicBuilder.connect(mp.sectionNodes[i], andNode)
+			}
 			if len(res.logs) == ms.maxResults {
 				lastLog := res.logs[ms.maxResults-1]
-				trimBlockProofs(mp.blockProofs, lastLog.BlockNumber, uint32(lastLog.TxIndex), mp.session.reverse)
-				mp.tableProver.addBlockProofs(mp.blockProofs, ms.maxResults-lastResultCount)
+				if mp.tableProver != nil {
+					trimBlockProofs(mp.blockProofs, lastLog.BlockNumber, uint32(lastLog.TxIndex), mp.session.reverse)
+					mp.tableProver.addBlockProofs(mp.blockProofs, ms.maxResults-lastResultCount)
+				}
 				lastResultCount = ms.maxResults
 				return lastBlockProven
 			}
@@ -625,10 +637,12 @@ func (ms *matcherSession) returnResults() {
 			}
 			res.logs = append(res.logs, log)
 		}
-		if len(mp.sectionNodes) > len(mp.allMatches) {
-			mp.logicBuilder.connect(mp.sectionNodes[len(mp.allMatches)], andNode)
+		if mp.tableProver != nil {
+			if len(mp.sectionNodes) > len(mp.allMatches) {
+				mp.logicBuilder.connect(mp.sectionNodes[len(mp.allMatches)], andNode)
+			}
+			mp.tableProver.addBlockProofs(mp.blockProofs, len(res.logs)-lastResultCount)
 		}
-		mp.tableProver.addBlockProofs(mp.blockProofs, len(res.logs)-lastResultCount)
 		lastResultCount = len(res.logs)
 		return lastBlockProven || len(res.logs) != ms.maxResults
 	}
