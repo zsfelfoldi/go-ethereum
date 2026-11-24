@@ -31,6 +31,7 @@ import (
 type mergeThread struct {
 	currentOp, lastOp tableOperation
 	startTaskCh       chan tableOperation
+	suspendCh         chan bool
 }
 
 type stoppedTask struct {
@@ -73,6 +74,14 @@ func (mt *mergeThread) stoppedTask(op tableOperation) {
 	}
 }
 
+func (mt *mergeThread) suspend(active bool) {
+	select {
+	case <-mt.suspendCh:
+	default:
+	}
+	mt.suspendCh <- active
+}
+
 func (ix *Indexer) startTableMerge() {
 	ix.mergeWg.Add(ix.mergeThreadCount + 1)
 	ix.mergeThreads = make([]mergeThread, ix.mergeThreadCount)
@@ -81,6 +90,7 @@ func (ix *Indexer) startTableMerge() {
 	ix.shutdownCh = make(chan struct{})
 	for i := range ix.mergeThreads {
 		ix.mergeThreads[i].startTaskCh = make(chan tableOperation, 1)
+		ix.mergeThreads[i].suspendCh = make(chan bool, 1)
 		go ix.mergeThreadLoop(i)
 	}
 	go ix.mergeControlLoop()
@@ -194,6 +204,17 @@ func (ix *Indexer) triggerMergeLoop() {
 	}
 }
 
+// assumes ix.lock
+func (ix *Indexer) suspendMerge(active bool) {
+	if active == ix.mergeSuspended {
+		return
+	}
+	ix.mergeSuspended = active
+	for _, mt := range ix.mergeThreads {
+		mt.suspend(active)
+	}
+}
+
 func (ix *Indexer) mergeControlLoop() {
 	defer ix.mergeWg.Done()
 
@@ -222,12 +243,26 @@ func (ix *Indexer) mergeControlLoop() {
 func (ix *Indexer) mergeThreadLoop(threadIndex int) {
 	defer ix.mergeWg.Done()
 
-	startTaskCh := ix.mergeThreads[threadIndex].startTaskCh
+	mt := &ix.mergeThreads[threadIndex]
 	var startOp tableOperation
 	for {
 		if startOp == (tableOperation{}) {
 			select {
-			case startOp = <-startTaskCh:
+			case startOp = <-mt.startTaskCh:
+			case suspend := <-mt.suspendCh:
+				if suspend {
+				suspendLoop:
+					for {
+						select {
+						case suspend := <-mt.suspendCh:
+							if !suspend {
+								break suspendLoop
+							}
+						case <-ix.shutdownCh:
+							return
+						}
+					}
+				}
 			case <-ix.shutdownCh:
 				return
 			}
@@ -242,13 +277,29 @@ func (ix *Indexer) mergeThreadLoop(threadIndex int) {
 			}
 		case opMerge:
 			_, err := ix.mergeTable(currentOp.id, func() bool {
-				select {
-				case startOp = <-startTaskCh:
-					return true
-				case <-ix.shutdownCh:
-					return true
-				default:
-					return false
+				for {
+					select {
+					case startOp = <-mt.startTaskCh:
+						return true
+					case suspend := <-mt.suspendCh:
+						if suspend {
+						suspendLoop2:
+							for {
+								select {
+								case suspend := <-mt.suspendCh:
+									if !suspend {
+										break suspendLoop2
+									}
+								case <-ix.shutdownCh:
+									return true
+								}
+							}
+						}
+					case <-ix.shutdownCh:
+						return true
+					default:
+						return false
+					}
 				}
 			})
 			if err != nil {

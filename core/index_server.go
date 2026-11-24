@@ -59,7 +59,7 @@ type Indexer interface {
 	SetHistoryCutoff(blockNumber uint64)
 	// SetFinalized signals the latest finalized block number to the indexer.
 	SetFinalized(blockNumber uint64)
-	// Suspended signals to the indexer that block processing has started and
+	// Suspend signals to the indexer that block processing has started and
 	// any non-essential asynchronous tasks of the indexer should be suspended.
 	// The next AddBlockData call signals the end of the suspended state.
 	// Note that if multiple blocks are inserted then the indexer is only
@@ -69,7 +69,7 @@ type Indexer interface {
 	// parallel with forward syncing, the purpose of the suspend mechanism is
 	// to handle historical index backfilling with a lower priority so that it
 	// does not increase block latency.
-	Suspended()
+	Suspend()
 	// Stop initiates indexer shutdown. No subsequent calls are made through this
 	// interface after Stop.
 	Stop()
@@ -130,7 +130,7 @@ func (f *indexServers) register(indexer Indexer, name string) {
 		revertCountCh:    make(chan uint64, 1),
 		deliveredCountCh: make(chan uint64, 1),
 		readSuspendCh:    make(chan suspendStatus, 1),
-		deliverSuspendCh: make(chan bool, 1),
+		deliverSuspendCh: make(chan suspendStatus, 1),
 		blockRequestCh:   make(chan uint64, queueCapacity),
 		blockDataCh:      make(chan blockData, queueCapacity),
 		indexerSuspend:   true,
@@ -258,7 +258,7 @@ type indexServer struct {
 	blockDataCh      chan blockData // historicReadLoop -> historicDeliverLoop => Indexer (cap=queueCapacity)
 
 	readSuspendCh                 chan suspendStatus // Indexer => callback -> historicReadLoop (cap=1)
-	deliverSuspendCh              chan bool          // Indexer => callback -> historicDeliverLoop (cap=1)
+	deliverSuspendCh              chan suspendStatus // Indexer => callback -> historicDeliverLoop (cap=1)
 	suspendLock                   sync.Mutex
 	indexerSuspend, systemSuspend bool
 
@@ -371,7 +371,7 @@ func (s *indexServer) updateSuspendStatus() {
 	case <-s.deliverSuspendCh:
 	default:
 	}
-	s.deliverSuspendCh <- suspend.active()
+	s.deliverSuspendCh <- suspend
 
 	select {
 	case <-s.readSuspendCh:
@@ -461,9 +461,10 @@ func (s *indexServer) historicDeliverLoop() {
 		s.parent.closeWg.Done()
 	}()
 
-	var suspend bool
+	var suspend suspendStatus
 	for {
-		switch suspend {
+		suspendBefore := suspend
+		switch suspend.active() {
 		case true:
 			select {
 			case <-s.parent.closeCh:
@@ -478,6 +479,11 @@ func (s *indexServer) historicDeliverLoop() {
 			case bd := <-s.blockDataCh:
 				s.deliverBlockData(bd)
 			}
+		}
+		if suspend.system && !suspendBefore.system {
+			s.indexerLock.Lock()
+			s.indexer.Suspend()
+			s.indexerLock.Unlock()
 		}
 	}
 }

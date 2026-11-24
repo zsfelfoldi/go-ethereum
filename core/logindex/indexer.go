@@ -115,6 +115,7 @@ type Indexer struct {
 	recentHeads          *lru.Cache[common.Hash, *cachedBlockData]
 
 	shutdown       bool
+	mergeSuspended bool
 	shutdownCh     chan struct{}
 	mergeThreads   []mergeThread
 	stoppedTaskCh  chan stoppedTask
@@ -257,9 +258,9 @@ func (ix *Indexer) Register(requestBlock func(uint64) bool, suspendDelivery func
 }
 
 var (
-	abStatCount                                                                                                         uint64
-	abStatWaitLock, abStatOther, abStatGetEntries, abStatSortEntries, abStatAddEntries, abStatFinalize, abStatUpdateOps mclock.AbsTime
-	abStatCurrent                                                                                                       *mclock.AbsTime
+	abStatCount                                                                                        uint64
+	abStatWaitLock, abStatOther, abStatGetEntries, abStatSortEntries, abStatAddEntries, abStatFinalize mclock.AbsTime
+	abStatCurrent                                                                                      *mclock.AbsTime
 )
 
 func abStatSet(s *mclock.AbsTime) {
@@ -279,6 +280,7 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 	defer abStatSet(nil)
 
 	ix.lock.Lock()
+	ix.suspendMerge(false)
 	abStatSet(&abStatOther)
 	if ix.shutdown {
 		ix.lock.Unlock()
@@ -311,14 +313,8 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 		err = ix.processBlockTable(tw, header, body, receipts)
 	}
 	if err == nil {
-		abStatSet(&abStatWaitLock)
-		ix.lock.Lock()
-		abStatSet(&abStatUpdateOps)
 		ix.triggerMergeLoop()
-		ix.lock.Unlock()
-		abStatSet(nil)
-	}
-	if err != nil {
+	} else {
 		log.Error("Failed to add block data to log index", "number", header.Number.Uint64(), "error", err)
 	}
 	//fmt.Println(" done")
@@ -330,7 +326,6 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 		fmt.Println(" sort entries", time.Duration(abStatSortEntries)/time.Duration(abStatCount))
 		fmt.Println(" add entries", time.Duration(abStatAddEntries)/time.Duration(abStatCount))
 		fmt.Println(" finalize", time.Duration(abStatFinalize)/time.Duration(abStatCount))
-		fmt.Println(" update table ops", time.Duration(abStatUpdateOps)/time.Duration(abStatCount))
 		fmt.Println(" other", time.Duration(abStatOther)/time.Duration(abStatCount))
 		fmt.Println("---------------------------------------")
 		fmt.Println("+ tables: complete", completeSet.count(), "partial", partialSet.count())
@@ -428,6 +423,7 @@ func (ix *Indexer) Revert(header *types.Header) {
 	if ix.shutdown {
 		return
 	}
+	ix.suspendMerge(false)
 	blockNumber := header.Number.Uint64()
 	if blockNumber >= ix.headBlock {
 		log.Error("Invalid indexer revert", "from", ix.headBlock, "to", blockNumber)
@@ -481,10 +477,11 @@ func (ix *Indexer) SetFinalized(blockNumber uint64) {
 	ix.triggerMergeLoop()
 }
 
-func (ix *Indexer) Suspended() { //TODO
+func (ix *Indexer) Suspend() {
 	ix.lock.Lock()
 	defer ix.lock.Unlock()
 
+	ix.suspendMerge(true)
 }
 
 func (ix *Indexer) Stop() {

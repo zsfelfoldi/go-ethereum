@@ -213,7 +213,7 @@ func (ti *testIndexer) SetFinalized(blockNumber uint64) {
 	ti.eventCh <- testIndexerEvent{ev: "SetFinalized", blockNumber: blockNumber}
 }
 
-func (ti *testIndexer) Suspended() {
+func (ti *testIndexer) Suspend() {
 	ti.eventCh <- testIndexerEvent{ev: "Suspended"}
 }
 
