@@ -155,7 +155,7 @@ loop:
 	return true
 }
 
-func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLevelMergeThreads, mergeThreads int) ([]tableOperation, common.RangeSet[uint64]) {
+func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLevelMergeThreadCount, mergeThreadCount int) ([]tableOperation, common.RangeSet[uint64]) {
 	var (
 		bestLowLevelOps, bestOps []tableOperation
 		required                 common.RangeSet[uint64]
@@ -175,8 +175,8 @@ func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLeve
 					index: remove.Last(),
 				},
 			}
-			p.addToOps(&bestLowLevelOps, op, lowLevelMergeThreads, true)
-			p.addToOps(&bestOps, op, mergeThreads, false)
+			p.addToOps(&bestLowLevelOps, op, lowLevelMergeThreadCount, true)
+			p.addToOps(&bestOps, op, mergeThreadCount, false)
 		}
 		required = required.Difference(complete[i])
 		if i > 0 {
@@ -190,8 +190,8 @@ func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLeve
 						index: merge.Last(),
 					},
 				}
-				add1 := p.addToOps(&bestLowLevelOps, op, lowLevelMergeThreads, true)
-				add2 := p.addToOps(&bestOps, op, mergeThreads, false)
+				add1 := p.addToOps(&bestLowLevelOps, op, lowLevelMergeThreadCount, true)
+				add2 := p.addToOps(&bestOps, op, mergeThreadCount, false)
 				if !add1 && !add2 {
 					break
 				}
@@ -203,7 +203,7 @@ func (p *Params) nextTableOperations(complete, partial, target tableSet, lowLeve
 	//fmt.Println("nextTableOperations  best", bestOps, "bestLL", bestLowLevelOps, "required blocks", required)
 	ops := bestLowLevelOps
 	for _, op := range bestOps {
-		if !p.addToOps(&ops, op, mergeThreads, true) {
+		if !p.addToOps(&ops, op, mergeThreadCount, true) {
 			break
 		}
 	}

@@ -18,7 +18,9 @@ package logindex
 
 import (
 	"errors"
-	//"fmt"
+	"fmt"
+	"math"
+
 	//"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -26,56 +28,235 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
-func (ix *Indexer) mergeLoop(threadIndex int) {
+type mergeThread struct {
+	currentOp, lastOp tableOperation
+	startTaskCh       chan tableOperation
+}
+
+type stoppedTask struct {
+	threadIndex int
+	op          tableOperation
+}
+
+func (mt *mergeThread) canStartTask() bool {
+	return mt.lastOp == (tableOperation{})
+}
+
+func (mt *mergeThread) runningTask(op tableOperation) bool {
+	return mt.currentOp == op || mt.lastOp == op
+}
+
+func (mt *mergeThread) startTask(op tableOperation) {
+	select {
+	case removed := <-mt.startTaskCh:
+		if removed != mt.currentOp {
+			panic("unknown tableOperation removed")
+		}
+		mt.currentOp = tableOperation{}
+	default:
+	}
+	mt.startTaskCh <- op
+	mt.lastOp, mt.currentOp = mt.currentOp, op
+}
+
+func (mt *mergeThread) stoppedTask(op tableOperation) {
+	switch op {
+	case mt.lastOp:
+		mt.lastOp = tableOperation{}
+	case mt.currentOp:
+		if mt.lastOp != (tableOperation{}) {
+			panic("tableOperation stopped out of order")
+		}
+		mt.currentOp = tableOperation{}
+	default:
+		panic("unknown tableOperation stopped")
+	}
+}
+
+func (ix *Indexer) startTableMerge() {
+	ix.mergeWg.Add(ix.mergeThreadCount + 1)
+	ix.mergeThreads = make([]mergeThread, ix.mergeThreadCount)
+	ix.stoppedTaskCh = make(chan stoppedTask, ix.mergeThreadCount)
+	ix.mergeTriggerCh = make(chan struct{}, 1)
+	ix.shutdownCh = make(chan struct{})
+	for i := range ix.mergeThreads {
+		ix.mergeThreads[i].startTaskCh = make(chan tableOperation, 1)
+		go ix.mergeThreadLoop(i)
+	}
+	go ix.mergeControlLoop()
+}
+
+func (ix *Indexer) processInitPhase() {
+	reqNumber, ok := ix.storage.requestInitBlockHash()
+	if !ok {
+		panic("cannot initialize index table storage")
+	}
+	if ix.requestedInitBlock == reqNumber {
+		return
+	}
+	fmt.Println("requesting init block", reqNumber)
+	if ix.requestBlock(ix.requestedInitBlock) {
+		ix.requestedInitBlock = reqNumber
+	}
+	return
+}
+
+func (ix *Indexer) startTableOperations(completeSet, partialSet tableSet) {
+	// update thread count assigned to merging low level tables
+	memFileTotal := ix.files.getMemFileTotal()
+	tableCountTotal := completeSet.count() + partialSet.count()
+	t := int((max(min(memFileTotal, memFileHighThreshold), memFileLowThreshold) - memFileLowThreshold) * uint64(ix.mergeThreadCount+1) / (memFileHighThreshold - memFileLowThreshold))
+	t2 := int((max(min(tableCountTotal, tableCountHighThreshold), tableCountLowThreshold) - tableCountLowThreshold) * uint64(ix.mergeThreadCount+1) / (tableCountHighThreshold - tableCountLowThreshold))
+	t = max(t, t2)
+	ix.lowLevelMergeThreadCount = min(max(ix.lowLevelMergeThreadCount+1, t)-1, t)
+	// determine priority of available operations
+	targetSet := ix.makeTargetSet(completeSet)
+	tableOps, requiredBlockTables := ix.params.nextTableOperations(completeSet, partialSet, targetSet, ix.lowLevelMergeThreadCount, ix.mergeThreadCount)
+	//fmt.Println("updateTableOperations   complete", completeSet.count(), "partial", partialSet.count(), "target", targetSet.count())
+	indexerSuspend := (memFileTotal >= memFileSuspendThreshold || tableCountTotal >= tableCountSuspendThreshold) && len(tableOps) != 0
+	if indexerSuspend != ix.indexerSuspend && ix.suspendDelivery != nil {
+		// suspend delivery of new blocks and do merge only if there are too many small tables
+		ix.suspendDelivery(indexerSuspend)
+	}
+	ix.indexerSuspend = indexerSuspend
+	ix.requiredBlockTables = requiredBlockTables
+	if !indexerSuspend && ix.requestBlock != nil {
+		// request more blocks for indexing
+		request := ix.requiredBlockTables.Difference(ix.requestedBlockTables)
+		for !request.IsEmpty() && ix.requestBlock(request.Last()) {
+			//fmt.Println("requesting table block", request.Last())
+			requested := common.SingleRangeSet[uint64](common.NewRange[uint64](request.Last(), 1))
+			ix.requestedBlockTables = ix.requestedBlockTables.Union(requested)
+			request = request.Difference(requested)
+		}
+	}
+	// start table operations
+	threadPriority := make([]int, ix.mergeThreadCount) // higher is better; 0 means cannot start new operation
+	for i, mt := range ix.mergeThreads {
+		if mt.canStartTask() {
+			if mt.currentOp == (tableOperation{}) {
+				threadPriority[i] = math.MaxInt // best case: thread is idle
+				continue
+			}
+			threadPriority[i] = math.MaxInt - 1 // second best case: thread is running something that is not on the current priority list
+		innerLoop:
+			for j, op := range tableOps { // iterate in order of decreasing priority
+				if op == mt.currentOp {
+					threadPriority[i] = j // stop lowest priority task if necessary
+					break innerLoop
+				}
+			}
+		}
+	}
+	for _, op := range tableOps { // iterate in order of decreasing priority
+		var bestThread, bestPri int
+	innerLoop2:
+		for i, mt := range ix.mergeThreads {
+			if mt.runningTask(op) {
+				bestPri = 0 // already running, do not start anywhere
+				break innerLoop2
+			}
+			if pri := threadPriority[i]; pri > bestPri {
+				bestThread, bestPri = i, pri
+			}
+		}
+		if bestPri > 0 {
+			ix.mergeThreads[bestThread].startTask(op)
+			threadPriority[bestThread] = 0
+		}
+	}
+}
+
+func (ix *Indexer) makeTargetSet(complete tableSet) tableSet {
+	if ix.headBlock == 0 {
+		return ix.params.newTableSet()
+	}
+	rangeStart := ix.tailBlock()
+	maxDelay := ix.params.tableLevels[len(ix.params.protocolLevels)-1].blockCount // highest in-protocol table size
+	rangeEnd := max(rangeStart+maxDelay, ix.finalBlock+maxDelay, ix.headBlock) - maxDelay
+	//fmt.Println("makeTargetSet  headBlock", ix.headBlock, "rangeStart", rangeStart, "rangeEnd", rangeEnd)
+	target := ix.params.rangeTarget(complete, common.SingleRangeSet[uint64](common.NewRange[uint64](rangeStart, rangeEnd+1-rangeStart)))
+	//fmt.Println(" rangeTarget", target)
+	for i, pl := range ix.params.protocolLevels {
+		first := (max(ix.headBlock, pl.tailAge) - pl.tailAge) / ix.params.tableLevels[i].blockCount
+		afterLast := (max(ix.headBlock+1, pl.headAge) - pl.headAge) / ix.params.tableLevels[i].blockCount
+		//fmt.Println(" protocolLevel", i, first, afterLast)
+		target[i] = target[i].Union(common.SingleRangeSet[uint64](common.NewRange[uint64](first, afterLast-first)))
+	}
+	//fmt.Println(" finalTarget", target)
+	return target
+}
+
+func (ix *Indexer) triggerMergeLoop() {
+	select {
+	case ix.mergeTriggerCh <- struct{}{}:
+	default:
+	}
+}
+
+func (ix *Indexer) mergeControlLoop() {
 	defer ix.mergeWg.Done()
 
-	var triggered bool
 	for {
-		if !triggered {
-			<-ix.updateMergeCh[threadIndex]
-		}
-		triggered = false
-		ix.lock.Lock()
-		currentOp, shutdown := ix.updateOps[threadIndex], ix.shutdown
-		ix.currentOps[threadIndex], ix.updateOps[threadIndex] = currentOp, tableOperation{}
-		ix.lock.Unlock()
-		if shutdown {
+		select {
+		case st := <-ix.stoppedTaskCh:
+			ix.mergeThreads[st.threadIndex].stoppedTask(st.op)
+		case <-ix.mergeTriggerCh:
+		case <-ix.shutdownCh:
 			return
 		}
+		ix.lock.Lock()
+		completeSet, partialSet, initPhase := ix.storage.tables()
+		/*fmt.Println("completeSet:", completeSet)
+		fmt.Println("partialSet:", partialSet)
+		fmt.Println("initPhase:", initPhase)*/
+		if initPhase {
+			ix.processInitPhase()
+		} else {
+			ix.startTableOperations(completeSet, partialSet)
+		}
+		ix.lock.Unlock()
+	}
+}
+
+func (ix *Indexer) mergeThreadLoop(threadIndex int) {
+	defer ix.mergeWg.Done()
+
+	startTaskCh := ix.mergeThreads[threadIndex].startTaskCh
+	var startOp tableOperation
+	for {
+		if startOp == (tableOperation{}) {
+			select {
+			case startOp = <-startTaskCh:
+			case <-ix.shutdownCh:
+				return
+			}
+		}
+		currentOp := startOp
+		startOp = tableOperation{}
 		switch currentOp.operation {
 		case opDelete:
 			if err := ix.storage.deleteTable(currentOp.id); err != nil {
 				r := ix.params.blockRange(currentOp.id)
 				log.Error("Failed to delete index table", "start", r.First(), "count", r.Count(), "error", err)
 			}
-			ix.lock.Lock()
-			ix.currentOps[threadIndex] = tableOperation{}
-			ix.updateTableOperations()
-			ix.lock.Unlock()
 		case opMerge:
-			completeSet, _, _ := ix.storage.tables()
-			if !completeSet.includes(currentOp.id) {
-				_, err := ix.mergeTable(currentOp.id, func() bool {
-					select {
-					case <-ix.updateMergeCh[threadIndex]:
-						triggered = true
-						return true
-					default:
-						return false
-					}
-				})
-				if err != nil {
-					r := ix.params.blockRange(currentOp.id)
-					log.Error("Failed to merge index table", "start", r.First(), "count", r.Count(), "error", err)
+			_, err := ix.mergeTable(currentOp.id, func() bool {
+				select {
+				case startOp = <-startTaskCh:
+					return true
+				case <-ix.shutdownCh:
+					return true
+				default:
+					return false
 				}
-			}
-			if !triggered {
-				ix.lock.Lock()
-				ix.currentOps[threadIndex] = tableOperation{}
-				ix.updateTableOperations()
-				ix.lock.Unlock()
+			})
+			if err != nil {
+				r := ix.params.blockRange(currentOp.id)
+				log.Error("Failed to merge index table", "start", r.First(), "count", r.Count(), "error", err)
 			}
 		}
+		ix.stoppedTaskCh <- stoppedTask{threadIndex: threadIndex, op: currentOp}
 	}
 }
 
