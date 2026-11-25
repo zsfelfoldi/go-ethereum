@@ -246,7 +246,7 @@ func (ix *Indexer) mergeThreadLoop(threadIndex int) {
 	mt := &ix.mergeThreads[threadIndex]
 	var startOp tableOperation
 	for {
-		if startOp == (tableOperation{}) {
+		for startOp == (tableOperation{}) {
 			select {
 			case startOp = <-mt.startTaskCh:
 			case suspend := <-mt.suspendCh:

@@ -280,17 +280,16 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 	defer abStatSet(nil)
 
 	ix.lock.Lock()
-	ix.suspendMerge(false)
 	abStatSet(&abStatOther)
 	if ix.shutdown {
 		ix.lock.Unlock()
 		return
 	}
+	ix.suspendMerge(false)
 	blockNumber := header.Number.Uint64()
 	if ix.requestedInitBlock == blockNumber {
 		ix.storage.deliverInitBlockHash(blockNumber, header.Hash())
 		ix.requestedInitBlock = math.MaxUint64
-		ix.lock.Unlock()
 	}
 	ix.requestedBlockTables = ix.requestedBlockTables.Difference(common.SingleRangeSet[uint64](common.NewRange[uint64](blockNumber, 1)))
 	//fmt.Println("AddBlockData", blockNumber, body != nil, receipts != nil)
