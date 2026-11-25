@@ -97,15 +97,15 @@ func (ix *Indexer) startTableMerge() {
 }
 
 func (ix *Indexer) processInitPhase() {
+	if ix.requestedInitBlock != math.MaxUint64 {
+		return
+	}
 	reqNumber, ok := ix.storage.requestInitBlockHash()
 	if !ok {
 		panic("cannot initialize index table storage")
 	}
-	if ix.requestedInitBlock == reqNumber {
-		return
-	}
 	fmt.Println("requesting init block", reqNumber)
-	if ix.requestBlock(ix.requestedInitBlock) {
+	if ix.requestBlock(reqNumber) {
 		ix.requestedInitBlock = reqNumber
 	}
 	return
