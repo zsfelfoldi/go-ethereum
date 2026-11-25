@@ -31,8 +31,7 @@ type indexStats struct {
 	indexerProcessing indexStat
 	totalWait         indexStat
 	waitForRequest    indexStat
-	systemSuspended   indexStat
-	indexerSuspended  indexStat
+	suspended         indexStat
 	deliverQueueFull  indexStat
 }
 
@@ -81,18 +80,15 @@ func (s *indexStat) printAndReset(now mclock.AbsTime, name string) {
 	fmt.Printf("| %-35s | %15v | %8d | %15v |\n", name, totalTime, totalCount, totalTime/time.Duration(max(totalCount, 1)))
 }
 
-func (s *indexStats) setWaiting(now mclock.AbsTime, systemSuspend, indexerSuspend, fullQueue, counting bool) {
+func (s *indexStats) setWaiting(now mclock.AbsTime, suspended, fullQueue, counting bool) {
 	s.totalWait.set(now, counting)
-	if systemSuspend {
-		s.systemSuspended.set(now, counting)
-	}
-	if indexerSuspend {
-		s.indexerSuspended.set(now, counting)
+	if suspended {
+		s.suspended.set(now, counting)
 	}
 	if fullQueue {
 		s.deliverQueueFull.set(now, counting)
 	}
-	if !(systemSuspend || indexerSuspend || fullQueue) {
+	if !(suspended || fullQueue) {
 		s.waitForRequest.set(now, counting)
 	}
 }
@@ -107,8 +103,7 @@ func (s *indexStats) printAndReset() {
 	fmt.Println(printDelimiter)
 	s.totalWait.printAndReset(now, "Total wait time in read loop")
 	s.waitForRequest.printAndReset(now, fmt.Sprintf(" Waiting for request"))
-	s.systemSuspended.printAndReset(now, fmt.Sprintf(" Blocked by system suspend"))
-	s.indexerSuspended.printAndReset(now, fmt.Sprintf(" Blocked by indexer suspend"))
+	s.suspended.printAndReset(now, fmt.Sprintf(" Blocked by system suspend"))
 	s.deliverQueueFull.printAndReset(now, fmt.Sprintf(" Blocked by full delivery queue"))
 	fmt.Println(printDelimiter)
 }

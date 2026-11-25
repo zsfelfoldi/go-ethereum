@@ -92,17 +92,15 @@ var DefaultParams = &Params{
 }
 
 type Indexer struct {
-	lock            sync.Mutex
-	params          *Params
-	config          Config
-	requestBlock    func(uint64) bool
-	suspendDelivery func(bool)
+	lock         sync.Mutex
+	params       *Params
+	config       Config
+	requestBlock func(uint64) bool
 
 	files                                      *tableFiles
 	storage                                    *tableStorage
 	mergeThreadCount, lowLevelMergeThreadCount int
 	requiredBlockTables, requestedBlockTables  common.RangeSet[uint64]
-	indexerSuspend                             bool
 	headBlock, finalBlock, cutoffBlock         uint64
 	headBlockHash                              common.Hash
 	blockRequests                              map[uint64][]DeliverBlockFn
@@ -140,7 +138,6 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 		config:             config,
 		files:              files,
 		storage:            storage,
-		indexerSuspend:     false,
 		mergeThreadCount:   maxMergeThreads,
 		requestedInitBlock: math.MaxUint64,
 		recentHeads:        lru.NewCache[common.Hash, *cachedBlockData](headCacheSize),
@@ -246,15 +243,14 @@ func getBlockEntries(blockNumber uint64, parentHash common.Hash, txs types.Trans
 	return entries
 }
 
-func (ix *Indexer) Register(requestBlock func(uint64) bool, suspendDelivery func(bool)) {
+func (ix *Indexer) Register(requestBlock func(uint64) bool) {
 	ix.lock.Lock()
 	defer ix.lock.Unlock()
 
 	if ix.shutdown {
 		return
 	}
-	ix.requestBlock, ix.suspendDelivery = requestBlock, suspendDelivery
-	ix.suspendDelivery(ix.indexerSuspend)
+	ix.requestBlock = requestBlock
 }
 
 var (

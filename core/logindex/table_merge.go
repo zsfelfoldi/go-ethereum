@@ -111,7 +111,7 @@ func (ix *Indexer) processInitPhase() {
 	return
 }
 
-func (ix *Indexer) startTableOperations(completeSet, partialSet tableSet) {
+func (ix *Indexer) startTableOperations(completeSet, partialSet tableSet) { //TODO rename
 	// update thread count assigned to merging low level tables
 	memFileTotal := ix.files.getMemFileTotal()
 	tableCountTotal := completeSet.count() + partialSet.count()
@@ -123,14 +123,9 @@ func (ix *Indexer) startTableOperations(completeSet, partialSet tableSet) {
 	targetSet := ix.makeTargetSet(completeSet)
 	tableOps, requiredBlockTables := ix.params.nextTableOperations(completeSet, partialSet, targetSet, ix.lowLevelMergeThreadCount, ix.mergeThreadCount)
 	//fmt.Println("updateTableOperations   complete", completeSet.count(), "partial", partialSet.count(), "target", targetSet.count())
-	indexerSuspend := (memFileTotal >= memFileSuspendThreshold || tableCountTotal >= tableCountSuspendThreshold) && len(tableOps) != 0
-	if indexerSuspend != ix.indexerSuspend && ix.suspendDelivery != nil {
-		// suspend delivery of new blocks and do merge only if there are too many small tables
-		ix.suspendDelivery(indexerSuspend)
-	}
-	ix.indexerSuspend = indexerSuspend
 	ix.requiredBlockTables = requiredBlockTables
-	if !indexerSuspend && ix.requestBlock != nil {
+	suspendDelivery := (memFileTotal >= memFileSuspendThreshold || tableCountTotal >= tableCountSuspendThreshold) && len(tableOps) != 0
+	if !suspendDelivery && ix.requestBlock != nil {
 		// request more blocks for indexing
 		request := ix.requiredBlockTables.Difference(ix.requestedBlockTables)
 		for !request.IsEmpty() && ix.requestBlock(request.Last()) {

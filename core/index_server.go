@@ -38,7 +38,7 @@ const (
 )
 
 type Indexer interface {
-	Register(requestBlock func(uint64) bool, suspendDelivery func(bool))
+	Register(requestBlock func(uint64) bool)
 	// AddBlockData delivers a header and receipts belonging to a block that is
 	// either a direct descendant of the latest delivered head or the first one
 	// in the last requested range.
@@ -129,12 +129,11 @@ func (f *indexServers) register(indexer Indexer, name string) {
 		revertBlocks:     make(map[uint64]uint64),
 		revertCountCh:    make(chan uint64, 1),
 		deliveredCountCh: make(chan uint64, 1),
-		readSuspendCh:    make(chan suspendStatus, 1),
-		deliverSuspendCh: make(chan suspendStatus, 1),
+		readSuspendCh:    make(chan bool, 1),
+		deliverSuspendCh: make(chan bool, 1),
 		blockRequestCh:   make(chan uint64, queueCapacity),
 		blockDataCh:      make(chan blockData, queueCapacity),
-		indexerSuspend:   true,
-		systemSuspend:    true,
+		suspended:        true,
 	}
 	f.closeWg.Add(2)
 	if enableIndexStats {
@@ -144,7 +143,7 @@ func (f *indexServers) register(indexer Indexer, name string) {
 		go server.printStatsLoop()
 	}
 	f.servers = append(f.servers, server)
-	indexer.Register(server.requestBlock, server.suspendByIndexer)
+	indexer.Register(server.requestBlock)
 	indexer.SetHistoryCutoff(f.historyCutoff)
 	indexer.SetFinalized(f.finalBlock)
 	if f.lastHead != nil && f.lastHeadBody != nil && f.lastHeadReceipts != nil {
@@ -257,10 +256,10 @@ type indexServer struct {
 	deliveredCountCh chan uint64    // historicDeliverLoop -> historicReadLoop (cap=1)
 	blockDataCh      chan blockData // historicReadLoop -> historicDeliverLoop => Indexer (cap=queueCapacity)
 
-	readSuspendCh                 chan suspendStatus // Indexer => callback -> historicReadLoop (cap=1)
-	deliverSuspendCh              chan suspendStatus // Indexer => callback -> historicDeliverLoop (cap=1)
-	suspendLock                   sync.Mutex
-	indexerSuspend, systemSuspend bool
+	readSuspendCh    chan bool // Indexer => callback -> historicReadLoop (cap=1)
+	deliverSuspendCh chan bool // Indexer => callback -> historicDeliverLoop (cap=1)
+	suspendLock      sync.Mutex
+	suspended        bool
 
 	testSuspendHookCh       chan struct{} // initialized by test (cap=1)
 	name                    string
@@ -334,39 +333,14 @@ func (s *indexServer) requestBlock(blockNumber uint64) bool {
 	}
 }
 
-func (s *indexServer) suspendByIndexer(suspend bool) {
+func (s *indexServer) suspend(suspend bool) {
 	s.suspendLock.Lock()
 	defer s.suspendLock.Unlock()
 
-	if s.indexerSuspend == suspend {
+	if s.suspended == suspend {
 		return
 	}
-	s.indexerSuspend = suspend
-	s.updateSuspendStatus()
-}
-
-func (s *indexServer) suspendBySystem(suspend bool) {
-	s.suspendLock.Lock()
-	defer s.suspendLock.Unlock()
-
-	if s.systemSuspend == suspend {
-		return
-	}
-	s.systemSuspend = suspend
-	s.updateSuspendStatus()
-}
-
-type suspendStatus struct {
-	system, indexer bool
-}
-
-func (u suspendStatus) active() bool {
-	return u.system || u.indexer
-}
-
-func (s *indexServer) updateSuspendStatus() {
-	//fmt.Println("*** updateSuspendStatus", s.indexerSuspend, s.systemSuspend)
-	suspend := suspendStatus{s.systemSuspend, s.indexerSuspend}
+	s.suspended = suspend
 	select {
 	case <-s.deliverSuspendCh:
 	default:
@@ -384,7 +358,7 @@ func (s *indexServer) historicReadLoop() {
 	defer s.parent.closeWg.Done()
 
 	var (
-		suspend, suspendBefore       suspendStatus
+		suspend, suspendBefore       bool
 		canDeliver, canDeliverBefore bool
 		revertCount                  uint64
 		readCount, deliveredCount    uint64
@@ -392,7 +366,7 @@ func (s *indexServer) historicReadLoop() {
 	handleRequest := func(blockNumber uint64) {
 		if s.stats != nil {
 			now := mclock.Now()
-			s.stats.setWaiting(mclock.Now(), suspendBefore.system, suspendBefore.indexer, canDeliverBefore, false)
+			s.stats.setWaiting(mclock.Now(), suspendBefore, canDeliverBefore, false)
 			s.stats.readBlockData.set(now, true)
 		}
 		s.blockDataCh <- s.readBlockData(blockNumber, revertCount)
@@ -404,10 +378,10 @@ func (s *indexServer) historicReadLoop() {
 
 	for {
 		canDeliver = readCount < deliveredCount+queueCapacity
-		waitRequest := canDeliver && !suspend.active()
+		waitRequest := canDeliver && !suspend
 		if s.stats != nil {
 			suspendBefore, canDeliverBefore = suspend, canDeliver
-			s.stats.setWaiting(mclock.Now(), suspend.system, suspend.indexer, canDeliver, true)
+			s.stats.setWaiting(mclock.Now(), suspend, canDeliver, true)
 		}
 		switch waitRequest {
 		case false:
@@ -430,7 +404,7 @@ func (s *indexServer) historicReadLoop() {
 			}
 		}
 		if s.stats != nil {
-			s.stats.setWaiting(mclock.Now(), suspendBefore.system, suspendBefore.indexer, canDeliverBefore, false)
+			s.stats.setWaiting(mclock.Now(), suspendBefore, canDeliverBefore, false)
 		}
 	}
 
@@ -461,29 +435,28 @@ func (s *indexServer) historicDeliverLoop() {
 		s.parent.closeWg.Done()
 	}()
 
-	var suspend suspendStatus
+	var suspended bool
 	for {
-		suspendBefore := suspend
-		switch suspend.active() {
+		switch suspended {
 		case true:
 			select {
 			case <-s.parent.closeCh:
 				return
-			case suspend = <-s.deliverSuspendCh:
+			case suspended = <-s.deliverSuspendCh:
 			}
 		case false:
 			select {
 			case <-s.parent.closeCh:
 				return
-			case suspend = <-s.deliverSuspendCh:
+			case suspended = <-s.deliverSuspendCh:
+				if suspended {
+					s.indexerLock.Lock()
+					s.indexer.Suspend()
+					s.indexerLock.Unlock()
+				}
 			case bd := <-s.blockDataCh:
 				s.deliverBlockData(bd)
 			}
-		}
-		if suspend.system && !suspendBefore.system {
-			s.indexerLock.Lock()
-			s.indexer.Suspend()
-			s.indexerLock.Unlock()
 		}
 	}
 }
@@ -555,7 +528,7 @@ func (s *indexServer) deliverBlockData(bd blockData) {
 // setBlockProcessing suspends serving historical blocks requested by the indexer
 // while a chain segment is being processed and added to the chain.
 func (s *indexServer) setBlockProcessing(processing bool) {
-	s.suspendBySystem(processing)
+	s.suspend(processing)
 	if processing && s.testSuspendHookCh != nil {
 		select {
 		case s.testSuspendHookCh <- struct{}{}:
