@@ -28,6 +28,41 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
+type mergeControl struct {
+	mergeSuspended bool
+	shutdownCh     chan struct{}
+	threads        []mergeThread
+	stoppedTaskCh  chan stoppedTask
+	triggerCh      chan struct{}
+	mergeWg        sync.WaitGroup
+	mergeStatTime  mclock.AbsTime
+	mergeStatCount uint64
+}
+
+func newMergeControl(threadCount int) *mergeControl {
+	return &mergeControl{
+		shutdownCh:    make(chan struct{}),
+		stoppedTaskCh: make(chan stoppedTask, threadCount),
+		triggerCh:     make(chan struct{}, 1),
+		threads:       make([]mergeThread, threadCount),
+	}
+}
+
+func (mc *mergeControl) start() {
+	mc.mergeWg.Add(threadCount + 1)
+	for i := range mc.threads {
+		mc.threads[i].startTaskCh = make(chan tableOperation, 1)
+		mc.threads[i].suspendCh = make(chan bool, 1)
+		go mc.threadLoop(i)
+	}
+	go mc.controlLoop()
+}
+
+func (mc *mergeControl) stop() {
+	close(mc.shutdownCh)
+	mc.mergeWg.Wait()
+}
+
 type mergeThread struct {
 	currentOp, lastOp tableOperation
 	startTaskCh       chan tableOperation
@@ -82,36 +117,7 @@ func (mt *mergeThread) suspend(active bool) {
 	mt.suspendCh <- active
 }
 
-func (ix *Indexer) startTableMerge() {
-	ix.mergeWg.Add(ix.mergeThreadCount + 1)
-	ix.mergeThreads = make([]mergeThread, ix.mergeThreadCount)
-	ix.stoppedTaskCh = make(chan stoppedTask, ix.mergeThreadCount)
-	ix.mergeTriggerCh = make(chan struct{}, 1)
-	ix.shutdownCh = make(chan struct{})
-	for i := range ix.mergeThreads {
-		ix.mergeThreads[i].startTaskCh = make(chan tableOperation, 1)
-		ix.mergeThreads[i].suspendCh = make(chan bool, 1)
-		go ix.mergeThreadLoop(i)
-	}
-	go ix.mergeControlLoop()
-}
-
-func (ix *Indexer) processInitPhase() {
-	if ix.requestedInitBlock != math.MaxUint64 {
-		return
-	}
-	reqNumber, ok := ix.storage.requestInitBlockHash()
-	if !ok {
-		panic("cannot initialize index table storage")
-	}
-	fmt.Println("requesting init block", reqNumber)
-	if ix.requestBlock(reqNumber) {
-		ix.requestedInitBlock = reqNumber
-	}
-	return
-}
-
-func (ix *Indexer) startTableOperations(completeSet, partialSet tableSet) { //TODO rename
+func (mc *mergeControl) startTableOperations(completeSet, partialSet tableSet) { //TODO rename
 	// update thread count assigned to merging low level tables
 	memFileTotal := ix.files.getMemFileTotal()
 	tableCountTotal := completeSet.count() + partialSet.count()
@@ -137,7 +143,7 @@ func (ix *Indexer) startTableOperations(completeSet, partialSet tableSet) { //TO
 	}
 	// start table operations
 	threadPriority := make([]int, ix.mergeThreadCount) // higher is better; 0 means cannot start new operation
-	for i, mt := range ix.mergeThreads {
+	for i, mt := range ix.threads {
 		if mt.canStartTask() {
 			if mt.currentOp == (tableOperation{}) {
 				threadPriority[i] = math.MaxInt // best case: thread is idle
@@ -156,7 +162,7 @@ func (ix *Indexer) startTableOperations(completeSet, partialSet tableSet) { //TO
 	for _, op := range tableOps { // iterate in order of decreasing priority
 		var bestThread, bestPri int
 	innerLoop2:
-		for i, mt := range ix.mergeThreads {
+		for i, mt := range ix.threads {
 			if mt.runningTask(op) {
 				bestPri = 0 // already running, do not start anywhere
 				break innerLoop2
@@ -166,13 +172,13 @@ func (ix *Indexer) startTableOperations(completeSet, partialSet tableSet) { //TO
 			}
 		}
 		if bestPri > 0 {
-			ix.mergeThreads[bestThread].startTask(op)
+			ix.threads[bestThread].startTask(op)
 			threadPriority[bestThread] = 0
 		}
 	}
-}
 
-func (ix *Indexer) makeTargetSet(complete tableSet) tableSet {
+}
+func (mc *mergeControl) makeTargetSet(complete tableSet) tableSet {
 	if ix.headBlock == 0 {
 		return ix.params.newTableSet()
 	}
@@ -192,53 +198,48 @@ func (ix *Indexer) makeTargetSet(complete tableSet) tableSet {
 	return target
 }
 
-func (ix *Indexer) triggerMergeLoop() {
+func (mc *mergeControl) triggerMergeLoop() {
 	select {
-	case ix.mergeTriggerCh <- struct{}{}:
+	case ix.triggerCh <- struct{}{}:
 	default:
 	}
 }
 
-// assumes ix.lock
-func (ix *Indexer) suspendMerge(active bool) {
+func (mc *mergeControl) suspendMerge(active bool) {
 	if active == ix.mergeSuspended {
 		return
 	}
 	ix.mergeSuspended = active
-	for _, mt := range ix.mergeThreads {
+	for _, mt := range ix.threads {
 		mt.suspend(active)
 	}
 }
 
-func (ix *Indexer) mergeControlLoop() {
+func (mc *mergeControl) controlLoop() {
 	defer ix.mergeWg.Done()
 
 	for {
 		select {
 		case st := <-ix.stoppedTaskCh:
-			ix.mergeThreads[st.threadIndex].stoppedTask(st.op)
-		case <-ix.mergeTriggerCh:
+			ix.threads[st.threadIndex].stoppedTask(st.op)
+		case <-ix.triggerCh:
 		case <-ix.shutdownCh:
 			return
 		}
 		ix.lock.Lock()
-		completeSet, partialSet, initPhase := ix.storage.tables()
-		/*fmt.Println("completeSet:", completeSet)
-		fmt.Println("partialSet:", partialSet)
-		fmt.Println("initPhase:", initPhase)*/
+		completeSet, partialSet, initPhase := ix.storage.tables() //TODO do it in startTableOperations, rename
 		if initPhase {
-			ix.processInitPhase()
-		} else {
-			ix.startTableOperations(completeSet, partialSet)
+			panic("merge control loop started before tableStorage initialized")
 		}
+		ix.startTableOperations(completeSet, partialSet)
 		ix.lock.Unlock()
 	}
 }
 
-func (ix *Indexer) mergeThreadLoop(threadIndex int) {
+func (mc *mergeControl) threadLoop(threadIndex int) {
 	defer ix.mergeWg.Done()
 
-	mt := &ix.mergeThreads[threadIndex]
+	mt := &ix.threads[threadIndex]
 	var startOp tableOperation
 	for {
 		for startOp == (tableOperation{}) {
@@ -306,7 +307,7 @@ func (ix *Indexer) mergeThreadLoop(threadIndex int) {
 	}
 }
 
-func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) (bool, error) {
+func (mc *mergeControl) mergeTable(id tableID, stopFn func() bool) (bool, error) {
 	//fmt.Println("mergeTable", id)
 	if id.level == 0 {
 		panic("cannot merge table on the lowest level")

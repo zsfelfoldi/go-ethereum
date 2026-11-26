@@ -103,7 +103,6 @@ type Indexer struct {
 	requiredBlockTables, requestedBlockTables  common.RangeSet[uint64]
 	headBlock, finalBlock, cutoffBlock         uint64
 	headBlockHash                              common.Hash
-	blockRequests                              map[uint64][]DeliverBlockFn
 	queuedBlockRequests                        []uint64
 	requestedInitBlock                         uint64
 
@@ -112,15 +111,10 @@ type Indexer struct {
 	processedBlockId     common.Hash
 	recentHeads          *lru.Cache[common.Hash, *cachedBlockData]
 
-	shutdown       bool
-	mergeSuspended bool
-	shutdownCh     chan struct{}
-	mergeThreads   []mergeThread
-	stoppedTaskCh  chan stoppedTask
-	mergeTriggerCh chan struct{}
-	mergeWg        sync.WaitGroup
-	mergeStatTime  mclock.AbsTime
-	mergeStatCount uint64
+	shutdown           bool
+	storageInitialized bool
+
+	mergeControl *mergeControl
 }
 
 func NewIndexer(params *Params, config Config, path string) *Indexer {
@@ -134,17 +128,31 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 		log.Crit("Could not open index table storage", "error", err)
 	}
 	ix := &Indexer{
-		params:             params,
-		config:             config,
-		files:              files,
-		storage:            storage,
-		mergeThreadCount:   maxMergeThreads,
-		requestedInitBlock: math.MaxUint64,
-		recentHeads:        lru.NewCache[common.Hash, *cachedBlockData](headCacheSize),
-		blockRequests:      make(map[uint64][]DeliverBlockFn),
+		params:           params,
+		config:           config,
+		files:            files,
+		storage:          storage,
+		mergeThreadCount: maxMergeThreads,
+		recentHeads:      lru.NewCache[common.Hash, *cachedBlockData](headCacheSize),
+		mergeControl: 
 	}
-	ix.startTableMerge()
+	ix.requestInitBlock()
 	return ix
+}
+
+func (ix *Indexer) requestInitBlock() {
+	if ix.storageInitialized {
+		return
+	}
+	reqNumber, ok := ix.storage.requestInitBlockHash() ?empty init eseten ez nem false?
+	if !ok {
+		panic("cannot initialize index table storage")
+	}
+	fmt.Println("requesting init block", reqNumber)
+	if ix.requestBlock(reqNumber) {
+		ix.requestedInitBlock = reqNumber
+	}
+	return
 }
 
 type cachedBlockData struct {
@@ -153,8 +161,6 @@ type cachedBlockData struct {
 	receipts       types.Receipts
 	canonicalUntil uint64
 }
-
-type DeliverBlockFn = func(uint64, *types.Header, *types.Body, types.Receipts)
 
 func (ix *Indexer) GetRangeReaders(refBlockHash common.Hash, blockRange common.Range[uint64]) []*TableReader {
 	ix.lock.Lock()
@@ -284,8 +290,12 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 	ix.suspendMerge(false)
 	blockNumber := header.Number.Uint64()
 	if ix.requestedInitBlock == blockNumber {
-		ix.storage.deliverInitBlockHash(blockNumber, header.Hash())
-		ix.requestedInitBlock = math.MaxUint64
+		if ix.storage.deliverInitBlockHash(blockNumber, header.Hash()) {
+			ix.storageInitialized = true
+			ix.mergeControl.start()
+		} else {
+			ix.requestInitBlock()
+		}
 	}
 	ix.requestedBlockTables = ix.requestedBlockTables.Difference(common.SingleRangeSet[uint64](common.NewRange[uint64](blockNumber, 1)))
 	//fmt.Println("AddBlockData", blockNumber, body != nil, receipts != nil)
@@ -437,7 +447,7 @@ func (ix *Indexer) Revert(header *types.Header) {
 	}
 	if ix.requestedInitBlock != math.MaxUint64 && ix.requestedInitBlock > blockNumber {
 		ix.storage.deliverInitBlockHash(ix.requestedInitBlock, common.Hash{})
-		ix.requestedInitBlock = math.MaxUint64
+		ix.requestInitBlock()
 	}
 	ix.triggerMergeLoop()
 }
@@ -456,7 +466,7 @@ func (ix *Indexer) SetHistoryCutoff(blockNumber uint64) {
 	ix.cutoffBlock = min(blockNumber, ix.headBlock+1)
 	if ix.requestedInitBlock < blockNumber {
 		ix.storage.deliverInitBlockHash(ix.requestedInitBlock, common.Hash{})
-		ix.requestedInitBlock = math.MaxUint64
+		ix.requestInitBlock()
 	}
 	ix.triggerMergeLoop()
 }
@@ -488,9 +498,10 @@ func (ix *Indexer) Stop() {
 	}
 	ix.shutdown = true
 	ix.lock.Unlock()
-	close(ix.shutdownCh)
-	ix.mergeWg.Wait()
-	fmt.Println(" merge loop stopped")
+	if ix.storageInitialized {
+		ix.mergeControl.stop()
+		fmt.Println(" merge loop stopped")
+	}
 	ix.storage.close()
 	fmt.Println(" table storage stopped")
 	ix.files.close()
