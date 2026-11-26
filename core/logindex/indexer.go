@@ -17,6 +17,7 @@
 package logindex
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -97,14 +98,13 @@ type Indexer struct {
 	config       Config
 	requestBlock func(uint64) bool
 
-	files                                      *tableFiles
-	storage                                    *tableStorage
-	mergeThreadCount, lowLevelMergeThreadCount int
-	requiredBlockTables, requestedBlockTables  common.RangeSet[uint64]
-	headBlock, finalBlock, cutoffBlock         uint64
-	headBlockHash                              common.Hash
-	queuedBlockRequests                        []uint64
-	requestedInitBlock                         uint64
+	files                              *tableFiles
+	storage                            *tableStorage
+	expectedBlockTables                common.RangeSet[uint64]
+	headBlock, finalBlock, cutoffBlock uint64
+	headBlockHash                      common.Hash
+	queuedBlockRequests                []uint64
+	requestedInitBlock                 uint64
 
 	hasProcessedBlock    bool
 	processedBlockNumber uint64
@@ -128,13 +128,12 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 		log.Crit("Could not open index table storage", "error", err)
 	}
 	ix := &Indexer{
-		params:           params,
-		config:           config,
-		files:            files,
-		storage:          storage,
-		mergeThreadCount: maxMergeThreads,
-		recentHeads:      lru.NewCache[common.Hash, *cachedBlockData](headCacheSize),
-		mergeControl: 
+		params:       params,
+		config:       config,
+		files:        files,
+		storage:      storage,
+		recentHeads:  lru.NewCache[common.Hash, *cachedBlockData](headCacheSize),
+		mergeControl: newMergeControl(maxMergeThreads),
 	}
 	ix.requestInitBlock()
 	return ix
@@ -144,8 +143,13 @@ func (ix *Indexer) requestInitBlock() {
 	if ix.storageInitialized {
 		return
 	}
-	reqNumber, ok := ix.storage.requestInitBlockHash() ?empty init eseten ez nem false?
+	reqNumber, ok := ix.storage.requestInitBlockHash()
 	if !ok {
+		_, _, initPhase := ix.storage.tables()
+		if !initPhase {
+			ix.storageInitialized = true
+			return
+		}
 		panic("cannot initialize index table storage")
 	}
 	fmt.Println("requesting init block", reqNumber)
@@ -318,7 +322,7 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 		err = ix.processBlockTable(tw, header, body, receipts)
 	}
 	if err == nil {
-		ix.triggerMergeLoop()
+		ix.mergeControl.trigger()
 	} else {
 		log.Error("Failed to add block data to log index", "number", header.Number.Uint64(), "error", err)
 	}
@@ -449,7 +453,7 @@ func (ix *Indexer) Revert(header *types.Header) {
 		ix.storage.deliverInitBlockHash(ix.requestedInitBlock, common.Hash{})
 		ix.requestInitBlock()
 	}
-	ix.triggerMergeLoop()
+	ix.mergeControl.trigger()
 }
 
 func (ix *Indexer) tailBlock() uint64 {
@@ -468,7 +472,7 @@ func (ix *Indexer) SetHistoryCutoff(blockNumber uint64) {
 		ix.storage.deliverInitBlockHash(ix.requestedInitBlock, common.Hash{})
 		ix.requestInitBlock()
 	}
-	ix.triggerMergeLoop()
+	ix.mergeControl.trigger()
 }
 
 func (ix *Indexer) SetFinalized(blockNumber uint64) {
@@ -479,7 +483,7 @@ func (ix *Indexer) SetFinalized(blockNumber uint64) {
 		return
 	}
 	ix.finalBlock = blockNumber
-	ix.triggerMergeLoop()
+	ix.mergeControl.trigger()
 }
 
 func (ix *Indexer) Suspend() {
@@ -506,4 +510,147 @@ func (ix *Indexer) Stop() {
 	fmt.Println(" table storage stopped")
 	ix.files.close()
 	fmt.Println(" closed table file manager")
+}
+
+func (ix *Indexer) mergeTable(id tableID, stopFn func() bool) error {
+	//fmt.Println("mergeTable", id)
+	if id.level == 0 {
+		panic("cannot merge table on the lowest level")
+	}
+	sourceIndices := shiftRangeLevel(common.NewRange[uint64](id.index, 1), ix.params.tableLevels[id.level], ix.params.tableLevels[id.level-1], false)
+	readers := make([]*TableReader, sourceIndices.Count())
+	var entryCount uint64
+	for i := range readers {
+		tr, err := ix.storage.getTableReader(tableID{level: id.level - 1, index: sourceIndices.First() + uint64(i)})
+		if err != nil {
+			return err
+		}
+		entryCount += tr.EntryCount
+		readers[i] = tr
+	}
+	tw, err := ix.storage.getTableWriter(id)
+	/*if err == nil && id.level > 4 {
+		fmt.Println("*** Resuming merge", id)
+		ix.mergeStatTime -= mclock.Now()
+	}*/
+	if err == errTableNotFound {
+		/*if id.level > 4 {
+			fmt.Println("*** Starting merge", id)
+			ix.mergeStatTime = -mclock.Now()
+			ix.mergeStatCount = 0
+		}*/
+		tw, err = ix.storage.addNewTableWriter(id, entryCount)
+		if err != nil {
+			return err
+		}
+		// initialize table metadata
+		r := ix.params.blockRange(id)
+		tw.setMeta(TableMeta{
+			LastBlockNumber: r.Last(),
+			BlockCount:      r.Count(),
+			LastBlockHash:   readers[len(readers)-1].Meta.LastBlockHash,
+			ParentHash:      readers[0].Meta.ParentHash,
+		})
+	}
+	if err != nil {
+		return err
+	}
+	if tw.entryCount != entryCount {
+		return errors.New("entry count mismatch")
+	}
+	lastEntry, nextEntry := tw.lastAndNextEntry()
+	if tw.getPhase() == wpWriteEntries && nextEntry != entryCount {
+		if lastEntry == nil {
+			//fmt.Println("lastAndNextEntry", "nil", nextEntry)
+		} else {
+			//fmt.Println("lastAndNextEntry", *lastEntry, nextEntry)
+		}
+		nextReadPosition := make([]uint64, len(readers))
+		nextReadEntries := make([]IndexEntries, len(readers))
+		if nextEntry != 0 {
+			// find next read position in each source reader
+			if lastEntry == nil {
+				return errors.New("last entry not found")
+			}
+			var checkNextEntry uint64
+			for i, tr := range readers {
+				pos, found, err := tr.SeekEntry(lastEntry, false)
+				if err != nil {
+					return err
+				}
+				if found {
+					pos++
+				}
+				nextReadPosition[i] = pos
+				checkNextEntry += pos
+				//fmt.Println(" reader", i, "pos", pos)
+			}
+			if checkNextEntry != nextEntry {
+				//fmt.Println(" checkNextEntry", checkNextEntry)
+				panic("xxx")
+				return errors.New("next entry mismatch")
+			}
+		}
+		for i, tr := range readers {
+			if nextReadPosition[i] < tr.EntryCount {
+				var err error
+				nextReadEntries[i], err = tr.getEntries(common.NewRange[uint64](nextReadPosition[i], min(mergeEntryPrefetch, tr.EntryCount-nextReadPosition[i])))
+				if err != nil {
+					return err
+				}
+			}
+		}
+		for nextEntry < entryCount {
+			if nextEntry%10000 == 0 && stopFn() {
+				return nil
+			}
+			var (
+				bestIndex int
+				bestEntry *IndexEntry
+			)
+			for i, entries := range nextReadEntries {
+				if len(entries) > 0 && (bestEntry == nil || entries[0].Compare(bestEntry) < 0) {
+					bestIndex, bestEntry = i, &entries[0]
+				}
+			}
+			if err := tw.addEntry(bestEntry); err != nil {
+				return err
+			}
+			ix.mergeStatCount++
+			nextEntry++
+			nextReadPosition[bestIndex]++
+			if tr, pos := readers[bestIndex], nextReadPosition[bestIndex]; pos < tr.EntryCount {
+				nextReadEntries[bestIndex] = nextReadEntries[bestIndex][1:]
+				if len(nextReadEntries[bestIndex]) == 0 {
+					var err error
+					nextReadEntries[bestIndex], err = tr.getEntries(common.NewRange[uint64](pos, min(mergeEntryPrefetch, tr.EntryCount-pos)))
+					if err != nil {
+						return err
+					}
+				}
+			} else {
+				nextReadEntries[bestIndex] = nil
+			}
+			//fmt.Println("merge", id, "write", nextEntry, "read", nextReadPosition, "entry", *bestEntry)
+		}
+	}
+	for {
+		if stopFn() {
+			return nil
+		}
+		done, err := tw.finalize()
+		if err != nil {
+			return err
+		}
+		if done {
+			break
+		}
+	}
+	if tw.getPhase() != wpFinalized {
+		panic("invalid table write phase")
+	}
+	if err := ix.storage.finalizeTableWriter(id); err != nil {
+		return err
+	}
+	return nil
 }
