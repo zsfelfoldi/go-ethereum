@@ -127,11 +127,12 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 		log.Crit("Could not open index table storage", "error", err)
 	}
 	ix := &Indexer{
-		params:      params,
-		config:      config,
-		files:       files,
-		storage:     storage,
-		recentHeads: lru.NewCache[common.Hash, *cachedBlockData](headCacheSize),
+		params:             params,
+		config:             config,
+		files:              files,
+		storage:            storage,
+		recentHeads:        lru.NewCache[common.Hash, *cachedBlockData](headCacheSize),
+		requestedInitBlock: math.MaxUint64,
 	}
 	ix.mergeControl = newMergeControl(
 		maxMergeThreads,
@@ -142,7 +143,6 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 		ix.mergeTable,
 		ix.requestBlockTable,
 	)
-	ix.requestInitBlock()
 	return ix
 }
 
@@ -154,6 +154,9 @@ func (ix *Indexer) getChainRange() (head, tail, final uint64) {
 }
 
 func (ix *Indexer) requestInitBlock() {
+	if ix.requestedInitBlock != math.MaxUint64 {
+		panic("already waiting for requested init block")
+	}
 	if ix.storageInitialized {
 		return
 	}
@@ -276,6 +279,9 @@ func (ix *Indexer) Register(requestBlock func(uint64) bool) {
 		return
 	}
 	ix.requestBlock = requestBlock
+	if !ix.storageInitialized {
+		ix.requestInitBlock()
+	}
 }
 
 var (
@@ -322,6 +328,7 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 	ix.mergeControl.suspend(false)
 	blockNumber := header.Number.Uint64()
 	if ix.requestedInitBlock == blockNumber {
+		ix.requestedInitBlock = math.MaxUint64
 		if ix.storage.deliverInitBlockHash(blockNumber, header.Hash()) {
 			ix.storageInitialized = true
 			ix.mergeControl.start()
@@ -470,6 +477,7 @@ func (ix *Indexer) Revert(header *types.Header) {
 	}
 	if ix.requestedInitBlock != math.MaxUint64 && ix.requestedInitBlock > blockNumber {
 		ix.storage.deliverInitBlockHash(ix.requestedInitBlock, common.Hash{})
+		ix.requestedInitBlock = math.MaxUint64
 		ix.requestInitBlock()
 	}
 	ix.mergeControl.trigger()
@@ -489,6 +497,7 @@ func (ix *Indexer) SetHistoryCutoff(blockNumber uint64) {
 	ix.cutoffBlock = min(blockNumber, ix.headBlock+1)
 	if ix.requestedInitBlock < blockNumber {
 		ix.storage.deliverInitBlockHash(ix.requestedInitBlock, common.Hash{})
+		ix.requestedInitBlock = math.MaxUint64
 		ix.requestInitBlock()
 	}
 	ix.mergeControl.trigger()
