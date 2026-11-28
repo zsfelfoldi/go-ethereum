@@ -29,54 +29,55 @@ type mergeControl struct {
 	params            *Params
 	storage           *tableStorage
 	getMemFileTotal   func() uint64
+	getChainRange     func() (uint64, uint64, uint64)
 	deleteTable       func(id tableID) error
 	mergeTable        func(id tableID, stop func() bool) error
 	requestBlockTable func(blockNumber uint64) (common.RangeSet[uint64], bool)
 
-	suspended                        bool
-	headBlock, tailBlock, finalBlock uint64
-	expectedBlockTables              common.RangeSet[uint64]
-	lowLevelThreadCount              int
-	shutdownCh                       chan struct{}
-	threads                          []mergeThread
-	stoppedTaskCh                    chan stoppedTask
-	triggerCh                        chan chainUpdate
-	mergeWg                          sync.WaitGroup
-}
-
-type chainUpdate struct {
-	headBlock, tailBlock, finalBlock uint64
+	suspended           bool
+	expectedBlockTables common.RangeSet[uint64]
+	lowLevelThreadCount int
+	shutdownCh          chan struct{}
+	threads             []mergeThread
+	stoppedTaskCh       chan stoppedTask
+	triggerCh           chan struct{}
+	mergeWg             sync.WaitGroup
 }
 
 func newMergeControl(
 	threadCount int,
 	storage *tableStorage,
 	getMemFileTotal func() uint64,
+	getChainRange func() (uint64, uint64, uint64),
 	deleteTable func(id tableID) error,
 	mergeTable func(id tableID, stop func() bool) error,
 	requestBlockTable func(blockNumber uint64) (common.RangeSet[uint64], bool),
 ) *mergeControl {
-	return &mergeControl{
+	mc := &mergeControl{
 		threadCount:       threadCount,
 		params:            storage.params,
 		storage:           storage,
 		getMemFileTotal:   getMemFileTotal,
+		getChainRange:     getChainRange,
 		deleteTable:       deleteTable,
 		mergeTable:        mergeTable,
 		requestBlockTable: requestBlockTable,
 
 		shutdownCh:    make(chan struct{}),
 		stoppedTaskCh: make(chan stoppedTask, threadCount),
-		triggerCh:     make(chan chainUpdate, 1),
+		triggerCh:     make(chan struct{}, 1),
 		threads:       make([]mergeThread, threadCount),
 	}
+	for i := range mc.threads {
+		mc.threads[i].startTaskCh = make(chan tableOperation, 1)
+		mc.threads[i].suspendCh = make(chan bool, 1)
+	}
+	return mc
 }
 
 func (mc *mergeControl) start() {
 	mc.mergeWg.Add(mc.threadCount + 1)
 	for i := range mc.threads {
-		mc.threads[i].startTaskCh = make(chan tableOperation, 1)
-		mc.threads[i].suspendCh = make(chan bool, 1)
 		go mc.threadLoop(i)
 	}
 	go mc.controlLoop()
@@ -157,8 +158,8 @@ func (mc *mergeControl) update() {
 	targetSet := mc.makeTargetSet(completeSet)
 	tableOps, requiredBlockTables := mc.params.nextTableOperations(completeSet, partialSet, targetSet, mc.lowLevelThreadCount, mc.threadCount)
 	//fmt.Println("updateTableOperations   complete", completeSet.count(), "partial", partialSet.count(), "target", targetSet.count())
-	suspendDelivery := (memFileTotal >= memFileSuspendThreshold || tableCountTotal >= tableCountSuspendThreshold) && len(tableOps) != 0
-	if !suspendDelivery {
+	suspendRequests := (memFileTotal >= memFileSuspendThreshold || tableCountTotal >= tableCountSuspendThreshold) && len(tableOps) != 0
+	if !suspendRequests {
 		// request more blocks for indexing
 		request := requiredBlockTables.Difference(mc.expectedBlockTables)
 		for !request.IsEmpty() {
@@ -210,18 +211,19 @@ func (mc *mergeControl) update() {
 
 }
 func (mc *mergeControl) makeTargetSet(complete tableSet) tableSet {
-	if mc.headBlock == 0 {
+	headBlock, tailBlock, finalBlock := mc.getChainRange()
+	if headBlock == 0 {
 		return mc.params.newTableSet()
 	}
-	rangeStart := mc.tailBlock
+	rangeStart := tailBlock
 	maxDelay := mc.params.tableLevels[len(mc.params.protocolLevels)-1].blockCount // highest in-protocol table size
-	rangeEnd := max(rangeStart+maxDelay, mc.finalBlock+maxDelay, mc.headBlock) - maxDelay
+	rangeEnd := max(rangeStart+maxDelay, finalBlock+maxDelay, headBlock) - maxDelay
 	//fmt.Println("makeTargetSet  headBlock", headBlock, "rangeStart", rangeStart, "rangeEnd", rangeEnd)
 	target := mc.params.rangeTarget(complete, common.SingleRangeSet[uint64](common.NewRange[uint64](rangeStart, rangeEnd+1-rangeStart)))
 	//fmt.Println(" rangeTarget", target)
 	for i, pl := range mc.params.protocolLevels {
-		first := (max(mc.headBlock, pl.tailAge) - pl.tailAge) / mc.params.tableLevels[i].blockCount
-		afterLast := (max(mc.headBlock+1, pl.headAge) - pl.headAge) / mc.params.tableLevels[i].blockCount
+		first := (max(headBlock, pl.tailAge) - pl.tailAge) / mc.params.tableLevels[i].blockCount
+		afterLast := (max(headBlock+1, pl.headAge) - pl.headAge) / mc.params.tableLevels[i].blockCount
 		//fmt.Println(" protocolLevel", i, first, afterLast)
 		target[i] = target[i].Union(common.SingleRangeSet[uint64](common.NewRange[uint64](first, afterLast-first)))
 	}
@@ -229,12 +231,11 @@ func (mc *mergeControl) makeTargetSet(complete tableSet) tableSet {
 	return target
 }
 
-func (mc *mergeControl) trigger(headBlock, tailBlock, finalBlock uint64) {
+func (mc *mergeControl) trigger() {
 	select {
-	case <-mc.triggerCh:
+	case mc.triggerCh <- struct{}{}:
 	default:
 	}
-	mc.triggerCh <- chainUpdate{headBlock: headBlock, tailBlock: tailBlock, finalBlock: finalBlock}
 }
 
 func (mc *mergeControl) suspend(suspend bool) {
@@ -254,8 +255,7 @@ func (mc *mergeControl) controlLoop() {
 		select {
 		case st := <-mc.stoppedTaskCh:
 			mc.threads[st.threadIndex].stoppedTask(st.op)
-		case c := <-mc.triggerCh:
-			mc.headBlock, mc.tailBlock, mc.finalBlock = c.headBlock, c.tailBlock, c.finalBlock
+		case <-mc.triggerCh:
 		case <-mc.shutdownCh:
 			return
 		}

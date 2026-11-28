@@ -40,9 +40,11 @@ const (
 	memFileLowThreshold        = 10000000 //TODO config
 	memFileHighThreshold       = 15000000 //TODO config
 	memFileSuspendThreshold    = 20000000 //TODO config
+	memFileDiscardThreshold    = 22000000 //TODO config
 	tableCountLowThreshold     = 200      //TODO config, +protocol tables
 	tableCountHighThreshold    = 250      //TODO config
 	tableCountSuspendThreshold = 300      //TODO config
+	tableCountDiscardThreshold = 320      //TODO config
 )
 
 // Config contains the configuration options for NewIndexer.
@@ -106,10 +108,7 @@ type Indexer struct {
 	queuedBlockRequests                []uint64
 	requestedInitBlock                 uint64
 
-	hasProcessedBlock    bool
-	processedBlockNumber uint64
-	processedBlockId     common.Hash
-	recentHeads          *lru.Cache[common.Hash, *cachedBlockData]
+	recentHeads *lru.Cache[common.Hash, *cachedBlockData]
 
 	shutdown           bool
 	storageInitialized bool
@@ -138,12 +137,20 @@ func NewIndexer(params *Params, config Config, path string) *Indexer {
 		maxMergeThreads,
 		storage,
 		ix.files.getMemFileTotal,
+		ix.getChainRange,
 		storage.deleteTable,
 		ix.mergeTable,
 		ix.requestBlockTable,
 	)
 	ix.requestInitBlock()
 	return ix
+}
+
+func (ix *Indexer) getChainRange() (head, tail, final uint64) {
+	ix.lock.Lock()
+	defer ix.lock.Unlock()
+
+	return ix.headBlock, ix.tailBlock(), ix.finalBlock
 }
 
 func (ix *Indexer) requestInitBlock() {
@@ -155,12 +162,13 @@ func (ix *Indexer) requestInitBlock() {
 		_, _, initPhase := ix.storage.tables()
 		if !initPhase {
 			ix.storageInitialized = true
+			ix.mergeControl.start()
 			return
 		}
 		panic("cannot initialize index table storage")
 	}
 	fmt.Println("requesting init block", reqNumber)
-	if ix.requestBlock(reqNumber) {
+	if ix.requestBlock != nil && ix.requestBlock(reqNumber) {
 		ix.requestedInitBlock = reqNumber
 	}
 	return
@@ -291,10 +299,11 @@ func (ix *Indexer) requestBlockTable(blockNumber uint64) (common.RangeSet[uint64
 	ix.lock.Lock()
 	defer ix.lock.Unlock()
 
-	sent := ix.requestBlock(blockNumber)
+	sent := ix.requestBlock != nil && ix.requestBlock(blockNumber)
 	if sent {
 		ix.expectedBlockTables = ix.expectedBlockTables.Union(common.SingleRangeSet[uint64](common.NewRange[uint64](blockNumber, 1)))
 	}
+	//fmt.Println("+++ requestBlockTable", blockNumber, sent, ix.expectedBlockTables)
 	return ix.expectedBlockTables, sent // never modified, can return without copying
 }
 
@@ -304,9 +313,10 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 	defer abStatSet(nil)
 
 	ix.lock.Lock()
+	defer ix.lock.Unlock()
+
 	abStatSet(&abStatOther)
 	if ix.shutdown {
-		ix.lock.Unlock()
 		return
 	}
 	ix.mergeControl.suspend(false)
@@ -319,36 +329,36 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 			ix.requestInitBlock()
 		}
 	}
-	expected := ix.expectedBlockTables.Includes(blockNumber)
 	if blockNumber >= ix.headBlock {
 		ix.headBlock = blockNumber
 		ix.headBlockHash = header.Hash()
 		ix.recentHeads.Add(header.Hash(), &cachedBlockData{header: header, body: body, receipts: receipts, canonicalUntil: blockNumber})
 	}
-	//fmt.Println(" processBlockTables")
-	if blockNumber < ix.headBlock && !expected {
+	if ix.discardDeliveredBlocks() {
+		return
+	}
+	expected := ix.expectedBlockTables.Includes(blockNumber)
+	if blockNumber >= ix.headBlock && !expected {
+		ix.expectedBlockTables = ix.expectedBlockTables.Union(common.SingleRangeSet[uint64](common.NewRange[uint64](blockNumber, 1)))
+		expected = true
+	}
+	//fmt.Println("AddBlockData", blockNumber, "head", ix.headBlock, "expected", expected, "ebt", ix.expectedBlockTables)
+	if !expected {
 		//fmt.Println(" unexpected", blockNumber, "required", ix.requiredBlockTables)
-		ix.lock.Unlock()
-		return // unexpected block, do not create table
+		return
 	}
-	if expected {
-		ix.expectedBlockTables = ix.expectedBlockTables.Difference(common.SingleRangeSet[uint64](common.NewRange[uint64](blockNumber, 1)))
-	}
-	tw, err := ix.getPartialBlockTableWriter(header)
 	var expectedBlockTables common.RangeSet[uint64]
 	if abStatCount%1000 == 0 {
 		expectedBlockTables = slices.Clone(ix.expectedBlockTables)
 	}
-	headBlock, tailBlock, finalBlock := ix.headBlock, ix.tailBlock(), ix.finalBlock
 	ix.lock.Unlock()
-	if err == nil {
-		err = ix.processBlockTable(tw, header, body, receipts)
-	}
-	if err == nil {
-		ix.mergeControl.trigger(headBlock, tailBlock, finalBlock)
+	if err := ix.makeBlockTable(header, body, receipts); err == nil {
+		ix.mergeControl.trigger()
 	} else {
 		log.Error("Failed to add block data to log index", "number", header.Number.Uint64(), "error", err)
 	}
+	ix.lock.Lock()
+	ix.expectedBlockTables = ix.expectedBlockTables.Difference(common.SingleRangeSet[uint64](common.NewRange[uint64](blockNumber, 1)))
 	//fmt.Println(" done")
 	if abStatCount%1000 == 0 {
 		completeSet, partialSet, _ := ix.storage.tables()
@@ -368,58 +378,45 @@ func (ix *Indexer) AddBlockData(header *types.Header, body *types.Body, receipts
 	}
 }
 
-func (ix *Indexer) getPartialBlockTableWriter(header *types.Header) (*tableWriter, error) {
-	var tw *tableWriter
-	if ix.hasProcessedBlock && ix.processedBlockNumber == header.Number.Uint64() {
-		if header.Hash() == ix.processedBlockId {
-			var err error
-			if tw, err = ix.storage.getTableWriter(tableID{level: 0, index: ix.processedBlockNumber}); err != nil {
-				return nil, err
-			}
-		} else {
-			if err := ix.storage.deleteTable(tableID{level: 0, index: ix.processedBlockNumber}); err != nil {
-				return nil, err
-			}
-		}
-		ix.hasProcessedBlock = false
-	}
-	return tw, nil
+func (ix *Indexer) discardDeliveredBlocks() bool {
+	complete, partial, _ := ix.storage.tables()
+	//fmt.Println("ddb complete", complete, "partial", partial)
+	return ix.files.getMemFileTotal() > memFileDiscardThreshold || complete.count()+partial.count() > tableCountDiscardThreshold
 }
 
-func (ix *Indexer) processBlockTable(tw *tableWriter, header *types.Header, body *types.Body, receipts types.Receipts) error {
+func (ix *Indexer) makeBlockTable(header *types.Header, body *types.Body, receipts types.Receipts) error {
 	blockNumber := header.Number.Uint64()
+	//fmt.Println("*** PBT", blockNumber)
 	id := tableID{level: 0, index: blockNumber}
-	if tw == nil {
-		complete, partial, initPhase := ix.storage.tables()
-		if initPhase {
-			return nil
-		}
-		if partial.includes(id) {
-			if err := ix.storage.deleteTable(id); err != nil {
-				return err
-			}
-		}
-		if complete.includes(id) {
-			return nil
-		}
-		abStatSet(&abStatGetEntries)
-		entries := getBlockEntries(blockNumber, header.ParentHash, body.Transactions, receipts)
-		abStatSet(&abStatSortEntries)
-		sort.Slice(entries, func(i, j int) bool {
-			return entries[i].Compare(&entries[j]) < 0
-		})
-		abStatSet(&abStatAddEntries)
-		var err error
-		if tw, err = ix.storage.addNewTableWriter(id, uint64(len(entries))); err != nil {
-			complete, partial, _ := ix.storage.tables()
-			fmt.Println(" complete", complete[0], "partial", partial[0])
+	complete, partial, initPhase := ix.storage.tables()
+	if initPhase {
+		return nil
+	}
+	if partial.includes(id) {
+		if err := ix.storage.deleteTable(id); err != nil {
 			return err
 		}
-		for _, entry := range entries {
-			if err := tw.addEntry(&entry); err != nil {
-				ix.storage.deleteTable(id)
-				return err
-			}
+	}
+	if complete.includes(id) {
+		return nil
+	}
+	abStatSet(&abStatGetEntries)
+	entries := getBlockEntries(blockNumber, header.ParentHash, body.Transactions, receipts)
+	abStatSet(&abStatSortEntries)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Compare(&entries[j]) < 0
+	})
+	abStatSet(&abStatAddEntries)
+	tw, err := ix.storage.addNewTableWriter(id, uint64(len(entries)))
+	if err != nil {
+		/*complete, partial, _ := ix.storage.tables()
+		fmt.Println(" complete", complete[0], "partial", partial[0])*/
+		return err
+	}
+	for _, entry := range entries {
+		if err := tw.addEntry(&entry); err != nil {
+			ix.storage.deleteTable(id)
+			return err
 		}
 	}
 	tw.setMeta(TableMeta{
@@ -443,7 +440,7 @@ func (ix *Indexer) processBlockTable(tw *tableWriter, header *types.Header, body
 		return err
 	}
 	abStatSet(&abStatOther)
-	//fmt.Println(" success")
+	//fmt.Println(" success PBT", blockNumber)
 	return nil
 }
 
@@ -464,7 +461,7 @@ func (ix *Indexer) Revert(header *types.Header) {
 	ix.headBlockHash = header.Hash()
 	//ix.recentHeads.Add(blockHash, cachedBlockData{header: header, body: body, receipts: receipts, canonicalUntil: blockNumber})
 	ix.cutoffBlock = min(ix.cutoffBlock, ix.headBlock+1)
-	ix.storage.deleteTablesFromBlock(blockNumber + 1)
+	ix.storage.deleteTablesFromBlock(blockNumber + 1) //TODO merge in progress
 	for _, key := range ix.recentHeads.Keys() {
 		bd, _ := ix.recentHeads.Get(key)
 		if bd.canonicalUntil > blockNumber {
@@ -475,7 +472,7 @@ func (ix *Indexer) Revert(header *types.Header) {
 		ix.storage.deliverInitBlockHash(ix.requestedInitBlock, common.Hash{})
 		ix.requestInitBlock()
 	}
-	ix.mergeControl.trigger(ix.headBlock, ix.tailBlock(), ix.finalBlock)
+	ix.mergeControl.trigger()
 }
 
 func (ix *Indexer) tailBlock() uint64 {
@@ -494,7 +491,7 @@ func (ix *Indexer) SetHistoryCutoff(blockNumber uint64) {
 		ix.storage.deliverInitBlockHash(ix.requestedInitBlock, common.Hash{})
 		ix.requestInitBlock()
 	}
-	ix.mergeControl.trigger(ix.headBlock, ix.tailBlock(), ix.finalBlock)
+	ix.mergeControl.trigger()
 }
 
 func (ix *Indexer) SetFinalized(blockNumber uint64) {
@@ -505,7 +502,7 @@ func (ix *Indexer) SetFinalized(blockNumber uint64) {
 		return
 	}
 	ix.finalBlock = blockNumber
-	ix.mergeControl.trigger(ix.headBlock, ix.tailBlock(), ix.finalBlock)
+	ix.mergeControl.trigger()
 }
 
 func (ix *Indexer) Suspend() {

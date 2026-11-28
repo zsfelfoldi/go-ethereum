@@ -577,7 +577,8 @@ func (tf *tableFiles) deleteFile(name string) error {
 	//fmt.Println("deleteFile", name)
 	fi, ok := tf.tableFiles[name]
 	if !ok {
-		fmt.Println(" not found")
+		fmt.Println(" not found:", name)
+		panic("Xxx")
 		return errFileNotFound
 	}
 	if fi.isLocked() {
